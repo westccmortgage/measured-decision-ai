@@ -1,0 +1,248 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="light">
+  <head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Measured Decision AI | The Living Property</title>
+    <meta name="description" content="Spatial intelligence connecting the physical property, its evidence, and the decisions around it.">
+    <meta name="theme-color" content="#f7f6f2">
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="styles.css?v=20260718-2">
+    <script>
+      try {
+        const saved = localStorage.getItem("mdai-theme");
+        const preferred = matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light";
+        document.documentElement.dataset.theme = saved === "light" || saved === "dark" ? saved : preferred;
+      } catch (_) {}
+    </script>
+  </head>
+  <body>
+    <main class="site-shell">
+      <header class="site-header">
+        <a class="brand" href="#top" aria-label="Measured Decision AI home">
+          <span class="brand-mark" aria-hidden="true"><i></i><i></i><i></i></span>
+          <span>Measured Decision <strong>AI</strong></span>
+        </a>
+        <button class="menu-button" type="button" aria-label="Toggle navigation" aria-expanded="false"><span></span><span></span></button>
+        <nav class="main-nav" aria-label="Main navigation">
+          <a href="#vision">Vision</a><a href="#film-center">Film Center</a><a href="#products">Products</a><a href="#technology">Technology</a><a href="#responsible">Responsible AI</a><a href="#company">About</a>
+        </nav>
+        <div class="header-actions">
+          <button class="theme-toggle" type="button" aria-label="Switch theme">
+            <span class="theme-track"><span class="theme-thumb">☼</span></span><span class="theme-name">Day</span>
+          </button>
+          <a class="contact-link" href="#contact">Contact</a>
+        </div>
+      </header>
+
+      <section class="hero living-hero" id="top">
+        <div class="ambient-grid" aria-hidden="true"></div>
+        <div class="hero-copy">
+          <p class="eyebrow">Spatial intelligence for the built world</p>
+          <h1>Every property<br>should become<br>understandable.</h1>
+          <p class="hero-lede">Spatial intelligence that connects the physical property, its evidence, and the decisions around it.</p>
+          <div class="hero-actions">
+            <a class="button button-primary" href="#film-center">Enter the property <span aria-hidden="true">→</span></a>
+            <a class="button button-secondary" href="#technology">See how it works <span aria-hidden="true">↓</span></a>
+          </div>
+          <p class="hero-note"><span></span> Physical space becomes a connected evidence environment.</p>
+        </div>
+
+        <figure class="hero-media">
+          <figcaption class="sr-only">A physical property continuously transforming into a connected digital twin.</figcaption>
+          <video class="hero-video" muted loop playsinline preload="auto" poster="assets/hero/digital-twin-poster.jpg">
+            <source src="assets/video/digital-twin-hero-smooth.mp4" type="video/mp4">
+          </video>
+          <div class="hero-media-wash" aria-hidden="true"></div>
+          <div class="hero-data-lines" aria-hidden="true"><span></span><span></span><span></span><i></i></div>
+          <p class="hero-media-label"><span>The living property</span><strong><i></i> Continuous digital-twin sequence</strong></p>
+          <button class="hero-video-toggle" type="button" aria-label="Pause hero video"><span>Ⅱ</span></button>
+        </figure>
+      </section>
+
+      <ul class="principles"><li><i>01</i> Property intelligence</li><li><i>02</i> Evidence in context</li><li><i>03</i> Human-centered review</li></ul>
+
+      <section class="section vision-section" id="vision">
+        <div class="vision-intro">
+          <div>
+            <p class="eyebrow">Our vision, explained</p>
+            <h2>Four dimensions of one measured mission.</h2>
+          </div>
+          <div class="vision-intro-copy">
+            <p>Measured Decision AI is working toward an environment where evidence, financial logic, property context, AI-assisted explanation, and accountable human review can operate as parts of one understandable system.</p>
+            <p class="concept-notice"><span>Concept note</span> These images communicate our research direction and design principles. They are not screenshots of unreleased product functionality.</p>
+          </div>
+        </div>
+
+        <article class="vision-film film-center" id="film-center" aria-labelledby="vision-film-title">
+          <div class="vision-film-heading">
+            <div>
+              <p class="chapter-kicker">Measured Decision AI · Film Center</p>
+              <h3 id="vision-film-title">Four perspectives. One direction.</h3>
+            </div>
+            <p>Choose a film to hear our vision through four distinct lenses: the company mission, financial evidence, the living record of a property, and the technology connecting it all.</p>
+          </div>
+          <div class="film-center-layout">
+            <div class="film-feature">
+              <div class="vision-film-frame">
+                <video id="film-player" controls playsinline preload="metadata" poster="assets/films/film-vision.jpg">
+                  <source id="film-source" src="assets/video/film-vision.mp4" type="video/mp4">
+                  <track id="film-caption" kind="captions" src="assets/captions/film-vision-en.vtt" srclang="en" label="English">
+                  Your browser does not support embedded video.
+                </video>
+              </div>
+              <div class="film-feature-copy" aria-live="polite">
+                <div><p id="film-category">Company vision</p><h4 id="film-active-title">The Measured Decision Vision</h4></div>
+                <p id="film-active-description">Why we are building an environment where evidence, context, explanation, and accountable human review work together.</p>
+                <span id="film-active-meta">2:56 · English captions available</span>
+              </div>
+            </div>
+            <div class="film-selector" role="group" aria-label="Choose a film">
+              <button class="film-choice is-active" type="button" aria-pressed="true" data-film-src="assets/video/film-vision.mp4" data-film-caption="assets/captions/film-vision-en.vtt" data-film-poster="assets/films/film-vision.jpg" data-film-category="Company vision" data-film-title="The Measured Decision Vision" data-film-description="Why we are building an environment where evidence, context, explanation, and accountable human review work together." data-film-meta="2:56 · English captions available"><img src="assets/films/film-vision.jpg" alt="" width="960" height="540"><span><b>01</b><strong>Vision</strong><small>The Measured Decision Vision</small></span></button>
+              <button class="film-choice" type="button" aria-pressed="false" data-film-src="assets/video/film-financial.mp4" data-film-caption="assets/captions/film-financial-en.vtt" data-film-poster="assets/films/film-financial.jpg" data-film-category="Financial perspective" data-film-title="Every Dollar Should Have an Evidence Path" data-film-description="A financial perspective on connecting capital, property conditions, supporting records, deterministic reconciliation, and human review." data-film-meta="2:39 · English captions available"><img src="assets/films/film-financial.jpg" alt="" width="960" height="540"><span><b>02</b><strong>Financial</strong><small>Every Dollar Should Have an Evidence Path</small></span></button>
+              <button class="film-choice" type="button" aria-pressed="false" data-film-src="assets/video/film-real-estate.mp4" data-film-caption="assets/captions/film-real-estate-en.vtt" data-film-poster="assets/films/film-real-estate.jpg" data-film-category="Real-estate perspective" data-film-title="Every Property Should Have a Living Record" data-film-description="A property should preserve its evolving story: plans, conditions, improvements, evidence, costs, and the decisions made around it." data-film-meta="3:11 · English captions available"><img src="assets/films/film-real-estate.jpg" alt="" width="960" height="540"><span><b>03</b><strong>Real estate</strong><small>Every Property Should Have a Living Record</small></span></button>
+              <button class="film-choice" type="button" aria-pressed="false" data-film-src="assets/video/film-technology.mp4" data-film-caption="assets/captions/film-technology-en.vtt" data-film-poster="assets/films/film-technology.jpg" data-film-category="Technology perspective" data-film-title="From Documents to Spatial Intelligence" data-film-description="How documents, images, calculations, spatial context, and accountable workflows can become one understandable intelligence environment." data-film-meta="2:55 · English captions available"><img src="assets/films/film-technology.jpg" alt="" width="960" height="540"><span><b>04</b><strong>Technology</strong><small>From Documents to Spatial Intelligence</small></span></button>
+            </div>
+          </div>
+        </article>
+
+        <div class="vision-chapters">
+          <article class="vision-chapter">
+            <div class="vision-chapter-heading">
+              <span class="chapter-number">01</span>
+              <div>
+                <p class="chapter-kicker">Our Vision</p>
+                <h3>From fragmented information to connected understanding.</h3>
+                <p>Important decisions are rarely supported by one source. Documents, images, calculations, property records, conversations, and workflow history often remain separated. Our vision is to connect those layers while preserving the source and meaning of every piece of evidence.</p>
+              </div>
+            </div>
+            <div class="vision-gallery">
+              <figure>
+                <div class="vision-image"><img src="assets/vision/01-fragmented-evidence.webp" width="1672" height="941" loading="lazy" decoding="async" alt="Separate property, document, financial, image, and workflow evidence displayed across disconnected planes"></div>
+                <figcaption><strong>Fragmented evidence</strong><p>Valuable information exists, but its relationships are difficult to see when each source lives in a different file, platform, or professional workflow.</p></figcaption>
+              </figure>
+              <figure>
+                <div class="vision-image"><img src="assets/vision/02-connected-intelligence.webp" width="1672" height="941" loading="lazy" decoding="async" alt="Property model connected to documents, imagery, financial information, workflow, and a human review point"></div>
+                <figcaption><strong>Connected intelligence</strong><p>The property becomes the shared context connecting source documents, physical evidence, calculations, operating history, and the responsible reviewer.</p></figcaption>
+              </figure>
+            </div>
+          </article>
+
+          <article class="vision-chapter">
+            <div class="vision-chapter-heading">
+              <span class="chapter-number">02</span>
+              <div>
+                <p class="chapter-kicker">Financial Intelligence</p>
+                <h3>Keep the calculation, explanation, and decision distinct.</h3>
+                <p>Our financial method separates structured evidence from deterministic mathematics, AI-assisted interpretation, and final human judgment. That separation allows a person to follow the path behind an explanation instead of receiving an unsupported answer.</p>
+              </div>
+            </div>
+            <div class="vision-gallery">
+              <figure>
+                <div class="vision-image"><img src="assets/vision/03-measured-decision-path.webp" width="1672" height="941" loading="lazy" decoding="async" alt="A visual sequence moving from source evidence through deterministic machinery and AI organization to human review"></div>
+                <figcaption><strong>The measured decision path</strong><p>Source evidence moves through visible calculations and organized interpretation before reaching a human professional who remains accountable for the decision.</p></figcaption>
+              </figure>
+              <figure>
+                <div class="vision-image"><img src="assets/vision/04-product-foundation.webp" width="1672" height="941" loading="lazy" decoding="async" alt="Four distinct intelligence modules connected to a central decision core"></div>
+                <figcaption><strong>Connected operating foundations</strong><p>WalletWCCM develops financial clarity while GRCRM preserves workflow continuity and accountable human handoffs.</p></figcaption>
+              </figure>
+            </div>
+          </article>
+
+          <article class="vision-chapter">
+            <div class="vision-chapter-heading">
+              <span class="chapter-number">03</span>
+              <div>
+                <p class="chapter-kicker">Property &amp; Spatial Intelligence</p>
+                <h3>Connect a physical property to the evidence that describes it.</h3>
+                <p>We are exploring how spatial computing and computer vision could make property information easier to examine in context. The commercial purpose is not virtual reality itself. It is a clearer relationship between physical conditions, supporting documents, costs, financial implications, and professional verification.</p>
+              </div>
+            </div>
+            <div class="vision-gallery">
+              <figure>
+                <div class="vision-image"><img src="assets/vision/05-spatial-property-review.webp" width="1672" height="941" loading="lazy" decoding="async" alt="Professional using a spatial-computing headset to examine a property model and supporting evidence"></div>
+                <figcaption><strong>Spatial review concept</strong><p>A decision-maker explores the property, plans, observations, and supporting records in one visual environment instead of reconstructing the story across disconnected systems.</p></figcaption>
+              </figure>
+              <figure>
+                <div class="vision-image"><img src="assets/vision/06-property-evidence.webp" width="1672" height="941" loading="lazy" decoding="async" alt="Cutaway property model with physical conditions linked to inspection and construction evidence"></div>
+                <figcaption><strong>Evidence anchored to place</strong><p>Physical conditions can be associated with the exact area they affect, then connected to inspection evidence, construction scope, estimated cost, and financial review.</p></figcaption>
+              </figure>
+            </div>
+          </article>
+
+          <article class="vision-chapter">
+            <div class="vision-chapter-heading">
+              <span class="chapter-number">04</span>
+              <div>
+                <p class="chapter-kicker">Technology &amp; Human Review</p>
+                <h3>Build a better environment for responsible judgment.</h3>
+                <p>Technology should make evidence easier to find, assumptions easier to question, and reasoning easier to verify. It should not conceal responsibility behind an impressive interface. Our direction keeps the human decision-maker visible at the end of every important path.</p>
+              </div>
+            </div>
+            <div class="vision-gallery">
+              <figure>
+                <div class="vision-image"><img src="assets/vision/07-human-review.webp" width="1672" height="941" loading="lazy" decoding="async" alt="Multidisciplinary professionals reviewing property evidence and analytical layers together"></div>
+                <figcaption><strong>Human accountability</strong><p>Financial, property, technology, and professional perspectives come together around the same evidence. AI supports the review; it does not become the authority.</p></figcaption>
+              </figure>
+              <figure>
+                <div class="vision-image"><img src="assets/vision/08-connected-future.webp" width="1672" height="941" loading="lazy" decoding="async" alt="Property landscape transitioning into a connected evidence and intelligence network toward a human focal point"></div>
+                <figcaption><strong>A connected future</strong><p>Our long-term direction is an intelligence layer that connects the question, evidence, calculation, explanation, operating workflow, and final human decision.</p></figcaption>
+              </figure>
+            </div>
+          </article>
+        </div>
+      </section>
+
+      <section class="section products-section" id="products">
+        <div class="section-heading"><div><p class="eyebrow">Our systems</p><h2>Two working systems.<br>One measured direction.</h2></div><p>Measured Decision AI connects financial clarity and workflow continuity while our spatial-intelligence research expands the property itself into a reviewable evidence environment.</p></div>
+        <div class="product-grid">
+          <article class="product-card"><div class="product-top"><span>01</span><div><span class="live-badge"><i></i> Live</span><span class="product-orbit"></span></div></div><p>Closing-cost intelligence</p><h3>WalletWCCM</h3><p class="product-copy">A focused experience that translates cash to close, credits, prepaids, and escrow assumptions into a clearer financial picture with an evidence path.</p><a href="https://walletwccm.com" target="_blank" rel="noreferrer" aria-label="Explore Wallet — opens in a new tab">Explore Wallet <span>↗</span></a></article>
+          <article class="product-card"><div class="product-top"><span>02</span><div><span class="live-badge"><i></i> Live</span><span class="product-orbit"></span></div></div><p>Workflow continuity</p><h3>GRCRM</h3><p class="product-copy">A shared operational layer for leads, follow-up, communication history, and the handoff between digital experiences and human teams.</p><a href="https://grcrm.com" target="_blank" rel="noreferrer" aria-label="View GRCRM — opens in a new tab">View GRCRM <span>↗</span></a></article>
+        </div>
+      </section>
+
+      <section class="section technology-section" id="technology">
+        <div class="technology-copy"><p class="eyebrow">How it works</p><h2>From a complicated scenario to a measured path forward.</h2><p>Our systems separate calculation, interpretation, and professional judgment. That distinction makes the experience clearer — and the technology more responsible.</p><a href="#responsible">Our responsible AI approach <span>→</span></a></div>
+        <div class="process-stack">
+          <article><span>01</span><div><h3>Understand</h3><p>Collect the facts and the question in plain language.</p></div></article>
+          <article><span>02</span><div><h3>Calculate</h3><p>Keep financial math deterministic, visible, and reviewable.</p></div></article>
+          <article><span>03</span><div><h3>Explain</h3><p>Use AI to organize context and communicate the implications.</p></div></article>
+          <article><span>04</span><div><h3>Review</h3><p>Route important decisions to a qualified human professional.</p></div></article>
+        </div>
+      </section>
+
+      <section class="section responsible-section" id="responsible">
+        <div class="responsible-intro"><p class="eyebrow">Responsible AI</p><h2>Clear about what AI does.<br>Clear about what it does not.</h2></div>
+        <div class="responsible-grid">
+          <article><span>Explainable</span><h3>Show the path, not only the answer.</h3><p>People should understand the assumptions, signals, and limitations behind an AI-assisted explanation.</p></article>
+          <article><span>Measured</span><h3>Separate math from interpretation.</h3><p>Core mortgage calculations remain deterministic. AI helps explain context; it does not quietly rewrite the numbers.</p></article>
+          <article><span>Human</span><h3>Keep professional judgment visible.</h3><p>Our products support decisions. They do not replace licensed review, underwriting, or the human responsibility behind an outcome.</p></article>
+        </div>
+        <p class="compliance-note">Measured Decision AI products provide educational and decision-support experiences. They do not issue loan approvals, rate quotes, loan estimates, or commitments to lend.</p>
+      </section>
+
+      <section class="section company-section" id="company">
+        <div class="company-statement"><p class="eyebrow">Company</p><h2>AI built with mortgage experience inside the room.</h2></div>
+        <div class="company-copy">
+          <p>Measured Decision AI grew from more than two decades of hands-on mortgage and real estate experience — and from a simple observation: people are often asked to make major financial and property decisions before the information has been made truly understandable.</p>
+          <p>We build applied systems for evidence clarity, workflow continuity, spatial context, and responsible human review. WalletWCCM and GRCRM are working foundations; the living-property concept defines where our research is going next.</p>
+          <div class="founder-line"><span>Founder &amp; product direction</span><strong>Anatoliy Kanevsky</strong><em>Mortgage and real estate experience since 2004</em></div>
+          <section class="team-strip" aria-label="Specialist network">
+            <article><span>Construction</span><strong>Jose L. Cardoso</strong><small>JLC Builders · CA License #1127473</small><a href="mailto:jlcardos@gmail.com">Contact</a></article>
+            <article><span>Real estate</span><strong>Marco Rufo</strong><small>Managing Partner · The Agency Palisades</small><a href="mailto:Marco@TheAgencyRE.com">Contact</a></article>
+            <article><span>SEO &amp; digital strategy</span><strong>Viktoriia Kotova</strong><small>MARKEVITA</small><a href="mailto:contact@markevita.com">Contact</a></article>
+            <article><span>Legal</span><strong>Edward Shkolnikov</strong><small>Attorney · California Bar #237116</small><a href="mailto:Ed@2defend.com">Contact</a></article>
+          </section>
+          <p class="network-note">Independent specialist network presented by professional discipline. Inclusion does not imply employment or automated decision authority.</p>
+        </div>
+      </section>
+
+      <section class="contact-section" id="contact"><p class="eyebrow">Start a conversation</p><h2>Build clearer decisions into mortgage workflows.</h2><p>For product access, industry collaboration, or a conversation about applied AI in mortgage finance.</p><a class="button button-primary" href="mailto:hello@measureddecision.com?subject=Measured%20Decision%20AI%20Inquiry">Contact Measured Decision AI <span>→</span></a></section>
+
+      <footer><a class="brand footer-brand" href="#top"><span class="brand-mark"><i></i><i></i><i></i></span><span>Measured Decision <strong>AI</strong></span></a><p>Applied intelligence for decisions that matter.</p><div><a href="#responsible">Responsible AI</a><a href="mailto:hello@measureddecision.com">hello@measureddecision.com</a></div><span>© 2026 Measured Decision AI</span></footer>
+    </main>
+    <script src="app.js?v=20260718-2" defer></script>
+  </body>
+</html>
