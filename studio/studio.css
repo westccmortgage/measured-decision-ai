@@ -1163,12 +1163,23 @@ dialog select {
 }
 .inventory-row {
   display: grid;
-  grid-template-columns: 42px minmax(220px, 1fr) 150px 130px;
+  grid-template-columns: 42px minmax(220px, 1fr) 150px 130px auto;
   align-items: center;
   gap: 14px;
   padding: 14px 20px;
   border-bottom: 1px solid var(--line-soft);
 }
+.inventory-edit { white-space: nowrap; }
+.new-room-fields {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 12px;
+  padding: 12px;
+  border: 1px solid var(--line-soft);
+  background: rgba(52, 211, 235, .035);
+}
+.new-room-fields[hidden] { display: none; }
+.new-room-fields label:first-child { grid-column: 1 / -1; }
 .inventory-row:last-child {
   border-bottom: 0;
 }
@@ -1570,6 +1581,9 @@ dialog select {
   .inventory-row > span {
     display: none;
   }
+  .inventory-edit { justify-self: start; }
+  .new-room-fields { grid-template-columns: 1fr; }
+  .new-room-fields label:first-child { grid-column: auto; }
   .job-card {
     grid-template-columns: 1fr auto;
   }
