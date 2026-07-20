@@ -1,0 +1,678 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta name="robots" content="noindex,nofollow,noarchive">
+    <meta name="theme-color" content="#07101d">
+    <title>Measured Decision Spatial Intelligence Studio</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link
+      href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap"
+      rel="stylesheet"
+    >
+    <link rel="stylesheet" href="studio.css">
+  </head>
+  <body>
+    <div class="prototype-gate" id="prototype-gate">
+      <div class="gate-card">
+        <div class="studio-mark" aria-hidden="true"><i></i><i></i><i></i></div>
+        <p class="eyebrow">Private spatial intelligence workspace</p>
+        <h1>Measured Decision Studio</h1>
+        <p>
+          Organize physical spaces, preserve evidence, request AI
+          interpretation, complete human review, and prepare a governed spatial
+          package for Apple Vision Pro.
+        </p>
+        <form class="auth-form" id="auth-form">
+          <label>Email<input id="auth-email" type="email" autocomplete="email" required></label>
+          <label>Password<input id="auth-password" type="password" autocomplete="current-password" minlength="8" placeholder="Use password or request a magic link"></label>
+          <button class="primary-button" id="enter-studio" type="submit">Sign in securely <span>→</span></button>
+          <button class="secondary-button" id="send-magic-link" type="button">Email me a magic link</button>
+          <p class="auth-message" id="auth-message" role="status" aria-live="polite">Supabase connection ready. Authorized accounts only.</p>
+        </form>
+        <small>Private workspace · Supabase Auth · Files governed by Row Level Security.</small>
+      </div>
+    </div>
+
+    <div class="app-shell" id="app-shell" hidden>
+      <header class="topbar">
+        <a class="brand" href="#" aria-label="Measured Decision Studio home">
+          <span class="studio-mark" aria-hidden="true"
+            ><i></i><i></i><i></i
+          ></span>
+          <span>Measured Decision <strong>Studio</strong></span>
+        </a>
+        <div class="topbar-center">
+            <span class="environment-pill"><i></i> Private cloud workspace</span>
+          <span class="autosave-status" id="autosave-status"
+            >Saved locally</span
+          >
+        </div>
+        <div class="topbar-actions">
+          <button
+            class="icon-button mobile-menu"
+            id="mobile-menu"
+            type="button"
+            aria-label="Open navigation"
+          >
+            ☰
+          </button>
+          <button class="connector-button" id="connector-status" type="button">
+            <i></i> AI port offline
+          </button>
+          <button class="secondary-button" id="export-record" type="button">
+            Export record
+          </button>
+          <button class="icon-button" id="sign-out" type="button">Sign out</button>
+          <span class="avatar" title="Anatoliy Kanevsky">AK</span>
+        </div>
+      </header>
+
+      <aside class="sidebar" id="sidebar" aria-label="Workspace navigation">
+        <nav aria-label="Studio navigation">
+          <button
+            class="nav-item active"
+            data-view-target="property"
+            type="button"
+          >
+            <span>⌂</span>Property record
+          </button>
+          <button class="nav-item" data-view-target="intake" type="button">
+            <span>⇧</span>Evidence intake
+          </button>
+          <button class="nav-item" data-view-target="processing" type="button">
+            <span>⌁</span>AI processing <small id="queue-nav-count">0</small>
+          </button>
+          <button class="nav-item" data-view-target="review" type="button">
+            <span>✓</span>Review center <small id="review-nav-count">2</small>
+          </button>
+          <button class="nav-item" data-view-target="vision" type="button">
+            <span>◫</span>Vision packages
+          </button>
+        </nav>
+        <div class="sidebar-footer">
+          <p>Processing model</p>
+          <ol id="pipeline-steps">
+            <li class="done">Capture</li>
+            <li class="done">Organize</li>
+            <li>Analyze</li>
+            <li>Verify</li>
+            <li>Package</li>
+          </ol>
+          <small>AI suggestions remain separate from verified facts.</small>
+        </div>
+      </aside>
+
+      <main class="workspace view active" data-view="property" aria-label="Property record">
+        <section class="property-header">
+          <div>
+            <p class="eyebrow">Property intelligence record</p>
+            <div class="title-row">
+              <h1 id="property-name">Private Pilot Property</h1>
+              <span class="private-pill">Private</span>
+            </div>
+            <p id="property-description">Los Angeles, California · Spatial evidence record</p>
+          </div>
+          <div class="property-actions">
+            <button class="secondary-button" id="add-room" type="button">
+              + Add room
+            </button>
+            <label class="primary-button upload-button" for="file-upload"
+              >Upload evidence <span>↑</span></label
+            >
+            <input
+              id="file-upload"
+              type="file"
+              accept="image/*,video/*,.pdf"
+              multiple
+              hidden
+            >
+          </div>
+        </section>
+
+        <section class="metrics" aria-label="Property record summary">
+          <article>
+            <span>Rooms</span><strong id="metric-rooms">2</strong
+            ><small>2 documented</small>
+          </article>
+          <article>
+            <span>Evidence</span><strong id="metric-evidence">2</strong
+            ><small id="metric-evidence-copy">2 spatial captures</small>
+          </article>
+          <article>
+            <span>Human review</span><strong id="metric-review">0/2</strong
+            ><small id="metric-review-copy">2 require verification</small>
+          </article>
+          <article>
+            <span>Last capture</span><strong>Jul 19</strong
+            ><small>Local intake session</small>
+          </article>
+        </section>
+
+        <section class="record-grid">
+          <aside class="room-panel" aria-label="Property rooms">
+            <div class="panel-heading">
+              <div>
+                <p>Spaces</p>
+                <h2>Room index</h2>
+              </div>
+              <button class="mini-button" id="room-filter" type="button">
+                All
+              </button>
+            </div>
+            <div class="room-list" id="room-list"></div>
+          </aside>
+
+          <section class="evidence-panel">
+            <div class="panel-heading evidence-heading">
+              <div>
+                <p id="room-level">Main House</p>
+                <h2 id="room-title">Entrance</h2>
+              </div>
+              <div class="evidence-count" id="room-evidence-count">
+                1 evidence item
+              </div>
+            </div>
+            <div class="evidence-stage" id="evidence-stage">
+              <img
+                id="evidence-image"
+                src="data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP///ywAAAAAAQABAAACAUwAOw=="
+                alt="Selected property evidence"
+              >
+              <video id="evidence-video" controls playsinline preload="metadata" hidden></video>
+              <div class="document-preview" id="document-preview" hidden><span>PDF</span><strong id="document-name">Document evidence</strong><a id="document-open" href="#" target="_blank" rel="noopener">Open document ↗</a></div>
+              <div class="stage-toolbar">
+                <span id="evidence-type">Spatial capture</span
+                ><button id="expand-image" type="button">Expand ↗</button>
+              </div>
+            </div>
+            <div class="evidence-strip" id="evidence-strip"></div>
+            <div class="source-details">
+              <div>
+                <span>Source</span
+                ><strong id="source-name">iPhone spatial capture</strong>
+              </div>
+              <div>
+                <span>Captured</span
+                ><strong id="source-date">July 19, 2026</strong>
+              </div>
+              <div>
+                <span>File status</span
+                ><strong id="source-status">Original preserved</strong>
+              </div>
+            </div>
+          </section>
+
+          <aside class="review-panel" aria-label="Human review workspace">
+            <div class="panel-heading">
+              <div>
+                <p>Review workspace</p>
+                <h2>Evidence interpretation</h2>
+              </div>
+              <span class="review-badge needs" id="review-badge"
+                >Needs verification</span
+              >
+            </div>
+            <div class="observation-block">
+              <div class="observation-label">
+                <span>Visible evidence</span><small>Descriptive only</small>
+              </div>
+              <ul id="visible-observations"></ul>
+            </div>
+            <div class="observation-block muted-block">
+              <div class="observation-label">
+                <span>Not established by this capture</span
+                ><small>Do not infer</small>
+              </div>
+              <ul id="unknown-observations"></ul>
+            </div>
+            <label class="review-note"
+              >Reviewer note<textarea
+                id="review-note"
+                rows="4"
+                placeholder="Add a factual note or required follow-up…"
+              ></textarea>
+            </label>
+            <div class="review-actions">
+              <button class="ai-button" id="request-analysis" type="button">
+                Request AI interpretation <span>↗</span>
+              </button>
+              <button class="confirm-button" id="confirm-record" type="button">
+                Confirm visible record
+              </button>
+              <button class="secondary-button" id="flag-record" type="button">
+                Keep verification required
+              </button>
+            </div>
+            <p class="review-principle">
+              <i></i> Confirmation applies only to the visible record. It does
+              not certify code compliance, installation quality, cost, or
+              completion.
+            </p>
+          </aside>
+        </section>
+      </main>
+
+      <main class="workspace view" data-view="intake" aria-label="Evidence intake" hidden>
+        <section class="view-header">
+          <div>
+            <p class="eyebrow">Evidence intake</p>
+            <h1>Bring the physical property into one governed record.</h1>
+            <p>
+              Every source is assigned to a property, space, capture type, and
+              review state before analysis begins.
+            </p>
+          </div>
+          <label class="primary-button upload-button" for="file-upload-intake"
+            >Add evidence <span>↑</span></label
+          >
+          <input
+            id="file-upload-intake"
+            type="file"
+            accept="image/*,video/*,.pdf,.usdz,.reality"
+            multiple
+            hidden
+          >
+        </section>
+        <section class="intake-layout">
+          <article class="drop-zone" id="drop-zone">
+            <div class="drop-icon">＋</div>
+            <h2>Drop property evidence here</h2>
+            <p>
+              Phone photos, walkthrough video, 360 capture, plans, PDFs,
+              invoices, inspections, USDZ, or Reality files.
+            </p>
+            <label class="secondary-button" for="file-upload-intake"
+              >Choose files</label
+            >
+            <small
+              >Original files remain distinct from AI derivatives and
+              human-verified facts.</small
+            >
+          </article>
+          <article class="governance-card">
+            <p class="eyebrow">Required metadata</p>
+            <h2>Intake contract</h2>
+            <ul>
+              <li>Property and space assignment</li>
+              <li>Source and capture timestamp</li>
+              <li>Evidence type and original preservation</li>
+              <li>Consent and access classification</li>
+              <li>Human owner for final verification</li>
+            </ul>
+          </article>
+        </section>
+        <section class="inventory-section">
+          <div class="section-heading">
+            <div>
+              <p>Current property</p>
+              <h2>Evidence inventory</h2>
+            </div>
+            <span id="inventory-count">2 items</span>
+          </div>
+          <div class="inventory-table" id="inventory-table"></div>
+        </section>
+      </main>
+
+      <main class="workspace view" data-view="processing" aria-label="AI processing" hidden>
+        <section class="view-header">
+          <div>
+            <p class="eyebrow">Artificial intelligence port</p>
+            <h1>Controlled processing, never silent automation.</h1>
+            <p>
+              Jobs are created from selected evidence, sent through a secure
+              server worker, and returned as suggestions—not facts.
+            </p>
+          </div>
+          <button class="secondary-button" id="open-connector" type="button">
+            Connector settings
+          </button>
+        </section>
+        <section class="connector-strip">
+          <div><span>AI connector</span><strong>Not configured</strong></div>
+          <div><span>Worker</span><strong>Server-side required</strong></div>
+          <div>
+            <span>Data policy</span><strong>No browser API keys</strong>
+          </div>
+          <div>
+            <span>Output</span><strong>Suggestions + provenance</strong>
+          </div>
+        </section>
+        <section class="processing-grid">
+          <article class="queue-board">
+            <div class="section-heading">
+              <div>
+                <p>Processing jobs</p>
+                <h2>Queue</h2>
+              </div>
+              <span id="queue-count">0 jobs</span>
+            </div>
+            <div id="job-list" class="job-list"></div>
+          </article>
+          <article class="pipeline-card">
+            <p class="eyebrow">Analysis contract</p>
+            <h2>What the AI may produce</h2>
+            <div class="contract-list">
+              <div>
+                <span>01</span>
+                <p>
+                  <strong>Visible observations</strong
+                  ><small
+                    >Descriptive statements tied to exact source
+                    evidence.</small
+                  >
+                </p>
+              </div>
+              <div>
+                <span>02</span>
+                <p>
+                  <strong>Questions and gaps</strong
+                  ><small
+                    >Missing proof, conflicts, and recommended follow-up.</small
+                  >
+                </p>
+              </div>
+              <div>
+                <span>03</span>
+                <p>
+                  <strong>Spatial anchors</strong
+                  ><small
+                    >Candidate room or object references for human
+                    placement.</small
+                  >
+                </p>
+              </div>
+              <div>
+                <span>04</span>
+                <p>
+                  <strong>Never final decisions</strong
+                  ><small
+                    >No code certification, valuation, diagnosis, or automatic
+                    approval.</small
+                  >
+                </p>
+              </div>
+            </div>
+          </article>
+        </section>
+      </main>
+
+      <main class="workspace view" data-view="review" aria-label="Human review center" hidden>
+        <section class="view-header">
+          <div>
+            <p class="eyebrow">Human review center</p>
+            <h1>Separate machine suggestions from verified property facts.</h1>
+            <p>
+              A suggestion becomes publishable only after a named reviewer
+              accepts, edits, or rejects it against the source.
+            </p>
+          </div>
+        </section>
+        <section class="review-queue" id="review-queue"></section>
+      </main>
+
+      <main class="workspace view" data-view="vision" aria-label="Vision package center" hidden>
+        <section class="view-header">
+          <div>
+            <p class="eyebrow">Apple Vision Pro delivery</p>
+            <h1>Prepare a spatial experience from verified evidence.</h1>
+            <p>
+              The release package links rooms, media, spatial assets,
+              annotations, and review provenance without changing the original
+              record.
+            </p>
+          </div>
+          <button
+            class="primary-button"
+            id="export-vision-manifest"
+            type="button"
+          >
+            Export Vision manifest <span>↓</span>
+          </button>
+        </section>
+        <section class="vision-grid">
+          <article class="vision-preview">
+            <div class="vision-orbit" aria-hidden="true">
+              <i></i><i></i><span></span>
+            </div>
+            <p class="eyebrow">Release candidate</p>
+            <h2><span id="vision-property-name">Private Pilot Property</span> · v0.1</h2>
+            <p>Room-by-room review experience for Apple Vision Pro.</p>
+            <div class="vision-flow">
+              <span>Physical space</span><i>→</i><span>Evidence</span><i>→</i
+              ><span>Context</span><i>→</i><span>Human decision</span>
+            </div>
+          </article>
+          <article class="readiness-card">
+            <div class="section-heading">
+              <div>
+                <p>Package governance</p>
+                <h2>Readiness</h2>
+              </div>
+              <strong id="readiness-score">50%</strong>
+            </div>
+            <div id="readiness-list" class="readiness-list"></div>
+            <p class="manifest-note">
+              The current export is a platform-neutral manifest for the future
+              visionOS client. It is not an installable Vision Pro application
+              or USDZ model.
+            </p>
+          </article>
+        </section>
+        <section class="release-contents">
+          <div class="section-heading">
+            <div>
+              <p>Release contents</p>
+              <h2>What the Vision client will receive</h2>
+            </div>
+          </div>
+          <div class="release-cards">
+            <article>
+              <span>01</span>
+              <h3>Space graph</h3>
+              <p>
+                Property, building, level, room, and evidence relationships.
+              </p>
+            </article>
+            <article>
+              <span>02</span>
+              <h3>Media references</h3>
+              <p>
+                Private signed URLs for approved images, video, 360, and spatial
+                assets.
+              </p>
+            </article>
+            <article>
+              <span>03</span>
+              <h3>Review overlays</h3>
+              <p>
+                Verified notes and carefully scoped AI suggestions with
+                provenance.
+              </p>
+            </article>
+            <article>
+              <span>04</span>
+              <h3>Interaction rules</h3>
+              <p>
+                What a user may inspect, compare, annotate, or return for
+                review.
+              </p>
+            </article>
+          </div>
+        </section>
+      </main>
+    </div>
+
+    <dialog id="room-dialog">
+      <form method="dialog" id="room-form">
+        <div class="dialog-heading">
+          <div>
+            <p class="eyebrow">Property structure</p>
+            <h2>Add a room or area</h2>
+          </div>
+          <button type="submit" value="cancel" aria-label="Close">×</button>
+        </div>
+        <label
+          >Room name<input
+            id="new-room-name"
+            type="text"
+            required
+            placeholder="e.g. Kitchen"
+        ></label>
+        <label
+          >Building<select id="new-room-building">
+            <option>Main House</option>
+            <option>ADU</option>
+            <option>Exterior</option>
+          </select></label
+        >
+        <label
+          >Level<select id="new-room-level">
+            <option>Level 1</option>
+            <option>Level 2</option>
+            <option>Lower level</option>
+            <option>Exterior</option>
+          </select></label
+        >
+        <div class="dialog-actions">
+          <button class="secondary-button" type="submit" value="cancel">
+            Cancel</button
+          ><button
+            class="primary-button"
+            type="submit"
+            value="default"
+            id="save-room"
+          >
+            Add room
+          </button>
+        </div>
+      </form>
+    </dialog>
+
+    <dialog class="upload-dialog" id="upload-dialog">
+      <form method="dialog" id="upload-form">
+        <div class="dialog-heading">
+          <div>
+            <p class="eyebrow">Evidence intake</p>
+            <h2>Assign uploaded material</h2>
+          </div>
+          <button type="submit" value="cancel" aria-label="Close">×</button>
+        </div>
+        <div class="upload-summary" id="upload-summary"></div>
+        <label>Assign to room<select id="upload-room"></select></label>
+        <label
+          >Evidence type<select id="upload-type">
+            <option>Room capture</option>
+            <option>Detail photo</option>
+            <option>Walkthrough video</option>
+            <option>360 capture</option>
+            <option>Plan or drawing</option>
+            <option>Invoice or estimate</option>
+            <option>Inspection record</option>
+          </select></label
+        >
+        <p class="dialog-notice">
+          Authenticated uploads are stored in private Supabase Storage. AI
+          analysis is never simulated.
+        </p>
+        <div class="dialog-actions">
+          <button class="secondary-button" type="submit" value="cancel">
+            Cancel</button
+          ><button
+            class="primary-button"
+            type="submit"
+            value="default"
+            id="save-upload"
+          >
+            Save evidence
+          </button>
+        </div>
+      </form>
+    </dialog>
+
+    <dialog id="edit-evidence-dialog">
+      <form method="dialog" id="edit-evidence-form">
+        <div class="dialog-heading">
+          <div>
+            <p class="eyebrow">Evidence organization</p>
+            <h2>Edit assignment</h2>
+          </div>
+          <button type="submit" value="cancel" aria-label="Close">×</button>
+        </div>
+        <div class="upload-summary"><strong id="edit-evidence-name">Evidence file</strong></div>
+        <label>Assign to room<select id="edit-evidence-room"></select></label>
+        <div class="new-room-fields" id="edit-new-room-fields" hidden>
+          <label>New room name<input id="edit-new-room-name" type="text" placeholder="e.g. Master Bedroom"></label>
+          <label>Building<select id="edit-new-room-building"><option>Main House</option><option>ADU</option><option>Exterior</option></select></label>
+          <label>Level<select id="edit-new-room-level"><option>Level 1</option><option>Level 2</option><option>Lower level</option><option>Exterior</option></select></label>
+        </div>
+        <label>Evidence type<select id="edit-evidence-type">
+          <option>Room capture</option>
+          <option>Detail photo</option>
+          <option>Walkthrough video</option>
+          <option>360 capture</option>
+          <option>Plan or drawing</option>
+          <option>Invoice or estimate</option>
+          <option>Inspection record</option>
+        </select></label>
+        <p class="dialog-notice">The original file remains unchanged. Only its room assignment and evidence type are updated.</p>
+        <div class="dialog-actions">
+          <button class="secondary-button" type="submit" value="cancel">Cancel</button>
+          <button class="primary-button" type="submit" value="default" id="save-evidence-edit">Save changes</button>
+        </div>
+      </form>
+    </dialog>
+
+    <dialog id="connector-dialog">
+      <form method="dialog">
+        <div class="dialog-heading">
+          <div>
+            <p class="eyebrow">AI connector</p>
+            <h2>Secure server connection required</h2>
+          </div>
+          <button type="submit" value="cancel" aria-label="Close">×</button>
+        </div>
+        <div class="security-callout">
+          <strong>Do not paste an API key into this browser.</strong>
+          <p>
+            The production Studio will call a protected server worker. The
+            worker will hold provider credentials, enforce access, remove
+            unsupported file types, log provenance, and write suggestions to a
+            separate review table.
+          </p>
+        </div>
+        <label
+          >Worker endpoint<input
+            type="url"
+            value=""
+            placeholder="https://your-project.supabase.co/functions/v1/spatial-analyze"
+            disabled
+        ></label>
+        <label
+          >Processing profile<select disabled>
+            <option>Property evidence · conservative</option>
+          </select></label
+        >
+        <p class="dialog-notice">
+          Configuration will become active only after Supabase Auth, private
+          Storage, RLS policies, and the worker function are deployed.
+        </p>
+        <div class="dialog-actions">
+          <button class="primary-button" type="submit">Understood</button>
+        </div>
+      </form>
+    </dialog>
+
+    <div class="lightbox" id="lightbox" hidden>
+      <button type="button" aria-label="Close image">×</button
+      ><img src="data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP///ywAAAAAAQABAAACAUwAOw==" alt="Expanded evidence">
+    </div>
+    <div class="toast" id="toast" role="status" aria-live="polite"></div>
+    <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2.106.2"></script>
+    <script src="https://cdn.jsdelivr.net/npm/tus-js-client@4.3.1/dist/tus.min.js"></script>
+    <script src="config.js"></script>
+    <script src="studio.js"></script>
+  </body>
+</html>
