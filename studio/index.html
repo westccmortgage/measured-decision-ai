@@ -27,8 +27,9 @@
         </p>
         <form class="auth-form" id="auth-form">
           <label>Email<input id="auth-email" type="email" autocomplete="email" required></label>
-          <label>Password<input id="auth-password" type="password" autocomplete="current-password" required minlength="8"></label>
+          <label>Password<input id="auth-password" type="password" autocomplete="current-password" minlength="8" placeholder="Use password or request a magic link"></label>
           <button class="primary-button" id="enter-studio" type="submit">Sign in securely <span>→</span></button>
+          <button class="secondary-button" id="send-magic-link" type="button">Email me a magic link</button>
           <p class="auth-message" id="auth-message" role="status" aria-live="polite">Supabase connection ready. Authorized accounts only.</p>
         </form>
         <small>Private workspace · Supabase Auth · Files governed by Row Level Security.</small>
