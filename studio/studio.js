@@ -178,17 +178,60 @@ function safeStorageName(filename) {
   return `${base || "evidence"}${extension.toLowerCase()}`;
 }
 
-async function uploadEvidenceToCloud(file, room, mediaType) {
+async function uploadStorageObject(storagePath, file, onProgress) {
+  const useResumableUpload = file.size > 6 * 1024 * 1024 && window.tus?.Upload;
+  if (!useResumableUpload) {
+    const { error } = await cloud.client.storage
+      .from(config.storageBucket)
+      .upload(storagePath, file, {
+        cacheControl: "3600",
+        contentType: file.type || "application/octet-stream",
+        upsert: false,
+      });
+    if (error) throw error;
+    onProgress?.(100);
+    return;
+  }
+
+  const projectId = new URL(config.supabaseUrl).hostname.split(".")[0];
+  return new Promise((resolve, reject) => {
+    const upload = new window.tus.Upload(file, {
+      endpoint: `https://${projectId}.storage.supabase.co/storage/v1/upload/resumable`,
+      retryDelays: [0, 3000, 5000, 10000, 20000],
+      headers: {
+        authorization: `Bearer ${cloud.session.access_token}`,
+      },
+      uploadDataDuringCreation: true,
+      removeFingerprintOnSuccess: true,
+      metadata: {
+        bucketName: config.storageBucket,
+        objectName: storagePath,
+        contentType: file.type || "application/octet-stream",
+        cacheControl: "3600",
+      },
+      chunkSize: 6 * 1024 * 1024,
+      onError: reject,
+      onProgress(bytesUploaded, bytesTotal) {
+        onProgress?.(Math.round((bytesUploaded / bytesTotal) * 100));
+      },
+      onSuccess: resolve,
+    });
+    upload
+      .findPreviousUploads()
+      .then((previousUploads) => {
+        if (previousUploads.length) {
+          upload.resumeFromPreviousUpload(previousUploads[0]);
+        }
+        upload.start();
+      })
+      .catch(reject);
+  });
+}
+
+async function uploadEvidenceToCloud(file, room, mediaType, onProgress) {
   const uniqueId = crypto.randomUUID();
   const storagePath = `${cloud.organizationId}/${cloud.propertyId}/${uniqueId}-${safeStorageName(file.name)}`;
-  const { error: uploadError } = await cloud.client.storage
-    .from(config.storageBucket)
-    .upload(storagePath, file, {
-      cacheControl: "3600",
-      contentType: file.type || "application/octet-stream",
-      upsert: false,
-    });
-  if (uploadError) throw uploadError;
+  await uploadStorageObject(storagePath, file, onProgress);
 
   const now = new Date();
   const { data, error: insertError } = await cloud.client
@@ -940,7 +983,11 @@ $("#save-upload").addEventListener("click", async (event) => {
   try {
     for (const file of pendingFiles) {
       if (cloud.schemaReady && cloud.propertyId) {
-        room.evidence.push(await uploadEvidenceToCloud(file, room, type));
+        room.evidence.push(
+          await uploadEvidenceToCloud(file, room, type, (progress) => {
+            button.textContent = `Uploading ${file.name} · ${progress}%`;
+          }),
+        );
       } else {
         const id = `${Date.now()}-${Math.random()}`;
         await storeEvidenceFile(id, file);
