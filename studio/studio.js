@@ -7,6 +7,30 @@ const propertyRecord = {
   access: "private",
 };
 
+const config = window.MDAI_CONFIG || {};
+const cloud = {
+  client:
+    window.supabase?.createClient &&
+    config.supabaseUrl &&
+    config.supabasePublishableKey
+      ? window.supabase.createClient(
+          config.supabaseUrl,
+          config.supabasePublishableKey,
+          {
+            auth: {
+              persistSession: true,
+              autoRefreshToken: true,
+              detectSessionInUrl: true,
+            },
+          },
+        )
+      : null,
+  session: null,
+  organizationId: null,
+  role: null,
+  schemaReady: false,
+};
+
 const seedRooms = [
   {
     id: "entrance",
@@ -61,6 +85,8 @@ const elements = {
   badge: $("#review-badge"),
   toast: $("#toast"),
   autosave: $("#autosave-status"),
+  authForm: $("#auth-form"),
+  authMessage: $("#auth-message"),
   roomDialog: $("#room-dialog"),
   uploadDialog: $("#upload-dialog"),
   fileUpload: $("#file-upload"),
@@ -414,6 +440,84 @@ function notify(message) {
   setTimeout(() => elements.toast.classList.remove("show"), 2600);
 }
 
+function setAuthMessage(message, tone = "neutral") {
+  elements.authMessage.textContent = message;
+  elements.authMessage.dataset.tone = tone;
+}
+
+function sessionInitials(session) {
+  const email = session?.user?.email || "Authorized user";
+  return (
+    email
+      .split("@")[0]
+      .split(/[._-]/)
+      .slice(0, 2)
+      .map((part) => part.charAt(0).toUpperCase())
+      .join("") || "AU"
+  );
+}
+
+async function hydrateCloudContext() {
+  if (!cloud.client || !cloud.session) return;
+  const { data, error } = await cloud.client
+    .from("organization_members")
+    .select("organization_id, role")
+    .limit(1)
+    .maybeSingle();
+  if (error) {
+    cloud.schemaReady = false;
+    $("#connector-status").innerHTML = "<i></i> Schema setup required";
+    elements.autosave.textContent = "Cloud schema not applied";
+    return;
+  }
+  if (!data) {
+    cloud.schemaReady = true;
+    $("#connector-status").innerHTML = "<i></i> Account needs organization";
+    elements.autosave.textContent = "Signed in · No organization assigned";
+    return;
+  }
+  cloud.schemaReady = true;
+  cloud.organizationId = data.organization_id;
+  cloud.role = data.role;
+  $("#connector-status").innerHTML = "<i></i> Supabase connected";
+  elements.autosave.textContent = `Cloud connected · ${data.role}`;
+}
+
+async function enterWorkspace(session) {
+  cloud.session = session;
+  elements.gate.hidden = true;
+  elements.shell.hidden = false;
+  $(".avatar").textContent = sessionInitials(session);
+  await Promise.all([hydrateEvidenceFiles(), hydrateCloudContext()]);
+  render();
+}
+
+async function initializeAuth() {
+  if (!cloud.client) {
+    setAuthMessage(
+      "Supabase client failed to load. Refresh and try again.",
+      "error",
+    );
+    return;
+  }
+  const { data, error } = await cloud.client.auth.getSession();
+  if (error) {
+    setAuthMessage(error.message, "error");
+    return;
+  }
+  if (data.session) await enterWorkspace(data.session);
+  cloud.client.auth.onAuthStateChange((event, session) => {
+    if (event === "SIGNED_OUT") {
+      cloud.session = null;
+      elements.shell.hidden = true;
+      elements.gate.hidden = false;
+      setAuthMessage("Signed out. Authorized accounts only.");
+    } else if (event === "SIGNED_IN" && session && !cloud.session) {
+      enterWorkspace(session);
+    }
+  });
+}
+
 function activateView(name) {
   document.querySelectorAll("[data-view]").forEach((view) => {
     const active = view.dataset.view === name;
@@ -429,11 +533,26 @@ function activateView(name) {
   window.scrollTo({ top: 0, behavior: "smooth" });
 }
 
-$("#enter-studio").addEventListener("click", async () => {
-  elements.gate.hidden = true;
-  elements.shell.hidden = false;
-  await hydrateEvidenceFiles();
-  render();
+elements.authForm.addEventListener("submit", async (event) => {
+  event.preventDefault();
+  if (!cloud.client) return;
+  const submit = $("#enter-studio");
+  submit.disabled = true;
+  setAuthMessage("Verifying account…");
+  const { data, error } = await cloud.client.auth.signInWithPassword({
+    email: $("#auth-email").value.trim(),
+    password: $("#auth-password").value,
+  });
+  submit.disabled = false;
+  if (error) {
+    setAuthMessage(error.message, "error");
+    return;
+  }
+  setAuthMessage("Access granted.", "success");
+  await enterWorkspace(data.session);
+});
+$("#sign-out").addEventListener("click", async () => {
+  if (cloud.client) await cloud.client.auth.signOut();
 });
 $("#mobile-menu").addEventListener("click", () =>
   $("#sidebar").classList.toggle("open"),
@@ -680,3 +799,5 @@ function downloadJson(data, filename) {
 window.addEventListener("beforeunload", () =>
   objectUrls.forEach(URL.revokeObjectURL),
 );
+
+initializeAuth();
