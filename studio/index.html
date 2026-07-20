@@ -25,13 +25,13 @@
           interpretation, complete human review, and prepare a governed spatial
           package for Apple Vision Pro.
         </p>
-        <button class="primary-button" id="enter-studio" type="button">
-          Enter local workspace <span>→</span>
-        </button>
-        <small
-          >Local vertical slice · No files leave this browser · AI and cloud
-          connectors are not yet active.</small
-        >
+        <form class="auth-form" id="auth-form">
+          <label>Email<input id="auth-email" type="email" autocomplete="email" required></label>
+          <label>Password<input id="auth-password" type="password" autocomplete="current-password" required minlength="8"></label>
+          <button class="primary-button" id="enter-studio" type="submit">Sign in securely <span>→</span></button>
+          <p class="auth-message" id="auth-message" role="status" aria-live="polite">Supabase connection ready. Authorized accounts only.</p>
+        </form>
+        <small>Private workspace · Supabase Auth · Files governed by Row Level Security.</small>
       </div>
     </div>
 
@@ -64,6 +64,7 @@
           <button class="secondary-button" id="export-record" type="button">
             Export record
           </button>
+          <button class="icon-button" id="sign-out" type="button">Sign out</button>
           <span class="avatar" title="Anatoliy Kanevsky">AK</span>
         </div>
       </header>
@@ -633,6 +634,8 @@
       ><img src="data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP///ywAAAAAAQABAAACAUwAOw==" alt="Expanded evidence">
     </div>
     <div class="toast" id="toast" role="status" aria-live="polite"></div>
+    <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2.106.2"></script>
+    <script src="config.js"></script>
     <script src="studio.js"></script>
   </body>
 </html>
