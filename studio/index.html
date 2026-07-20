@@ -592,6 +592,39 @@
       </form>
     </dialog>
 
+    <dialog id="edit-evidence-dialog">
+      <form method="dialog" id="edit-evidence-form">
+        <div class="dialog-heading">
+          <div>
+            <p class="eyebrow">Evidence organization</p>
+            <h2>Edit assignment</h2>
+          </div>
+          <button type="submit" value="cancel" aria-label="Close">×</button>
+        </div>
+        <div class="upload-summary"><strong id="edit-evidence-name">Evidence file</strong></div>
+        <label>Assign to room<select id="edit-evidence-room"></select></label>
+        <div class="new-room-fields" id="edit-new-room-fields" hidden>
+          <label>New room name<input id="edit-new-room-name" type="text" placeholder="e.g. Master Bedroom"></label>
+          <label>Building<select id="edit-new-room-building"><option>Main House</option><option>ADU</option><option>Exterior</option></select></label>
+          <label>Level<select id="edit-new-room-level"><option>Level 1</option><option>Level 2</option><option>Lower level</option><option>Exterior</option></select></label>
+        </div>
+        <label>Evidence type<select id="edit-evidence-type">
+          <option>Room capture</option>
+          <option>Detail photo</option>
+          <option>Walkthrough video</option>
+          <option>360 capture</option>
+          <option>Plan or drawing</option>
+          <option>Invoice or estimate</option>
+          <option>Inspection record</option>
+        </select></label>
+        <p class="dialog-notice">The original file remains unchanged. Only its room assignment and evidence type are updated.</p>
+        <div class="dialog-actions">
+          <button class="secondary-button" type="submit" value="cancel">Cancel</button>
+          <button class="primary-button" type="submit" value="default" id="save-evidence-edit">Save changes</button>
+        </div>
+      </form>
+    </dialog>
+
     <dialog id="connector-dialog">
       <form method="dialog">
         <div class="dialog-heading">
