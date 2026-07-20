@@ -1,6 +1,8 @@
 -- Enables authorized Studio users to correct evidence metadata and room assignment.
 -- Apply after 001_spatial_studio.sql.
 
+drop policy if exists evidence_update on public.evidence_items;
+
 create policy evidence_update on public.evidence_items
 for update
 using (
