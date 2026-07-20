@@ -1,4 +1,4 @@
-const propertyRecord = {
+let propertyRecord = {
   id: "private-pilot-property",
   name: "Private Pilot Property",
   city: "Los Angeles",
@@ -27,6 +27,7 @@ const cloud = {
       : null,
   session: null,
   organizationId: null,
+  propertyId: null,
   role: null,
   schemaReady: false,
 };
@@ -74,6 +75,10 @@ const elements = {
   level: $("#room-level"),
   count: $("#room-evidence-count"),
   image: $("#evidence-image"),
+  video: $("#evidence-video"),
+  document: $("#document-preview"),
+  documentName: $("#document-name"),
+  documentOpen: $("#document-open"),
   strip: $("#evidence-strip"),
   type: $("#evidence-type"),
   sourceName: $("#source-name"),
@@ -94,6 +99,31 @@ const elements = {
   uploadRoom: $("#upload-room"),
   lightbox: $("#lightbox"),
 };
+
+function isVideo(item) {
+  return Boolean(
+    item?.mimeType?.startsWith("video/") ||
+      /\.(mp4|mov|m4v|webm)$/i.test(item?.name || ""),
+  );
+}
+
+function isImage(item) {
+  return Boolean(
+    item?.mimeType?.startsWith("image/") ||
+      /\.(jpe?g|png|gif|webp|heic|heif)$/i.test(item?.name || ""),
+  );
+}
+
+function evidenceThumbnail(item, className = "room-thumb") {
+  if (!item?.src) return `<span class="${className}"></span>`;
+  if (isImage(item)) {
+    return `<img class="${className}" src="${escapeText(item.src)}" alt="">`;
+  }
+  if (isVideo(item)) {
+    return `<span class="${className} video-thumb" aria-hidden="true">▶</span>`;
+  }
+  return `<span class="${className} document-thumb" aria-hidden="true">DOC</span>`;
+}
 
 function loadRooms() {
   try {
@@ -137,6 +167,65 @@ async function storeEvidenceFile(id, file) {
   });
 }
 
+function safeStorageName(filename) {
+  const extension = filename.includes(".") ? `.${filename.split(".").pop()}` : "";
+  const base = filename
+    .replace(extension, "")
+    .normalize("NFKD")
+    .replace(/[^a-zA-Z0-9_-]+/g, "-")
+    .replace(/^-+|-+$/g, "")
+    .slice(0, 80);
+  return `${base || "evidence"}${extension.toLowerCase()}`;
+}
+
+async function uploadEvidenceToCloud(file, room, mediaType) {
+  const uniqueId = crypto.randomUUID();
+  const storagePath = `${cloud.organizationId}/${cloud.propertyId}/${uniqueId}-${safeStorageName(file.name)}`;
+  const { error: uploadError } = await cloud.client.storage
+    .from(config.storageBucket)
+    .upload(storagePath, file, {
+      cacheControl: "3600",
+      contentType: file.type || "application/octet-stream",
+      upsert: false,
+    });
+  if (uploadError) throw uploadError;
+
+  const now = new Date();
+  const { data, error: insertError } = await cloud.client
+    .from("evidence_items")
+    .insert({
+      organization_id: cloud.organizationId,
+      property_id: cloud.propertyId,
+      space_id: room.id,
+      storage_path: storagePath,
+      original_filename: file.name,
+      media_type: mediaType,
+      mime_type: file.type || "application/octet-stream",
+      byte_size: file.size,
+      captured_at: now.toISOString(),
+      source_metadata: {
+        source: "measured-decision-studio",
+        last_modified: file.lastModified || null,
+      },
+      created_by: cloud.session.user.id,
+    })
+    .select("id")
+    .single();
+  if (insertError) throw insertError;
+
+  return {
+    id: data.id,
+    src: await signedEvidenceUrl(storagePath),
+    storagePath,
+    name: file.name,
+    type: mediaType,
+    mimeType: file.type || "application/octet-stream",
+    byteSize: file.size,
+    date: formatEvidenceDate(now.toISOString()),
+    status: "Private cloud original · Awaiting analysis",
+  };
+}
+
 async function hydrateEvidenceFiles() {
   const database = await openFileDatabase();
   const pending = rooms
@@ -163,7 +252,7 @@ async function hydrateEvidenceFiles() {
   );
 }
 
-function saveRooms(message = "Saved locally") {
+function saveRooms(message = cloud.schemaReady ? "Cloud record updated" : "Saved locally") {
   localStorage.setItem(
     STORAGE_KEY,
     JSON.stringify(rooms, (key, value) =>
@@ -171,7 +260,13 @@ function saveRooms(message = "Saved locally") {
     ),
   );
   elements.autosave.textContent = message;
-  setTimeout(() => (elements.autosave.textContent = "Saved locally"), 1300);
+  setTimeout(
+    () =>
+      (elements.autosave.textContent = cloud.schemaReady
+        ? `Cloud connected · ${cloud.role}`
+        : "Saved locally"),
+    1300,
+  );
   updateMetrics();
 }
 
@@ -193,9 +288,9 @@ function escapeText(value) {
 function renderRooms() {
   elements.roomList.innerHTML = rooms
     .map((room) => {
-      const thumb = room.evidence.find((item) => item.src)?.src || "";
+      const thumb = room.evidence.find((item) => item.src);
       return `<button class="room-card ${room.id === activeRoomId ? "active" : ""}" data-room="${room.id}" type="button">
-      ${thumb ? `<img class="room-thumb" src="${thumb}" alt="">` : `<span class="room-thumb"></span>`}
+      ${evidenceThumbnail(thumb)}
       <span><strong>${escapeText(room.name)}</strong><small>${escapeText(room.level)} · ${room.evidence.length} item${room.evidence.length === 1 ? "" : "s"}</small></span>
       <i class="status-dot ${room.status === "confirmed" ? "confirmed" : room.evidence.length ? "" : "empty"}"></i>
     </button>`;
@@ -216,24 +311,12 @@ function renderRoom() {
   elements.title.textContent = room.name;
   elements.level.textContent = `${room.building} · ${room.level}`;
   elements.count.textContent = `${room.evidence.length} evidence item${room.evidence.length === 1 ? "" : "s"}`;
-  if (evidence?.src) {
-    elements.image.src = evidence.src;
-    elements.image.alt = `${room.name} evidence capture`;
-    elements.image.hidden = false;
-  } else {
-    elements.image.removeAttribute("src");
-    elements.image.alt = "No evidence uploaded";
-    elements.image.hidden = true;
-  }
-  elements.type.textContent = evidence?.type || "No evidence selected";
-  elements.sourceName.textContent = evidence?.name || "—";
-  elements.sourceDate.textContent = evidence?.date || "—";
-  elements.sourceStatus.textContent = evidence?.status || "Awaiting upload";
+  showEvidence(evidence, room.name);
   elements.strip.innerHTML = room.evidence
     .filter((item) => item.src)
     .map(
       (item, index) =>
-        `<button class="evidence-thumb" data-evidence="${index}" type="button"><img src="${item.src}" alt="${escapeText(item.type)}"></button>`,
+        `<button class="evidence-thumb" data-evidence="${index}" type="button">${evidenceThumbnail(item, "strip-thumb")}</button>`,
     )
     .join("");
   elements.strip
@@ -261,13 +344,43 @@ function renderRoom() {
   elements.badge.className = `review-badge ${confirmed ? "confirmed" : "needs"}`;
 }
 
-function showEvidence(item) {
-  if (!item) return;
-  elements.image.src = item.src;
-  elements.type.textContent = item.type;
-  elements.sourceName.textContent = item.name;
-  elements.sourceDate.textContent = item.date;
-  elements.sourceStatus.textContent = item.status;
+function showEvidence(item, roomName = currentRoom()?.name || "Room") {
+  elements.video.pause();
+  elements.image.hidden = true;
+  elements.video.hidden = true;
+  elements.document.hidden = true;
+  elements.image.removeAttribute("src");
+  elements.video.removeAttribute("src");
+  elements.documentOpen.removeAttribute("href");
+
+  if (!item?.src) {
+    elements.image.alt = "No evidence uploaded";
+    elements.type.textContent = "No evidence selected";
+    elements.sourceName.textContent = "—";
+    elements.sourceDate.textContent = "—";
+    elements.sourceStatus.textContent = "Awaiting upload";
+    $("#expand-image").hidden = true;
+    return;
+  }
+
+  if (isVideo(item)) {
+    elements.video.src = item.src;
+    elements.video.hidden = false;
+  } else if (isImage(item)) {
+    elements.image.src = item.src;
+    elements.image.alt = `${roomName} evidence capture`;
+    elements.image.hidden = false;
+  } else {
+    elements.documentName.textContent = item.name || "Document evidence";
+    elements.documentOpen.href = item.src;
+    elements.document.hidden = false;
+  }
+
+  $("#expand-image").hidden = !isImage(item);
+  elements.type.textContent = item.type || "Evidence";
+  elements.sourceName.textContent = item.name || "—";
+  elements.sourceDate.textContent = item.date || "—";
+  elements.sourceStatus.textContent = item.status || "Original preserved";
 }
 
 function updateMetrics() {
@@ -308,7 +421,7 @@ function renderInventory() {
     ? evidence
         .map(
           (item) =>
-            `<article class="inventory-row"><span class="file-icon">${item.type?.includes("video") ? "▶" : item.type?.includes("Plan") ? "⌑" : "◫"}</span><div><strong>${escapeText(item.name)}</strong><small>${escapeText(item.type)} · ${escapeText(item.room)}</small></div><span>${escapeText(item.date || "Date unavailable")}</span><span class="inventory-status ${item.roomStatus}">${item.roomStatus === "confirmed" ? "Human confirmed" : "Review required"}</span></article>`,
+            `<article class="inventory-row"><span class="file-icon">${isVideo(item) ? "▶" : item.type?.includes("Plan") ? "⌑" : isImage(item) ? "◫" : "DOC"}</span><div><strong>${escapeText(item.name)}</strong><small>${escapeText(item.type)} · ${escapeText(item.room)}</small></div><span>${escapeText(item.date || "Date unavailable")}</span><span class="inventory-status ${item.roomStatus}">${item.roomStatus === "confirmed" ? "Human confirmed" : "Review required"}</span></article>`,
         )
         .join("")
     : `<div class="empty-state"><strong>No evidence yet</strong><p>Add source material to begin the governed record.</p></div>`;
@@ -342,7 +455,7 @@ function renderReviewQueue() {
   queue.innerHTML = rooms
     .map(
       (room) =>
-        `<article class="review-queue-card"><div class="review-room-thumb">${room.evidence.find((item) => item.src) ? `<img src="${room.evidence.find((item) => item.src).src}" alt="">` : "<span>—</span>"}</div><div><p>${escapeText(room.building)} · ${escapeText(room.level)}</p><h2>${escapeText(room.name)}</h2><small>${room.evidence.length} source item${room.evidence.length === 1 ? "" : "s"} · ${jobs.some((job) => job.roomId === room.id) ? "AI request awaiting connector" : "No AI suggestion"}</small></div><span class="review-badge ${room.status === "confirmed" ? "confirmed" : "needs"}">${room.status === "confirmed" ? "Human confirmed" : "Needs verification"}</span><button class="secondary-button" data-review-room="${room.id}" type="button">Open record</button></article>`,
+        `<article class="review-queue-card"><div class="review-room-thumb">${evidenceThumbnail(room.evidence.find((item) => item.src), "review-thumb-media")}</div><div><p>${escapeText(room.building)} · ${escapeText(room.level)}</p><h2>${escapeText(room.name)}</h2><small>${room.evidence.length} source item${room.evidence.length === 1 ? "" : "s"} · ${jobs.some((job) => job.roomId === room.id) ? "AI request awaiting worker" : "No AI suggestion"}</small></div><span class="review-badge ${room.status === "confirmed" ? "confirmed" : "needs"}">${room.status === "confirmed" ? "Human confirmed" : "Needs verification"}</span><button class="secondary-button" data-review-room="${room.id}" type="button">Open record</button></article>`,
     )
     .join("");
   queue.querySelectorAll("[data-review-room]").forEach((button) =>
@@ -381,8 +494,17 @@ function renderVisionReadiness() {
     },
     {
       label: "Private media delivery",
-      ready: false,
-      note: "Supabase Storage not connected",
+      ready:
+        cloud.schemaReady &&
+        evidenceCount > 0 &&
+        rooms.every((room) =>
+          room.evidence.every((item) => Boolean(item.storagePath)),
+        ),
+      note: cloud.schemaReady
+        ? evidenceCount
+          ? "Private signed delivery configured"
+          : "Upload evidence to verify delivery"
+        : "Supabase Storage not connected",
     },
     {
       label: "visionOS client build",
@@ -457,6 +579,131 @@ function sessionInitials(session) {
   );
 }
 
+function formatEvidenceDate(value) {
+  if (!value) return "Date unavailable";
+  return new Date(value).toLocaleDateString("en-US", {
+    year: "numeric",
+    month: "long",
+    day: "numeric",
+  });
+}
+
+async function signedEvidenceUrl(storagePath) {
+  if (!storagePath) return "";
+  const { data, error } = await cloud.client.storage
+    .from(config.storageBucket)
+    .createSignedUrl(storagePath, 60 * 60);
+  if (error) return "";
+  return data?.signedUrl || "";
+}
+
+async function hydrateCloudRecord() {
+  const { data: property, error: propertyError } = await cloud.client
+    .from("properties")
+    .select("id, name, address, access_classification")
+    .eq("organization_id", cloud.organizationId)
+    .order("created_at", { ascending: true })
+    .limit(1)
+    .maybeSingle();
+  if (propertyError) throw propertyError;
+  if (!property) {
+    elements.autosave.textContent = "Cloud connected · No property assigned";
+    return;
+  }
+
+  cloud.propertyId = property.id;
+  const address = property.address || {};
+  propertyRecord = {
+    id: property.id,
+    name: property.name,
+    city: address.city || "",
+    state: address.state || "",
+    description:
+      [address.city, address.state].filter(Boolean).join(", ") ||
+      "Private spatial evidence record",
+    access: property.access_classification,
+  };
+
+  const [{ data: spaceRows, error: spacesError }, { data: evidenceRows, error: evidenceError }] =
+    await Promise.all([
+      cloud.client
+        .from("spaces")
+        .select("id, name, building, level, review_state")
+        .eq("property_id", property.id)
+        .order("created_at", { ascending: true }),
+      cloud.client
+        .from("evidence_items")
+        .select(
+          "id, space_id, storage_path, original_filename, media_type, mime_type, byte_size, captured_at, created_at",
+        )
+        .eq("property_id", property.id)
+        .order("created_at", { ascending: true }),
+    ]);
+  if (spacesError) throw spacesError;
+  if (evidenceError) throw evidenceError;
+
+  const evidenceWithUrls = await Promise.all(
+    (evidenceRows || []).map(async (item) => ({
+      id: item.id,
+      src: await signedEvidenceUrl(item.storage_path),
+      storagePath: item.storage_path,
+      name: item.original_filename,
+      type: item.media_type,
+      mimeType: item.mime_type,
+      byteSize: item.byte_size,
+      date: formatEvidenceDate(item.captured_at || item.created_at),
+      status: "Private cloud original · Awaiting analysis",
+    })),
+  );
+
+  rooms = (spaceRows || []).map((space) => ({
+    id: space.id,
+    name: space.name,
+    building: space.building || "Property",
+    level: space.level || "Unspecified level",
+    status: space.review_state === "confirmed" ? "confirmed" : "needs",
+    note: "",
+    evidence: evidenceWithUrls.filter((item) => {
+      const source = (evidenceRows || []).find((row) => row.id === item.id);
+      return source?.space_id === space.id;
+    }),
+    visible: [],
+    unknown: [
+      "Uploaded material has not been analyzed",
+      "No factual observations have been confirmed",
+    ],
+  }));
+  activeRoomId = rooms[0]?.id || null;
+
+  const { data: jobRows, error: jobsError } = await cloud.client
+    .from("analysis_jobs")
+    .select("id, space_id, state, profile, created_at, evidence_ids")
+    .eq("property_id", property.id)
+    .order("created_at", { ascending: false });
+  if (!jobsError) {
+    jobs = (jobRows || []).map((job) => {
+      const room = rooms.find((item) => item.id === job.space_id);
+      return {
+        id: job.id,
+        roomId: job.space_id,
+        roomName: room?.name || "Property",
+        evidenceCount: job.evidence_ids?.length || 0,
+        profile: job.profile,
+        status:
+          job.state === "queued"
+            ? "Awaiting secure AI worker"
+            : job.state.charAt(0).toUpperCase() + job.state.slice(1),
+        createdAt: new Date(job.created_at).toLocaleString("en-US", {
+          month: "short",
+          day: "numeric",
+          hour: "numeric",
+          minute: "2-digit",
+        }),
+      };
+    });
+  }
+}
+
 async function hydrateCloudContext() {
   if (!cloud.client || !cloud.session) return;
   const { data, error } = await cloud.client
@@ -479,8 +726,16 @@ async function hydrateCloudContext() {
   cloud.schemaReady = true;
   cloud.organizationId = data.organization_id;
   cloud.role = data.role;
-  $("#connector-status").innerHTML = "<i></i> Supabase connected";
-  elements.autosave.textContent = `Cloud connected · ${data.role}`;
+  try {
+    await hydrateCloudRecord();
+    $("#connector-status").innerHTML = "<i></i> Supabase connected";
+    elements.autosave.textContent = `Cloud connected · ${data.role}`;
+  } catch (recordError) {
+    cloud.schemaReady = false;
+    $("#connector-status").innerHTML = "<i></i> Cloud record unavailable";
+    elements.autosave.textContent = "Cloud record could not load";
+    console.error(recordError);
+  }
 }
 
 async function enterWorkspace(session) {
@@ -488,7 +743,8 @@ async function enterWorkspace(session) {
   elements.gate.hidden = true;
   elements.shell.hidden = false;
   $(".avatar").textContent = sessionInitials(session);
-  await Promise.all([hydrateEvidenceFiles(), hydrateCloudContext()]);
+  await hydrateEvidenceFiles();
+  await hydrateCloudContext();
   render();
 }
 
@@ -593,16 +849,38 @@ document
     ),
   );
 $("#add-room").addEventListener("click", () => elements.roomDialog.showModal());
-$("#save-room").addEventListener("click", (event) => {
+$("#save-room").addEventListener("click", async (event) => {
   event.preventDefault();
   const name = $("#new-room-name").value.trim();
   if (!name) return;
-  const id = `${name.toLowerCase().replace(/[^a-z0-9]+/g, "-")}-${Date.now()}`;
+  const building = $("#new-room-building").value;
+  const level = $("#new-room-level").value;
+  let id = `${name.toLowerCase().replace(/[^a-z0-9]+/g, "-")}-${Date.now()}`;
+  if (cloud.schemaReady && cloud.propertyId) {
+    const { data, error } = await cloud.client
+      .from("spaces")
+      .insert({
+        organization_id: cloud.organizationId,
+        property_id: cloud.propertyId,
+        name,
+        building,
+        level,
+        review_state: "needs_review",
+        created_by: cloud.session.user.id,
+      })
+      .select("id")
+      .single();
+    if (error) {
+      notify(`Room was not added: ${error.message}`);
+      return;
+    }
+    id = data.id;
+  }
   rooms.push({
     id,
     name,
-    building: $("#new-room-building").value,
-    level: $("#new-room-level").value,
+    building,
+    level,
     status: "needs",
     note: "",
     evidence: [],
@@ -610,11 +888,11 @@ $("#save-room").addEventListener("click", (event) => {
     unknown: ["Evidence has not been uploaded or reviewed"],
   });
   activeRoomId = id;
-  saveRooms("Room added");
+  saveRooms(cloud.schemaReady ? "Room added to cloud record" : "Room added locally");
   render();
   $("#room-form").reset();
   elements.roomDialog.close();
-  notify(`${name} added to the property record`);
+  notify(`${name} added to the ${cloud.schemaReady ? "private cloud" : "local"} record`);
 });
 
 function beginUploadFiles(files) {
@@ -656,27 +934,36 @@ $("#save-upload").addEventListener("click", async (event) => {
   const room = rooms.find((item) => item.id === elements.uploadRoom.value);
   if (!room) return;
   const type = $("#upload-type").value;
-  for (const file of pendingFiles) {
-    const id = `${Date.now()}-${Math.random()}`;
-    await storeEvidenceFile(id, file);
-    const src =
-      file.type.startsWith("image/") || file.type.startsWith("video/")
-        ? URL.createObjectURL(file)
-        : "";
-    if (src) objectUrls.push(src);
-    room.evidence.push({
-      id,
-      fileRef: id,
-      src,
-      name: file.name,
-      type,
-      date: new Date().toLocaleDateString("en-US", {
-        year: "numeric",
-        month: "long",
-        day: "numeric",
-      }),
-      status: "Stored in browser · Awaiting analysis",
-    });
+  const button = $("#save-upload");
+  button.disabled = true;
+  button.textContent = cloud.schemaReady ? "Uploading securely…" : "Saving locally…";
+  try {
+    for (const file of pendingFiles) {
+      if (cloud.schemaReady && cloud.propertyId) {
+        room.evidence.push(await uploadEvidenceToCloud(file, room, type));
+      } else {
+        const id = `${Date.now()}-${Math.random()}`;
+        await storeEvidenceFile(id, file);
+        const src = URL.createObjectURL(file);
+        objectUrls.push(src);
+        room.evidence.push({
+          id,
+          fileRef: id,
+          src,
+          name: file.name,
+          type,
+          mimeType: file.type || "application/octet-stream",
+          date: formatEvidenceDate(new Date().toISOString()),
+          status: "Stored in browser · Awaiting analysis",
+        });
+      }
+    }
+  } catch (uploadError) {
+    console.error(uploadError);
+    notify(`Upload failed: ${uploadError.message || "Cloud storage error"}`);
+    button.disabled = false;
+    button.textContent = "Save evidence";
+    return;
   }
   room.status = "needs";
   room.visible = [];
@@ -685,34 +972,57 @@ $("#save-upload").addEventListener("click", async (event) => {
     "No factual observations have been confirmed",
   ];
   activeRoomId = room.id;
-  saveRooms("Evidence added");
+  saveRooms(cloud.schemaReady ? "Evidence secured in cloud" : "Evidence added locally");
   render();
   pendingFiles = [];
   elements.fileUpload.value = "";
   elements.intakeUpload.value = "";
   elements.uploadDialog.close();
-  notify("Evidence saved locally and assigned to the room");
+  button.disabled = false;
+  button.textContent = "Save evidence";
+  notify(
+    cloud.schemaReady
+      ? "Evidence uploaded to private Supabase Storage"
+      : "Evidence saved locally and assigned to the room",
+  );
 });
 
 elements.note.addEventListener("input", () => {
   currentRoom().note = elements.note.value;
   saveRooms("Saving…");
 });
-$("#confirm-record").addEventListener("click", () => {
+async function persistRoomReview(room, reviewState) {
+  if (!cloud.schemaReady || !cloud.propertyId) return true;
+  const { error } = await cloud.client
+    .from("spaces")
+    .update({ review_state: reviewState })
+    .eq("id", room.id)
+    .eq("property_id", cloud.propertyId);
+  if (error) {
+    notify(`Review was not saved: ${error.message}`);
+    return false;
+  }
+  return true;
+}
+
+$("#confirm-record").addEventListener("click", async () => {
   const room = currentRoom();
+  if (!(await persistRoomReview(room, "confirmed"))) return;
   room.status = "confirmed";
   room.note = elements.note.value;
-  saveRooms("Human review saved");
+  saveRooms(cloud.schemaReady ? "Human review saved to cloud" : "Human review saved");
   render();
   notify("Visible record confirmed by human review");
 });
-$("#flag-record").addEventListener("click", () => {
-  currentRoom().status = "needs";
+$("#flag-record").addEventListener("click", async () => {
+  const room = currentRoom();
+  if (!(await persistRoomReview(room, "needs_review"))) return;
+  room.status = "needs";
   saveRooms("Verification flag saved");
   render();
   notify("Room remains in the verification queue");
 });
-$("#request-analysis").addEventListener("click", () => {
+$("#request-analysis").addEventListener("click", async () => {
   const room = currentRoom();
   if (!room.evidence.length) {
     notify("Add evidence before requesting interpretation");
@@ -724,13 +1034,44 @@ $("#request-analysis").addEventListener("click", () => {
     notify("This room already has a processing request");
     return;
   }
+  let jobId = `job-${Date.now()}`;
+  if (cloud.schemaReady && cloud.propertyId) {
+    const evidenceIds = room.evidence
+      .filter((item) => item.storagePath)
+      .map((item) => item.id);
+    if (!evidenceIds.length) {
+      notify("Re-upload this browser-only evidence to secure cloud storage first");
+      return;
+    }
+    const { data, error } = await cloud.client
+      .from("analysis_jobs")
+      .insert({
+        organization_id: cloud.organizationId,
+        property_id: cloud.propertyId,
+        space_id: room.id,
+        state: "queued",
+        profile: "property-evidence-conservative",
+        profile_version: "0.1",
+        evidence_ids: evidenceIds,
+        requested_by: cloud.session.user.id,
+      })
+      .select("id")
+      .single();
+    if (error) {
+      notify(`Processing request failed: ${error.message}`);
+      return;
+    }
+    jobId = data.id;
+  }
   jobs.unshift({
-    id: `job-${Date.now()}`,
+    id: jobId,
     roomId: room.id,
     roomName: room.name,
     evidenceCount: room.evidence.length,
     profile: "Property evidence · conservative",
-    status: "Awaiting secure AI connector",
+    status: cloud.schemaReady
+      ? "Awaiting secure AI worker"
+      : "Awaiting secure AI connector",
     createdAt: new Date().toLocaleString("en-US", {
       month: "short",
       day: "numeric",
@@ -740,7 +1081,11 @@ $("#request-analysis").addEventListener("click", () => {
   });
   saveJobs();
   activateView("processing");
-  notify("Request recorded; no data was sent");
+  notify(
+    cloud.schemaReady
+      ? "Processing request recorded securely; no AI result has been fabricated"
+      : "Request recorded locally; no data was sent",
+  );
 });
 $("#connector-status").addEventListener("click", () =>
   $("#connector-dialog").showModal(),
@@ -806,7 +1151,13 @@ $("#export-vision-manifest").addEventListener("click", () => {
         deliveryUrl: null,
       })),
     })),
-    blockers: ["private_storage_not_connected", "visionos_client_not_built"],
+    blockers: [
+      ...(cloud.schemaReady &&
+      rooms.every((room) => room.evidence.every((item) => item.storagePath))
+        ? []
+        : ["private_storage_not_connected"]),
+      "visionos_client_not_built",
+    ],
   };
   downloadJson(manifest, "private-property-vision-manifest-v0.1.json");
   notify("Draft Vision manifest exported");
