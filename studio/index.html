@@ -45,7 +45,7 @@
           <span>Measured Decision <strong>Studio</strong></span>
         </a>
         <div class="topbar-center">
-          <span class="environment-pill"><i></i> Local secure draft</span>
+            <span class="environment-pill"><i></i> Private cloud workspace</span>
           <span class="autosave-status" id="autosave-status"
             >Saved locally</span
           >
@@ -181,6 +181,8 @@
                 src="data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP///ywAAAAAAQABAAACAUwAOw=="
                 alt="Selected property evidence"
               >
+              <video id="evidence-video" controls playsinline preload="metadata" hidden></video>
+              <div class="document-preview" id="document-preview" hidden><span>PDF</span><strong id="document-name">Document evidence</strong><a id="document-open" href="#" target="_blank" rel="noopener">Open document ↗</a></div>
               <div class="stage-toolbar">
                 <span id="evidence-type">Spatial capture</span
                 ><button id="expand-image" type="button">Expand ↗</button>
@@ -572,8 +574,8 @@
           </select></label
         >
         <p class="dialog-notice">
-          Files are stored only in this browser for the prototype. AI analysis
-          is not simulated.
+          Authenticated uploads are stored in private Supabase Storage. AI
+          analysis is never simulated.
         </p>
         <div class="dialog-actions">
           <button class="secondary-button" type="submit" value="cancel">
