@@ -63,6 +63,7 @@ let rooms = loadRooms();
 let jobs = loadJobs();
 let activeRoomId = rooms[0]?.id;
 let pendingFiles = [];
+let editingEvidenceId = null;
 let objectUrls = [];
 let fileDatabase;
 
@@ -94,9 +95,11 @@ const elements = {
   authMessage: $("#auth-message"),
   roomDialog: $("#room-dialog"),
   uploadDialog: $("#upload-dialog"),
+  editEvidenceDialog: $("#edit-evidence-dialog"),
   fileUpload: $("#file-upload"),
   intakeUpload: $("#file-upload-intake"),
   uploadRoom: $("#upload-room"),
+  editEvidenceRoom: $("#edit-evidence-room"),
   lightbox: $("#lightbox"),
 };
 
@@ -442,13 +445,18 @@ function updateMetrics() {
   $("#review-nav-count").textContent = rooms.length - confirmed;
 }
 
-function renderUploadRooms() {
-  elements.uploadRoom.innerHTML = rooms
+function roomOptions(selectedId, allowNew = false) {
+  const existing = rooms
     .map(
       (room) =>
-        `<option value="${room.id}" ${room.id === activeRoomId ? "selected" : ""}>${escapeText(room.name)} · ${escapeText(room.level)}</option>`,
+        `<option value="${room.id}" ${room.id === selectedId ? "selected" : ""}>${escapeText(room.name)} · ${escapeText(room.level)}</option>`,
     )
     .join("");
+  return `${existing}${allowNew ? '<option value="__new__">＋ Create a new room…</option>' : ""}`;
+}
+
+function renderUploadRooms() {
+  elements.uploadRoom.innerHTML = roomOptions(activeRoomId);
 }
 function renderInventory() {
   const evidence = rooms.flatMap((room) =>
@@ -464,10 +472,15 @@ function renderInventory() {
     ? evidence
         .map(
           (item) =>
-            `<article class="inventory-row"><span class="file-icon">${isVideo(item) ? "▶" : item.type?.includes("Plan") ? "⌑" : isImage(item) ? "◫" : "DOC"}</span><div><strong>${escapeText(item.name)}</strong><small>${escapeText(item.type)} · ${escapeText(item.room)}</small></div><span>${escapeText(item.date || "Date unavailable")}</span><span class="inventory-status ${item.roomStatus}">${item.roomStatus === "confirmed" ? "Human confirmed" : "Review required"}</span></article>`,
+            `<article class="inventory-row"><span class="file-icon">${isVideo(item) ? "▶" : item.type?.includes("Plan") ? "⌑" : isImage(item) ? "◫" : "DOC"}</span><div><strong>${escapeText(item.name)}</strong><small>${escapeText(item.type)} · ${escapeText(item.room)}</small></div><span>${escapeText(item.date || "Date unavailable")}</span><span class="inventory-status ${item.roomStatus}">${item.roomStatus === "confirmed" ? "Human confirmed" : "Review required"}</span><button class="mini-button inventory-edit" data-edit-evidence="${item.id}" type="button">Edit assignment</button></article>`,
         )
         .join("")
     : `<div class="empty-state"><strong>No evidence yet</strong><p>Add source material to begin the governed record.</p></div>`;
+  $("#inventory-table")
+    .querySelectorAll("[data-edit-evidence]")
+    .forEach((button) =>
+      button.addEventListener("click", () => openEvidenceEditor(button.dataset.editEvidence)),
+    );
 }
 
 function renderJobs() {
@@ -891,13 +904,8 @@ document
       activateView(button.dataset.viewTarget),
     ),
   );
-$("#add-room").addEventListener("click", () => elements.roomDialog.showModal());
-$("#save-room").addEventListener("click", async (event) => {
-  event.preventDefault();
-  const name = $("#new-room-name").value.trim();
-  if (!name) return;
-  const building = $("#new-room-building").value;
-  const level = $("#new-room-level").value;
+
+async function createRoomRecord({ name, building, level }) {
   let id = `${name.toLowerCase().replace(/[^a-z0-9]+/g, "-")}-${Date.now()}`;
   if (cloud.schemaReady && cloud.propertyId) {
     const { data, error } = await cloud.client
@@ -913,13 +921,10 @@ $("#save-room").addEventListener("click", async (event) => {
       })
       .select("id")
       .single();
-    if (error) {
-      notify(`Room was not added: ${error.message}`);
-      return;
-    }
+    if (error) throw error;
     id = data.id;
   }
-  rooms.push({
+  const room = {
     id,
     name,
     building,
@@ -929,13 +934,117 @@ $("#save-room").addEventListener("click", async (event) => {
     evidence: [],
     visible: [],
     unknown: ["Evidence has not been uploaded or reviewed"],
-  });
-  activeRoomId = id;
+  };
+  rooms.push(room);
+  return room;
+}
+
+$("#add-room").addEventListener("click", () => elements.roomDialog.showModal());
+$("#save-room").addEventListener("click", async (event) => {
+  event.preventDefault();
+  const name = $("#new-room-name").value.trim();
+  if (!name) return;
+  const building = $("#new-room-building").value;
+  const level = $("#new-room-level").value;
+  let room;
+  try {
+    room = await createRoomRecord({ name, building, level });
+  } catch (error) {
+    notify(`Room was not added: ${error.message}`);
+    return;
+  }
+  activeRoomId = room.id;
   saveRooms(cloud.schemaReady ? "Room added to cloud record" : "Room added locally");
   render();
   $("#room-form").reset();
   elements.roomDialog.close();
   notify(`${name} added to the ${cloud.schemaReady ? "private cloud" : "local"} record`);
+});
+
+function findEvidenceLocation(evidenceId) {
+  for (const room of rooms) {
+    const index = room.evidence.findIndex((item) => item.id === evidenceId);
+    if (index !== -1) return { room, index, evidence: room.evidence[index] };
+  }
+  return null;
+}
+
+function openEvidenceEditor(evidenceId) {
+  const location = findEvidenceLocation(evidenceId);
+  if (!location) return;
+  editingEvidenceId = evidenceId;
+  $("#edit-evidence-name").textContent = location.evidence.name;
+  elements.editEvidenceRoom.innerHTML = roomOptions(location.room.id, true);
+  $("#edit-evidence-type").value = location.evidence.type || "Room capture";
+  $("#edit-new-room-fields").hidden = true;
+  $("#edit-new-room-name").value = "";
+  elements.editEvidenceDialog.showModal();
+}
+
+elements.editEvidenceRoom.addEventListener("change", () => {
+  const creatingRoom = elements.editEvidenceRoom.value === "__new__";
+  $("#edit-new-room-fields").hidden = !creatingRoom;
+  if (creatingRoom) $("#edit-new-room-name").focus();
+});
+
+$("#save-evidence-edit").addEventListener("click", async (event) => {
+  event.preventDefault();
+  const location = findEvidenceLocation(editingEvidenceId);
+  if (!location) return;
+  const button = $("#save-evidence-edit");
+  button.disabled = true;
+  button.textContent = "Saving…";
+
+  let targetRoom = rooms.find(
+    (room) => room.id === elements.editEvidenceRoom.value,
+  );
+  try {
+    if (elements.editEvidenceRoom.value === "__new__") {
+      const name = $("#edit-new-room-name").value.trim();
+      if (!name) {
+        notify("Enter the new room name");
+        $("#edit-new-room-name").focus();
+        return;
+      }
+      targetRoom = await createRoomRecord({
+        name,
+        building: $("#edit-new-room-building").value,
+        level: $("#edit-new-room-level").value,
+      });
+    }
+    if (!targetRoom) throw new Error("Select a destination room");
+
+    const evidenceType = $("#edit-evidence-type").value;
+    if (cloud.schemaReady && cloud.propertyId) {
+      const { error } = await cloud.client
+        .from("evidence_items")
+        .update({ space_id: targetRoom.id, media_type: evidenceType })
+        .eq("id", location.evidence.id)
+        .eq("property_id", cloud.propertyId);
+      if (error) throw error;
+    }
+
+    const [evidence] = location.room.evidence.splice(location.index, 1);
+    evidence.type = evidenceType;
+    targetRoom.evidence.push(evidence);
+    targetRoom.status = "needs";
+    targetRoom.unknown = [
+      "Uploaded material has not been analyzed",
+      "No factual observations have been confirmed",
+    ];
+    activeRoomId = targetRoom.id;
+    saveRooms(cloud.schemaReady ? "Evidence assignment updated" : "Assignment updated locally");
+    render();
+    elements.editEvidenceDialog.close();
+    editingEvidenceId = null;
+    notify(`${evidence.name} moved to ${targetRoom.name}`);
+  } catch (error) {
+    console.error(error);
+    notify(`Assignment was not changed: ${error.message}`);
+  } finally {
+    button.disabled = false;
+    button.textContent = "Save changes";
+  }
 });
 
 function beginUploadFiles(files) {
