@@ -537,11 +537,16 @@ elements.authForm.addEventListener("submit", async (event) => {
   event.preventDefault();
   if (!cloud.client) return;
   const submit = $("#enter-studio");
+  const password = $("#auth-password").value;
+  if (!password) {
+    setAuthMessage("Enter your password or request a magic link.", "error");
+    return;
+  }
   submit.disabled = true;
   setAuthMessage("Verifying account…");
   const { data, error } = await cloud.client.auth.signInWithPassword({
     email: $("#auth-email").value.trim(),
-    password: $("#auth-password").value,
+    password,
   });
   submit.disabled = false;
   if (error) {
@@ -550,6 +555,29 @@ elements.authForm.addEventListener("submit", async (event) => {
   }
   setAuthMessage("Access granted.", "success");
   await enterWorkspace(data.session);
+});
+$("#send-magic-link").addEventListener("click", async () => {
+  if (!cloud.client) return;
+  const email = $("#auth-email").value.trim();
+  if (!email) {
+    setAuthMessage("Enter your authorized email address first.", "error");
+    return;
+  }
+  const button = $("#send-magic-link");
+  button.disabled = true;
+  setAuthMessage("Sending secure sign-in link…");
+  const { error } = await cloud.client.auth.signInWithOtp({
+    email,
+    options: {
+      shouldCreateUser: false,
+      emailRedirectTo: `${window.location.origin}/studio/`,
+    },
+  });
+  button.disabled = false;
+  setAuthMessage(
+    error ? error.message : "Magic link sent. Check your email.",
+    error ? "error" : "success",
+  );
 });
 $("#sign-out").addEventListener("click", async () => {
   if (cloud.client) await cloud.client.auth.signOut();
