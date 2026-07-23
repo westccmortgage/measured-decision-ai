@@ -634,11 +634,6 @@ footer a:hover { color: var(--accent); }
   .products-section .product-grid { grid-template-columns: 1fr; }
 }
 @media (prefers-reduced-motion: reduce) {
-  .hero-video { visibility: hidden; }
-  .property-panel-main { background: #050913 url("assets/hero/digital-twin-poster.jpg") center / cover no-repeat; }
-}
-
-@media (prefers-reduced-motion: reduce) {
   *, *::before, *::after { animation-duration: .01ms !important; animation-iteration-count: 1 !important; scroll-behavior: auto !important; transition-duration: .01ms !important; }
 }
 
@@ -959,8 +954,23 @@ footer a:hover { color: var(--accent); }
   height: 100%;
   object-fit: cover;
   object-position: 52% center;
+  opacity: 0;
+  position: relative;
+  transition: opacity 180ms ease;
   width: 100%;
+  z-index: 1;
 }
+.hero-video-poster {
+  display: block;
+  height: 100%;
+  inset: 0;
+  object-fit: cover;
+  object-position: 52% center;
+  position: absolute;
+  width: 100%;
+  z-index: 0;
+}
+.hero-media.has-played .hero-video { opacity: 1; }
 .hero-media-wash {
   background: radial-gradient(circle at 64% 48%, transparent 18%, rgba(4,10,24,.14) 68%), linear-gradient(135deg, color-mix(in srgb, var(--accent) 10%, transparent), transparent 46%);
   inset: 0;
@@ -1057,24 +1067,48 @@ footer a:hover { color: var(--accent); }
   .film-choice img { height: 70px; width: 88px; }
 }
 @media (max-width: 900px) {
-  .living-hero { min-height: 920px; padding-top: 86px; }
-  .living-hero .hero-copy { min-height: 470px; padding: 58px 24px 54px; width: 100%; }
-  .hero-media { bottom: 0; clip-path: polygon(0 13%, 72% 0, 100% 8%, 100% 100%, 0 100%); height: 500px; top: auto; width: 100%; }
-  .hero-media::after { background: linear-gradient(180deg, var(--bg) 0%, transparent 24%), linear-gradient(0deg, rgba(3,8,18,.3), transparent 45%); }
-  .hero-media-label { left: 5%; top: 76px; }
+  .living-hero {
+    display: flex;
+    flex-direction: column;
+    min-height: 0;
+    padding-top: 86px;
+  }
+  .living-hero .hero-copy {
+    min-height: 0;
+    padding: 58px 24px 46px;
+    width: 100%;
+  }
+  .hero-media {
+    aspect-ratio: 16 / 9;
+    bottom: auto;
+    clip-path: none;
+    height: auto;
+    position: relative;
+    right: auto;
+    top: auto;
+    width: 100%;
+  }
+  .hero-media::after { background: linear-gradient(0deg, rgba(3,8,18,.28), transparent 48%); }
+  .hero-media-label { left: 24px; right: 24px; top: 20px; }
   .film-center-layout { grid-template-columns: 1fr; }
   .film-selector { display: flex; overflow-x: auto; padding: 2px 2px 12px; scroll-snap-type: x mandatory; }
   .film-choice { flex: 0 0 280px; scroll-snap-align: start; }
 }
 @media (max-width: 600px) {
-  .living-hero { min-height: 890px; }
-  .living-hero .hero-copy { min-height: 500px; }
-  .hero-media { height: 430px; }
+  .living-hero .hero-copy { padding: 42px 20px 34px; }
+  .living-hero .hero-actions { gap: 12px; margin-top: 28px; }
+  .living-hero .hero-note { line-height: 1.45; margin-top: 24px; }
+  .hero-media { aspect-ratio: 4 / 3; }
+  .hero-media .hero-video,
+  .hero-video-poster { object-position: center; }
+  .hero-media-label { left: 18px; top: 16px; }
   .hero-media-label strong { display: none; }
+  .hero-data-lines span:nth-child(2) { left: 58%; top: 48%; }
+  .hero-data-lines span:nth-child(3) { left: 82%; top: 72%; }
+  .hero-video-toggle { bottom: 18px; right: 18px; }
   .film-feature-copy { grid-template-columns: 1fr; padding-bottom: 35px; }
   .film-feature-copy > span { left: 2px; right: auto; }
 }
 @media (prefers-reduced-motion: reduce) {
-  .hero-media .hero-video { visibility: hidden; }
-  .hero-media { background: #050913 url("assets/hero/digital-twin-poster.jpg") center / cover no-repeat; }
+  .hero-media .hero-video { opacity: 0 !important; }
 }
