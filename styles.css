@@ -1095,14 +1095,25 @@ footer a:hover { color: var(--accent); }
   .film-choice { flex: 0 0 280px; scroll-snap-align: start; }
 }
 @media (max-width: 600px) {
-  .living-hero .hero-copy { padding: 42px 20px 34px; }
+  .living-hero .hero-copy {
+    overflow: hidden;
+    padding: 42px 20px 34px;
+  }
+  .living-hero .hero-copy h1 {
+    font-size: clamp(42px, 12vw, 50px);
+    letter-spacing: -.045em;
+    line-height: 1;
+    max-width: 100%;
+    overflow-wrap: normal;
+    word-break: normal;
+  }
+  .living-hero .hero-copy h1 br { display: block; }
   .living-hero .hero-actions { gap: 12px; margin-top: 28px; }
   .living-hero .hero-note { line-height: 1.45; margin-top: 24px; }
   .hero-media { aspect-ratio: 4 / 3; }
   .hero-media .hero-video,
   .hero-video-poster { object-position: center; }
-  .hero-media-label { left: 18px; top: 16px; }
-  .hero-media-label strong { display: none; }
+  .hero-media-label { display: none; }
   .hero-data-lines span:nth-child(2) { left: 58%; top: 48%; }
   .hero-data-lines span:nth-child(3) { left: 82%; top: 72%; }
   .hero-video-toggle { bottom: 18px; right: 18px; }
