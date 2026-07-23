@@ -39,24 +39,47 @@ const heroVideo = document.querySelector(".hero-video");
 const heroVideoToggle = document.querySelector(".hero-video-toggle");
 
 if (heroVideo && heroVideoToggle) {
+  const heroMedia = heroVideo.closest(".hero-media");
   heroVideo.muted = true;
+  heroVideo.defaultMuted = true;
   heroVideo.loop = true;
   const syncHeroButton = () => {
     const paused = heroVideo.paused;
     heroVideoToggle.querySelector("span").textContent = paused ? "▶" : "Ⅱ";
     heroVideoToggle.setAttribute("aria-label", paused ? "Play hero video" : "Pause hero video");
   };
+
+  const playHero = () => {
+    const attempt = heroVideo.play();
+    if (attempt && typeof attempt.catch === "function") {
+      attempt.catch(syncHeroButton);
+    }
+  };
+
   if (matchMedia("(prefers-reduced-motion: reduce)").matches) {
     heroVideo.pause();
   } else {
-    heroVideo.play().catch(syncHeroButton);
+    playHero();
   }
+
   heroVideoToggle.addEventListener("click", () => {
-    if (heroVideo.paused) heroVideo.play();
+    if (heroVideo.paused) playHero();
     else heroVideo.pause();
   });
-  heroVideo.addEventListener("play", syncHeroButton);
+  heroVideo.addEventListener("playing", () => {
+    heroMedia?.classList.add("has-played");
+    syncHeroButton();
+  });
   heroVideo.addEventListener("pause", syncHeroButton);
+  heroVideo.addEventListener("error", () => {
+    heroMedia?.classList.remove("has-played");
+    syncHeroButton();
+  });
+  document.addEventListener("visibilitychange", () => {
+    if (!document.hidden && !matchMedia("(prefers-reduced-motion: reduce)").matches && heroVideo.paused) {
+      playHero();
+    }
+  });
   syncHeroButton();
 }
 
