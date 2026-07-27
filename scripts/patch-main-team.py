@@ -28,8 +28,9 @@ if 'href="/team/">Meet the team' not in html:
     end = html.find(end_marker, start)
     if start == -1 or end == -1:
         raise SystemExit("Could not locate the main-page team section")
-    line_start = html.rfind("\n", 0, start) + 1
-    html = html[:line_start] + replacement + html[end - 6:]
+    team_line_start = html.rfind("\n", 0, start) + 1
+    contact_line_start = html.rfind("\n", 0, end) + 1
+    html = html[:team_line_start] + replacement + html[contact_line_start:]
 
 footer_old = '<a href="#responsible">Responsible AI</a><a href="#films">Films</a><a href="/investors/">Investors</a>'
 footer_new = '<a href="#responsible">Responsible AI</a><a href="#films">Films</a><a href="/team/">Our Team</a><a href="/investors/">Investors</a>'
