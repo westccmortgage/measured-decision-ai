@@ -12,7 +12,7 @@
       href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap"
       rel="stylesheet"
     >
-    <link rel="stylesheet" href="studio.css">
+    <link rel="stylesheet" href="studio.css?v=20260727-2">
   </head>
   <body>
     <div class="prototype-gate" id="prototype-gate">
@@ -79,6 +79,9 @@
           >
             <span>⌂</span>Property record
           </button>
+          <button class="nav-item" data-view-target="guide" type="button">
+            <span>?</span>Capture guide
+          </button>
           <button class="nav-item" data-view-target="intake" type="button">
             <span>⇧</span>Evidence intake
           </button>
@@ -116,6 +119,9 @@
             <p id="property-description">Los Angeles, California · Spatial evidence record</p>
           </div>
           <div class="property-actions">
+            <button class="secondary-button" data-view-target="guide" type="button">
+              Capture guide
+            </button>
             <button class="secondary-button" id="add-room" type="button">
               + Add room
             </button>
@@ -185,7 +191,10 @@
               <div class="document-preview" id="document-preview" hidden><span>PDF</span><strong id="document-name">Document evidence</strong><a id="document-open" href="#" target="_blank" rel="noopener">Open document ↗</a></div>
               <div class="stage-toolbar">
                 <span id="evidence-type">Spatial capture</span
-                ><button id="expand-image" type="button">Expand ↗</button>
+                ><div class="stage-toolbar-actions">
+                  <button id="delete-selected-evidence" class="danger-link" type="button" hidden>Delete</button>
+                  <button id="expand-image" type="button">Expand ↗</button>
+                </div>
               </div>
             </div>
             <div class="evidence-strip" id="evidence-strip"></div>
@@ -197,6 +206,10 @@
               <div>
                 <span>Captured</span
                 ><strong id="source-date">July 19, 2026</strong>
+              </div>
+              <div>
+                <span>Subject</span
+                ><strong id="source-subject">Room overview</strong>
               </div>
               <div>
                 <span>File status</span
@@ -252,6 +265,64 @@
               completion.
             </p>
           </aside>
+        </section>
+      </main>
+
+      <main class="workspace view" data-view="guide" aria-label="Capture and Vision Pro guide" hidden>
+        <section class="view-header guide-header">
+          <div>
+            <p class="eyebrow">Start here · Capture guide</p>
+            <h1>Turn a job site into a room-by-room evidence record.</h1>
+            <p>
+              The Studio tells the capture team what to record, where each file belongs,
+              what supporting proof is missing, and what will later be available inside
+              the spatial review experience.
+            </p>
+          </div>
+          <button class="primary-button" data-view-target="intake" type="button">
+            Start evidence intake <span>→</span>
+          </button>
+        </section>
+
+        <section class="guide-foundation">
+          <div>
+            <p class="eyebrow">The organizing rule</p>
+            <h2>Property → Building → Level → Room → Component → Evidence</h2>
+          </div>
+          <p>Never upload an unexplained file. Every source needs a physical location, a subject, an evidence type, and a reason it matters.</p>
+        </section>
+
+        <section class="guide-steps" aria-label="Capture workflow">
+          <article><span>01</span><div><h2>Build the space map</h2><p>Create the buildings, floors, rooms, exterior zones, or commercial work areas before uploading files.</p><small>Example: Main House → Level 1 → Formal Living</small></div></article>
+          <article><span>02</span><div><h2>Capture the overview</h2><p>Record one slow 360 capture or walkthrough that establishes the full room and its orientation.</p><small>Stand near the center; keep doors, windows, walls, floor, and ceiling visible.</small></div></article>
+          <article><span>03</span><div><h2>Capture important details</h2><p>Add close photos or short clips for windows, doors, wiring, plumbing, finishes, equipment, defects, and concealed work.</p><small>Name the exact subject: “North window W-03,” not “window video.”</small></div></article>
+          <article><span>04</span><div><h2>Attach the proof</h2><p>Upload plans, invoices, product labels, installation records, inspections, warranties, and change orders to the same room or component.</p><small>Example: W-03 detail photo + approved window schedule + installation invoice.</small></div></article>
+          <article><span>05</span><div><h2>Review the gaps</h2><p>The system separates what is visible from what is merely claimed and asks for missing angles, dates, documents, or professional verification.</p><small>A 360 view provides context; it does not prove what is behind a finished wall.</small></div></article>
+          <article><span>06</span><div><h2>Prepare the spatial package</h2><p>Only organized and reviewed evidence is selected for the Vision Pro manifest. Original files remain private and traceable.</p><small>Current: governed record and manifest. Next: native spatial viewer and anchored room navigation.</small></div></article>
+        </section>
+
+        <section class="guide-capture-matrix">
+          <div class="section-heading">
+            <div><p>What to upload</p><h2>One room, four evidence layers</h2></div>
+          </div>
+          <div class="guide-layer"><span>01 · Orientation</span><strong>360 room capture or complete walkthrough</strong><p>Answers: Where is everything?</p></div>
+          <div class="guide-layer"><span>02 · Detail</span><strong>Close photos and short component videos</strong><p>Answers: What exactly is visible?</p></div>
+          <div class="guide-layer"><span>03 · Documentary proof</span><strong>Plans, invoices, inspections, labels, warranties</strong><p>Answers: What supports the claim?</p></div>
+          <div class="guide-layer"><span>04 · Time and change</span><strong>Repeat captures at important construction stages</strong><p>Answers: What changed, and when?</p></div>
+        </section>
+
+        <section class="guide-vision">
+          <div>
+            <p class="eyebrow">Target Vision Pro review</p>
+            <h2>How the reviewer will use the record.</h2>
+          </div>
+          <ol>
+            <li><span>01</span><p><strong>Select the property and date.</strong> Open the correct governed release—not a loose folder of files.</p></li>
+            <li><span>02</span><p><strong>Enter a building, floor, and room.</strong> Navigate through the same structure created during intake.</p></li>
+            <li><span>03</span><p><strong>Look at a component and select its marker.</strong> See the close-up, document, date, source, and review status together.</p></li>
+            <li><span>04</span><p><strong>Compare stages and record a disposition.</strong> Review change over time while keeping the final decision human.</p></li>
+          </ol>
+          <p class="guide-status"><i></i><strong>Product status:</strong> Studio intake and governed manifest are the current foundation. The native Vision Pro viewing experience is the next development layer and is not presented as released functionality.</p>
         </section>
       </main>
 
@@ -573,7 +644,11 @@
             <option>Inspection record</option>
           </select></label
         >
+        <label>What does this file show?<input id="upload-subject" type="text" maxlength="140" placeholder="e.g. North window W-03, electrical rough-in, room overview"></label>
+        <label>Why is it being uploaded?<textarea id="upload-context" rows="3" maxlength="500" placeholder="e.g. Installation evidence before drywall; connect to window schedule and invoice"></textarea></label>
         <p class="dialog-notice">
+          Upload files together only when they show the same room, component,
+          and purpose. Use a separate upload for a different subject.<br>
           Authenticated uploads are stored in private Supabase Storage. AI
           analysis is never simulated.
         </p>
@@ -617,10 +692,32 @@
           <option>Invoice or estimate</option>
           <option>Inspection record</option>
         </select></label>
-        <p class="dialog-notice">The original file remains unchanged. Only its room assignment and evidence type are updated.</p>
+        <label>What does this file show?<input id="edit-evidence-subject" type="text" maxlength="140"></label>
+        <label>Why is it being kept?<textarea id="edit-evidence-context" rows="3" maxlength="500"></textarea></label>
+        <p class="dialog-notice">The original file remains unchanged. Its room assignment, evidence type, subject, and context can be updated.</p>
         <div class="dialog-actions">
           <button class="secondary-button" type="submit" value="cancel">Cancel</button>
           <button class="primary-button" type="submit" value="default" id="save-evidence-edit">Save changes</button>
+        </div>
+      </form>
+    </dialog>
+
+    <dialog id="delete-evidence-dialog" class="danger-dialog">
+      <form method="dialog" id="delete-evidence-form">
+        <div class="dialog-heading">
+          <div>
+            <p class="eyebrow">Permanent deletion</p>
+            <h2>Delete evidence?</h2>
+          </div>
+          <button type="submit" value="cancel" aria-label="Close">×</button>
+        </div>
+        <div class="delete-evidence-summary">
+          <strong id="delete-evidence-name">Evidence file</strong>
+          <p>This removes the database record and the original file from private storage. This action cannot be undone.</p>
+        </div>
+        <div class="dialog-actions">
+          <button class="secondary-button" type="submit" value="cancel">Keep evidence</button>
+          <button class="danger-button" type="button" id="confirm-evidence-delete">Delete permanently</button>
         </div>
       </form>
     </dialog>
@@ -673,6 +770,6 @@
     <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2.106.2"></script>
     <script src="https://cdn.jsdelivr.net/npm/tus-js-client@4.3.1/dist/tus.min.js"></script>
     <script src="config.js"></script>
-    <script src="studio.js"></script>
+    <script src="studio.js?v=20260727-2"></script>
   </body>
 </html>
