@@ -30,6 +30,7 @@ const cloud = {
   propertyId: null,
   role: null,
   schemaReady: false,
+  properties: [],
 };
 
 const seedRooms = [
@@ -72,7 +73,9 @@ let fileDatabase;
 const $ = (selector) => document.querySelector(selector);
 const elements = {
   gate: $("#prototype-gate"),
+  propertyGate: $("#property-gate"),
   shell: $("#app-shell"),
+  propertyDirectory: $("#property-directory"),
   roomList: $("#room-list"),
   title: $("#room-title"),
   level: $("#room-level"),
@@ -377,7 +380,21 @@ function renderRooms() {
 
 function renderRoom() {
   const room = currentRoom();
-  if (!room) return;
+  if (!room) {
+    elements.title.textContent = "No rooms yet";
+    elements.level.textContent = "Create the property space map";
+    elements.count.textContent = "0 evidence items";
+    elements.image.hidden = true;
+    elements.video.hidden = true;
+    elements.document.hidden = true;
+    elements.strip.innerHTML = "";
+    elements.visible.innerHTML = "<li>Add the first room or area to begin</li>";
+    elements.unknown.innerHTML = "<li>No room evidence has been captured</li>";
+    elements.note.value = "";
+    elements.badge.textContent = "Setup required";
+    elements.badge.className = "review-badge needs";
+    return;
+  }
   const evidence =
     room.evidence.find((item) => item.id === activeEvidenceId) ||
     room.evidence[0];
@@ -693,33 +710,102 @@ async function signedEvidenceUrl(storagePath) {
   return data?.signedUrl || "";
 }
 
+function propertyTypeLabel(value) {
+  const labels = {
+    single_family: "Single-family residence",
+    multifamily: "Multifamily",
+    commercial: "Commercial building",
+    hospitality: "Hotel / hospitality",
+    industrial: "Industrial",
+    construction_site: "Construction site",
+    other: "Other property",
+  };
+  return labels[value] || "Property";
+}
+
+function renderPropertyDirectory() {
+  const properties = cloud.properties || [];
+  elements.propertyDirectory.innerHTML = properties
+    .map((property) => {
+      const address = property.address || {};
+      const profile = address.profile || {};
+      const location =
+        [address.street, address.city, address.state, address.postal_code]
+          .filter(Boolean)
+          .join(", ") || "Address not yet entered";
+      const facts = [
+        profile.bedrooms ? `${profile.bedrooms} bedrooms` : "",
+        profile.bathrooms ? `${profile.bathrooms} bathrooms` : "",
+        profile.square_feet ? `${Number(profile.square_feet).toLocaleString()} sq ft` : "",
+      ]
+        .filter(Boolean)
+        .join(" · ");
+      return `<button class="property-directory-card" type="button" data-property-id="${escapeText(property.id)}">
+        <span>${escapeText(propertyTypeLabel(profile.property_type))}</span>
+        <h2>${escapeText(property.name)}</h2>
+        <p>${escapeText(location)}</p>
+        <small>${escapeText(facts || "Open property workspace")} →</small>
+      </button>`;
+    })
+    .join("");
+  $("#empty-property-state").hidden = properties.length > 0;
+  elements.propertyDirectory.hidden = properties.length === 0;
+  elements.propertyDirectory
+    .querySelectorAll("[data-property-id]")
+    .forEach((button) =>
+      button.addEventListener("click", () => openProperty(button.dataset.propertyId)),
+    );
+}
+
+async function loadPropertyDirectory() {
+  const { data, error } = await cloud.client
+    .from("properties")
+    .select("id, name, address, access_classification, created_at")
+    .eq("organization_id", cloud.organizationId)
+    .order("created_at", { ascending: true });
+  if (error) throw error;
+  cloud.properties = data || [];
+  renderPropertyDirectory();
+}
+
 async function hydrateCloudRecord() {
+  if (!cloud.propertyId) throw new Error("Select a property before loading Studio.");
   const { data: property, error: propertyError } = await cloud.client
     .from("properties")
     .select("id, name, address, access_classification")
     .eq("organization_id", cloud.organizationId)
-    .order("created_at", { ascending: true })
-    .limit(1)
-    .maybeSingle();
+    .eq("id", cloud.propertyId)
+    .single();
   if (propertyError) throw propertyError;
   if (!property) {
     elements.autosave.textContent = "Cloud connected · No property assigned";
     return;
   }
 
-  cloud.propertyId = property.id;
   const address = property.address || {};
+  const profile = address.profile || {};
   propertyRecord = {
     id: property.id,
     name: property.name,
     city: address.city || "",
     state: address.state || "",
-    description:
-      [address.city, address.state].filter(Boolean).join(", ") ||
-      "Private spatial evidence record",
+    description: [
+      [address.city, address.state].filter(Boolean).join(", "),
+      propertyTypeLabel(profile.property_type),
+      profile.square_feet
+        ? `${Number(profile.square_feet).toLocaleString()} sq ft`
+        : "",
+    ]
+      .filter(Boolean)
+      .join(" · "),
     access: property.access_classification,
+    profile,
   };
 
+  rooms = [];
+  jobs = [];
+  activeRoomId = null;
+  activeEvidenceId = null;
   const [{ data: spaceRows, error: spacesError }, { data: evidenceRows, error: evidenceError }] =
     await Promise.all([
       cloud.client
@@ -803,6 +889,31 @@ async function hydrateCloudRecord() {
   }
 }
 
+async function openProperty(propertyId) {
+  cloud.propertyId = propertyId;
+  elements.propertyGate.hidden = true;
+  elements.shell.hidden = false;
+  elements.autosave.textContent = "Loading property…";
+  try {
+    await hydrateCloudRecord();
+    $("#connector-status").innerHTML = "<i></i> Supabase connected";
+    elements.autosave.textContent = `Cloud connected · ${cloud.role}`;
+    activateView("property");
+    render();
+  } catch (error) {
+    console.error(error);
+    elements.shell.hidden = true;
+    elements.propertyGate.hidden = false;
+    notify("This property could not be opened.");
+  }
+}
+
+function showPropertyDirectory() {
+  elements.shell.hidden = true;
+  elements.propertyGate.hidden = false;
+  renderPropertyDirectory();
+}
+
 async function hydrateCloudContext() {
   if (!cloud.client || !cloud.session) return;
   const { data, error } = await cloud.client
@@ -826,7 +937,7 @@ async function hydrateCloudContext() {
   cloud.organizationId = data.organization_id;
   cloud.role = data.role;
   try {
-    await hydrateCloudRecord();
+    await loadPropertyDirectory();
     $("#connector-status").innerHTML = "<i></i> Supabase connected";
     elements.autosave.textContent = `Cloud connected · ${data.role}`;
   } catch (recordError) {
@@ -840,11 +951,12 @@ async function hydrateCloudContext() {
 async function enterWorkspace(session) {
   cloud.session = session;
   elements.gate.hidden = true;
-  elements.shell.hidden = false;
+  elements.shell.hidden = true;
+  elements.propertyGate.hidden = false;
   $(".avatar").textContent = sessionInitials(session);
   await hydrateEvidenceFiles();
   await hydrateCloudContext();
-  render();
+  renderPropertyDirectory();
 }
 
 async function initializeAuth() {
@@ -865,6 +977,7 @@ async function initializeAuth() {
     if (event === "SIGNED_OUT") {
       cloud.session = null;
       elements.shell.hidden = true;
+      elements.propertyGate.hidden = true;
       elements.gate.hidden = false;
       setAuthMessage("Signed out. Authorized accounts only.");
     } else if (event === "SIGNED_IN" && session && !cloud.session) {
@@ -936,6 +1049,75 @@ $("#send-magic-link").addEventListener("click", async () => {
 });
 $("#sign-out").addEventListener("click", async () => {
   if (cloud.client) await cloud.client.auth.signOut();
+});
+$("#property-gate-sign-out").addEventListener("click", async () => {
+  if (cloud.client) await cloud.client.auth.signOut();
+});
+$("#switch-property").addEventListener("click", showPropertyDirectory);
+
+function openPropertyDialog() {
+  if (!cloud.organizationId) {
+    window.alert("Your account is not assigned to an organization.");
+    return;
+  }
+  $("#property-form").reset();
+  $("#property-form-message").textContent = "";
+  $("#property-dialog").showModal();
+}
+
+$("#create-property").addEventListener("click", openPropertyDialog);
+$("#create-first-property").addEventListener("click", openPropertyDialog);
+$("#property-form").addEventListener("submit", async (event) => {
+  event.preventDefault();
+  const submit = $("#save-property");
+  const name = $("#profile-property-name").value.trim();
+  const city = $("#profile-city").value.trim();
+  const state = $("#profile-state").value.trim();
+  if (!name || !city || !state) return;
+  const numberOrNull = (selector) => {
+    const value = $(selector).value;
+    return value === "" ? null : Number(value);
+  };
+  const address = {
+    street: $("#profile-street").value.trim(),
+    city,
+    state,
+    postal_code: $("#profile-postal").value.trim(),
+    profile: {
+      property_type: $("#profile-property-type").value,
+      project_stage: $("#profile-project-stage").value,
+      bedrooms: numberOrNull("#profile-bedrooms"),
+      bathrooms: numberOrNull("#profile-bathrooms"),
+      floors: numberOrNull("#profile-floors"),
+      square_feet: numberOrNull("#profile-square-feet"),
+      year_built: numberOrNull("#profile-year-built"),
+      purpose: $("#profile-purpose").value.trim(),
+    },
+  };
+  submit.disabled = true;
+  submit.textContent = "Creating property…";
+  const { data, error } = await cloud.client
+    .from("properties")
+    .insert({
+      organization_id: cloud.organizationId,
+      name,
+      address,
+      access_classification: "private",
+      created_by: cloud.session.user.id,
+    })
+    .select("id, name, address, access_classification, created_at")
+    .single();
+  submit.disabled = false;
+  submit.textContent = "Create property and enter Studio";
+  if (error) {
+    $("#property-form-message").textContent = `Property was not created: ${error.message}`;
+    return;
+  }
+  cloud.properties.push(data);
+  $("#property-dialog").close();
+  renderPropertyDirectory();
+  notify(`${name} property profile created`);
+  await openProperty(data.id);
 });
 $("#mobile-menu").addEventListener("click", () =>
   $("#sidebar").classList.toggle("open"),
