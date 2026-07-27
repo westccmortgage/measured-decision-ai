@@ -35,51 +35,122 @@ navigation.querySelectorAll("a").forEach((link) => {
   });
 });
 
-const heroVideo = document.querySelector(".hero-video");
+const proofStage = document.querySelector(".proof-stage");
+const proofVideos = [...document.querySelectorAll(".proof-video")];
+const proofTabs = [...document.querySelectorAll(".proof-stage-tab")];
+const proofContext = document.querySelector(".proof-stage-context");
 const heroVideoToggle = document.querySelector(".hero-video-toggle");
+const reducedMotion = matchMedia("(prefers-reduced-motion: reduce)");
 
-if (heroVideo && heroVideoToggle) {
-  const heroMedia = heroVideo.closest(".hero-media");
-  heroVideo.muted = true;
-  heroVideo.defaultMuted = true;
-  heroVideo.loop = true;
+if (proofStage && proofVideos.length && proofTabs.length && heroVideoToggle) {
+  const contexts = {
+    commercial: "High-rise construction",
+    residential: "Custom-home construction"
+  };
+  let activeName = "commercial";
+  let transitionTimer;
+  let userPaused = reducedMotion.matches;
+
+  proofVideos.forEach((video) => {
+    video.muted = true;
+    video.defaultMuted = true;
+  });
+
+  const getVideo = (name) => proofVideos.find((video) => video.dataset.proofVideo === name);
+
   const syncHeroButton = () => {
-    const paused = heroVideo.paused;
+    const activeVideo = getVideo(activeName);
+    const paused = !activeVideo || activeVideo.paused;
     heroVideoToggle.querySelector("span").textContent = paused ? "▶" : "Ⅱ";
     heroVideoToggle.setAttribute("aria-label", paused ? "Play hero video" : "Pause hero video");
   };
 
-  const playHero = () => {
-    const attempt = heroVideo.play();
-    if (attempt && typeof attempt.catch === "function") {
-      attempt.catch(syncHeroButton);
+  const playActive = () => {
+    if (userPaused || reducedMotion.matches || document.hidden) {
+      syncHeroButton();
+      return;
     }
+    const activeVideo = getVideo(activeName);
+    const attempt = activeVideo?.play();
+    if (attempt && typeof attempt.catch === "function") attempt.catch(syncHeroButton);
   };
 
-  if (matchMedia("(prefers-reduced-motion: reduce)").matches) {
-    heroVideo.pause();
-  } else {
-    playHero();
-  }
+  const setProof = (name, { restart = true } = {}) => {
+    if (!getVideo(name)) return;
+    const previous = getVideo(activeName);
+    const next = getVideo(name);
+    activeName = name;
+
+    window.clearTimeout(transitionTimer);
+    if (restart) next.currentTime = 0;
+    next.classList.add("is-active");
+    next.setAttribute("aria-hidden", "false");
+    next.play().catch(syncHeroButton);
+    proofStage.classList.add("has-played");
+
+    proofVideos.forEach((video) => {
+      if (video !== next) {
+        video.classList.remove("is-active");
+        video.setAttribute("aria-hidden", "true");
+      }
+    });
+    transitionTimer = window.setTimeout(() => {
+      if (previous && previous !== next) previous.pause();
+    }, 850);
+
+    proofTabs.forEach((tab) => {
+      const active = tab.dataset.proofTarget === name;
+      tab.classList.toggle("is-active", active);
+      tab.setAttribute("aria-pressed", String(active));
+    });
+    if (proofContext) proofContext.textContent = contexts[name];
+    syncHeroButton();
+  };
+
+  proofTabs.forEach((tab) => {
+    tab.addEventListener("click", () => {
+      userPaused = false;
+      setProof(tab.dataset.proofTarget);
+    });
+  });
+
+  proofVideos.forEach((video) => {
+    video.addEventListener("ended", () => {
+      if (video.dataset.proofVideo !== activeName || userPaused) return;
+      setProof(activeName === "commercial" ? "residential" : "commercial");
+    });
+    video.addEventListener("playing", () => {
+      proofStage.classList.add("has-played");
+      syncHeroButton();
+    });
+    video.addEventListener("pause", syncHeroButton);
+    video.addEventListener("error", syncHeroButton);
+  });
 
   heroVideoToggle.addEventListener("click", () => {
-    if (heroVideo.paused) playHero();
-    else heroVideo.pause();
-  });
-  heroVideo.addEventListener("playing", () => {
-    heroMedia?.classList.add("has-played");
-    syncHeroButton();
-  });
-  heroVideo.addEventListener("pause", syncHeroButton);
-  heroVideo.addEventListener("error", () => {
-    heroMedia?.classList.remove("has-played");
-    syncHeroButton();
-  });
-  document.addEventListener("visibilitychange", () => {
-    if (!document.hidden && !matchMedia("(prefers-reduced-motion: reduce)").matches && heroVideo.paused) {
-      playHero();
+    const activeVideo = getVideo(activeName);
+    if (!activeVideo) return;
+    if (activeVideo.paused) {
+      userPaused = false;
+      activeVideo.play().catch(syncHeroButton);
+    } else {
+      userPaused = true;
+      activeVideo.pause();
     }
+    syncHeroButton();
   });
+
+  document.addEventListener("visibilitychange", () => {
+    if (!document.hidden) playActive();
+    else proofVideos.forEach((video) => video.pause());
+  });
+
+  proofVideos.forEach((video) => video.setAttribute("aria-hidden", video.dataset.proofVideo === activeName ? "false" : "true"));
+  if (reducedMotion.matches) {
+    proofVideos.forEach((video) => video.pause());
+  } else {
+    playActive();
+  }
   syncHeroButton();
 }
 

@@ -7,9 +7,20 @@ Official static website for [MeasuredDecision.com](https://measureddecision.com)
 - [WalletWCCM](https://walletwccm.com) — closing-cost and cash-to-close clarity
 - [GRCRM](https://grcrm.com) — lead and workflow continuity
 
-## The Living Property
+## Commercial + Residential proof stage
 
-The homepage hero presents the company's spatial-intelligence direction: physical property → evidence → context → human decision. The lightweight muted video uses blended scene transitions and a seamless loop inside the integrated diagonal hero composition, with a pause/play control.
+The homepage opens with two lightweight master scenes instead of an abstract
+technology loop:
+
+- Commercial construction: site capture, drone context, a connected building
+  model, and spatial human review.
+- Residential construction: room capture, a connected home record, and a future
+  owner reviewing the history in Vision Pro.
+
+Both scenes are preloaded and crossfade without a blank frame. Visitors can
+switch between them manually, pause playback, or let the page advance
+automatically. Smaller mobile encodes and static posters reduce first-load cost
+and preserve a useful fallback when autoplay is unavailable.
 
 ## Film Center
 

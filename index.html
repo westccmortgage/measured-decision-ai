@@ -12,7 +12,7 @@
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
-    <link rel="stylesheet" href="styles.css?v=20260725-2">
+    <link rel="stylesheet" href="styles.css?v=20260727-1">
     <script>
       try {
         const saved = localStorage.getItem("mdai-theme");
@@ -47,33 +47,53 @@
       <section class="hero living-hero investor-hero" id="top">
         <div class="ambient-grid" aria-hidden="true"></div>
         <div class="hero-copy">
-          <p class="eyebrow">Evidence infrastructure for the built world</p>
-          <h1>Every asset should have<br>a living, verifiable<br>record.</h1>
-          <p class="hero-lede">Measured Decision AI connects reality capture, spatial evidence, project documents, and financial events—so consequential asset decisions can follow a clear evidence path.</p>
+          <p class="eyebrow">Construction evidence, connected to the place</p>
+          <h1>See the site.<br>See the evidence.<br>Review the project.</h1>
+          <p class="hero-lede">Capture a property with a phone, 360 camera, or drone. Connect photos, plans, invoices, inspections, and materials to the exact place they belong. Review the complete record on a screen or in Vision Pro.</p>
           <div class="hero-actions">
-            <a class="button button-primary" href="#platform">Explore the Platform <span aria-hidden="true">→</span></a>
+            <a class="button button-primary" href="#proof">Watch How It Works <span aria-hidden="true">→</span></a>
             <a class="button button-secondary" href="#pilot">Discuss a Pilot <span aria-hidden="true">↓</span></a>
           </div>
-          <p class="hero-note"><span></span> Initial application · Construction capital verification</p>
+          <p class="hero-note"><span></span> From custom homes to high-rise construction</p>
         </div>
 
-        <figure class="hero-media">
-          <figcaption class="sr-only">A physical property continuously transforming into a connected digital evidence environment.</figcaption>
-          <img class="hero-video-poster" src="assets/hero/digital-twin-poster.jpg" alt="" width="1920" height="1080" aria-hidden="true">
-          <video class="hero-video" autoplay muted loop playsinline webkit-playsinline preload="metadata" poster="assets/hero/digital-twin-poster.jpg">
-            <source src="assets/video/digital-twin-hero-smooth.mp4" type="video/mp4">
-          </video>
+        <figure class="hero-media proof-stage" id="proof">
+          <figcaption class="sr-only">Commercial and residential construction capture becomes a connected spatial evidence record for human review.</figcaption>
+          <div class="proof-stage-tabs" role="group" aria-label="Choose project type">
+            <button class="proof-stage-tab is-active" type="button" aria-pressed="true" data-proof-target="commercial">
+              <span>01</span> Commercial
+            </button>
+            <button class="proof-stage-tab" type="button" aria-pressed="false" data-proof-target="residential">
+              <span>02</span> Residential
+            </button>
+          </div>
+          <div class="proof-stage-videos">
+            <video class="hero-video proof-video is-active" data-proof-video="commercial" autoplay muted playsinline webkit-playsinline preload="auto" poster="assets/hero/commercial-master-poster.jpg">
+              <source media="(max-width: 700px)" src="assets/video/commercial-master-mobile.mp4" type="video/mp4">
+              <source src="assets/video/commercial-master-hero.mp4" type="video/mp4">
+            </video>
+            <video class="hero-video proof-video" data-proof-video="residential" muted playsinline webkit-playsinline preload="auto" poster="assets/hero/residential-master-poster.jpg">
+              <source media="(max-width: 700px)" src="assets/video/residential-master-mobile.mp4" type="video/mp4">
+              <source src="assets/video/residential-master-hero.mp4" type="video/mp4">
+            </video>
+          </div>
           <div class="hero-media-wash" aria-hidden="true"></div>
-          <div class="hero-data-lines" aria-hidden="true"><span></span><span></span><span></span><i></i></div>
-          <p class="hero-media-label"><span>Spatial evidence sequence</span><strong><i></i> Physical asset → reviewable record</strong></p>
+          <div class="proof-stage-story" aria-live="polite">
+            <p class="proof-stage-context">High-rise construction</p>
+            <ol aria-label="How the platform works">
+              <li><span>01</span><strong>Capture</strong></li>
+              <li><span>02</span><strong>Connect</strong></li>
+              <li><span>03</span><strong>Review</strong></li>
+            </ol>
+          </div>
           <button class="hero-video-toggle" type="button" aria-label="Pause hero video"><span>Ⅱ</span></button>
         </figure>
       </section>
 
       <ul class="principles investor-principles">
-        <li><i>01</i> Physical reality</li>
-        <li><i>02</i> Evidence path</li>
-        <li><i>03</i> Human decision</li>
+        <li><i>01</i> Capture the site</li>
+        <li><i>02</i> Connect the evidence</li>
+        <li><i>03</i> Review in context</li>
       </ul>
 
       <section class="section film-section film-section-elevated" id="films">
@@ -240,6 +260,6 @@
         <span>© 2026 Measured Decision AI</span>
       </footer>
     </main>
-    <script src="app.js?v=20260723-1" defer></script>
+    <script src="app.js?v=20260727-1" defer></script>
   </body>
 </html>
