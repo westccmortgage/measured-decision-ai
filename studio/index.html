@@ -12,7 +12,7 @@
       href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap"
       rel="stylesheet"
     >
-    <link rel="stylesheet" href="studio.css?v=20260727-2">
+    <link rel="stylesheet" href="studio.css?v=20260727-3">
   </head>
   <body>
     <div class="prototype-gate" id="prototype-gate">
@@ -35,6 +35,29 @@
         <small>Private workspace · Supabase Auth · Files governed by Row Level Security.</small>
       </div>
     </div>
+
+    <section class="property-gate" id="property-gate" hidden>
+      <div class="property-gate-shell">
+        <header class="property-gate-header">
+          <div>
+            <p class="eyebrow">Your spatial portfolio</p>
+            <h1>Choose a property to enter Studio.</h1>
+            <p>Every property keeps its own spaces, evidence, reviews, and Vision package.</p>
+          </div>
+          <div class="property-gate-actions">
+            <button class="primary-button" id="create-property" type="button">+ Create property</button>
+            <button class="secondary-button" id="property-gate-sign-out" type="button">Sign out</button>
+          </div>
+        </header>
+        <div class="property-directory" id="property-directory"></div>
+        <div class="empty-property-state" id="empty-property-state" hidden>
+          <span>01</span>
+          <h2>Create your first property profile.</h2>
+          <p>Start with the real address and basic building facts. Rooms and evidence are added inside that property’s Studio.</p>
+          <button class="primary-button" id="create-first-property" type="button">Create property profile →</button>
+        </div>
+      </div>
+    </section>
 
     <div class="app-shell" id="app-shell" hidden>
       <header class="topbar">
@@ -64,6 +87,9 @@
           </button>
           <button class="secondary-button" id="export-record" type="button">
             Export record
+          </button>
+          <button class="secondary-button" id="switch-property" type="button">
+            Properties
           </button>
           <button class="icon-button" id="sign-out" type="button">Sign out</button>
           <span class="avatar" title="Anatoliy Kanevsky">AK</span>
@@ -622,6 +648,52 @@
       </form>
     </dialog>
 
+    <dialog id="property-dialog" class="property-dialog">
+      <form method="dialog" id="property-form">
+        <div class="dialog-heading">
+          <div>
+            <p class="eyebrow">Property profile</p>
+            <h2>Create a governed property workspace</h2>
+          </div>
+          <button type="submit" value="cancel" aria-label="Close">×</button>
+        </div>
+        <div class="property-form-grid">
+          <label class="wide">Property name<input id="profile-property-name" type="text" required placeholder="e.g. Hutton Place Residence"></label>
+          <label>Property type<select id="profile-property-type" required>
+            <option value="single_family">Single-family residence</option>
+            <option value="multifamily">Multifamily</option>
+            <option value="commercial">Commercial building</option>
+            <option value="hospitality">Hotel / hospitality</option>
+            <option value="industrial">Industrial</option>
+            <option value="construction_site">Construction site</option>
+            <option value="other">Other</option>
+          </select></label>
+          <label>Project stage<select id="profile-project-stage">
+            <option value="preconstruction">Pre-construction</option>
+            <option value="construction">Under construction</option>
+            <option value="completed">Completed</option>
+            <option value="occupied">Occupied / operating</option>
+          </select></label>
+          <label class="wide">Street address<input id="profile-street" type="text" placeholder="3001 Hutton Place"></label>
+          <label>City<input id="profile-city" type="text" required placeholder="Los Angeles"></label>
+          <label>State<input id="profile-state" type="text" required maxlength="30" placeholder="CA"></label>
+          <label>ZIP / postal code<input id="profile-postal" type="text" maxlength="20"></label>
+          <label>Bedrooms<input id="profile-bedrooms" type="number" min="0" max="999" step="1"></label>
+          <label>Bathrooms<input id="profile-bathrooms" type="number" min="0" max="999" step="0.5"></label>
+          <label>Floors<input id="profile-floors" type="number" min="0" max="300" step="1"></label>
+          <label>Approx. square feet<input id="profile-square-feet" type="number" min="0" step="1"></label>
+          <label>Year built<input id="profile-year-built" type="number" min="1700" max="2100" step="1"></label>
+          <label class="wide">What should this record preserve?<textarea id="profile-purpose" rows="3" maxlength="600" placeholder="e.g. Construction history, installed materials, inspections, draw evidence, and final handoff"></textarea></label>
+        </div>
+        <p class="dialog-notice">This information creates the property container. No evidence is shared between properties.</p>
+        <p class="form-message" id="property-form-message" role="status" aria-live="polite"></p>
+        <div class="dialog-actions">
+          <button class="secondary-button" type="submit" value="cancel">Cancel</button>
+          <button class="primary-button" id="save-property" type="submit" value="default">Create property and enter Studio</button>
+        </div>
+      </form>
+    </dialog>
+
     <dialog class="upload-dialog" id="upload-dialog">
       <form method="dialog" id="upload-form">
         <div class="dialog-heading">
@@ -770,6 +842,6 @@
     <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2.106.2"></script>
     <script src="https://cdn.jsdelivr.net/npm/tus-js-client@4.3.1/dist/tus.min.js"></script>
     <script src="config.js"></script>
-    <script src="studio.js?v=20260727-2"></script>
+    <script src="studio.js?v=20260727-3"></script>
   </body>
 </html>
