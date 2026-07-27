@@ -64,6 +64,8 @@ let jobs = loadJobs();
 let activeRoomId = rooms[0]?.id;
 let pendingFiles = [];
 let editingEvidenceId = null;
+let deletingEvidenceId = null;
+let activeEvidenceId = null;
 let objectUrls = [];
 let fileDatabase;
 
@@ -84,6 +86,7 @@ const elements = {
   type: $("#evidence-type"),
   sourceName: $("#source-name"),
   sourceDate: $("#source-date"),
+  sourceSubject: $("#source-subject"),
   sourceStatus: $("#source-status"),
   visible: $("#visible-observations"),
   unknown: $("#unknown-observations"),
@@ -96,6 +99,7 @@ const elements = {
   roomDialog: $("#room-dialog"),
   uploadDialog: $("#upload-dialog"),
   editEvidenceDialog: $("#edit-evidence-dialog"),
+  deleteEvidenceDialog: $("#delete-evidence-dialog"),
   fileUpload: $("#file-upload"),
   intakeUpload: $("#file-upload-intake"),
   uploadRoom: $("#upload-room"),
@@ -170,6 +174,17 @@ async function storeEvidenceFile(id, file) {
   });
 }
 
+async function deleteStoredEvidenceFile(id) {
+  if (!id) return;
+  const database = await openFileDatabase();
+  return new Promise((resolve, reject) => {
+    const transaction = database.transaction("files", "readwrite");
+    transaction.objectStore("files").delete(id);
+    transaction.oncomplete = resolve;
+    transaction.onerror = () => reject(transaction.error);
+  });
+}
+
 function safeStorageName(filename) {
   const extension = filename.includes(".") ? `.${filename.split(".").pop()}` : "";
   const base = filename
@@ -231,7 +246,7 @@ async function uploadStorageObject(storagePath, file, onProgress) {
   });
 }
 
-async function uploadEvidenceToCloud(file, room, mediaType, onProgress) {
+async function uploadEvidenceToCloud(file, room, mediaType, metadata, onProgress) {
   const uniqueId = crypto.randomUUID();
   const storagePath = `${cloud.organizationId}/${cloud.propertyId}/${uniqueId}-${safeStorageName(file.name)}`;
   await uploadStorageObject(storagePath, file, onProgress);
@@ -252,6 +267,8 @@ async function uploadEvidenceToCloud(file, room, mediaType, onProgress) {
       source_metadata: {
         source: "measured-decision-studio",
         last_modified: file.lastModified || null,
+        subject: metadata.subject || null,
+        context: metadata.context || null,
       },
       created_by: cloud.session.user.id,
     })
@@ -269,6 +286,14 @@ async function uploadEvidenceToCloud(file, room, mediaType, onProgress) {
     byteSize: file.size,
     date: formatEvidenceDate(now.toISOString()),
     status: "Private cloud original · Awaiting analysis",
+    subject: metadata.subject || "",
+    context: metadata.context || "",
+    sourceMetadata: {
+      source: "measured-decision-studio",
+      last_modified: file.lastModified || null,
+      subject: metadata.subject || null,
+      context: metadata.context || null,
+    },
   };
 }
 
@@ -353,7 +378,9 @@ function renderRooms() {
 function renderRoom() {
   const room = currentRoom();
   if (!room) return;
-  const evidence = room.evidence[0];
+  const evidence =
+    room.evidence.find((item) => item.id === activeEvidenceId) ||
+    room.evidence[0];
   elements.title.textContent = room.name;
   elements.level.textContent = `${room.building} · ${room.level}`;
   elements.count.textContent = `${room.evidence.length} evidence item${room.evidence.length === 1 ? "" : "s"}`;
@@ -361,16 +388,19 @@ function renderRoom() {
   elements.strip.innerHTML = room.evidence
     .filter((item) => item.src)
     .map(
-      (item, index) =>
-        `<button class="evidence-thumb" data-evidence="${index}" type="button">${evidenceThumbnail(item, "strip-thumb")}</button>`,
+      (item) =>
+        `<button class="evidence-thumb" data-evidence-id="${escapeText(item.id)}" type="button">${evidenceThumbnail(item, "strip-thumb")}</button>`,
     )
     .join("");
   elements.strip
-    .querySelectorAll("[data-evidence]")
+    .querySelectorAll("[data-evidence-id]")
     .forEach((button) =>
-      button.addEventListener("click", () =>
-        showEvidence(room.evidence[Number(button.dataset.evidence)]),
-      ),
+      button.addEventListener("click", () => {
+        const item = room.evidence.find(
+          (candidate) => candidate.id === button.dataset.evidenceId,
+        );
+        if (item) showEvidence(item, room.name);
+      }),
     );
   elements.visible.innerHTML = (
     room.visible.length ? room.visible : ["No observations recorded"]
@@ -391,6 +421,7 @@ function renderRoom() {
 }
 
 function showEvidence(item, roomName = currentRoom()?.name || "Room") {
+  activeEvidenceId = item?.id || null;
   elements.video.pause();
   elements.image.hidden = true;
   elements.video.hidden = true;
@@ -404,8 +435,10 @@ function showEvidence(item, roomName = currentRoom()?.name || "Room") {
     elements.type.textContent = "No evidence selected";
     elements.sourceName.textContent = "—";
     elements.sourceDate.textContent = "—";
+    elements.sourceSubject.textContent = "—";
     elements.sourceStatus.textContent = "Awaiting upload";
     $("#expand-image").hidden = true;
+    $("#delete-selected-evidence").hidden = true;
     return;
   }
 
@@ -423,9 +456,11 @@ function showEvidence(item, roomName = currentRoom()?.name || "Room") {
   }
 
   $("#expand-image").hidden = !isImage(item);
+  $("#delete-selected-evidence").hidden = !canDeleteEvidence();
   elements.type.textContent = item.type || "Evidence";
   elements.sourceName.textContent = item.name || "—";
   elements.sourceDate.textContent = item.date || "—";
+  elements.sourceSubject.textContent = item.subject || "Not described";
   elements.sourceStatus.textContent = item.status || "Original preserved";
 }
 
@@ -472,7 +507,7 @@ function renderInventory() {
     ? evidence
         .map(
           (item) =>
-            `<article class="inventory-row"><span class="file-icon">${isVideo(item) ? "▶" : item.type?.includes("Plan") ? "⌑" : isImage(item) ? "◫" : "DOC"}</span><div><strong>${escapeText(item.name)}</strong><small>${escapeText(item.type)} · ${escapeText(item.room)}</small></div><span>${escapeText(item.date || "Date unavailable")}</span><span class="inventory-status ${item.roomStatus}">${item.roomStatus === "confirmed" ? "Human confirmed" : "Review required"}</span><button class="mini-button inventory-edit" data-edit-evidence="${item.id}" type="button">Edit assignment</button></article>`,
+            `<article class="inventory-row"><span class="file-icon">${isVideo(item) ? "▶" : item.type?.includes("Plan") ? "⌑" : isImage(item) ? "◫" : "DOC"}</span><div><strong>${escapeText(item.subject || item.name)}</strong><small>${escapeText(item.name)} · ${escapeText(item.type)} · ${escapeText(item.room)}</small></div><span>${escapeText(item.date || "Date unavailable")}</span><span class="inventory-status ${item.roomStatus}">${item.roomStatus === "confirmed" ? "Human confirmed" : "Review required"}</span><div class="inventory-actions"><button class="mini-button inventory-edit" data-edit-evidence="${item.id}" type="button">Edit</button>${canDeleteEvidence() ? `<button class="mini-button inventory-delete" data-delete-evidence="${item.id}" type="button">Delete</button>` : ""}</div></article>`,
         )
         .join("")
     : `<div class="empty-state"><strong>No evidence yet</strong><p>Add source material to begin the governed record.</p></div>`;
@@ -480,6 +515,11 @@ function renderInventory() {
     .querySelectorAll("[data-edit-evidence]")
     .forEach((button) =>
       button.addEventListener("click", () => openEvidenceEditor(button.dataset.editEvidence)),
+    );
+  $("#inventory-table")
+    .querySelectorAll("[data-delete-evidence]")
+    .forEach((button) =>
+      button.addEventListener("click", () => openEvidenceDelete(button.dataset.deleteEvidence)),
     );
 }
 
@@ -690,7 +730,7 @@ async function hydrateCloudRecord() {
       cloud.client
         .from("evidence_items")
         .select(
-          "id, space_id, storage_path, original_filename, media_type, mime_type, byte_size, captured_at, created_at",
+          "id, space_id, storage_path, original_filename, media_type, mime_type, byte_size, captured_at, created_at, source_metadata",
         )
         .eq("property_id", property.id)
         .order("created_at", { ascending: true }),
@@ -709,6 +749,9 @@ async function hydrateCloudRecord() {
       byteSize: item.byte_size,
       date: formatEvidenceDate(item.captured_at || item.created_at),
       status: "Private cloud original · Awaiting analysis",
+      subject: item.source_metadata?.subject || "",
+      context: item.source_metadata?.context || "",
+      sourceMetadata: item.source_metadata || {},
     })),
   );
 
@@ -969,6 +1012,91 @@ function findEvidenceLocation(evidenceId) {
   return null;
 }
 
+function canDeleteEvidence() {
+  return !cloud.schemaReady || ["owner", "admin"].includes(cloud.role);
+}
+
+function openEvidenceDelete(evidenceId) {
+  const location = findEvidenceLocation(evidenceId);
+  if (!location || !canDeleteEvidence()) return;
+  deletingEvidenceId = evidenceId;
+  $("#delete-evidence-name").textContent = location.evidence.name;
+  elements.deleteEvidenceDialog.showModal();
+}
+
+async function removeEvidenceRecord(location) {
+  const evidence = location.evidence;
+  let storageCleanupFailed = false;
+  if (cloud.schemaReady && cloud.propertyId) {
+    const { data: deletedRows, error: databaseError } = await cloud.client
+      .from("evidence_items")
+      .delete()
+      .eq("id", evidence.id)
+      .eq("property_id", cloud.propertyId)
+      .select("id");
+    if (databaseError) throw databaseError;
+    if (!deletedRows?.length) {
+      throw new Error("Deletion is not authorized or the evidence no longer exists");
+    }
+
+    if (evidence.storagePath) {
+      const { error: storageError } = await cloud.client.storage
+        .from(config.storageBucket)
+        .remove([evidence.storagePath]);
+      if (storageError) {
+        console.error("Evidence record deleted but storage cleanup failed", storageError);
+        storageCleanupFailed = true;
+      }
+    }
+  } else if (evidence.fileRef) {
+    await deleteStoredEvidenceFile(evidence.fileRef);
+  }
+
+  if (evidence.src?.startsWith("blob:")) {
+    URL.revokeObjectURL(evidence.src);
+    objectUrls = objectUrls.filter((url) => url !== evidence.src);
+  }
+  location.room.evidence.splice(location.index, 1);
+  location.room.status = "needs";
+  location.room.visible = [];
+  location.room.unknown = location.room.evidence.length
+    ? ["Uploaded material has not been analyzed", "No factual observations have been confirmed"]
+    : ["Evidence has not been uploaded or reviewed"];
+  activeEvidenceId = location.room.evidence[0]?.id || null;
+  return { storageCleanupFailed };
+}
+
+$("#delete-selected-evidence").addEventListener("click", () => {
+  if (activeEvidenceId) openEvidenceDelete(activeEvidenceId);
+});
+
+$("#confirm-evidence-delete").addEventListener("click", async () => {
+  const location = findEvidenceLocation(deletingEvidenceId);
+  if (!location) return;
+  const button = $("#confirm-evidence-delete");
+  const filename = location.evidence.name;
+  button.disabled = true;
+  button.textContent = "Deleting…";
+  try {
+    const result = await removeEvidenceRecord(location);
+    saveRooms(cloud.schemaReady ? "Evidence deleted from cloud record" : "Evidence deleted locally");
+    render();
+    elements.deleteEvidenceDialog.close();
+    deletingEvidenceId = null;
+    notify(
+      result.storageCleanupFailed
+        ? `${filename} removed from the database; storage cleanup requires attention`
+        : `${filename} deleted permanently`,
+    );
+  } catch (error) {
+    console.error(error);
+    notify(`Evidence was not deleted: ${error.message}`);
+  } finally {
+    button.disabled = false;
+    button.textContent = "Delete permanently";
+  }
+});
+
 function openEvidenceEditor(evidenceId) {
   const location = findEvidenceLocation(evidenceId);
   if (!location) return;
@@ -976,6 +1104,8 @@ function openEvidenceEditor(evidenceId) {
   $("#edit-evidence-name").textContent = location.evidence.name;
   elements.editEvidenceRoom.innerHTML = roomOptions(location.room.id, true);
   $("#edit-evidence-type").value = location.evidence.type || "Room capture";
+  $("#edit-evidence-subject").value = location.evidence.subject || "";
+  $("#edit-evidence-context").value = location.evidence.context || "";
   $("#edit-new-room-fields").hidden = true;
   $("#edit-new-room-name").value = "";
   elements.editEvidenceDialog.showModal();
@@ -1015,10 +1145,21 @@ $("#save-evidence-edit").addEventListener("click", async (event) => {
     if (!targetRoom) throw new Error("Select a destination room");
 
     const evidenceType = $("#edit-evidence-type").value;
+    const subject = $("#edit-evidence-subject").value.trim();
+    const context = $("#edit-evidence-context").value.trim();
+    const sourceMetadata = {
+      ...(location.evidence.sourceMetadata || {}),
+      subject: subject || null,
+      context: context || null,
+    };
     if (cloud.schemaReady && cloud.propertyId) {
       const { error } = await cloud.client
         .from("evidence_items")
-        .update({ space_id: targetRoom.id, media_type: evidenceType })
+        .update({
+          space_id: targetRoom.id,
+          media_type: evidenceType,
+          source_metadata: sourceMetadata,
+        })
         .eq("id", location.evidence.id)
         .eq("property_id", cloud.propertyId);
       if (error) throw error;
@@ -1026,6 +1167,9 @@ $("#save-evidence-edit").addEventListener("click", async (event) => {
 
     const [evidence] = location.room.evidence.splice(location.index, 1);
     evidence.type = evidenceType;
+    evidence.subject = subject;
+    evidence.context = context;
+    evidence.sourceMetadata = sourceMetadata;
     targetRoom.evidence.push(evidence);
     targetRoom.status = "needs";
     targetRoom.unknown = [
@@ -1086,6 +1230,15 @@ $("#save-upload").addEventListener("click", async (event) => {
   const room = rooms.find((item) => item.id === elements.uploadRoom.value);
   if (!room) return;
   const type = $("#upload-type").value;
+  const metadata = {
+    subject: $("#upload-subject").value.trim(),
+    context: $("#upload-context").value.trim(),
+  };
+  if (!metadata.subject) {
+    notify("Describe what the uploaded material shows");
+    $("#upload-subject").focus();
+    return;
+  }
   const button = $("#save-upload");
   button.disabled = true;
   button.textContent = cloud.schemaReady ? "Uploading securely…" : "Saving locally…";
@@ -1093,7 +1246,7 @@ $("#save-upload").addEventListener("click", async (event) => {
     for (const file of pendingFiles) {
       if (cloud.schemaReady && cloud.propertyId) {
         room.evidence.push(
-          await uploadEvidenceToCloud(file, room, type, (progress) => {
+          await uploadEvidenceToCloud(file, room, type, metadata, (progress) => {
             button.textContent = `Uploading ${file.name} · ${progress}%`;
           }),
         );
@@ -1111,6 +1264,9 @@ $("#save-upload").addEventListener("click", async (event) => {
           mimeType: file.type || "application/octet-stream",
           date: formatEvidenceDate(new Date().toISOString()),
           status: "Stored in browser · Awaiting analysis",
+          subject: metadata.subject,
+          context: metadata.context,
+          sourceMetadata: metadata,
         });
       }
     }
@@ -1133,6 +1289,8 @@ $("#save-upload").addEventListener("click", async (event) => {
   pendingFiles = [];
   elements.fileUpload.value = "";
   elements.intakeUpload.value = "";
+  $("#upload-subject").value = "";
+  $("#upload-context").value = "";
   elements.uploadDialog.close();
   button.disabled = false;
   button.textContent = "Save evidence";
