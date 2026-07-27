@@ -75,6 +75,15 @@ body {
   gap: 10px;
   flex: 0 0 auto;
 }
+.property-gate-message {
+  min-height: 1.3em;
+  margin-top: 12px !important;
+  color: var(--muted);
+  font-size: 13px;
+}
+.property-gate-message.error {
+  color: #f0a861 !important;
+}
 .property-directory {
   display: grid;
   grid-template-columns: repeat(3, minmax(0, 1fr));
