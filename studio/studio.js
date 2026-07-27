@@ -930,12 +930,15 @@ async function hydrateCloudContext() {
   if (!data) {
     cloud.schemaReady = true;
     $("#connector-status").innerHTML = "<i></i> Account needs organization";
-    elements.autosave.textContent = "Signed in · No organization assigned";
+    elements.autosave.textContent = "Signed in · Workspace setup required";
+    $("#property-gate-message").textContent =
+      "Create your first property to finish setting up your private workspace.";
     return;
   }
   cloud.schemaReady = true;
   cloud.organizationId = data.organization_id;
   cloud.role = data.role;
+  $("#property-gate-message").textContent = "";
   try {
     await loadPropertyDirectory();
     $("#connector-status").innerHTML = "<i></i> Supabase connected";
@@ -1078,11 +1081,46 @@ $("#property-gate-sign-out").addEventListener("click", async () => {
 });
 $("#switch-property").addEventListener("click", showPropertyDirectory);
 
-function openPropertyDialog() {
-  if (!cloud.organizationId) {
-    window.alert("Your account is not assigned to an organization.");
-    return;
+async function ensurePersonalOrganization() {
+  if (cloud.organizationId) return true;
+  const message = $("#property-gate-message");
+  message.classList.remove("error");
+  message.textContent = "Preparing your private workspace…";
+  const user = cloud.session?.user;
+  const displayName =
+    user?.user_metadata?.full_name ||
+    user?.user_metadata?.name ||
+    user?.email?.split("@")[0] ||
+    "My";
+  const { data, error } = await cloud.client.rpc(
+    "bootstrap_personal_organization",
+    { workspace_name: `${displayName} Property Workspace` },
+  );
+  if (error) {
+    console.error(error);
+    message.classList.add("error");
+    message.textContent =
+      "Workspace setup is not active yet. Please contact the Studio administrator.";
+    return false;
   }
+  const membership = Array.isArray(data) ? data[0] : data;
+  if (!membership?.organization_id) {
+    message.classList.add("error");
+    message.textContent = "The private workspace could not be created.";
+    return false;
+  }
+  cloud.organizationId = membership.organization_id;
+  cloud.role = membership.role || "owner";
+  cloud.schemaReady = true;
+  $("#connector-status").innerHTML = "<i></i> Supabase connected";
+  elements.autosave.textContent = `Cloud connected · ${cloud.role}`;
+  message.textContent = "";
+  return true;
+}
+
+async function openPropertyDialog() {
+  const ready = await ensurePersonalOrganization();
+  if (!ready) return;
   $("#property-form").reset();
   $("#property-form-message").textContent = "";
   $("#property-dialog").showModal();
