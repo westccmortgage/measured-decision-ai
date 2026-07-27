@@ -30,12 +30,15 @@ if count != 1 and 'href="/team/">Meet the team' not in html:
 
 footer_old = '<a href="#responsible">Responsible AI</a><a href="#films">Films</a><a href="/investors/">Investors</a>'
 footer_new = '<a href="#responsible">Responsible AI</a><a href="#films">Films</a><a href="/team/">Our Team</a><a href="/investors/">Investors</a>'
-html = html.replace(footer_old, footer_new)
+if '/team/">Our Team' not in html:
+    html = html.replace(footer_old, footer_new)
 index_path.write_text(html, encoding="utf-8")
 
 investor_path = root / "investors" / "index.html"
 if investor_path.exists():
     investor = investor_path.read_text(encoding="utf-8")
-    investor = investor.replace('<a href="#validation">Validation</a>', '<a href="#validation">Validation</a>\n        <a href="/team/">Team</a>')
-    investor = investor.replace('<a href="/">Main site</a>', '<a href="/">Main site</a><a href="/team/">Our Team</a>')
+    if '<a href="/team/">Team</a>' not in investor:
+        investor = investor.replace('<a href="#validation">Validation</a>', '<a href="#validation">Validation</a>\n        <a href="/team/">Team</a>')
+    if '<a href="/team/">Our Team</a>' not in investor:
+        investor = investor.replace('<a href="/">Company Site</a>', '<a href="/">Company Site</a><a href="/team/">Our Team</a>')
     investor_path.write_text(investor, encoding="utf-8")
