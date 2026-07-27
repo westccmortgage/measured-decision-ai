@@ -1001,6 +1001,29 @@ function activateView(name) {
   window.scrollTo({ top: 0, behavior: "smooth" });
 }
 
+$("#continue-google").addEventListener("click", async () => {
+  if (!cloud.client) {
+    setAuthMessage("Supabase connection is unavailable.", "error");
+    return;
+  }
+  const button = $("#continue-google");
+  button.disabled = true;
+  setAuthMessage("Opening secure Google sign-in…");
+  const { error } = await cloud.client.auth.signInWithOAuth({
+    provider: "google",
+    options: {
+      redirectTo: `${window.location.origin}/studio/`,
+      queryParams: {
+        prompt: "select_account",
+      },
+    },
+  });
+  if (error) {
+    button.disabled = false;
+    setAuthMessage(error.message, "error");
+  }
+});
+
 elements.authForm.addEventListener("submit", async (event) => {
   event.preventDefault();
   if (!cloud.client) return;
