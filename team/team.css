@@ -6,7 +6,8 @@
 .team-hero {
   display: grid;
   gap: clamp(48px, 6vw, 100px);
-  grid-template-columns: minmax(360px, .78fr) minmax(560px, 1.22fr);
+  grid-template-columns: minmax(360px, 1fr) minmax(380px, 560px);
+  justify-content: space-between;
   min-height: 790px;
   padding: 150px clamp(24px, 5vw, 80px) 92px;
   position: relative;
@@ -22,15 +23,13 @@
 .founder-identity small { color: var(--muted); font-size: 13px; line-height: 1.5; }
 
 .founder-video-card { align-self: center; margin: 0; min-width: 0; position: relative; z-index: 2; }
-.founder-video-frame { aspect-ratio: 16 / 9; background: #050913; border: 1px solid var(--line-strong); border-radius: 24px; box-shadow: var(--shadow); margin-left: auto; max-width: 860px; overflow: hidden; position: relative; width: 100%; }
+.founder-video-frame { aspect-ratio: 4 / 5; background: #050913; border: 1px solid var(--line-strong); border-radius: 24px; box-shadow: var(--shadow); margin-left: auto; max-width: 560px; overflow: hidden; position: relative; width: 100%; }
 .founder-video-frame::after { border: 1px solid rgba(255,255,255,.16); border-radius: 18px; content: ""; inset: 8px; pointer-events: none; position: absolute; z-index: 2; }
-.founder-video-frame iframe { border: 0; display: block; height: 100%; inset: 0; position: absolute; width: 100%; }
-.founder-video-card figcaption { display: grid; gap: 7px; margin: 22px 0 0 auto; max-width: 860px; }
+.founder-video-frame video { background: #050913; display: block; height: 100%; object-fit: cover; width: 100%; }
+.founder-video-card figcaption { display: grid; gap: 7px; margin: 22px 0 0 auto; max-width: 560px; }
 .founder-video-card figcaption span { color: var(--accent); font-size: 10px; font-weight: 700; letter-spacing: .18em; text-transform: uppercase; }
 .founder-video-card figcaption strong { font-size: 21px; font-weight: 580; letter-spacing: -.03em; }
 .founder-video-card figcaption small { color: var(--muted); font-size: 12px; }
-.founder-video-card figcaption a { color: var(--accent); font-size: 12px; margin-top: 5px; width: max-content; }
-.founder-video-card figcaption a:hover { text-decoration: underline; text-underline-offset: 4px; }
 
 .team-principles { border-bottom: 1px solid var(--line); border-top: 1px solid var(--line); display: grid; grid-template-columns: repeat(3, 1fr); margin: 0 clamp(24px, 4.7vw, 76px); }
 .team-principles p { border-right: 1px solid var(--line); display: grid; gap: 8px; margin: 0; padding: 30px 28px; }
@@ -60,7 +59,7 @@
   .team-hero { grid-template-columns: 1fr; padding-top: 130px; }
   .team-hero-copy { max-width: 780px; }
   .founder-video-card { width: 100%; }
-  .founder-video-frame, .founder-video-card figcaption { margin-left: 0; max-width: 900px; }
+  .founder-video-frame, .founder-video-card figcaption { margin-left: 0; max-width: 560px; }
   .team-grid { grid-template-columns: repeat(2, 1fr); }
   .team-card.founder-card { grid-column: span 2; }
 }
