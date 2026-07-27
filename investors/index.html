@@ -1,0 +1,219 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="dark">
+  <head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Measured Decision AI | Investor Overview</title>
+    <meta name="description" content="Measured Decision AI investor overview: the evidence problem, platform, initial construction-finance market, and asset-lifecycle expansion.">
+    <meta name="theme-color" content="#060a14">
+    <meta property="og:title" content="Measured Decision AI | Investor Overview">
+    <meta property="og:description" content="A governed evidence layer for the built world.">
+    <meta property="og:image" content="https://measureddecision.com/assets/investors/investor-02-platform.jpg">
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="investors.css?v=20260727-1">
+    <script>
+      try {
+        const saved = localStorage.getItem("mdai-investor-theme");
+        document.documentElement.dataset.theme = saved === "light" ? "light" : "dark";
+      } catch (_) {}
+    </script>
+  </head>
+  <body>
+    <header class="investor-header">
+      <a class="brand" href="/" aria-label="Measured Decision AI home">
+        <span class="brand-mark" aria-hidden="true"><i></i><i></i><i></i></span>
+        <span>Measured Decision <strong>AI</strong></span>
+      </a>
+      <nav aria-label="Investor navigation">
+        <a href="#vision">Vision</a>
+        <a href="#market">Initial Market</a>
+        <a href="#model">Business Model</a>
+        <a href="#validation">Validation</a>
+      </nav>
+      <div class="header-actions">
+        <button class="theme-toggle" type="button" aria-label="Switch to day mode"><span>◐</span></button>
+        <a class="header-cta" href="#data-room">Request Access</a>
+      </div>
+    </header>
+
+    <main>
+      <section class="investor-hero" id="top">
+        <div class="hero-grid" aria-hidden="true"></div>
+        <div class="hero-copy">
+          <p class="eyebrow">Measured Decision AI · Investor Overview</p>
+          <h1>The physical world has an evidence problem.</h1>
+          <p class="hero-lede">Buildings change in the real world. The photographs, plans, invoices, inspections, and financial decisions around them remain scattered. We are building the governed evidence layer that connects them.</p>
+          <div class="hero-actions">
+            <a class="button button-primary" href="#vision">Watch the thesis <span>↓</span></a>
+            <a class="button button-secondary" href="#data-room">Investor conversation <span>→</span></a>
+          </div>
+        </div>
+        <div class="hero-thesis" aria-label="Investment thesis">
+          <p><span>01</span><strong>Capture physical change</strong><small>Phone · 360 · drone · LiDAR · project records</small></p>
+          <p><span>02</span><strong>Connect the evidence</strong><small>Place · time · source · cost · decision</small></p>
+          <p><span>03</span><strong>Prepare human review</strong><small>Supported · missing · conflicting · requires verification</small></p>
+        </div>
+      </section>
+
+      <section class="thesis-bar" aria-label="Company thesis">
+        <p><span>Problem</span>Physical progress and financial records are disconnected.</p>
+        <p><span>Platform</span>One living record connects evidence to the asset.</p>
+        <p><span>Wedge</span>Construction capital verification.</p>
+        <p><span>Expansion</span>Intelligence across the asset lifecycle.</p>
+      </section>
+
+      <section class="section vision-section" id="vision">
+        <div class="section-heading">
+          <div>
+            <p class="eyebrow">Investor Vision · Four chapters</p>
+            <h2>Understand the company in four short films.</h2>
+          </div>
+          <p>Each chapter stands alone. Together they explain the problem, the platform, the first market, and the expansion path.</p>
+        </div>
+
+        <div class="vision-player">
+          <div class="player-frame">
+            <video id="investor-player" controls playsinline preload="metadata" poster="../assets/investors/investor-01-problem.jpg">
+              <source id="investor-source" src="../assets/video/investor-01-problem.mp4" type="video/mp4">
+              Your browser does not support embedded video.
+            </video>
+          </div>
+          <div class="active-film-copy" aria-live="polite">
+            <p id="active-number">01 · The Problem</p>
+            <h3 id="active-title">Physical Reality and Financial Decisions</h3>
+            <span id="active-duration">1:05</span>
+          </div>
+        </div>
+
+        <div class="chapter-selector" role="group" aria-label="Choose an investor vision chapter">
+          <button class="chapter is-active" type="button" aria-pressed="true"
+            data-src="../assets/video/investor-01-problem.mp4"
+            data-poster="../assets/investors/investor-01-problem.jpg"
+            data-number="01 · The Problem"
+            data-title="Physical Reality and Financial Decisions"
+            data-duration="1:05">
+            <img src="../assets/investors/investor-01-problem.jpg" alt="" width="960" height="540">
+            <span><b>01</b><strong>The Problem</strong><small>Why the evidence story breaks</small></span>
+          </button>
+          <button class="chapter" type="button" aria-pressed="false"
+            data-src="../assets/video/investor-02-platform.mp4"
+            data-poster="../assets/investors/investor-02-platform.jpg"
+            data-number="02 · How It Works"
+            data-title="A Living Evidence Record"
+            data-duration="1:04">
+            <img src="../assets/investors/investor-02-platform.jpg" alt="" width="960" height="540">
+            <span><b>02</b><strong>How It Works</strong><small>From capture to review</small></span>
+          </button>
+          <button class="chapter" type="button" aria-pressed="false"
+            data-src="../assets/video/investor-03-construction-finance.mp4"
+            data-poster="../assets/investors/investor-03-construction-finance.jpg"
+            data-number="03 · Initial Market"
+            data-title="Construction Capital Verification"
+            data-duration="1:13">
+            <img src="../assets/investors/investor-03-construction-finance.jpg" alt="" width="960" height="540">
+            <span><b>03</b><strong>Construction Finance</strong><small>The first commercial wedge</small></span>
+          </button>
+          <button class="chapter" type="button" aria-pressed="false"
+            data-src="../assets/video/investor-04-asset-lifecycle.mp4"
+            data-poster="../assets/investors/investor-04-asset-lifecycle.jpg"
+            data-number="04 · Expansion"
+            data-title="Intelligence Across the Asset Lifecycle"
+            data-duration="1:09">
+            <img src="../assets/investors/investor-04-asset-lifecycle.jpg" alt="" width="960" height="540">
+            <span><b>04</b><strong>Asset Lifecycle</strong><small>Where the record can expand</small></span>
+          </button>
+        </div>
+      </section>
+
+      <section class="section market-section" id="market">
+        <div class="section-heading">
+          <div>
+            <p class="eyebrow">Initial market</p>
+            <h2>Start where evidence already controls capital.</h2>
+          </div>
+          <p>Construction finance creates a clear first use case: a financial request must be reconciled with visible work, project records, and accountable human review.</p>
+        </div>
+        <div class="market-path">
+          <article><span>01</span><h3>Financial request</h3><p>Draw request, schedule of values, budget, invoices, and schedule.</p></article>
+          <i>→</i>
+          <article><span>02</span><h3>Work-in-place evidence</h3><p>Site capture, plans, inspections, changes, location, and time.</p></article>
+          <i>→</i>
+          <article><span>03</span><h3>Review package</h3><p>What is supported, missing, conflicting, or still requires verification.</p></article>
+        </div>
+        <p class="guardrail">The platform supports review. It does not replace inspection, certification, underwriting, or authorization to release funds.</p>
+      </section>
+
+      <section class="section model-section" id="model">
+        <div class="section-heading">
+          <div>
+            <p class="eyebrow">Business model direction</p>
+            <h2>Enterprise value grows with the governed record.</h2>
+          </div>
+          <p>The commercial model will be validated through paid pilots before long-range assumptions are presented as established economics.</p>
+        </div>
+        <div class="model-grid">
+          <article><span>Pilot</span><h3>Implementation</h3><p>Configure one real workflow, evidence structure, review path, and success criteria.</p></article>
+          <article><span>Platform</span><h3>Subscription</h3><p>Organization, project, or portfolio access to the governed evidence workspace.</p></article>
+          <article><span>Usage</span><h3>Processing &amp; storage</h3><p>Evidence ingestion, spatial processing, comparison, retention, and governed export.</p></article>
+          <article><span>Enterprise</span><h3>Integrations</h3><p>Connect approved project, finance, insurance, maintenance, and asset systems.</p></article>
+        </div>
+      </section>
+
+      <section class="section lifecycle-section">
+        <div class="section-heading">
+          <div>
+            <p class="eyebrow">Platform expansion</p>
+            <h2>One evidence foundation. Multiple consequential reviews.</h2>
+          </div>
+          <p>The capture layer remains sensor-neutral. The governed record becomes more useful as verified events accumulate through the asset lifecycle.</p>
+        </div>
+        <ol class="lifecycle">
+          <li><span>Now</span><strong>Construction Finance</strong><small>Draw review and work-in-place evidence</small></li>
+          <li><span>Next</span><strong>Insurance · Claims</strong><small>Pre-loss context and before-and-after evidence</small></li>
+          <li><span>Then</span><strong>Asset Management · Maintenance · Due Diligence</strong><small>Condition, service history, risk, and transaction review</small></li>
+        </ol>
+        <p class="roadmap-note">Expansion areas describe platform direction. They are not presented as released products.</p>
+      </section>
+
+      <section class="section validation-section" id="validation">
+        <div class="section-heading">
+          <div>
+            <p class="eyebrow">Pilot validation</p>
+            <h2>Evidence before claims.</h2>
+          </div>
+          <p>We will publish metrics only after they are observed in real pilot workflows. The first objective is not a large headline—it is a repeatable, defensible result.</p>
+        </div>
+        <div class="validation-grid">
+          <article><span>01</span><h3>Capture repeatability</h3><p>Can different operators document the same scope consistently?</p></article>
+          <article><span>02</span><h3>Evidence linkage</h3><p>Can each material item retain its source, place, time, and review state?</p></article>
+          <article><span>03</span><h3>Review efficiency</h3><p>Does the platform reduce time spent reconstructing the project story?</p></article>
+          <article><span>04</span><h3>Pilot economics</h3><p>What implementation and recurring model creates measurable customer value?</p></article>
+        </div>
+      </section>
+
+      <section class="section data-room-section" id="data-room">
+        <div>
+          <p class="eyebrow">Private investor materials</p>
+          <h2>Continue the conversation in the Data Room.</h2>
+          <p>Detailed market research, pilot results, financial assumptions, product roadmap, and corporate materials will be shared selectively as they are completed and verified.</p>
+        </div>
+        <div class="data-room-actions">
+          <a class="button button-primary" href="mailto:hello@measureddecision.com?subject=Measured%20Decision%20AI%20Investor%20Access">Request investor access <span>→</span></a>
+          <a class="button button-secondary" href="mailto:hello@measureddecision.com?subject=Measured%20Decision%20AI%20Investor%20Meeting">Schedule a conversation <span>↗</span></a>
+          <small>Access is reviewed individually. No securities are offered through this website.</small>
+        </div>
+      </section>
+    </main>
+
+    <footer>
+      <a class="brand" href="/"><span class="brand-mark" aria-hidden="true"><i></i><i></i><i></i></span><span>Measured Decision <strong>AI</strong></span></a>
+      <p>Evidence infrastructure for the built world.</p>
+      <div><a href="/">Company Site</a><a href="mailto:hello@measureddecision.com">hello@measureddecision.com</a></div>
+      <span>© 2026 Measured Decision AI</span>
+    </footer>
+
+    <script src="investors.js?v=20260727-1" defer></script>
+  </body>
+</html>
