@@ -199,9 +199,74 @@ function safeStorageName(filename) {
   return `${base || "evidence"}${extension.toLowerCase()}`;
 }
 
+function formatFileSize(bytes) {
+  if (!Number.isFinite(bytes)) return "unknown size";
+  const units = ["B", "KB", "MB", "GB"];
+  let value = bytes;
+  let unitIndex = 0;
+  while (value >= 1024 && unitIndex < units.length - 1) {
+    value /= 1024;
+    unitIndex += 1;
+  }
+  return `${value.toFixed(unitIndex ? 1 : 0)} ${units[unitIndex]}`;
+}
+
+function normalizeUploadError(error, file) {
+  let status = null;
+  let responseBody = "";
+  try {
+    status = error?.originalResponse?.getStatus?.() || null;
+    responseBody = error?.originalResponse?.getBody?.() || "";
+  } catch {
+    responseBody = "";
+  }
+
+  const rawMessage = [error?.message, responseBody].filter(Boolean).join(" ");
+  const sizeLabel = `${file.name} (${formatFileSize(file.size)})`;
+  if (
+    status === 413 ||
+    /maximum allowed size|file size limit|payload too large|entity too large/i.test(rawMessage)
+  ) {
+    return new Error(
+      `${sizeLabel} exceeds the current Supabase Storage limit. Increase both the global Storage limit and the property-evidence bucket limit, then retry.`,
+    );
+  }
+  if (status === 401 || status === 403) {
+    return new Error(
+      `Secure upload authorization expired for ${file.name}. Sign out, sign back in, and retry.`,
+    );
+  }
+  if (!navigator.onLine) {
+    return new Error(`Internet connection was lost while uploading ${file.name}.`);
+  }
+
+  const detail = String(responseBody || error?.message || "Cloud storage error")
+    .replace(/<[^>]+>/g, " ")
+    .replace(/\s+/g, " ")
+    .trim()
+    .slice(0, 280);
+  return new Error(`Could not upload ${sizeLabel}: ${detail}`);
+}
+
 async function uploadStorageObject(storagePath, file, onProgress) {
-  const useResumableUpload = file.size > 6 * 1024 * 1024 && window.tus?.Upload;
-  if (!useResumableUpload) {
+  const resumableThreshold = 6 * 1024 * 1024;
+  const needsResumableUpload = file.size > resumableThreshold;
+
+  const { data: sessionData, error: sessionError } =
+    await cloud.client.auth.getSession();
+  const currentSession = sessionData?.session;
+  if (sessionError || !currentSession?.access_token) {
+    throw new Error("Your secure session expired. Sign out, sign back in, and retry.");
+  }
+  cloud.session = currentSession;
+
+  if (needsResumableUpload && !window.tus?.Upload) {
+    throw new Error(
+      "The secure large-file uploader did not load. Reload this page and try again.",
+    );
+  }
+
+  if (!needsResumableUpload) {
     const { error } = await cloud.client.storage
       .from(config.storageBucket)
       .upload(storagePath, file, {
@@ -209,7 +274,7 @@ async function uploadStorageObject(storagePath, file, onProgress) {
         contentType: file.type || "application/octet-stream",
         upsert: false,
       });
-    if (error) throw error;
+    if (error) throw normalizeUploadError(error, file);
     onProgress?.(100);
     return;
   }
@@ -220,7 +285,8 @@ async function uploadStorageObject(storagePath, file, onProgress) {
       endpoint: `https://${projectId}.storage.supabase.co/storage/v1/upload/resumable`,
       retryDelays: [0, 3000, 5000, 10000, 20000],
       headers: {
-        authorization: `Bearer ${cloud.session.access_token}`,
+        authorization: `Bearer ${currentSession.access_token}`,
+        "x-upsert": "false",
       },
       uploadDataDuringCreation: true,
       removeFingerprintOnSuccess: true,
@@ -231,7 +297,9 @@ async function uploadStorageObject(storagePath, file, onProgress) {
         cacheControl: "3600",
       },
       chunkSize: 6 * 1024 * 1024,
-      onError: reject,
+      onError(error) {
+        reject(normalizeUploadError(error, file));
+      },
       onProgress(bytesUploaded, bytesTotal) {
         onProgress?.(Math.round((bytesUploaded / bytesTotal) * 100));
       },
@@ -245,7 +313,7 @@ async function uploadStorageObject(storagePath, file, onProgress) {
         }
         upload.start();
       })
-      .catch(reject);
+      .catch((error) => reject(normalizeUploadError(error, file)));
   });
 }
 
@@ -669,10 +737,10 @@ function render() {
   renderVisionReadiness();
   updatePipeline();
 }
-function notify(message) {
+function notify(message, duration = 2600) {
   elements.toast.textContent = message;
   elements.toast.classList.add("show");
-  setTimeout(() => elements.toast.classList.remove("show"), 2600);
+  setTimeout(() => elements.toast.classList.remove("show"), duration);
 }
 
 function setAuthMessage(message, tone = "neutral") {
@@ -1438,7 +1506,9 @@ function beginUploadFiles(files) {
   pendingFiles = [...files];
   if (!pendingFiles.length) return;
   $("#upload-summary").innerHTML =
-    `<strong>${pendingFiles.length} file${pendingFiles.length === 1 ? "" : "s"} selected</strong><br>${pendingFiles.map((file) => escapeText(file.name)).join("<br>")}`;
+    `<strong>${pendingFiles.length} file${pendingFiles.length === 1 ? "" : "s"} selected</strong><br>${pendingFiles
+      .map((file) => `${escapeText(file.name)} · ${formatFileSize(file.size)}`)
+      .join("<br>")}`;
   renderUploadRooms();
   elements.uploadDialog.showModal();
 }
@@ -1515,9 +1585,12 @@ $("#save-upload").addEventListener("click", async (event) => {
     }
   } catch (uploadError) {
     console.error(uploadError);
-    notify(`Upload failed: ${uploadError.message || "Cloud storage error"}`);
+    const message = uploadError.message || "Cloud storage error";
+    $("#upload-summary").innerHTML =
+      `<strong>Upload failed</strong><br>${escapeText(message)}`;
+    notify(`Upload failed: ${message}`, 12000);
     button.disabled = false;
-    button.textContent = "Save evidence";
+    button.textContent = "Retry upload";
     return;
   }
   room.status = "needs";
