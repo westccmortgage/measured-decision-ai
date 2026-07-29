@@ -12,7 +12,7 @@
       href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap"
       rel="stylesheet"
     >
-    <link rel="stylesheet" href="studio.css?v=20260727-5">
+    <link rel="stylesheet" href="studio.css?v=20260729-ai-worker">
   </head>
   <body>
     <div class="prototype-gate" id="prototype-gate">
@@ -265,6 +265,13 @@
                 >Needs verification</span
               >
             </div>
+            <div class="ai-result-summary" id="ai-result-summary" hidden>
+              <div>
+                <span>AI suggestion</span>
+                <strong id="ai-capture-quality">Awaiting analysis</strong>
+              </div>
+              <p id="ai-summary"></p>
+            </div>
             <div class="observation-block">
               <div class="observation-label">
                 <span>Visible evidence</span><small>Descriptive only</small>
@@ -277,6 +284,13 @@
                 ><small>Do not infer</small>
               </div>
               <ul id="unknown-observations"></ul>
+            </div>
+            <div class="observation-block" id="follow-up-block" hidden>
+              <div class="observation-label">
+                <span>Recommended follow-up captures</span
+                ><small>Close evidence gaps</small>
+              </div>
+              <ul id="follow-up-captures"></ul>
             </div>
             <label class="review-note"
               >Reviewer note<textarea
@@ -853,6 +867,6 @@
     <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2.106.2"></script>
     <script src="https://cdn.jsdelivr.net/npm/tus-js-client@4.3.1/dist/tus.min.js"></script>
     <script src="config.js"></script>
-    <script src="studio.js?v=20260728-upload-fix"></script>
+    <script src="studio.js?v=20260729-ai-worker"></script>
   </body>
 </html>

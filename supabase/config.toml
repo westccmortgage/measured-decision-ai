@@ -1,0 +1,4 @@
+project_id = "hbqlhplgqwuesrovbiye"
+
+[functions.spatial-analyze]
+verify_jwt = true

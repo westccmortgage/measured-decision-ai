@@ -69,6 +69,7 @@ let deletingEvidenceId = null;
 let activeEvidenceId = null;
 let objectUrls = [];
 let fileDatabase;
+const analysisRoomsInFlight = new Set();
 
 const $ = (selector) => document.querySelector(selector);
 const elements = {
@@ -93,6 +94,11 @@ const elements = {
   sourceStatus: $("#source-status"),
   visible: $("#visible-observations"),
   unknown: $("#unknown-observations"),
+  analysisSummary: $("#ai-result-summary"),
+  analysisSummaryText: $("#ai-summary"),
+  analysisQuality: $("#ai-capture-quality"),
+  followUpBlock: $("#follow-up-block"),
+  followUp: $("#follow-up-captures"),
   note: $("#review-note"),
   badge: $("#review-badge"),
   toast: $("#toast"),
@@ -122,6 +128,112 @@ function isImage(item) {
     item?.mimeType?.startsWith("image/") ||
       /\.(jpe?g|png|gif|webp|heic|heif)$/i.test(item?.name || ""),
   );
+}
+
+function waitForMediaEvent(target, eventName, timeoutMs = 20000) {
+  return new Promise((resolve, reject) => {
+    const timeout = setTimeout(() => {
+      cleanup();
+      reject(new Error(`Timed out while preparing video ${eventName}`));
+    }, timeoutMs);
+    const cleanup = () => {
+      clearTimeout(timeout);
+      target.removeEventListener(eventName, onSuccess);
+      target.removeEventListener("error", onError);
+    };
+    const onSuccess = () => {
+      cleanup();
+      resolve();
+    };
+    const onError = () => {
+      cleanup();
+      reject(new Error("The video could not be decoded for AI keyframes"));
+    };
+    target.addEventListener(eventName, onSuccess, { once: true });
+    target.addEventListener("error", onError, { once: true });
+  });
+}
+
+async function extractVideoFrames(item, frameLimit = 4) {
+  if (!item?.src || !isVideo(item) || frameLimit < 1) return [];
+  const video = document.createElement("video");
+  video.crossOrigin = "anonymous";
+  video.muted = true;
+  video.preload = "auto";
+  video.playsInline = true;
+  video.src = item.src;
+  try {
+    if (video.readyState < 1) await waitForMediaEvent(video, "loadedmetadata");
+    const duration = Number(video.duration);
+    if (!Number.isFinite(duration) || duration <= 0) {
+      throw new Error("The video duration is unavailable");
+    }
+    const positions = [0.1, 0.35, 0.6, 0.85].slice(0, frameLimit);
+    const canvas = document.createElement("canvas");
+    const scale = Math.min(1, 960 / Math.max(1, video.videoWidth));
+    canvas.width = Math.max(1, Math.round(video.videoWidth * scale));
+    canvas.height = Math.max(1, Math.round(video.videoHeight * scale));
+    const context = canvas.getContext("2d", { alpha: false });
+    if (!context) throw new Error("Video frame capture is unavailable");
+
+    const frames = [];
+    for (const position of positions) {
+      const timestamp = Math.min(
+        Math.max(0.05, duration * position),
+        Math.max(0.05, duration - 0.05),
+      );
+      if (Math.abs(video.currentTime - timestamp) > 0.02) {
+        const frameReady = waitForMediaEvent(video, "seeked");
+        video.currentTime = timestamp;
+        await frameReady;
+      }
+      context.drawImage(video, 0, 0, canvas.width, canvas.height);
+      frames.push({
+        evidence_id: item.id,
+        timestamp_seconds: Number(timestamp.toFixed(2)),
+        data_url: canvas.toDataURL("image/jpeg", 0.72),
+      });
+    }
+    return frames;
+  } finally {
+    video.removeAttribute("src");
+    video.load();
+  }
+}
+
+async function prepareVideoFrames(room) {
+  const frames = [];
+  const warnings = [];
+  for (const item of room.evidence.filter(isVideo)) {
+    if (frames.length >= 8) break;
+    try {
+      frames.push(...(await extractVideoFrames(item, Math.min(4, 8 - frames.length))));
+    } catch (error) {
+      console.warn("Video keyframe extraction failed", item.name, error);
+      warnings.push(item.name || "Video");
+    }
+  }
+  return { frames, warnings };
+}
+
+function applyAnalysisResult(room, analysis, suggestionId) {
+  if (!room || !analysis) return;
+  room.analysis = analysis;
+  room.suggestionId = suggestionId || room.suggestionId || null;
+  room.visible = Array.isArray(analysis.visible_observations)
+    ? analysis.visible_observations.map((item) => item.text).filter(Boolean)
+    : [];
+  room.unknown = Array.isArray(analysis.not_established)
+    ? analysis.not_established
+        .map((item) =>
+          [item.question, item.reason].filter(Boolean).join(" — "),
+        )
+        .filter(Boolean)
+    : [];
+  room.status = "needs";
+  room.evidence.forEach((item) => {
+    item.status = "Private cloud original · AI suggestion available";
+  });
 }
 
 function evidenceThumbnail(item, className = "room-thumb") {
@@ -458,6 +570,9 @@ function renderRoom() {
     elements.strip.innerHTML = "";
     elements.visible.innerHTML = "<li>Add the first room or area to begin</li>";
     elements.unknown.innerHTML = "<li>No room evidence has been captured</li>";
+    elements.analysisSummary.hidden = true;
+    elements.followUpBlock.hidden = true;
+    elements.followUp.innerHTML = "";
     elements.note.value = "";
     elements.badge.textContent = "Setup required";
     elements.badge.className = "review-badge needs";
@@ -496,6 +611,22 @@ function renderRoom() {
     room.unknown.length ? room.unknown : ["Evidence has not been reviewed"]
   )
     .map((item) => `<li>${escapeText(item)}</li>`)
+    .join("");
+  const analysis = room.analysis;
+  elements.analysisSummary.hidden = !analysis;
+  elements.analysisSummaryText.textContent = analysis?.summary || "";
+  elements.analysisQuality.textContent = analysis?.capture_quality
+    ? `${analysis.capture_quality} capture · human verification required`
+    : "Human verification required";
+  const followUps = Array.isArray(analysis?.follow_up_captures)
+    ? analysis.follow_up_captures
+    : [];
+  elements.followUpBlock.hidden = !followUps.length;
+  elements.followUp.innerHTML = followUps
+    .map(
+      (item) =>
+        `<li><strong>${escapeText(item.request || "Additional capture")}</strong>${item.reason ? ` — ${escapeText(item.reason)}` : ""}</li>`,
+    )
     .join("");
   elements.note.value = room.note || "";
   const confirmed = room.status === "confirmed";
@@ -613,20 +744,22 @@ function renderJobs() {
   if (!list) return;
   $("#queue-count").textContent =
     `${jobs.length} job${jobs.length === 1 ? "" : "s"}`;
-  $("#queue-nav-count").textContent = jobs.length;
+  $("#queue-nav-count").textContent = jobs.filter((job) =>
+    ["Queued for AI", "Analyzing evidence"].includes(job.status),
+  ).length;
   list.innerHTML = jobs.length
     ? jobs
         .map(
           (job) =>
-            `<article class="job-card"><div class="job-state"><i></i><span>${escapeText(job.status)}</span></div><div><strong>${escapeText(job.roomName)}</strong><p>${job.evidenceCount} evidence item${job.evidenceCount === 1 ? "" : "s"} · ${escapeText(job.profile)}</p></div><time>${escapeText(job.createdAt)}</time><button class="mini-button" data-cancel-job="${job.id}" type="button">Remove</button></article>`,
+            `<article class="job-card"><div class="job-state"><i></i><span>${escapeText(job.status)}</span></div><div><strong>${escapeText(job.roomName)}</strong><p>${job.evidenceCount} evidence item${job.evidenceCount === 1 ? "" : "s"} · ${escapeText(job.profile)}</p></div><time>${escapeText(job.createdAt)}</time><button class="mini-button" data-job-room="${job.roomId}" type="button">Open room</button></article>`,
         )
         .join("")
-    : `<div class="empty-state"><strong>No processing jobs</strong><p>Open a room and request AI interpretation. The job will remain explicitly blocked until the secure worker is connected.</p></div>`;
-  list.querySelectorAll("[data-cancel-job]").forEach((button) =>
+    : `<div class="empty-state"><strong>No processing jobs</strong><p>Open a room and request AI interpretation.</p></div>`;
+  list.querySelectorAll("[data-job-room]").forEach((button) =>
     button.addEventListener("click", () => {
-      jobs = jobs.filter((job) => job.id !== button.dataset.cancelJob);
-      saveJobs();
-      notify("Processing request removed");
+      activeRoomId = button.dataset.jobRoom;
+      activateView("property");
+      render();
     }),
   );
 }
@@ -634,10 +767,19 @@ function renderJobs() {
 function renderReviewQueue() {
   const queue = $("#review-queue");
   queue.innerHTML = rooms
-    .map(
-      (room) =>
-        `<article class="review-queue-card"><div class="review-room-thumb">${evidenceThumbnail(room.evidence.find((item) => item.src), "review-thumb-media")}</div><div><p>${escapeText(room.building)} · ${escapeText(room.level)}</p><h2>${escapeText(room.name)}</h2><small>${room.evidence.length} source item${room.evidence.length === 1 ? "" : "s"} · ${jobs.some((job) => job.roomId === room.id) ? "AI request awaiting worker" : "No AI suggestion"}</small></div><span class="review-badge ${room.status === "confirmed" ? "confirmed" : "needs"}">${room.status === "confirmed" ? "Human confirmed" : "Needs verification"}</span><button class="secondary-button" data-review-room="${room.id}" type="button">Open record</button></article>`,
-    )
+    .map((room) => {
+      const activeJob = jobs.find(
+        (job) =>
+          job.roomId === room.id &&
+          ["Queued for AI", "Analyzing evidence"].includes(job.status),
+      );
+      const aiStatus = room.analysis
+        ? "AI suggestion ready"
+        : activeJob
+          ? activeJob.status
+          : "No AI suggestion";
+      return `<article class="review-queue-card"><div class="review-room-thumb">${evidenceThumbnail(room.evidence.find((item) => item.src), "review-thumb-media")}</div><div><p>${escapeText(room.building)} · ${escapeText(room.level)}</p><h2>${escapeText(room.name)}</h2><small>${room.evidence.length} source item${room.evidence.length === 1 ? "" : "s"} · ${escapeText(aiStatus)}</small></div><span class="review-badge ${room.status === "confirmed" ? "confirmed" : "needs"}">${room.status === "confirmed" ? "Human confirmed" : "Needs verification"}</span><button class="secondary-button" data-review-room="${room.id}" type="button">Open record</button></article>`;
+    })
     .join("");
   queue.querySelectorAll("[data-review-room]").forEach((button) =>
     button.addEventListener("click", () => {
@@ -944,7 +1086,9 @@ async function hydrateCloudRecord() {
         profile: job.profile,
         status:
           job.state === "queued"
-            ? "Awaiting secure AI worker"
+            ? "Queued for AI"
+            : job.state === "processing"
+              ? "Analyzing evidence"
             : job.state.charAt(0).toUpperCase() + job.state.slice(1),
         createdAt: new Date(job.created_at).toLocaleString("en-US", {
           month: "short",
@@ -954,6 +1098,32 @@ async function hydrateCloudRecord() {
         }),
       };
     });
+  }
+
+  const { data: suggestionRows, error: suggestionsError } = await cloud.client
+    .from("ai_suggestions")
+    .select("id, space_id, body, evidence_ids, created_at")
+    .eq("property_id", property.id)
+    .eq("suggestion_type", "room_interpretation")
+    .order("created_at", { ascending: false });
+  if (!suggestionsError) {
+    for (const suggestion of suggestionRows || []) {
+      const room = rooms.find((item) => item.id === suggestion.space_id);
+      const currentEvidenceIds = new Set(
+        room?.evidence.map((item) => item.id) || [],
+      );
+      const matchesCurrentEvidence =
+        suggestion.evidence_ids?.length === currentEvidenceIds.size &&
+        suggestion.evidence_ids.every((id) => currentEvidenceIds.has(id));
+      if (room && !room.suggestionId && matchesCurrentEvidence) {
+        applyAnalysisResult(room, suggestion.body, suggestion.id);
+        if (room.status === "needs" && spaceRows?.length) {
+          const sourceSpace = spaceRows.find((item) => item.id === room.id);
+          room.status =
+            sourceSpace?.review_state === "confirmed" ? "confirmed" : "needs";
+        }
+      }
+    }
   }
 }
 
@@ -1369,6 +1539,8 @@ async function removeEvidenceRecord(location) {
   }
   location.room.evidence.splice(location.index, 1);
   location.room.status = "needs";
+  location.room.analysis = null;
+  location.room.suggestionId = null;
   location.room.visible = [];
   location.room.unknown = location.room.evidence.length
     ? ["Uploaded material has not been analyzed", "No factual observations have been confirmed"]
@@ -1482,7 +1654,14 @@ $("#save-evidence-edit").addEventListener("click", async (event) => {
     evidence.context = context;
     evidence.sourceMetadata = sourceMetadata;
     targetRoom.evidence.push(evidence);
+    location.room.analysis = null;
+    location.room.suggestionId = null;
+    location.room.visible = [];
+    location.room.status = "needs";
     targetRoom.status = "needs";
+    targetRoom.analysis = null;
+    targetRoom.suggestionId = null;
+    targetRoom.visible = [];
     targetRoom.unknown = [
       "Uploaded material has not been analyzed",
       "No factual observations have been confirmed",
@@ -1594,6 +1773,8 @@ $("#save-upload").addEventListener("click", async (event) => {
     return;
   }
   room.status = "needs";
+  room.analysis = null;
+  room.suggestionId = null;
   room.visible = [];
   room.unknown = [
     "Uploaded material has not been analyzed",
@@ -1635,8 +1816,35 @@ async function persistRoomReview(room, reviewState) {
   return true;
 }
 
+async function persistSuggestionReview(room, reviewState) {
+  if (
+    !cloud.schemaReady ||
+    !cloud.propertyId ||
+    !room.suggestionId
+  ) {
+    return true;
+  }
+  const { error } = await cloud.client.from("suggestion_reviews").upsert(
+    {
+      organization_id: cloud.organizationId,
+      suggestion_id: room.suggestionId,
+      state: reviewState,
+      reviewer_note: elements.note.value.trim() || null,
+      reviewed_by: cloud.session.user.id,
+      reviewed_at: new Date().toISOString(),
+    },
+    { onConflict: "suggestion_id" },
+  );
+  if (error) {
+    notify(`AI review was not saved: ${error.message}`);
+    return false;
+  }
+  return true;
+}
+
 $("#confirm-record").addEventListener("click", async () => {
   const room = currentRoom();
+  if (!(await persistSuggestionReview(room, "confirmed"))) return;
   if (!(await persistRoomReview(room, "confirmed"))) return;
   room.status = "confirmed";
   room.note = elements.note.value;
@@ -1646,6 +1854,7 @@ $("#confirm-record").addEventListener("click", async () => {
 });
 $("#flag-record").addEventListener("click", async () => {
   const room = currentRoom();
+  if (!(await persistSuggestionReview(room, "needs_review"))) return;
   if (!(await persistRoomReview(room, "needs_review"))) return;
   room.status = "needs";
   saveRooms("Verification flag saved");
@@ -1654,24 +1863,46 @@ $("#flag-record").addEventListener("click", async () => {
 });
 $("#request-analysis").addEventListener("click", async () => {
   const room = currentRoom();
+  const button = $("#request-analysis");
   if (!room.evidence.length) {
     notify("Add evidence before requesting interpretation");
     return;
   }
-  const existing = jobs.find((job) => job.roomId === room.id);
-  if (existing) {
-    activateView("processing");
-    notify("This room already has a processing request");
+  if (!cloud.schemaReady || !cloud.propertyId) {
+    notify("Secure Supabase connection is required for AI analysis");
     return;
   }
-  let jobId = `job-${Date.now()}`;
-  if (cloud.schemaReady && cloud.propertyId) {
+  if (analysisRoomsInFlight.has(room.id)) {
+    activateView("processing");
+    notify("This room is already being analyzed");
+    return;
+  }
+  const processingJob = jobs.find(
+    (job) =>
+      job.roomId === room.id &&
+      ["Analyzing evidence", "Preparing video frames"].includes(job.status),
+  );
+  if (processingJob) {
+    activateView("processing");
+    notify("This room is already being analyzed");
+    return;
+  }
+
+  analysisRoomsInFlight.add(room.id);
+  button.disabled = true;
+  const queuedJob = jobs.find(
+    (job) => job.roomId === room.id && job.status === "Queued for AI",
+  );
+  let jobId = queuedJob?.id || "";
+  let localJob = queuedJob;
+  try {
+    if (!jobId) {
     const evidenceIds = room.evidence
       .filter((item) => item.storagePath)
       .map((item) => item.id);
     if (!evidenceIds.length) {
       notify("Re-upload this browser-only evidence to secure cloud storage first");
-      return;
+      throw new Error("Cloud evidence is required");
     }
     const { data, error } = await cloud.client
       .from("analysis_jobs")
@@ -1688,34 +1919,75 @@ $("#request-analysis").addEventListener("click", async () => {
       .select("id")
       .single();
     if (error) {
-      notify(`Processing request failed: ${error.message}`);
-      return;
+      throw new Error(`Processing request failed: ${error.message}`);
     }
     jobId = data.id;
+      localJob = {
+        id: jobId,
+        roomId: room.id,
+        roomName: room.name,
+        evidenceCount: room.evidence.length,
+        profile: "Property evidence · conservative",
+        status: "Queued for AI",
+        createdAt: new Date().toLocaleString("en-US", {
+          month: "short",
+          day: "numeric",
+          hour: "numeric",
+          minute: "2-digit",
+        }),
+      };
+      jobs.unshift(localJob);
+    }
+
+    localJob.status = room.evidence.some(isVideo)
+      ? "Preparing video frames"
+      : "Analyzing evidence";
+    saveJobs();
+    activateView("processing");
+    notify(
+      room.evidence.some(isVideo)
+        ? "Preparing representative video frames for analysis"
+        : "Secure AI analysis started",
+    );
+
+    const { frames, warnings } = await prepareVideoFrames(room);
+    localJob.status = "Analyzing evidence";
+    saveJobs();
+    const { data, error } = await cloud.client.functions.invoke(
+      config.aiFunctionName,
+      {
+        body: {
+          job_id: jobId,
+          video_frames: frames,
+        },
+      },
+    );
+    if (error) throw new Error(error.message || "Secure AI worker failed");
+    if (!data?.analysis) throw new Error(data?.error || "AI returned no result");
+
+    localJob.status = "Completed";
+    applyAnalysisResult(room, data.analysis, data.suggestion_id);
+    saveRooms("AI suggestion saved · Human verification required");
+    saveJobs();
+    activateView("property");
+    render();
+    notify(
+      warnings.length
+        ? `AI suggestion ready; ${warnings.length} video could not be sampled`
+        : `AI suggestion ready from ${data.analyzed_images || 0} images and ${data.analyzed_video_frames || 0} video frames`,
+      5000,
+    );
+  } catch (error) {
+    if (localJob) {
+      localJob.status = "Failed";
+      saveJobs();
+    }
+    console.error(error);
+    notify(error.message || "AI analysis failed", 5000);
+  } finally {
+    analysisRoomsInFlight.delete(room.id);
+    button.disabled = false;
   }
-  jobs.unshift({
-    id: jobId,
-    roomId: room.id,
-    roomName: room.name,
-    evidenceCount: room.evidence.length,
-    profile: "Property evidence · conservative",
-    status: cloud.schemaReady
-      ? "Awaiting secure AI worker"
-      : "Awaiting secure AI connector",
-    createdAt: new Date().toLocaleString("en-US", {
-      month: "short",
-      day: "numeric",
-      hour: "numeric",
-      minute: "2-digit",
-    }),
-  });
-  saveJobs();
-  activateView("processing");
-  notify(
-    cloud.schemaReady
-      ? "Processing request recorded securely; no AI result has been fabricated"
-      : "Request recorded locally; no data was sent",
-  );
 });
 $("#connector-status").addEventListener("click", () =>
   $("#connector-dialog").showModal(),

@@ -867,6 +867,36 @@ button {
   background: #183d36;
   color: var(--green);
 }
+.ai-result-summary {
+  border-bottom: 1px solid var(--line);
+  background: linear-gradient(135deg, rgba(35, 195, 207, 0.1), transparent);
+  padding: 16px 18px;
+}
+.ai-result-summary > div {
+  align-items: center;
+  display: flex;
+  gap: 10px;
+  justify-content: space-between;
+}
+.ai-result-summary span {
+  color: var(--cyan);
+  font-size: 9px;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+.ai-result-summary strong {
+  color: var(--muted);
+  font-size: 8px;
+  font-weight: 600;
+  text-transform: capitalize;
+}
+.ai-result-summary p {
+  color: #c7d6e2;
+  font-size: 10px;
+  line-height: 1.6;
+  margin: 10px 0 0;
+}
 .observation-block {
   padding: 18px;
   border-bottom: 1px solid var(--line);
@@ -1087,6 +1117,9 @@ dialog textarea { min-height:78px; resize:vertical; }
     grid-template-columns: 1fr 1fr;
   }
   .review-panel > .panel-heading {
+    grid-column: 1/-1;
+  }
+  .ai-result-summary {
     grid-column: 1/-1;
   }
   .review-note,
