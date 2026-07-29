@@ -1,6 +1,6 @@
 import { createClient } from "npm:@supabase/supabase-js@2";
 
-const OPENAI_MODEL = Deno.env.get("OPENAI_MODEL") || "gpt-5.6";
+const OPENAI_MODEL = Deno.env.get("OPENAI_MODEL") || "gpt-5.6-sol";
 const STORAGE_BUCKET = "property-evidence";
 const MAX_IMAGE_INPUTS = 20;
 const MAX_VIDEO_FRAMES = 8;
@@ -72,6 +72,14 @@ function jsonResponse(
 
 function fail(message: string, status = 400): never {
   throw Object.assign(new Error(message), { status });
+}
+
+function diagnosticCode(value: unknown) {
+  return String(value || "")
+    .toLowerCase()
+    .replace(/[^a-z0-9_]+/g, "_")
+    .replace(/^_+|_+$/g, "")
+    .slice(0, 64);
 }
 
 function normalizeFrames(
@@ -440,15 +448,17 @@ Deno.serve(async (request) => {
     >;
     if (!openAIResponse.ok) {
       const apiError = openAIPayload.error as
-        | Record<string, unknown>
-        | undefined;
+        Record<string, unknown> | undefined;
+      const providerCode = diagnosticCode(apiError?.code || apiError?.type);
       const message =
         typeof apiError?.message === "string"
           ? apiError.message
           : `OpenAI request failed (${openAIResponse.status}).`;
       throw Object.assign(new Error(message), {
         status: 502,
-        errorCode: `openai_${openAIResponse.status}`,
+        errorCode: ["openai", String(openAIResponse.status), providerCode]
+          .filter(Boolean)
+          .join("_"),
       });
     }
     if (openAIPayload.status === "incomplete") {

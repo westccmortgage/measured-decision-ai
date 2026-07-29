@@ -530,6 +530,49 @@ function saveJobs() {
   updatePipeline();
 }
 
+function jobErrorLabel(errorCode) {
+  const code = String(errorCode || "").toLowerCase();
+  if (!code) return "Open the room and run the analysis again.";
+  if (code.includes("insufficient_quota")) {
+    return "OpenAI API billing or credits are not active.";
+  }
+  if (code.includes("invalid_api_key") || code.startsWith("openai_401")) {
+    return "The OpenAI API key is invalid or no longer active.";
+  }
+  if (code.includes("rate_limit") || code.startsWith("openai_429")) {
+    return "OpenAI temporarily rejected the request because of quota or rate limits.";
+  }
+  if (code.includes("model_not_found") || code.includes("model_not_available")) {
+    return "The configured OpenAI model is not available to this API project.";
+  }
+  if (code === "suggestion_write_failed") {
+    return "The AI response was produced but could not be saved.";
+  }
+  if (code === "openai_incomplete") {
+    return "OpenAI stopped before completing the structured result.";
+  }
+  if (code.startsWith("openai_400")) {
+    return "OpenAI rejected the analysis request format.";
+  }
+  return `Worker error: ${code}`;
+}
+
+async function functionInvocationError(error) {
+  const fallback = error?.message || "Secure AI worker failed";
+  const response = error?.context;
+  if (!response || typeof response.json !== "function") {
+    return new Error(fallback);
+  }
+  try {
+    const payload = await response.json();
+    const detail = payload?.error || fallback;
+    const code = payload?.code ? ` (${payload.code})` : "";
+    return new Error(`${detail}${code}`);
+  } catch {
+    return new Error(fallback);
+  }
+}
+
 function currentRoom() {
   return rooms.find((room) => room.id === activeRoomId) || rooms[0];
 }
@@ -751,7 +794,7 @@ function renderJobs() {
     ? jobs
         .map(
           (job) =>
-            `<article class="job-card"><div class="job-state"><i></i><span>${escapeText(job.status)}</span></div><div><strong>${escapeText(job.roomName)}</strong><p>${job.evidenceCount} evidence item${job.evidenceCount === 1 ? "" : "s"} · ${escapeText(job.profile)}</p></div><time>${escapeText(job.createdAt)}</time><button class="mini-button" data-job-room="${job.roomId}" type="button">Open room</button></article>`,
+            `<article class="job-card"><div class="job-state"><i></i><span>${escapeText(job.status)}</span></div><div><strong>${escapeText(job.roomName)}</strong><p>${job.evidenceCount} evidence item${job.evidenceCount === 1 ? "" : "s"} · ${escapeText(job.profile)}</p>${job.status === "Failed" ? `<small class="job-error">${escapeText(jobErrorLabel(job.errorCode))}</small>` : ""}</div><time>${escapeText(job.createdAt)}</time><button class="mini-button" data-job-room="${job.roomId}" type="button">Open room</button></article>`,
         )
         .join("")
     : `<div class="empty-state"><strong>No processing jobs</strong><p>Open a room and request AI interpretation.</p></div>`;
@@ -1072,7 +1115,7 @@ async function hydrateCloudRecord() {
 
   const { data: jobRows, error: jobsError } = await cloud.client
     .from("analysis_jobs")
-    .select("id, space_id, state, profile, created_at, evidence_ids")
+    .select("id, space_id, state, profile, created_at, evidence_ids, error_code")
     .eq("property_id", property.id)
     .order("created_at", { ascending: false });
   if (!jobsError) {
@@ -1084,6 +1127,7 @@ async function hydrateCloudRecord() {
         roomName: room?.name || "Property",
         evidenceCount: job.evidence_ids?.length || 0,
         profile: job.profile,
+        errorCode: job.error_code || "",
         status:
           job.state === "queued"
             ? "Queued for AI"
@@ -1962,7 +2006,7 @@ $("#request-analysis").addEventListener("click", async () => {
         },
       },
     );
-    if (error) throw new Error(error.message || "Secure AI worker failed");
+    if (error) throw await functionInvocationError(error);
     if (!data?.analysis) throw new Error(data?.error || "AI returned no result");
 
     localJob.status = "Completed";

@@ -1586,6 +1586,13 @@ dialog textarea { min-height:78px; resize:vertical; }
   color: var(--muted);
   font-size: 9px;
 }
+.job-card .job-error {
+  display: block;
+  margin-top: 7px;
+  color: #f2b27f;
+  font-size: 9px;
+  line-height: 1.45;
+}
 .pipeline-card {
   padding: 28px;
 }
