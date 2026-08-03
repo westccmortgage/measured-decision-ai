@@ -12,7 +12,7 @@
       href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap"
       rel="stylesheet"
     >
-    <link rel="stylesheet" href="studio.css?v=20260729-ai-diagnostics">
+    <link rel="stylesheet" href="studio.css?v=20260803-password-recovery">
   </head>
   <body>
     <div class="prototype-gate" id="prototype-gate">
@@ -40,6 +40,7 @@
           <label>Password<input id="auth-password" type="password" autocomplete="current-password" minlength="8" placeholder="Use password or request a magic link"></label>
           <button class="primary-button" id="enter-studio" type="submit">Sign in securely <span>→</span></button>
           <button class="secondary-button" id="send-magic-link" type="button">Email me a magic link</button>
+          <button class="auth-link-button" id="forgot-password" type="button">Forgot password?</button>
           <p class="auth-message" id="auth-message" role="status" aria-live="polite">Supabase connection ready. Authorized accounts only.</p>
         </form>
         <small>Private workspace · Supabase Auth · Files governed by Row Level Security.</small>
@@ -57,6 +58,7 @@
           </div>
           <div class="property-gate-actions">
             <button class="primary-button" id="create-property" type="button">+ Create property</button>
+            <button class="secondary-button" id="property-account-security" type="button">Set password</button>
             <button class="secondary-button" id="property-gate-sign-out" type="button">Sign out</button>
           </div>
         </header>
@@ -101,6 +103,9 @@
           </button>
           <button class="secondary-button" id="switch-property" type="button">
             Properties
+          </button>
+          <button class="secondary-button" id="account-security" type="button">
+            Account
           </button>
           <button class="icon-button" id="sign-out" type="button">Sign out</button>
           <span class="avatar" title="Anatoliy Kanevsky">AK</span>
@@ -819,6 +824,37 @@
       </form>
     </dialog>
 
+    <dialog id="account-security-dialog">
+      <form id="account-security-form">
+        <div class="dialog-heading">
+          <div>
+            <p class="eyebrow" id="account-security-eyebrow">Account security</p>
+            <h2 id="account-security-title">Set your Studio password</h2>
+          </div>
+          <button id="close-account-security" type="button" aria-label="Close">×</button>
+        </div>
+        <p class="account-security-copy" id="account-security-copy">
+          Add email and password access to this account without removing Google sign-in.
+        </p>
+        <label>
+          Account email
+          <input id="account-security-email" type="email" readonly>
+        </label>
+        <label>
+          New password
+          <input id="new-account-password" type="password" autocomplete="new-password" minlength="8" required>
+        </label>
+        <label>
+          Confirm new password
+          <input id="confirm-account-password" type="password" autocomplete="new-password" minlength="8" required>
+        </label>
+        <p class="account-security-message" id="account-security-message" role="status" aria-live="polite"></p>
+        <div class="dialog-actions">
+          <button class="primary-button" id="save-account-password" type="submit">Save password</button>
+        </div>
+      </form>
+    </dialog>
+
     <dialog id="connector-dialog">
       <form method="dialog">
         <div class="dialog-heading">
@@ -867,6 +903,6 @@
     <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2.106.2"></script>
     <script src="https://cdn.jsdelivr.net/npm/tus-js-client@4.3.1/dist/tus.min.js"></script>
     <script src="config.js"></script>
-    <script src="studio.js?v=20260729-ai-diagnostics"></script>
+    <script src="studio.js?v=20260803-password-recovery"></script>
   </body>
 </html>

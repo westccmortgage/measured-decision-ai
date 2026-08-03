@@ -8,6 +8,7 @@ let propertyRecord = {
 };
 
 const config = window.MDAI_CONFIG || {};
+const PASSWORD_RECOVERY_REDIRECT = `${window.location.origin}/studio/?recovery=1`;
 const cloud = {
   client:
     window.supabase?.createClient &&
@@ -105,6 +106,9 @@ const elements = {
   autosave: $("#autosave-status"),
   authForm: $("#auth-form"),
   authMessage: $("#auth-message"),
+  accountSecurityDialog: $("#account-security-dialog"),
+  accountSecurityForm: $("#account-security-form"),
+  accountSecurityMessage: $("#account-security-message"),
   roomDialog: $("#room-dialog"),
   uploadDialog: $("#upload-dialog"),
   editEvidenceDialog: $("#edit-evidence-dialog"),
@@ -115,6 +119,7 @@ const elements = {
   editEvidenceRoom: $("#edit-evidence-room"),
   lightbox: $("#lightbox"),
 };
+let accountSecurityMode = "set";
 
 function isVideo(item) {
   return Boolean(
@@ -933,6 +938,53 @@ function setAuthMessage(message, tone = "neutral") {
   elements.authMessage.dataset.tone = tone;
 }
 
+function isPasswordRecoveryUrl() {
+  return new URLSearchParams(window.location.search).get("recovery") === "1";
+}
+
+function passwordRecoveryUrlError() {
+  const query = new URLSearchParams(window.location.search);
+  const hash = new URLSearchParams(window.location.hash.replace(/^#/, ""));
+  return query.get("error_description") || hash.get("error_description") || "";
+}
+
+function clearPasswordRecoveryUrl() {
+  window.history.replaceState({}, document.title, `${window.location.origin}/studio/`);
+}
+
+function setAccountSecurityMessage(message, tone = "neutral") {
+  elements.accountSecurityMessage.textContent = message;
+  elements.accountSecurityMessage.dataset.tone = tone;
+}
+
+function openAccountSecurity(mode = "set", session = cloud.session) {
+  if (!session?.user) return;
+  accountSecurityMode = mode;
+  cloud.session = session;
+  const isRecovery = mode === "recovery";
+  $("#account-security-eyebrow").textContent = isRecovery
+    ? "Password recovery"
+    : "Account security";
+  $("#account-security-title").textContent = isRecovery
+    ? "Choose a new password"
+    : "Set your Studio password";
+  $("#account-security-copy").textContent = isRecovery
+    ? "This secure recovery session is connected to your existing Studio account."
+    : "Add email and password access to this account without removing Google sign-in.";
+  $("#save-account-password").textContent = isRecovery
+    ? "Update password"
+    : "Save password";
+  $("#close-account-security").hidden = isRecovery;
+  $("#account-security-email").value = session.user.email || "";
+  $("#new-account-password").value = "";
+  $("#confirm-account-password").value = "";
+  setAccountSecurityMessage("");
+  if (!elements.accountSecurityDialog.open) {
+    elements.accountSecurityDialog.showModal();
+  }
+  $("#new-account-password").focus();
+}
+
 function sessionInitials(session) {
   const email = session?.user?.email || "Authorized user";
   return (
@@ -1257,7 +1309,21 @@ async function initializeAuth() {
     setAuthMessage(error.message, "error");
     return;
   }
-  if (data.session) await enterWorkspace(data.session);
+  const recoveryRequested = isPasswordRecoveryUrl();
+  const recoveryError = passwordRecoveryUrlError();
+  if (data.session && recoveryRequested) {
+    elements.gate.hidden = false;
+    openAccountSecurity("recovery", data.session);
+  } else if (data.session) {
+    await enterWorkspace(data.session);
+  } else if (recoveryRequested) {
+    setAuthMessage(
+      recoveryError
+        ? `This recovery link is invalid or expired. ${recoveryError}`
+        : "This recovery link is invalid or expired. Request a new one.",
+      "error",
+    );
+  }
   cloud.client.auth.onAuthStateChange((event, session) => {
     if (event === "SIGNED_OUT") {
       cloud.session = null;
@@ -1265,8 +1331,14 @@ async function initializeAuth() {
       elements.propertyGate.hidden = true;
       elements.gate.hidden = false;
       setAuthMessage("Signed out. Authorized accounts only.");
+    } else if (event === "PASSWORD_RECOVERY" && session) {
+      elements.gate.hidden = false;
+      openAccountSecurity("recovery", session);
+    } else if (event === "SIGNED_IN" && session && isPasswordRecoveryUrl()) {
+      elements.gate.hidden = false;
+      openAccountSecurity("recovery", session);
     } else if (event === "SIGNED_IN" && session && !cloud.session) {
-      enterWorkspace(session);
+      window.setTimeout(() => enterWorkspace(session), 0);
     }
   });
 }
@@ -1354,6 +1426,76 @@ $("#send-magic-link").addEventListener("click", async () => {
     error ? error.message : "Magic link sent. Check your email.",
     error ? "error" : "success",
   );
+});
+$("#forgot-password").addEventListener("click", async () => {
+  if (!cloud.client) return;
+  const email = $("#auth-email").value.trim();
+  if (!email) {
+    setAuthMessage("Enter your authorized email address first.", "error");
+    $("#auth-email").focus();
+    return;
+  }
+  const button = $("#forgot-password");
+  button.disabled = true;
+  setAuthMessage("Sending password recovery email…");
+  const { error } = await cloud.client.auth.resetPasswordForEmail(email, {
+    redirectTo: PASSWORD_RECOVERY_REDIRECT,
+  });
+  button.disabled = false;
+  setAuthMessage(
+    error
+      ? error.message
+      : "Recovery link sent. Open the email on this device to choose a new password.",
+    error ? "error" : "success",
+  );
+});
+$("#account-security").addEventListener("click", () =>
+  openAccountSecurity("set"),
+);
+$("#property-account-security").addEventListener("click", () =>
+  openAccountSecurity("set"),
+);
+$("#close-account-security").addEventListener("click", () => {
+  if (accountSecurityMode !== "recovery") {
+    elements.accountSecurityDialog.close();
+  }
+});
+elements.accountSecurityForm.addEventListener("submit", async (event) => {
+  event.preventDefault();
+  if (!cloud.client || !cloud.session) return;
+  const password = $("#new-account-password").value;
+  const confirmation = $("#confirm-account-password").value;
+  if (password.length < 8) {
+    setAccountSecurityMessage("Use at least 8 characters.", "error");
+    return;
+  }
+  if (password !== confirmation) {
+    setAccountSecurityMessage("The passwords do not match.", "error");
+    return;
+  }
+  const button = $("#save-account-password");
+  button.disabled = true;
+  setAccountSecurityMessage("Saving password…");
+  const { error } = await cloud.client.auth.updateUser({ password });
+  button.disabled = false;
+  if (error) {
+    setAccountSecurityMessage(error.message, "error");
+    return;
+  }
+  setAccountSecurityMessage(
+    "Password saved. Email and password sign-in is now active.",
+    "success",
+  );
+  window.setTimeout(async () => {
+    elements.accountSecurityDialog.close();
+    if (accountSecurityMode === "recovery") {
+      clearPasswordRecoveryUrl();
+      const { data } = await cloud.client.auth.getSession();
+      if (data.session) await enterWorkspace(data.session);
+    } else {
+      notify("Account password saved");
+    }
+  }, 700);
 });
 $("#sign-out").addEventListener("click", async () => {
   if (cloud.client) await cloud.client.auth.signOut();
