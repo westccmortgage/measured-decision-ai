@@ -1,0 +1,196 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta name="robots" content="noindex,nofollow,noarchive">
+    <meta name="theme-color" content="#07101d">
+    <title>Project Plans · Measured Decision Studio</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="plans.css?v=20260808-plan-first">
+  </head>
+  <body>
+    <div class="boot-screen" id="boot-screen">
+      <div class="brand-mark" aria-hidden="true"><i></i><i></i><i></i></div>
+      <p>Opening Plan Intelligence…</p>
+    </div>
+
+    <div class="app" id="app" hidden>
+      <header class="topbar">
+        <a class="brand" href="../">
+          <span class="brand-mark" aria-hidden="true"><i></i><i></i><i></i></span>
+          <span>Measured Decision <strong>Studio</strong></span>
+        </a>
+        <div class="topbar-center"><span class="secure-pill"><i></i> Private plan workspace</span></div>
+        <div class="topbar-actions">
+          <span class="sync-status" id="sync-status">Cloud connected</span>
+          <a class="button secondary" href="../">Return to evidence</a>
+          <button class="button secondary" id="sign-out" type="button">Sign out</button>
+        </div>
+      </header>
+
+      <aside class="sidebar">
+        <nav>
+          <a class="nav-item" href="../"><span>⌂</span>Property record</a>
+          <button class="nav-item active" type="button"><span>▤</span>Project plans</button>
+          <a class="nav-item" href="../"><span>?</span>Capture guide</a>
+          <a class="nav-item" href="../"><span>⇧</span>Evidence intake</a>
+          <a class="nav-item" href="../"><span>⌁</span>AI processing</a>
+          <a class="nav-item" href="../"><span>✓</span>Review center</a>
+          <a class="nav-item" href="../"><span>◫</span>Vision packages</a>
+        </nav>
+        <div class="sidebar-footer">
+          <p>Project activation</p>
+          <ol>
+            <li class="done">Upload plans</li>
+            <li id="step-analyze">AI interpretation</li>
+            <li id="step-approve">Human approval</li>
+            <li id="step-capture">Guided capture</li>
+            <li>Spatial record</li>
+          </ol>
+          <small>Plans establish what must be captured before evidence collection begins.</small>
+        </div>
+      </aside>
+
+      <main class="workspace">
+        <section class="hero">
+          <div>
+            <p class="eyebrow">Project intelligence · Start here</p>
+            <h1>Plans first. Evidence with a purpose.</h1>
+            <p class="hero-copy">Upload the current drawing set. AI will map the project, identify evidence gates, and produce exact room-by-room capture instructions for human approval.</p>
+          </div>
+          <div class="property-picker">
+            <label for="property-select">Active project</label>
+            <select id="property-select"></select>
+            <span id="workflow-badge" class="state-pill intake">Intake</span>
+          </div>
+        </section>
+
+        <section class="metrics" aria-label="Plan intelligence summary">
+          <article><span>Source documents</span><strong id="metric-documents">0</strong><small id="metric-documents-copy">Upload the issued set</small></article>
+          <article><span>Baseline</span><strong id="metric-baseline">—</strong><small id="metric-baseline-copy">Not analyzed</small></article>
+          <article><span>Capture gates</span><strong id="metric-phases">0</strong><small>Construction stages</small></article>
+          <article><span>Required captures</span><strong id="metric-tasks">0</strong><small id="metric-tasks-copy">Waiting for plans</small></article>
+        </section>
+
+        <section class="workflow-grid">
+          <article class="panel documents-panel">
+            <div class="panel-heading">
+              <div><p>01 · Document control</p><h2>Current plan set</h2></div>
+              <label class="button primary upload-button" id="upload-plans-label" for="plan-files">Upload PDF plans <span>↑</span></label>
+              <input id="plan-files" type="file" accept="application/pdf,.pdf" multiple hidden>
+            </div>
+            <div class="upload-fields" id="upload-fields" hidden>
+              <label>Document discipline
+                <select id="document-type">
+                  <option value="architectural">Architectural</option>
+                  <option value="structural">Structural</option>
+                  <option value="mechanical">Mechanical / HVAC</option>
+                  <option value="electrical">Electrical</option>
+                  <option value="plumbing">Plumbing</option>
+                  <option value="civil">Civil</option>
+                  <option value="landscape">Landscape</option>
+                  <option value="specification">Specifications</option>
+                  <option value="schedule">Schedule</option>
+                  <option value="permit">Permit set</option>
+                  <option value="addendum">Addendum</option>
+                  <option value="change_order">Change order</option>
+                  <option value="other">Other</option>
+                </select>
+              </label>
+              <label>Revision / issue<input id="document-revision" type="text" maxlength="60" placeholder="e.g. Permit Set · Rev 2"></label>
+              <label>Issue date<input id="document-issued" type="date"></label>
+              <button class="button primary" id="confirm-upload" type="button">Save to project</button>
+              <button class="button secondary" id="cancel-upload" type="button">Cancel</button>
+              <p class="selected-files" id="selected-files"></p>
+            </div>
+            <div class="document-list" id="document-list"></div>
+            <div class="empty-state" id="document-empty">
+              <span>PDF</span>
+              <h3>Upload the governing drawing set.</h3>
+              <p>Start with architectural and structural plans, then add MEP, schedules, specifications, addenda, and approved revisions.</p>
+            </div>
+          </article>
+
+          <aside class="panel action-panel">
+            <p class="eyebrow">02 · Controlled AI processing</p>
+            <h2>Build the project baseline</h2>
+            <p>AI reads PDF text and page images, connects sheet references, and generates a proposed construction evidence roadmap.</p>
+            <ul class="contract">
+              <li><i></i>Extract only what is supported by the plan set</li>
+              <li><i></i>Expose conflicts and missing information</li>
+              <li><i></i>Create capture gates before work is concealed</li>
+              <li><i></i>Require named human approval</li>
+            </ul>
+            <button class="button ai-button" id="analyze-plans" type="button">Analyze current plan set <span>↗</span></button>
+            <p class="action-message" id="action-message" role="status" aria-live="polite"></p>
+          </aside>
+        </section>
+
+        <section class="baseline-section" id="baseline-section" hidden>
+          <div class="section-heading">
+            <div><p>03 · Human-governed baseline</p><h2>Review what the AI understood</h2></div>
+            <div class="heading-actions">
+              <span class="state-pill" id="baseline-state">Review</span>
+              <button class="button primary approve" id="approve-baseline" type="button">Approve baseline & activate roadmap</button>
+            </div>
+          </div>
+          <div class="baseline-summary">
+            <article class="summary-card"><span>AI project summary</span><p id="project-summary"></p></article>
+            <article class="summary-card"><span>Detected structure</span><div id="structure-summary"></div></article>
+            <article class="summary-card gaps"><span>Questions and gaps</span><div id="gap-list"></div></article>
+          </div>
+          <p class="governance-note"><i></i>Approval confirms the roadmap as the current capture baseline. It does not certify the design, code compliance, construction quality, schedule, or concealed conditions.</p>
+        </section>
+
+        <section class="roadmap-section" id="roadmap-section" hidden>
+          <div class="section-heading">
+            <div><p>04 · Field capture roadmap</p><h2>What to capture, when, and why</h2></div>
+            <div class="roadmap-filters">
+              <select id="phase-filter"><option value="all">All phases</option></select>
+              <select id="status-filter">
+                <option value="all">All tasks</option>
+                <option value="ready">Ready</option>
+                <option value="blocked">Blocked</option>
+                <option value="submitted">Submitted</option>
+                <option value="verified">Verified</option>
+              </select>
+            </div>
+          </div>
+          <div class="phase-list" id="phase-list"></div>
+        </section>
+      </main>
+    </div>
+
+    <dialog id="task-dialog">
+      <form method="dialog">
+        <div class="dialog-heading">
+          <div><p class="eyebrow" id="task-dialog-phase">Capture requirement</p><h2 id="task-dialog-title"></h2></div>
+          <button class="dialog-close" value="cancel" aria-label="Close">×</button>
+        </div>
+        <div class="task-dialog-grid">
+          <section><span>Location</span><p id="task-dialog-location"></p></section>
+          <section><span>Capture method</span><p id="task-dialog-method"></p></section>
+          <section class="wide"><span>Why this evidence matters</span><p id="task-dialog-why"></p></section>
+          <section class="wide"><span>Field instructions</span><ol id="task-dialog-instructions"></ol></section>
+          <section><span>Must be visible</span><ul id="task-dialog-must-show"></ul></section>
+          <section><span>Completion check</span><ul id="task-dialog-criteria"></ul></section>
+          <section class="wide concealment"><span>Capture before</span><p id="task-dialog-before"></p></section>
+          <section class="wide"><span>Plan references</span><p id="task-dialog-refs"></p></section>
+        </div>
+        <div class="dialog-actions">
+          <button class="button secondary" value="cancel">Close</button>
+          <a class="button primary" id="task-open-intake" href="../">Open evidence intake</a>
+        </div>
+      </form>
+    </dialog>
+
+    <div class="toast" id="toast" role="status" aria-live="polite"></div>
+    <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2.106.2"></script>
+    <script src="https://cdn.jsdelivr.net/npm/tus-js-client@4.3.1/dist/tus.min.js"></script>
+    <script src="../config.js"></script>
+    <script src="plans.js?v=20260808-plan-first"></script>
+  </body>
+</html>
