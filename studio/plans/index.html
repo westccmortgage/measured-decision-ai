@@ -9,7 +9,7 @@
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
-    <link rel="stylesheet" href="plans.css?v=20260808-plan-first">
+    <link rel="stylesheet" href="plans.css?v=20260808-analysis-progress">
   </head>
   <body>
     <div class="boot-screen" id="boot-screen">
@@ -124,6 +124,28 @@
               <li><i></i>Create capture gates before work is concealed</li>
               <li><i></i>Require named human approval</li>
             </ul>
+            <section class="analysis-progress" id="analysis-progress" aria-live="polite" hidden>
+              <div class="analysis-progress-heading">
+                <span>Analysis in progress</span>
+                <strong id="analysis-progress-value">0%</strong>
+              </div>
+              <div class="analysis-progress-track" id="analysis-progress-track" role="progressbar" aria-label="Estimated plan analysis progress" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0">
+                <i id="analysis-progress-fill"></i>
+              </div>
+              <div class="analysis-current-stage">
+                <span class="analysis-pulse" aria-hidden="true"><i></i></span>
+                <div><strong id="analysis-stage-title">Preparing plan set</strong><small id="analysis-stage-detail">Creating a secure analysis job…</small></div>
+                <time id="analysis-elapsed">0:00</time>
+              </div>
+              <ol class="analysis-steps">
+                <li data-analysis-step="0"><i></i><span>Secure source documents</span></li>
+                <li data-analysis-step="1"><i></i><span>Read sheets and references</span></li>
+                <li data-analysis-step="2"><i></i><span>Map spaces and systems</span></li>
+                <li data-analysis-step="3"><i></i><span>Build capture roadmap</span></li>
+                <li data-analysis-step="4"><i></i><span>Prepare human review</span></li>
+              </ol>
+              <p class="analysis-estimate">Estimated progress. Completion is confirmed only when the governed baseline is saved.</p>
+            </section>
             <button class="button ai-button" id="analyze-plans" type="button">Analyze current plan set <span>↗</span></button>
             <p class="action-message" id="action-message" role="status" aria-live="polite"></p>
           </aside>
@@ -191,6 +213,6 @@
     <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2.106.2"></script>
     <script src="https://cdn.jsdelivr.net/npm/tus-js-client@4.3.1/dist/tus.min.js"></script>
     <script src="../config.js"></script>
-    <script src="plans.js?v=20260808-plan-first"></script>
+    <script src="plans.js?v=20260808-analysis-progress"></script>
   </body>
 </html>
