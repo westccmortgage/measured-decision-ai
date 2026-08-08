@@ -37,6 +37,24 @@ Each film includes an optional English CC track that is off by default.
 
 Mortgage data → deterministic calculations → AI-assisted explanation → human review.
 
+## Plan Intelligence pilot
+
+The authenticated Studio now starts construction evidence collection from the
+governing PDF plan set instead of from an unstructured site walk:
+
+1. Upload private plans at `/studio/plans/` with discipline, revision, and issue date.
+2. Run the server-side `plan-analyze` worker against an explicit document set.
+3. Review the versioned project baseline, source references, conflicts, and gaps.
+4. Approve the baseline to create rooms and activate phase-based capture tasks.
+5. Open a task in Evidence Intake; uploaded evidence is linked to that exact requirement.
+
+Apply `supabase/migrations/005_plan_intelligence.sql` and deploy the
+`plan-analyze` Edge Function before enabling the page in production. The worker
+uses `OPENAI_PLAN_MODEL`, then `OPENAI_MODEL`, and requires the same server-only
+`OPENAI_API_KEY` already used by evidence analysis. See
+[`docs/AI_OPERATING_CONTRACT.md`](docs/AI_OPERATING_CONTRACT.md) for its scope
+and non-inference rules.
+
 ## Vision chapters
 
 The site includes four illustrated chapters explaining the company's direction:

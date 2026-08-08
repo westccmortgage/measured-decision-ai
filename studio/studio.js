@@ -1225,6 +1225,11 @@ async function hydrateCloudRecord() {
 
 async function openProperty(propertyId) {
   cloud.propertyId = propertyId;
+  const plansHref = `plans/?property=${encodeURIComponent(propertyId)}`;
+  const plansNavigation = $("#plans-navigation");
+  const projectPlansLink = $("#project-plans-link");
+  if (plansNavigation) plansNavigation.href = plansHref;
+  if (projectPlansLink) projectPlansLink.href = plansHref;
   elements.propertyGate.hidden = true;
   elements.shell.hidden = false;
   elements.autosave.textContent = "Loading property…";
@@ -1253,6 +1258,8 @@ async function hydrateCloudContext() {
   const { data, error } = await cloud.client
     .from("organization_members")
     .select("organization_id, role")
+    .eq("user_id", cloud.session.user.id)
+    .order("created_at", { ascending: true })
     .limit(1)
     .maybeSingle();
   if (error) {
