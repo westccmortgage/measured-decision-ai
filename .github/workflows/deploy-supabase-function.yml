@@ -1,4 +1,4 @@
-name: Deploy Supabase AI Worker
+name: Deploy Supabase Production
 
 on:
   push:
@@ -8,13 +8,14 @@ on:
       - ".github/workflows/deploy-supabase-function.yml"
       - "supabase/config.toml"
       - "supabase/functions/**"
+      - "supabase/migrations/**"
   workflow_dispatch:
 
 permissions:
   contents: read
 
 jobs:
-  deploy:
+  deploy-database:
     runs-on: ubuntu-latest
     steps:
       - name: Check out repository
@@ -24,6 +25,39 @@ jobs:
         uses: supabase/setup-cli@v1
         with:
           version: latest
+
+      - name: Link production project
+        env:
+          SUPABASE_ACCESS_TOKEN: ${{ secrets.SUPABASE_ACCESS_TOKEN }}
+          SUPABASE_DB_PASSWORD: ${{ secrets.SUPABASE_DB_PASSWORD }}
+        run: >-
+          supabase link
+          --project-ref hbqlhplgqwuesrovbiye
+
+      - name: Apply pending database migrations
+        env:
+          SUPABASE_ACCESS_TOKEN: ${{ secrets.SUPABASE_ACCESS_TOKEN }}
+          SUPABASE_DB_PASSWORD: ${{ secrets.SUPABASE_DB_PASSWORD }}
+        run: supabase db push --linked
+
+  deploy-functions:
+    needs: deploy-database
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Install Supabase CLI
+        uses: supabase/setup-cli@v1
+        with:
+          version: latest
+
+      - name: Deploy plan analysis worker
+        env:
+          SUPABASE_ACCESS_TOKEN: ${{ secrets.SUPABASE_ACCESS_TOKEN }}
+        run: >-
+          supabase functions deploy plan-analyze
+          --project-ref hbqlhplgqwuesrovbiye
 
       - name: Deploy spatial analysis worker
         env:
