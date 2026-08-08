@@ -297,9 +297,8 @@ Deno.serve(async (request) => {
         type: "input_text",
         text: `Analyze this project document set. Database source register:\n${JSON.stringify(register, null, 2)}`,
       },
-      ...signedDocuments.map(({ row, url }) => ({
+      ...signedDocuments.map(({ url }) => ({
         type: "input_file",
-        filename: row.original_filename,
         file_url: url,
       })),
     ];
