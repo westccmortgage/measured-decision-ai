@@ -40,6 +40,8 @@ create table if not exists public.plan_analysis_jobs (
     check (state in ('queued', 'processing', 'completed', 'failed', 'cancelled')),
   profile text not null default 'construction-plan-baseline',
   profile_version text not null default '1.0',
+  agent_key text not null default 'plan_interpreter',
+  agent_contract_version text not null default '2026-08-08.1',
   provider text,
   model text,
   baseline_id uuid,
@@ -63,6 +65,8 @@ create table if not exists public.document_baselines (
   analysis jsonb not null,
   gaps jsonb not null default '[]'::jsonb,
   model text,
+  agent_key text not null default 'plan_interpreter',
+  agent_contract_version text not null default '2026-08-08.1',
   created_by uuid references auth.users(id),
   created_at timestamptz not null default now(),
   approved_by uuid references auth.users(id),
@@ -162,6 +166,14 @@ create table if not exists public.capture_tasks (
 alter table public.evidence_items
   add column if not exists capture_task_id uuid references public.capture_tasks(id) on delete set null,
   add column if not exists baseline_id uuid references public.document_baselines(id) on delete set null;
+
+alter table public.analysis_jobs
+  add column if not exists agent_key text not null default 'evidence_inspector',
+  add column if not exists agent_contract_version text not null default '2026-08-08.1';
+
+alter table public.ai_suggestions
+  add column if not exists agent_key text not null default 'evidence_inspector',
+  add column if not exists agent_contract_version text not null default '2026-08-08.1';
 
 create index if not exists project_documents_property_idx
   on public.project_documents(organization_id, property_id, created_at desc);

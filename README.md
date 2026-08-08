@@ -53,7 +53,9 @@ Apply `supabase/migrations/005_plan_intelligence.sql` and deploy the
 uses `OPENAI_PLAN_MODEL`, then `OPENAI_MODEL`, and requires the same server-only
 `OPENAI_API_KEY` already used by evidence analysis. See
 [`docs/AI_OPERATING_CONTRACT.md`](docs/AI_OPERATING_CONTRACT.md) for its scope
-and non-inference rules.
+and non-inference rules. The versioned specialist responsibilities, routing,
+training loop, and current activation status are defined in
+[`docs/AGENT_OPERATING_MODEL.md`](docs/AGENT_OPERATING_MODEL.md).
 
 ## Vision chapters
 
