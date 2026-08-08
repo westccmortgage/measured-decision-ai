@@ -22,6 +22,9 @@ const state = {
   pendingFiles: [],
   selectedDocumentIds: new Set(),
   busy: false,
+  analysisStartedAt: null,
+  analysisProgressTimer: null,
+  analysisProgress: 0,
 };
 
 const elements = {
@@ -37,6 +40,13 @@ const elements = {
   documentEmpty: $("#document-empty"),
   analyze: $("#analyze-plans"),
   message: $("#action-message"),
+  analysisProgress: $("#analysis-progress"),
+  analysisProgressTrack: $("#analysis-progress-track"),
+  analysisProgressFill: $("#analysis-progress-fill"),
+  analysisProgressValue: $("#analysis-progress-value"),
+  analysisStageTitle: $("#analysis-stage-title"),
+  analysisStageDetail: $("#analysis-stage-detail"),
+  analysisElapsed: $("#analysis-elapsed"),
   baselineSection: $("#baseline-section"),
   roadmapSection: $("#roadmap-section"),
   phaseList: $("#phase-list"),
@@ -70,6 +80,84 @@ function notify(message, kind = "success") {
 function setMessage(message = "", kind = "") {
   elements.message.textContent = message;
   elements.message.className = `action-message ${kind}`;
+}
+
+const analysisStages = [
+  { title: "Securing source documents", detail: "Validating access and preparing private plan files." },
+  { title: "Reading sheets and references", detail: "Extracting drawing content, sheet names, notes, and cross-references." },
+  { title: "Mapping spaces and systems", detail: "Connecting levels, rooms, disciplines, and construction systems." },
+  { title: "Building the capture roadmap", detail: "Creating evidence gates and exact field capture instructions." },
+  { title: "Preparing human review", detail: "Checking gaps and assembling the governed project baseline." },
+];
+
+function progressSnapshot(elapsedSeconds) {
+  if (elapsedSeconds < 5) return { percent: 4 + (elapsedSeconds / 5) * 10, stage: 0 };
+  if (elapsedSeconds < 30) return { percent: 14 + ((elapsedSeconds - 5) / 25) * 22, stage: 1 };
+  if (elapsedSeconds < 70) return { percent: 36 + ((elapsedSeconds - 30) / 40) * 22, stage: 2 };
+  if (elapsedSeconds < 120) return { percent: 58 + ((elapsedSeconds - 70) / 50) * 20, stage: 3 };
+  return { percent: 78 + (1 - Math.exp(-(elapsedSeconds - 120) / 90)) * 14, stage: 4 };
+}
+
+function formatElapsed(elapsedSeconds) {
+  const total = Math.max(0, Math.floor(elapsedSeconds));
+  return `${Math.floor(total / 60)}:${String(total % 60).padStart(2, "0")}`;
+}
+
+function renderAnalysisProgress(percent, stageIndex, options = {}) {
+  const bounded = Math.max(0, Math.min(100, Math.round(percent)));
+  const stage = analysisStages[Math.max(0, Math.min(analysisStages.length - 1, stageIndex))];
+  state.analysisProgress = bounded;
+  elements.analysisProgress.hidden = false;
+  elements.analysisProgress.classList.toggle("success", Boolean(options.success));
+  elements.analysisProgress.classList.toggle("failed", Boolean(options.failed));
+  elements.analysisProgressValue.textContent = `${bounded}%`;
+  elements.analysisProgressFill.style.width = `${bounded}%`;
+  elements.analysisProgressTrack.setAttribute("aria-valuenow", String(bounded));
+  elements.analysisStageTitle.textContent = options.title || stage.title;
+  elements.analysisStageDetail.textContent = options.detail || stage.detail;
+  elements.analysisElapsed.textContent = formatElapsed((Date.now() - state.analysisStartedAt) / 1000);
+  elements.analysisProgress.querySelectorAll("[data-analysis-step]").forEach((item, index) => {
+    item.classList.toggle("done", options.success || index < stageIndex);
+    item.classList.toggle("active", !options.success && !options.failed && index === stageIndex);
+  });
+  elements.sync.textContent = options.success
+    ? "Plan analysis complete"
+    : options.failed
+      ? "Plan analysis stopped"
+      : `AI analysis · ${bounded}% estimated`;
+}
+
+function updateAnalysisProgress() {
+  const elapsedSeconds = (Date.now() - state.analysisStartedAt) / 1000;
+  const snapshot = progressSnapshot(elapsedSeconds);
+  renderAnalysisProgress(snapshot.percent, snapshot.stage);
+}
+
+function startAnalysisProgress() {
+  window.clearInterval(state.analysisProgressTimer);
+  state.analysisStartedAt = Date.now();
+  state.analysisProgress = 0;
+  elements.analysisProgress.className = "analysis-progress";
+  updateAnalysisProgress();
+  state.analysisProgressTimer = window.setInterval(updateAnalysisProgress, 500);
+}
+
+function finishAnalysisProgress(success, detail = "") {
+  window.clearInterval(state.analysisProgressTimer);
+  state.analysisProgressTimer = null;
+  if (success) {
+    renderAnalysisProgress(100, analysisStages.length - 1, {
+      success: true,
+      title: "Baseline ready for review",
+      detail: detail || "The roadmap was saved and is ready for human approval.",
+    });
+    return;
+  }
+  renderAnalysisProgress(state.analysisProgress, analysisStages.length - 1, {
+    failed: true,
+    title: "Analysis stopped",
+    detail: detail || "The plan set was preserved. Review the error and try again.",
+  });
 }
 
 function safeStorageName(name) {
@@ -459,6 +547,7 @@ async function analyzePlans() {
     notify(message, "error");
     return;
   }
+  startAnalysisProgress();
   setBusy(true, "AI is reading the plan set…");
   setMessage("Creating a governed analysis job. Large drawing sets may take several minutes.");
   try {
@@ -477,12 +566,15 @@ async function analyzePlans() {
       throw new Error(detail);
     }
     if (data?.error) throw new Error(data.error);
+    finishAnalysisProgress(true);
     setMessage(`Baseline v${data.version} is ready for human review.`);
     notify("Plan roadmap generated. Review it before activation.");
+    await new Promise((resolve) => window.setTimeout(resolve, 650));
     await openProperty(state.property.id);
     elements.baselineSection.scrollIntoView({ behavior: "smooth", block: "start" });
   } catch (error) {
     console.error(error);
+    finishAnalysisProgress(false, error.message || "Plan analysis failed");
     setMessage(error.message || "Plan analysis failed", "error");
     notify(error.message || "Plan analysis failed", "error");
     await openProperty(state.property.id);
