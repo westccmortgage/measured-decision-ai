@@ -38,7 +38,12 @@ jobs:
         env:
           SUPABASE_ACCESS_TOKEN: ${{ secrets.SUPABASE_ACCESS_TOKEN }}
           SUPABASE_DB_PASSWORD: ${{ secrets.SUPABASE_DB_PASSWORD }}
-        run: supabase db push --linked
+        run: |
+          # Migrations 001-004 were applied through the Dashboard before this
+          # repository adopted Supabase migration tracking. Record that known
+          # production state, then apply only migrations that are actually new.
+          supabase migration repair --linked --status applied 001 002 003 004
+          supabase db push --linked
 
   deploy-functions:
     needs: deploy-database
