@@ -29,6 +29,9 @@ const state = {
   analysisStartedAt: null,
   analysisProgressTimer: null,
   analysisProgress: 0,
+  analysisStage: 0,
+  activeAnalysisJob: null,
+  analysisPolling: false,
 };
 
 const elements = {
@@ -123,8 +126,10 @@ function formatElapsed(elapsedSeconds) {
 
 function renderAnalysisProgress(percent, stageIndex, options = {}) {
   const bounded = Math.max(0, Math.min(100, Math.round(percent)));
-  const stage = analysisStages[Math.max(0, Math.min(analysisStages.length - 1, stageIndex))];
+  const boundedStage = Math.max(0, Math.min(analysisStages.length - 1, stageIndex));
+  const stage = analysisStages[boundedStage];
   state.analysisProgress = bounded;
+  state.analysisStage = boundedStage;
   elements.analysisProgress.hidden = false;
   elements.analysisProgress.classList.toggle("success", Boolean(options.success));
   elements.analysisProgress.classList.toggle("failed", Boolean(options.failed));
@@ -148,13 +153,14 @@ function renderAnalysisProgress(percent, stageIndex, options = {}) {
 function updateAnalysisProgress() {
   const elapsedSeconds = (Date.now() - state.analysisStartedAt) / 1000;
   const snapshot = progressSnapshot(elapsedSeconds);
-  renderAnalysisProgress(snapshot.percent, snapshot.stage);
+  renderAnalysisProgress(Math.max(state.analysisProgress, snapshot.percent), Math.max(state.analysisStage, snapshot.stage));
 }
 
 function startAnalysisProgress() {
   window.clearInterval(state.analysisProgressTimer);
   state.analysisStartedAt = Date.now();
   state.analysisProgress = 0;
+  state.analysisStage = 0;
   elements.analysisProgress.className = "analysis-progress";
   updateAnalysisProgress();
   state.analysisProgressTimer = window.setInterval(updateAnalysisProgress, 500);
@@ -176,6 +182,39 @@ function finishAnalysisProgress(success, detail = "") {
     title: "Analysis stopped",
     detail: detail || "The plan set was preserved. Review the error and try again.",
   });
+}
+
+function analysisStageIndex(stage = "") {
+  return {
+    queued: 0,
+    securing_sources: 0,
+    provider_queued: 1,
+    reading_documents: 2,
+    legacy_processing: 3,
+    finalizing: 4,
+    completed: 4,
+  }[stage] ?? 1;
+}
+
+function serverProgressDetail(stage = "") {
+  return {
+    queued: "The job is saved and waiting for the secure worker.",
+    securing_sources: "Validating access and preparing private plan files.",
+    provider_queued: "The plan set is securely queued for AI interpretation.",
+    reading_documents: "AI is reading sheets, notes, and cross-references in the background.",
+    legacy_processing: "Studio is checking the prior analysis and any baseline already saved.",
+    finalizing: "The roadmap is ready; Studio is saving phases, tasks, and source references.",
+  }[stage] || "The analysis continues in the background. You may leave this page and return later.";
+}
+
+function applyServerAnalysisProgress(job) {
+  const stage = job?.progress_stage || "reading_documents";
+  const percent = Math.max(state.analysisProgress, Number(job?.progress_percent) || 0);
+  renderAnalysisProgress(percent, Math.max(state.analysisStage, analysisStageIndex(stage)), { detail: serverProgressDetail(stage) });
+}
+
+function wait(milliseconds) {
+  return new Promise((resolve) => window.setTimeout(resolve, milliseconds));
 }
 
 function shortDate(value) {
@@ -271,6 +310,7 @@ async function initialize() {
   elements.boot.hidden = true;
   elements.app.hidden = false;
   await openProperty(initial.id);
+  if (state.activeAnalysisJob) void monitorAnalysisJob(state.activeAnalysisJob.id, { resumed: true });
 }
 
 async function openProperty(propertyId) {
@@ -279,7 +319,7 @@ async function openProperty(propertyId) {
   window.history.replaceState({}, "", `${window.location.pathname}?property=${encodeURIComponent(propertyId)}`);
   elements.sync.textContent = "Loading project…";
   setMessage("");
-  const [documentsResult, baselinesResult] = await Promise.all([
+  const [documentsResult, baselinesResult, activeJobResult] = await Promise.all([
     client.from("project_documents")
       .select("id, storage_path, storage_provider, storage_bucket, object_version_id, original_filename, mime_type, byte_size, document_type, revision_label, issued_at, status, processing_error, created_at")
       .eq("organization_id", state.organizationId)
@@ -291,9 +331,16 @@ async function openProperty(propertyId) {
       .eq("property_id", propertyId)
       .order("version", { ascending: false })
       .limit(1),
+    client.from("plan_analysis_jobs")
+      .select("id, state, baseline_id, progress_stage, progress_percent, error_code, error_message, started_at, created_at")
+      .eq("organization_id", state.organizationId)
+      .eq("property_id", propertyId)
+      .in("state", ["queued", "processing"])
+      .order("created_at", { ascending: false })
+      .limit(1),
   ]);
-  if (documentsResult.error || baselinesResult.error) {
-    const error = documentsResult.error || baselinesResult.error;
+  if (documentsResult.error || baselinesResult.error || activeJobResult.error) {
+    const error = documentsResult.error || baselinesResult.error || activeJobResult.error;
     notify(error.message, "error");
     elements.sync.textContent = "Cloud query failed";
     return;
@@ -303,6 +350,7 @@ async function openProperty(propertyId) {
     state.documents.filter((document) => document.status !== "superseded").map((document) => document.id),
   );
   state.baseline = baselinesResult.data?.[0] || null;
+  state.activeAnalysisJob = activeJobResult.data?.[0] || null;
   state.phases = [];
   state.planSpaces = [];
   state.requirements = [];
@@ -328,7 +376,9 @@ async function openProperty(propertyId) {
     state.qualityChecks = qualityResult.data || [];
   }
   render();
-  elements.sync.textContent = `Cloud connected · ${state.role}`;
+  elements.sync.textContent = state.activeAnalysisJob
+    ? "Plan analysis continues in the background"
+    : `Cloud connected · ${state.role}`;
 }
 
 function render() {
@@ -575,6 +625,83 @@ async function savePendingFiles() {
   }
 }
 
+async function monitorAnalysisJob(jobId, options = {}) {
+  if (!jobId || state.analysisPolling) return;
+  state.analysisPolling = true;
+  if (!state.analysisStartedAt || options.resumed) startAnalysisProgress();
+  setBusy(true, options.resumed ? "Resuming saved plan analysis…" : "AI is reading the plan set…");
+  setMessage(options.resumed
+    ? "A saved analysis is still active. Studio is reconnecting to it now."
+    : "The analysis is running in the background. You may leave this page and return later.");
+  let transientFailures = 0;
+  try {
+    while (true) {
+      let payload = null;
+      try {
+        const { data, error } = await client.functions.invoke("plan-analyze", {
+          body: { action: "status", job_id: jobId },
+        });
+        if (error) throw await functionInvocationError(error, "Could not read analysis status");
+        if (data?.error) throw new Error(data.error);
+        payload = data;
+        transientFailures = 0;
+      } catch (error) {
+        transientFailures += 1;
+        console.warn("Analysis status check interrupted", error);
+        if (transientFailures >= 6) {
+          throw new Error("The analysis is still saved, but Studio cannot reach the status service. Reload this page to continue checking.");
+        }
+        setMessage("Connection interrupted. The job is safe; Studio is checking again…");
+        await wait(Math.min(12000, 2500 * transientFailures));
+        continue;
+      }
+
+      if (payload?.state === "completed") {
+        const recoveredCopy = payload.recovered
+          ? "The roadmap was already saved. Studio restored the completed job after the earlier connection timeout."
+          : "The roadmap was saved and is ready for human approval.";
+        finishAnalysisProgress(true, recoveredCopy);
+        setMessage(payload.version
+          ? `Baseline v${payload.version} is ready for human review.`
+          : "The saved baseline is ready for human review.");
+        notify(payload.recovered ? "Saved plan roadmap recovered." : "Plan roadmap generated. Review it before activation.");
+        await wait(450);
+        await openProperty(state.property.id);
+        elements.baselineSection.scrollIntoView({ behavior: "smooth", block: "start" });
+        return;
+      }
+      if (["failed", "cancelled"].includes(payload?.state)) {
+        throw new Error(payload.error || "Plan analysis failed");
+      }
+      applyServerAnalysisProgress(payload || {});
+      state.activeAnalysisJob = { ...(state.activeAnalysisJob || {}), ...(payload || {}), id: jobId };
+      await wait(4000);
+    }
+  } catch (error) {
+    console.error(error);
+    const serviceUnavailable = /still saved|cannot reach the status service/i.test(error.message || "");
+    if (serviceUnavailable) {
+      window.clearInterval(state.analysisProgressTimer);
+      state.analysisProgressTimer = null;
+      renderAnalysisProgress(state.analysisProgress, analysisStageIndex(state.activeAnalysisJob?.progress_stage), {
+        title: "Analysis continues in the background",
+        detail: error.message,
+      });
+      setMessage(error.message, "error");
+      notify("Analysis is safe. Reload later to resume status checks.", "error");
+    } else {
+      finishAnalysisProgress(false, error.message || "Plan analysis failed");
+      setMessage(error.message || "Plan analysis failed", "error");
+      notify(error.message || "Plan analysis failed", "error");
+    }
+    await openProperty(state.property.id);
+  } finally {
+    state.analysisPolling = false;
+    setBusy(false, state.activeAnalysisJob ? "Plan analysis continues in the background" : `Cloud connected · ${state.role}`);
+    render();
+  }
+}
+
 async function analyzePlans() {
   if (!state.selectedDocumentIds.size || state.busy) return;
   const activeDocuments = state.documents.filter((document) => state.selectedDocumentIds.has(document.id));
@@ -600,15 +727,21 @@ async function analyzePlans() {
       requested_by: state.session.user.id,
     }).select("id").single();
     if (jobError) throw jobError;
-    const { data, error } = await client.functions.invoke("plan-analyze", { body: { job_id: job.id } });
-    if (error) throw await functionInvocationError(error, "Plan analysis worker failed");
-    if (data?.error) throw new Error(data.error);
-    finishAnalysisProgress(true);
-    setMessage(`Baseline v${data.version} is ready for human review.`);
-    notify("Plan roadmap generated. Review it before activation.");
-    await new Promise((resolve) => window.setTimeout(resolve, 650));
-    await openProperty(state.property.id);
-    elements.baselineSection.scrollIntoView({ behavior: "smooth", block: "start" });
+    state.activeAnalysisJob = { id: job.id, state: "queued", progress_stage: "queued", progress_percent: 4 };
+    const { data, error } = await client.functions.invoke("plan-analyze", {
+      body: { action: "start", job_id: job.id },
+    });
+    if (error) {
+      console.warn("Analysis start response interrupted; checking the saved job", error);
+      setMessage("The start response was interrupted. The job is saved; Studio is checking its status…");
+    } else if (data?.error) {
+      throw new Error(data.error);
+    } else {
+      state.activeAnalysisJob = { ...state.activeAnalysisJob, ...(data || {}) };
+      applyServerAnalysisProgress(data || {});
+    }
+    state.analysisPolling = false;
+    await monitorAnalysisJob(job.id);
   } catch (error) {
     console.error(error);
     finishAnalysisProgress(false, error.message || "Plan analysis failed");
@@ -616,8 +749,10 @@ async function analyzePlans() {
     notify(error.message || "Plan analysis failed", "error");
     await openProperty(state.property.id);
   } finally {
-    setBusy(false, `Cloud connected · ${state.role}`);
-    render();
+    if (!state.analysisPolling) {
+      setBusy(false, state.activeAnalysisJob ? "Plan analysis continues in the background" : `Cloud connected · ${state.role}`);
+      render();
+    }
   }
 }
 
@@ -645,7 +780,10 @@ async function approveBaseline() {
   }
 }
 
-elements.propertySelect.addEventListener("change", () => openProperty(elements.propertySelect.value));
+elements.propertySelect.addEventListener("change", async () => {
+  await openProperty(elements.propertySelect.value);
+  if (state.activeAnalysisJob) void monitorAnalysisJob(state.activeAnalysisJob.id, { resumed: true });
+});
 elements.fileInput.addEventListener("change", () => {
   state.pendingFiles = Array.from(elements.fileInput.files || []);
   elements.uploadFields.hidden = !state.pendingFiles.length;
