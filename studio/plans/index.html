@@ -231,10 +231,39 @@
       </form>
     </dialog>
 
+    <dialog id="attestation-dialog" class="attestation-dialog">
+      <form method="dialog" id="attestation-form">
+        <div class="dialog-heading">
+          <div><p class="eyebrow">Manager confirmation</p><h2>Confirm the governing approved plan set</h2></div>
+          <button class="dialog-close" value="cancel" aria-label="Close">×</button>
+        </div>
+        <div class="attestation-body">
+          <p class="attestation-intro">AI could not establish the plan set's official status from the PDF alone. The AI questions remain in the record. A project manager may confirm that this is the official approved set used to create field-capture instructions.</p>
+          <section>
+            <span>AI items acknowledged</span>
+            <div id="attestation-blockers" class="attestation-blockers"></div>
+          </section>
+          <label class="attestation-reference">Approval reference
+            <input id="attestation-reference" type="text" maxlength="240" placeholder="Permit number, approval stamp, approval email, or manager reference" autocomplete="off">
+            <small>Use the shortest reference another reviewer could recognize later.</small>
+          </label>
+          <label class="attestation-check">
+            <input id="attestation-confirmed" type="checkbox">
+            <span>I confirm that the selected PDFs are the official approved governing set for this project's field-capture roadmap.</span>
+          </label>
+          <p class="attestation-warning">This activates evidence-collection tasks. It does not certify design, code compliance, construction quality, schedule, or concealed conditions.</p>
+        </div>
+        <div class="dialog-actions">
+          <button class="button secondary" value="cancel">Cancel</button>
+          <button class="button primary" id="confirm-governing-set" type="button" disabled>Confirm & activate roadmap</button>
+        </div>
+      </form>
+    </dialog>
+
     <div class="toast" id="toast" role="status" aria-live="polite"></div>
     <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2.106.2"></script>
     <script src="../config.js"></script>
     <script src="../s3-upload.js?v=20260809-s3"></script>
-    <script src="plans.js?v=20260809-field-operations"></script>
+    <script src="plans.js?v=20260809-governing-attestation"></script>
   </body>
 </html>

@@ -261,11 +261,17 @@ function baselineApprovalBlocked() {
   return blockingBaselineGaps().length > 0;
 }
 
+function updateAttestationAction() {
+  const reference = $("#attestation-reference").value.trim();
+  $("#confirm-governing-set").disabled = state.busy || reference.length < 3 || !$("#attestation-confirmed").checked;
+}
+
 function setBusy(busy, message = "") {
   state.busy = busy;
   elements.analyze.disabled = busy || !canAnalyzePlans() || !state.selectedDocumentIds.size;
   $("#confirm-upload").disabled = busy || !canUploadPlans();
-  $("#approve-baseline").disabled = busy || !canApproveBaseline() || state.baseline?.state === "approved" || baselineApprovalBlocked();
+  $("#approve-baseline").disabled = busy || !canApproveBaseline() || state.baseline?.state === "approved";
+  updateAttestationAction();
   elements.propertySelect.disabled = busy;
   if (message) elements.sync.textContent = message;
 }
@@ -444,16 +450,17 @@ function renderBaseline() {
   const blockingGaps = blockingBaselineGaps();
   const approvalButton = $("#approve-baseline");
   const approvalGuidance = $("#approval-guidance");
-  approvalButton.disabled = state.busy || !canApproveBaseline() || blockingGaps.length > 0;
+  approvalButton.disabled = state.busy || !canApproveBaseline();
+  approvalButton.classList.toggle("manager-confirmation", blockingGaps.length > 0);
   approvalButton.textContent = blockingGaps.length
-    ? `Resolve ${blockingGaps.length} blocker${blockingGaps.length === 1 ? "" : "s"} before activation`
+    ? "Confirm approved set & activate roadmap"
     : "Approve baseline & activate roadmap";
   approvalButton.title = blockingGaps.length
-    ? "Upload the missing or corrected governing documents and generate a new baseline."
+    ? "Record the manager's governing-set confirmation before activating field tasks."
     : "Approve this reviewed baseline and activate field capture tasks.";
   approvalGuidance.hidden = !blockingGaps.length;
   approvalGuidance.textContent = blockingGaps.length
-    ? `Activation is blocked by ${blockingGaps.length} unresolved plan question${blockingGaps.length === 1 ? "" : "s"}. Review the red items, upload the missing or corrected governing documents, then run a new baseline analysis.`
+    ? `AI reported ${blockingGaps.length} blocking plan question${blockingGaps.length === 1 ? "" : "s"}. If this is the official approved set, an authorized manager can acknowledge those items, record the approval reference, and activate the roadmap.`
     : "";
   $("#project-summary").textContent = state.baseline.project_summary;
   const analysis = state.baseline.analysis || {};
@@ -783,8 +790,13 @@ async function approveBaseline() {
   if (!state.baseline || state.busy) return;
   const criticalGaps = blockingBaselineGaps();
   if (criticalGaps.length) {
-    const message = `${criticalGaps.length} blocking plan gap${criticalGaps.length === 1 ? "" : "s"} must be resolved. Upload the missing or corrected document and generate a new baseline.`;
-    notify(message, "error");
+    $("#attestation-blockers").innerHTML = criticalGaps.map((gap, index) =>
+      `<p><b>${index + 1}</b><span>${escapeHtml(gap.question)}</span></p>`,
+    ).join("");
+    $("#attestation-reference").value = "";
+    $("#attestation-confirmed").checked = false;
+    updateAttestationAction();
+    $("#attestation-dialog").showModal();
     return;
   }
   setBusy(true, "Approving baseline…");
@@ -797,6 +809,30 @@ async function approveBaseline() {
   } catch (error) {
     console.error(error);
     notify(error.message || "Approval failed", "error");
+  } finally {
+    setBusy(false, `Cloud connected · ${state.role}`);
+    render();
+  }
+}
+
+async function attestAndApproveBaseline() {
+  if (!state.baseline || state.busy) return;
+  const approvalReference = $("#attestation-reference").value.trim();
+  if (approvalReference.length < 3 || !$("#attestation-confirmed").checked) return;
+  setBusy(true, "Recording manager confirmation…");
+  try {
+    const { error } = await client.rpc("attest_and_approve_document_baseline", {
+      target_baseline: state.baseline.id,
+      approval_reference: approvalReference,
+    });
+    if (error) throw error;
+    $("#attestation-dialog").close();
+    notify("Governing set confirmed. Field capture roadmap is active.");
+    await openProperty(state.property.id);
+    elements.roadmapSection.scrollIntoView({ behavior: "smooth", block: "start" });
+  } catch (error) {
+    console.error(error);
+    notify(error.message || "Governing-set confirmation failed", "error");
   } finally {
     setBusy(false, `Cloud connected · ${state.role}`);
     render();
@@ -820,6 +856,9 @@ $("#cancel-upload").addEventListener("click", () => {
 $("#confirm-upload").addEventListener("click", savePendingFiles);
 elements.analyze.addEventListener("click", analyzePlans);
 $("#approve-baseline").addEventListener("click", approveBaseline);
+$("#attestation-reference").addEventListener("input", updateAttestationAction);
+$("#attestation-confirmed").addEventListener("change", updateAttestationAction);
+$("#confirm-governing-set").addEventListener("click", attestAndApproveBaseline);
 $("#send-field-task").addEventListener("click", createFieldAssignment);
 $("#copy-field-link").addEventListener("click", copyFieldLink);
 $("#phase-filter").addEventListener("change", renderRoadmap);
