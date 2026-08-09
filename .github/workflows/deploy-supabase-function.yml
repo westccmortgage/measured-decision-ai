@@ -64,6 +64,13 @@ jobs:
           supabase functions deploy plan-analyze
           --project-ref hbqlhplgqwuesrovbiye
 
+      - name: Deploy private object storage worker
+        env:
+          SUPABASE_ACCESS_TOKEN: ${{ secrets.SUPABASE_ACCESS_TOKEN }}
+        run: >-
+          supabase functions deploy object-storage
+          --project-ref hbqlhplgqwuesrovbiye
+
       - name: Deploy spatial analysis worker
         env:
           SUPABASE_ACCESS_TOKEN: ${{ secrets.SUPABASE_ACCESS_TOKEN }}

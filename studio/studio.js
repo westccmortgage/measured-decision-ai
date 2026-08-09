@@ -305,17 +305,6 @@ async function deleteStoredEvidenceFile(id) {
   });
 }
 
-function safeStorageName(filename) {
-  const extension = filename.includes(".") ? `.${filename.split(".").pop()}` : "";
-  const base = filename
-    .replace(extension, "")
-    .normalize("NFKD")
-    .replace(/[^a-zA-Z0-9_-]+/g, "-")
-    .replace(/^-+|-+$/g, "")
-    .slice(0, 80);
-  return `${base || "evidence"}${extension.toLowerCase()}`;
-}
-
 function formatFileSize(bytes) {
   if (!Number.isFinite(bytes)) return "unknown size";
   const units = ["B", "KB", "MB", "GB"];
@@ -328,129 +317,18 @@ function formatFileSize(bytes) {
   return `${value.toFixed(unitIndex ? 1 : 0)} ${units[unitIndex]}`;
 }
 
-function normalizeUploadError(error, file) {
-  let status = null;
-  let responseBody = "";
-  try {
-    status = error?.originalResponse?.getStatus?.() || null;
-    responseBody = error?.originalResponse?.getBody?.() || "";
-  } catch {
-    responseBody = "";
-  }
-
-  const rawMessage = [error?.message, responseBody].filter(Boolean).join(" ");
-  const sizeLabel = `${file.name} (${formatFileSize(file.size)})`;
-  if (
-    status === 413 ||
-    /maximum allowed size|file size limit|payload too large|entity too large/i.test(rawMessage)
-  ) {
-    return new Error(
-      `${sizeLabel} exceeds the current Supabase Storage limit. Increase both the global Storage limit and the property-evidence bucket limit, then retry.`,
-    );
-  }
-  if (status === 401 || status === 403) {
-    return new Error(
-      `Secure upload authorization expired for ${file.name}. Sign out, sign back in, and retry.`,
-    );
-  }
-  if (!navigator.onLine) {
-    return new Error(`Internet connection was lost while uploading ${file.name}.`);
-  }
-
-  const detail = String(responseBody || error?.message || "Cloud storage error")
-    .replace(/<[^>]+>/g, " ")
-    .replace(/\s+/g, " ")
-    .trim()
-    .slice(0, 280);
-  return new Error(`Could not upload ${sizeLabel}: ${detail}`);
-}
-
-async function uploadStorageObject(storagePath, file, onProgress) {
-  const resumableThreshold = 6 * 1024 * 1024;
-  const needsResumableUpload = file.size > resumableThreshold;
-
-  const { data: sessionData, error: sessionError } =
-    await cloud.client.auth.getSession();
-  const currentSession = sessionData?.session;
-  if (sessionError || !currentSession?.access_token) {
-    throw new Error("Your secure session expired. Sign out, sign back in, and retry.");
-  }
-  cloud.session = currentSession;
-
-  if (needsResumableUpload && !window.tus?.Upload) {
-    throw new Error(
-      "The secure large-file uploader did not load. Reload this page and try again.",
-    );
-  }
-
-  if (!needsResumableUpload) {
-    const { error } = await cloud.client.storage
-      .from(config.storageBucket)
-      .upload(storagePath, file, {
-        cacheControl: "3600",
-        contentType: file.type || "application/octet-stream",
-        upsert: false,
-      });
-    if (error) throw normalizeUploadError(error, file);
-    onProgress?.(100);
-    return;
-  }
-
-  const projectId = new URL(config.supabaseUrl).hostname.split(".")[0];
-  return new Promise((resolve, reject) => {
-    const upload = new window.tus.Upload(file, {
-      endpoint: `https://${projectId}.storage.supabase.co/storage/v1/upload/resumable`,
-      retryDelays: [0, 3000, 5000, 10000, 20000],
-      headers: {
-        authorization: `Bearer ${currentSession.access_token}`,
-        "x-upsert": "false",
-      },
-      uploadDataDuringCreation: true,
-      removeFingerprintOnSuccess: true,
-      metadata: {
-        bucketName: config.storageBucket,
-        objectName: storagePath,
-        contentType: file.type || "application/octet-stream",
-        cacheControl: "3600",
-      },
-      chunkSize: 6 * 1024 * 1024,
-      onError(error) {
-        reject(normalizeUploadError(error, file));
-      },
-      onProgress(bytesUploaded, bytesTotal) {
-        onProgress?.(Math.round((bytesUploaded / bytesTotal) * 100));
-      },
-      onSuccess: resolve,
-    });
-    upload
-      .findPreviousUploads()
-      .then((previousUploads) => {
-        if (previousUploads.length) {
-          upload.resumeFromPreviousUpload(previousUploads[0]);
-        }
-        upload.start();
-      })
-      .catch((error) => reject(normalizeUploadError(error, file)));
-  });
-}
-
 async function uploadEvidenceToCloud(file, room, mediaType, metadata, onProgress) {
-  const uniqueId = crypto.randomUUID();
-  const storagePath = `${cloud.organizationId}/${cloud.propertyId}/${uniqueId}-${safeStorageName(file.name)}`;
-  await uploadStorageObject(storagePath, file, onProgress);
-
   const now = new Date();
-  const { data, error: insertError } = await cloud.client
-    .from("evidence_items")
-    .insert({
-      organization_id: cloud.organizationId,
-      property_id: cloud.propertyId,
-      space_id: room.id,
-      storage_path: storagePath,
-      original_filename: file.name,
+  if (!window.MDAIObjectStorage) throw new Error("The secure S3 uploader did not load. Reload the page and retry.");
+  const result = await window.MDAIObjectStorage.upload({
+    client: cloud.client,
+    entityType: "evidence",
+    organizationId: cloud.organizationId,
+    propertyId: cloud.propertyId,
+    spaceId: room.id,
+    file,
+    metadata: {
       media_type: mediaType,
-      mime_type: file.type || "application/octet-stream",
-      byte_size: file.size,
       captured_at: now.toISOString(),
       source_metadata: {
         source: "measured-decision-studio",
@@ -458,16 +336,17 @@ async function uploadEvidenceToCloud(file, room, mediaType, metadata, onProgress
         subject: metadata.subject || null,
         context: metadata.context || null,
       },
-      created_by: cloud.session.user.id,
-    })
-    .select("id")
-    .single();
-  if (insertError) throw insertError;
+    },
+    onProgress,
+  });
+  const data = result.record;
 
   return {
     id: data.id,
-    src: await signedEvidenceUrl(storagePath),
-    storagePath,
+    src: result.signed_url || "",
+    storagePath: data.storage_path,
+    storageProvider: data.storage_provider,
+    storageBucket: data.storage_bucket,
     name: file.name,
     type: mediaType,
     mimeType: file.type || "application/octet-stream",
@@ -569,7 +448,7 @@ async function functionInvocationError(error) {
     return new Error(fallback);
   }
   try {
-    const payload = await response.json();
+    const payload = await (typeof response.clone === "function" ? response.clone() : response).json();
     const detail = payload?.error || fallback;
     const code = payload?.code ? ` (${payload.code})` : "";
     return new Error(`${detail}${code}`);
@@ -1006,8 +885,16 @@ function formatEvidenceDate(value) {
   });
 }
 
-async function signedEvidenceUrl(storagePath) {
+async function signedEvidenceUrl(storagePath, record = null) {
   if (!storagePath) return "";
+  if (record?.storage_provider === "aws-s3") {
+    try {
+      return await window.MDAIObjectStorage.getSignedUrl(cloud.client, "evidence", record.id);
+    } catch (error) {
+      console.error("Could not sign S3 evidence URL", error);
+      return "";
+    }
+  }
   const { data, error } = await cloud.client.storage
     .from(config.storageBucket)
     .createSignedUrl(storagePath, 60 * 60);
@@ -1121,7 +1008,7 @@ async function hydrateCloudRecord() {
       cloud.client
         .from("evidence_items")
         .select(
-          "id, space_id, storage_path, original_filename, media_type, mime_type, byte_size, captured_at, created_at, source_metadata",
+          "id, space_id, storage_path, storage_provider, storage_bucket, object_version_id, original_filename, media_type, mime_type, byte_size, captured_at, created_at, source_metadata",
         )
         .eq("property_id", property.id)
         .order("created_at", { ascending: true }),
@@ -1132,8 +1019,10 @@ async function hydrateCloudRecord() {
   const evidenceWithUrls = await Promise.all(
     (evidenceRows || []).map(async (item) => ({
       id: item.id,
-      src: await signedEvidenceUrl(item.storage_path),
+      src: await signedEvidenceUrl(item.storage_path, item),
       storagePath: item.storage_path,
+      storageProvider: item.storage_provider,
+      storageBucket: item.storage_bucket,
       name: item.original_filename,
       type: item.media_type,
       mimeType: item.mime_type,
@@ -1702,18 +1591,21 @@ async function removeEvidenceRecord(location) {
   const evidence = location.evidence;
   let storageCleanupFailed = false;
   if (cloud.schemaReady && cloud.propertyId) {
-    const { data: deletedRows, error: databaseError } = await cloud.client
-      .from("evidence_items")
-      .delete()
-      .eq("id", evidence.id)
-      .eq("property_id", cloud.propertyId)
-      .select("id");
-    if (databaseError) throw databaseError;
-    if (!deletedRows?.length) {
-      throw new Error("Deletion is not authorized or the evidence no longer exists");
+    if (evidence.storageProvider === "aws-s3") {
+      if (!window.MDAIObjectStorage) throw new Error("The secure S3 service is unavailable. Reload and retry.");
+      await window.MDAIObjectStorage.deleteEvidence(cloud.client, evidence.id);
+    } else {
+      const { data: deletedRows, error: databaseError } = await cloud.client
+        .from("evidence_items")
+        .delete()
+        .eq("id", evidence.id)
+        .eq("property_id", cloud.propertyId)
+        .select("id");
+      if (databaseError) throw databaseError;
+      if (!deletedRows?.length) throw new Error("Deletion is not authorized or the evidence no longer exists");
     }
 
-    if (evidence.storagePath) {
+    if (evidence.storagePath && evidence.storageProvider !== "aws-s3") {
       const { error: storageError } = await cloud.client.storage
         .from(config.storageBucket)
         .remove([evidence.storagePath]);
@@ -1932,7 +1824,9 @@ $("#save-upload").addEventListener("click", async (event) => {
       if (cloud.schemaReady && cloud.propertyId) {
         room.evidence.push(
           await uploadEvidenceToCloud(file, room, type, metadata, (progress) => {
-            button.textContent = `Uploading ${file.name} · ${progress}%`;
+            button.textContent = progress.stage === "finalizing"
+              ? `Finalizing ${file.name}…`
+              : `Uploading ${file.name} · ${progress.percent}% · ${progress.label}`;
           }),
         );
       } else {

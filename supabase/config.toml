@@ -5,3 +5,6 @@ verify_jwt = true
 
 [functions.plan-analyze]
 verify_jwt = true
+
+[functions.object-storage]
+verify_jwt = true

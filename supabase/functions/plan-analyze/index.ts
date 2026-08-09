@@ -3,6 +3,7 @@ import {
   AGENT_CONTRACT_VERSION,
   PLAN_WORKFLOW_INSTRUCTIONS,
 } from "../_shared/agent-contracts.ts";
+import { signedObjectReadUrl } from "../_shared/aws-object-store.ts";
 
 const allowedOrigins = new Set([
   "https://measureddecision.com",
@@ -172,6 +173,8 @@ type DocumentRow = {
   organization_id: string;
   property_id: string;
   storage_path: string;
+  storage_provider: string;
+  storage_bucket: string | null;
   original_filename: string;
   byte_size: number | null;
   document_type: string;
@@ -250,7 +253,7 @@ Deno.serve(async (request) => {
 
     const { data: documents, error: documentError } = await userClient
       .from("project_documents")
-      .select("id, organization_id, property_id, storage_path, original_filename, byte_size, document_type, revision_label, issued_at")
+      .select("id, organization_id, property_id, storage_path, storage_provider, storage_bucket, original_filename, byte_size, document_type, revision_label, issued_at")
       .in("id", job.document_ids)
       .eq("organization_id", job.organization_id)
       .eq("property_id", job.property_id);
@@ -278,11 +281,15 @@ Deno.serve(async (request) => {
 
     const signedDocuments: Array<{ row: DocumentRow; url: string }> = [];
     for (const row of documents as DocumentRow[]) {
-      const { data: signed, error: signedError } = await admin.storage
-        .from("project-documents")
-        .createSignedUrl(row.storage_path, 900);
-      if (signedError || !signed?.signedUrl) throw new Error(`Could not read ${row.original_filename}`);
-      signedDocuments.push({ row, url: signed.signedUrl });
+      if (row.storage_provider === "aws-s3") {
+        signedDocuments.push({ row, url: await signedObjectReadUrl(row.storage_path, 900) });
+      } else {
+        const { data: signed, error: signedError } = await admin.storage
+          .from(row.storage_bucket || "project-documents")
+          .createSignedUrl(row.storage_path, 900);
+        if (signedError || !signed?.signedUrl) throw new Error(`Could not read ${row.original_filename}`);
+        signedDocuments.push({ row, url: signed.signedUrl });
+      }
     }
 
     const register = signedDocuments.map(({ row }) => ({

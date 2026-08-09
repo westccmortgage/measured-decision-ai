@@ -3,6 +3,7 @@ import {
   AGENT_CONTRACT_VERSION,
   EVIDENCE_WORKFLOW_INSTRUCTIONS,
 } from "../_shared/agent-contracts.ts";
+import { signedObjectReadUrl } from "../_shared/aws-object-store.ts";
 
 const OPENAI_MODEL = Deno.env.get("OPENAI_MODEL") || "gpt-5.6-sol";
 const STORAGE_BUCKET = "property-evidence";
@@ -38,6 +39,8 @@ type AnalysisJob = {
 type EvidenceItem = {
   id: string;
   storage_path: string;
+  storage_provider: string;
+  storage_bucket: string | null;
   original_filename: string;
   media_type: string;
   mime_type: string;
@@ -325,7 +328,7 @@ Deno.serve(async (request) => {
       admin
         .from("evidence_items")
         .select(
-          "id, storage_path, original_filename, media_type, mime_type, byte_size, captured_at, source_metadata",
+          "id, storage_path, storage_provider, storage_bucket, original_filename, media_type, mime_type, byte_size, captured_at, source_metadata",
         )
         .eq("organization_id", job.organization_id)
         .eq("property_id", job.property_id)
@@ -386,17 +389,23 @@ Deno.serve(async (request) => {
     for (const item of evidence) {
       if (!item.mime_type.startsWith("image/")) continue;
       if (imageCount >= MAX_IMAGE_INPUTS) break;
-      const { data: signed, error: signedError } = await admin.storage
-        .from(STORAGE_BUCKET)
-        .createSignedUrl(item.storage_path, 15 * 60);
-      if (signedError || !signed?.signedUrl) continue;
+      let signedUrl = "";
+      if (item.storage_provider === "aws-s3") {
+        signedUrl = await signedObjectReadUrl(item.storage_path, 15 * 60).catch(() => "");
+      } else {
+        const { data: signed, error: signedError } = await admin.storage
+          .from(item.storage_bucket || STORAGE_BUCKET)
+          .createSignedUrl(item.storage_path, 15 * 60);
+        if (!signedError) signedUrl = signed?.signedUrl || "";
+      }
+      if (!signedUrl) continue;
       content.push({
         type: "input_text",
         text: `Evidence image ${item.id} · ${item.original_filename}`,
       });
       content.push({
         type: "input_image",
-        image_url: signed.signedUrl,
+        image_url: signedUrl,
         detail: "high",
       });
       imageCount += 1;

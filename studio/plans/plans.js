@@ -77,6 +77,20 @@ function notify(message, kind = "success") {
   notify.timer = window.setTimeout(() => elements.toast.classList.remove("show"), 5000);
 }
 
+async function functionInvocationError(error, fallback = "Secure server worker failed") {
+  let message = error?.message || fallback;
+  const response = error?.context;
+  if (!response || typeof response.json !== "function") return new Error(message);
+  try {
+    const payload = await (typeof response.clone === "function" ? response.clone() : response).json();
+    if (payload?.error) message = payload.error;
+    const code = payload?.code ? ` (${payload.code})` : "";
+    return new Error(`${message}${code}`);
+  } catch {
+    return new Error(message);
+  }
+}
+
 function setMessage(message = "", kind = "") {
   elements.message.textContent = message;
   elements.message.className = `action-message ${kind}`;
@@ -158,13 +172,6 @@ function finishAnalysisProgress(success, detail = "") {
     title: "Analysis stopped",
     detail: detail || "The plan set was preserved. Review the error and try again.",
   });
-}
-
-function safeStorageName(name) {
-  const parts = name.split(".");
-  const extension = parts.length > 1 ? `.${parts.pop().toLowerCase()}` : "";
-  const base = parts.join(".").normalize("NFKD").replace(/[^a-zA-Z0-9._-]+/g, "-").replace(/^-+|-+$/g, "");
-  return `${(base || "plan").slice(0, 100)}${extension}`;
 }
 
 function shortDate(value) {
@@ -266,7 +273,7 @@ async function openProperty(propertyId) {
   setMessage("");
   const [documentsResult, baselinesResult] = await Promise.all([
     client.from("project_documents")
-      .select("id, storage_path, original_filename, mime_type, byte_size, document_type, revision_label, issued_at, status, processing_error, created_at")
+      .select("id, storage_path, storage_provider, storage_bucket, object_version_id, original_filename, mime_type, byte_size, document_type, revision_label, issued_at, status, processing_error, created_at")
       .eq("organization_id", state.organizationId)
       .eq("property_id", propertyId)
       .order("created_at", { ascending: false }),
@@ -449,45 +456,6 @@ function openTask(requirementId) {
   $("#task-dialog").showModal();
 }
 
-async function uploadResumable(file, storagePath) {
-  const { data: sessionData, error: sessionError } = await client.auth.getSession();
-  const currentSession = sessionData?.session;
-  if (sessionError || !currentSession?.access_token) {
-    throw new Error("Your secure session expired. Sign out, sign back in, and retry.");
-  }
-  state.session = currentSession;
-  const projectId = new URL(config.supabaseUrl).hostname.split(".")[0];
-  return new Promise((resolve, reject) => {
-    const upload = new window.tus.Upload(file, {
-      endpoint: `https://${projectId}.storage.supabase.co/storage/v1/upload/resumable`,
-      headers: {
-        authorization: `Bearer ${currentSession.access_token}`,
-        "x-upsert": "false",
-      },
-      uploadDataDuringCreation: true,
-      removeFingerprintOnSuccess: true,
-      retryDelays: [0, 1000, 3000, 5000, 10000],
-      chunkSize: 6 * 1024 * 1024,
-      metadata: {
-        bucketName: "project-documents",
-        objectName: storagePath,
-        contentType: "application/pdf",
-        cacheControl: "3600",
-      },
-      onError: reject,
-      onProgress(bytesUploaded, bytesTotal) {
-        const percent = Math.round((bytesUploaded / bytesTotal) * 100);
-        elements.sync.textContent = `Uploading ${file.name} · ${percent}%`;
-      },
-      onSuccess: () => resolve(upload.url),
-    });
-    upload.findPreviousUploads().then((previous) => {
-      if (previous.length) upload.resumeFromPreviousUpload(previous[0]);
-      upload.start();
-    }).catch(reject);
-  });
-}
-
 async function savePendingFiles() {
   if (!state.pendingFiles.length || state.busy) return;
   const invalid = state.pendingFiles.find((file) => file.type !== "application/pdf" && !file.name.toLowerCase().endsWith(".pdf"));
@@ -497,28 +465,30 @@ async function savePendingFiles() {
   const revision = $("#document-revision").value.trim() || null;
   const issuedAt = $("#document-issued").value || null;
   try {
+    if (!window.MDAIObjectStorage) throw new Error("The secure S3 uploader did not load. Reload the page and retry.");
     for (const file of state.pendingFiles) {
-      const documentId = crypto.randomUUID();
-      const storagePath = `${state.organizationId}/${state.property.id}/${documentId}-${safeStorageName(file.name)}`;
-      await uploadResumable(file, storagePath);
-      const { error } = await client.from("project_documents").insert({
-        id: documentId,
-        organization_id: state.organizationId,
-        property_id: state.property.id,
-        storage_path: storagePath,
-        original_filename: file.name,
-        mime_type: "application/pdf",
-        byte_size: file.size,
-        document_type: documentType,
-        revision_label: revision,
-        issued_at: issuedAt,
-        status: "uploaded",
-        created_by: state.session.user.id,
+      await window.MDAIObjectStorage.upload({
+        client,
+        entityType: "project_document",
+        organizationId: state.organizationId,
+        propertyId: state.property.id,
+        file,
+        metadata: {
+          document_type: documentType,
+          revision_label: revision,
+          issued_at: issuedAt,
+          source_metadata: {
+            source: "measured-decision-plan-workspace",
+            last_modified: file.lastModified || null,
+          },
+        },
+        onProgress(progress) {
+          const resumeLabel = progress.resumed && progress.stage === "resuming" ? "Resuming · " : "";
+          elements.sync.textContent = progress.stage === "finalizing"
+            ? `Finalizing ${file.name}…`
+            : `${resumeLabel}Uploading ${file.name} · ${progress.percent}% · ${progress.label}`;
+        },
       });
-      if (error) {
-        await client.storage.from("project-documents").remove([storagePath]);
-        throw error;
-      }
     }
     notify(`${state.pendingFiles.length} plan document${state.pendingFiles.length === 1 ? "" : "s"} saved`);
     state.pendingFiles = [];
@@ -560,11 +530,7 @@ async function analyzePlans() {
     }).select("id").single();
     if (jobError) throw jobError;
     const { data, error } = await client.functions.invoke("plan-analyze", { body: { job_id: job.id } });
-    if (error) {
-      let detail = error.message;
-      try { detail = (await error.context?.json())?.error || detail; } catch (_) { /* response may not be JSON */ }
-      throw new Error(detail);
-    }
+    if (error) throw await functionInvocationError(error, "Plan analysis worker failed");
     if (data?.error) throw new Error(data.error);
     finishAnalysisProgress(true);
     setMessage(`Baseline v${data.version} is ready for human review.`);
