@@ -36,6 +36,22 @@ type UploadRow = {
   entity_metadata: Record<string, unknown>;
   status: "pending" | "completed" | "aborted" | "failed";
   created_by: string;
+  field_assignment_id: string | null;
+};
+
+type FieldAssignment = {
+  id: string;
+  organization_id: string;
+  property_id: string;
+  baseline_id: string;
+  capture_task_id: string;
+  requirement_id: string;
+  space_id: string | null;
+  status: string;
+  token_hash: string;
+  expires_at: string;
+  created_by: string;
+  instructions_snapshot: Record<string, unknown>;
 };
 
 function corsHeaders(request: Request) {
@@ -88,6 +104,15 @@ function isUuid(value: unknown) {
   return /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(String(value || ""));
 }
 
+function bytesToHex(bytes: Uint8Array) {
+  return Array.from(bytes).map((byte) => byte.toString(16).padStart(2, "0")).join("");
+}
+
+async function hashToken(token: string) {
+  const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(token));
+  return bytesToHex(new Uint8Array(digest));
+}
+
 Deno.serve(async (request) => {
   if (request.method === "OPTIONS") return new Response("ok", { headers: corsHeaders(request) });
   if (request.method !== "POST") return json(request, { error: "Method not allowed" }, 405);
@@ -97,24 +122,43 @@ Deno.serve(async (request) => {
   const serviceKey = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY");
   const authorization = request.headers.get("Authorization") || "";
   if (!supabaseUrl || !anonKey || !serviceKey) return json(request, { error: "Server configuration is incomplete" }, 500);
-  if (!authorization.startsWith("Bearer ")) return json(request, { error: "Authentication required" }, 401);
 
-  const userClient = createClient(supabaseUrl, anonKey, {
-    global: { headers: { Authorization: authorization } },
-    auth: { persistSession: false },
-  });
   const admin = createClient(supabaseUrl, serviceKey, { auth: { persistSession: false } });
-  const { data: userData, error: userError } = await userClient.auth.getUser();
-  if (userError || !userData.user) return json(request, { error: "Invalid session" }, 401);
 
   try {
     const body = await request.json();
     const operation = text(body?.operation);
-    const userId = userData.user.id;
+    let userId = "";
+    let fieldAssignment: FieldAssignment | null = null;
+    if (body?.field_access?.assignment_id && body?.field_access?.token) {
+      const assignmentId = text(body.field_access.assignment_id);
+      const token = text(body.field_access.token);
+      if (!isUuid(assignmentId) || token.length < 32) throw Object.assign(new Error("Invalid field assignment"), { status: 401 });
+      const { data: assignment } = await admin.from("field_assignments")
+        .select("*")
+        .eq("id", assignmentId)
+        .eq("token_hash", await hashToken(token))
+        .maybeSingle();
+      if (!assignment || ["revoked", "expired", "completed"].includes(assignment.status) || new Date(assignment.expires_at).valueOf() <= Date.now()) {
+        throw Object.assign(new Error("This field assignment is no longer available"), { status: 410 });
+      }
+      fieldAssignment = assignment as FieldAssignment;
+      userId = fieldAssignment.created_by;
+    } else {
+      if (!authorization.startsWith("Bearer ")) throw Object.assign(new Error("Authentication required"), { status: 401 });
+      const userClient = createClient(supabaseUrl, anonKey, {
+        global: { headers: { Authorization: authorization } },
+        auth: { persistSession: false },
+      });
+      const { data: userData, error: userError } = await userClient.auth.getUser();
+      if (userError || !userData.user) throw Object.assign(new Error("Invalid session"), { status: 401 });
+      userId = userData.user.id;
+    }
     const { bucket, client: s3 } = awsObjectStore();
 
     async function membership(organizationId: string) {
-      const { data } = await userClient.from("organization_members")
+      if (fieldAssignment) return "field_worker";
+      const { data } = await admin.from("organization_members")
         .select("role")
         .eq("organization_id", organizationId)
         .eq("user_id", userId)
@@ -127,7 +171,7 @@ Deno.serve(async (request) => {
       const { data, error } = await admin.from("object_uploads")
         .select("*")
         .eq("id", sessionId)
-        .eq("created_by", userId)
+        .eq(fieldAssignment ? "field_assignment_id" : "created_by", fieldAssignment ? fieldAssignment.id : userId)
         .maybeSingle();
       if (error || !data) throw Object.assign(new Error("Upload session not found"), { status: 404 });
       const role = await membership(data.organization_id);
@@ -147,10 +191,13 @@ Deno.serve(async (request) => {
     }
 
     if (operation === "create_upload") {
-      const entityType = text(body?.entity_type);
-      const organizationId = text(body?.organization_id);
-      const propertyId = text(body?.property_id);
-      const spaceId = body?.space_id ? text(body.space_id) : null;
+      const fieldCaptureType = text(fieldAssignment?.instructions_snapshot?.capture_type).toLowerCase();
+      const entityType = fieldAssignment
+        ? fieldCaptureType === "document" ? "project_document" : "evidence"
+        : text(body?.entity_type);
+      const organizationId = fieldAssignment?.organization_id || text(body?.organization_id);
+      const propertyId = fieldAssignment?.property_id || text(body?.property_id);
+      const spaceId = fieldAssignment?.space_id || (body?.space_id ? text(body.space_id) : null);
       const filename = text(body?.file?.name);
       const mimeType = text(body?.file?.type, "application/octet-stream");
       const byteSize = numberValue(body?.file?.size);
@@ -162,9 +209,9 @@ Deno.serve(async (request) => {
       const allowedRoles = entityType === "project_document"
         ? ["owner", "admin", "contributor"]
         : ["owner", "admin", "contributor"];
-      if (!role || !allowedRoles.includes(role)) throw Object.assign(new Error("Not authorized to upload this file"), { status: 403 });
+      if (!role || (!fieldAssignment && !allowedRoles.includes(role))) throw Object.assign(new Error("Not authorized to upload this file"), { status: 403 });
 
-      const { data: property } = await userClient.from("properties")
+      const { data: property } = await admin.from("properties")
         .select("id")
         .eq("id", propertyId)
         .eq("organization_id", organizationId)
@@ -172,7 +219,7 @@ Deno.serve(async (request) => {
       if (!property) throw Object.assign(new Error("Project not found"), { status: 404 });
       if (entityType === "evidence") {
         if (!isUuid(spaceId)) throw Object.assign(new Error("A valid room is required"), { status: 400 });
-        const { data: space } = await userClient.from("spaces")
+        const { data: space } = await admin.from("spaces")
           .select("id")
           .eq("id", spaceId)
           .eq("property_id", propertyId)
@@ -197,6 +244,18 @@ Deno.serve(async (request) => {
       }));
       if (!created.UploadId) throw new Error("S3 did not create a multipart upload");
 
+      const suppliedMetadata = body?.metadata && typeof body.metadata === "object" ? body.metadata : {};
+      const entityMetadata = fieldAssignment ? {
+        ...suppliedMetadata,
+        capture_task_id: fieldAssignment.capture_task_id,
+        baseline_id: fieldAssignment.baseline_id,
+        field_assignment_id: fieldAssignment.id,
+        source_metadata: {
+          ...((suppliedMetadata as Record<string, Record<string, unknown>>)?.source_metadata || {}),
+          source: "secure-field-portal",
+          field_assignment_id: fieldAssignment.id,
+        },
+      } : suppliedMetadata;
       const { error: insertError } = await admin.from("object_uploads").insert({
         id: sessionId,
         organization_id: organizationId,
@@ -209,8 +268,9 @@ Deno.serve(async (request) => {
         original_filename: filename,
         mime_type: mimeType,
         byte_size: byteSize,
-        entity_metadata: body?.metadata && typeof body.metadata === "object" ? body.metadata : {},
+        entity_metadata: entityMetadata,
         created_by: userId,
+        field_assignment_id: fieldAssignment?.id || null,
       });
       if (insertError) {
         await s3.send(new AbortMultipartUploadCommand({ Bucket: bucket, Key: objectKey, UploadId: created.UploadId })).catch(() => undefined);
@@ -302,6 +362,9 @@ Deno.serve(async (request) => {
           issued_at: metadata.issued_at || null,
           status: "uploaded",
           source_metadata: metadata.source_metadata || {},
+          capture_task_id: metadata.capture_task_id || null,
+          baseline_id: metadata.baseline_id || null,
+          field_assignment_id: metadata.field_assignment_id || row.field_assignment_id || null,
         }
         : {
           ...baseRecord,
@@ -311,6 +374,7 @@ Deno.serve(async (request) => {
           source_metadata: metadata.source_metadata || {},
           capture_task_id: metadata.capture_task_id || null,
           baseline_id: metadata.baseline_id || null,
+          field_assignment_id: metadata.field_assignment_id || row.field_assignment_id || null,
         };
       const { data: inserted, error: insertError } = await admin.from(table).insert(record).select("*").single();
       if (insertError) {
@@ -322,11 +386,11 @@ Deno.serve(async (request) => {
       await admin.from("object_uploads").update({ status: "completed", completed_at: completedAt, updated_at: completedAt }).eq("id", row.id);
       const { error: auditError } = await admin.from("audit_events").insert({
         organization_id: row.organization_id,
-        actor_id: userId,
+        actor_id: fieldAssignment ? null : userId,
         action: `${row.entity_type}.uploaded_to_s3`,
         entity_type: table,
         entity_id: row.id,
-        detail: { bucket: row.storage_bucket, object_key: row.object_key, byte_size: row.byte_size },
+        detail: { bucket: row.storage_bucket, object_key: row.object_key, byte_size: row.byte_size, field_assignment_id: row.field_assignment_id },
       });
       if (auditError) console.error("Object upload audit event could not be recorded", auditError);
       return json(request, { record: inserted, signed_url: await signedObjectReadUrl(row.object_key, URL_TTL_SECONDS) });
@@ -337,19 +401,25 @@ Deno.serve(async (request) => {
       const recordId = text(body?.record_id);
       const table = entityType === "project_document" ? "project_documents" : entityType === "evidence" ? "evidence_items" : "";
       if (!table || !isUuid(recordId)) throw Object.assign(new Error("A valid record is required"), { status: 400 });
-      const { data: record } = await userClient.from(table)
-        .select("id, organization_id, storage_provider, storage_bucket, storage_path")
+      const { data: record } = await admin.from(table)
+        .select("id, organization_id, storage_provider, storage_bucket, storage_path, field_assignment_id")
         .eq("id", recordId)
         .maybeSingle();
       if (!record) throw Object.assign(new Error("Stored object not found"), { status: 404 });
+      if (fieldAssignment) {
+        if ((record as Record<string, unknown>).field_assignment_id !== fieldAssignment.id) throw Object.assign(new Error("This file is outside the field assignment"), { status: 403 });
+      } else if (!await membership(record.organization_id)) {
+        throw Object.assign(new Error("Not authorized to open this file"), { status: 403 });
+      }
       if (record.storage_provider !== "aws-s3" || record.storage_bucket !== bucket) throw Object.assign(new Error("Record is not stored in the configured S3 bucket"), { status: 409 });
       return json(request, { signed_url: await signedObjectReadUrl(record.storage_path, URL_TTL_SECONDS), expires_in: URL_TTL_SECONDS });
     }
 
     if (operation === "delete_evidence") {
+      if (fieldAssignment) throw Object.assign(new Error("Field links cannot delete submitted evidence"), { status: 403 });
       const recordId = text(body?.record_id);
       if (!isUuid(recordId)) throw Object.assign(new Error("A valid evidence record is required"), { status: 400 });
-      const { data: record } = await userClient.from("evidence_items")
+      const { data: record } = await admin.from("evidence_items")
         .select("id, organization_id, property_id, storage_provider, storage_bucket, storage_path")
         .eq("id", recordId)
         .maybeSingle();

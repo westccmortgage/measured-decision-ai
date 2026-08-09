@@ -68,6 +68,8 @@ let pendingFiles = [];
 let editingEvidenceId = null;
 let deletingEvidenceId = null;
 let activeEvidenceId = null;
+let visionRelease = null;
+let approvedVisionRelease = null;
 let objectUrls = [];
 let fileDatabase;
 const analysisRoomsInFlight = new Set();
@@ -457,6 +459,86 @@ async function functionInvocationError(error) {
   }
 }
 
+function visionBlockerLabel(code = "") {
+  if (code === "approved_plan_baseline_required") return "Approve the current plan baseline";
+  if (code === "verified_spatial_evidence_required") return "Add reviewed spatial evidence";
+  if (code.startsWith("space_review_required:")) return "Confirm every included room";
+  if (code.startsWith("field_task_verification_required:")) return "Complete the linked field assignment";
+  if (code.startsWith("current_interpretation_required:")) return "Run AI on the current room evidence";
+  if (code.startsWith("interpretation_review_required:")) return "Human-confirm the current AI interpretation";
+  return code.replaceAll("_", " ");
+}
+
+function normalizedVisionRelease(release) {
+  if (!release) return null;
+  return {
+    ...release,
+    blockers: Array.isArray(release.blockers)
+      ? release.blockers
+      : Array.isArray(release.manifest?.blockers)
+        ? release.manifest.blockers
+        : [],
+  };
+}
+
+function renderVisionReleaseStatus() {
+  const status = $("#vision-release-status");
+  const state = $("#vision-release-state");
+  const approve = $("#approve-vision-release");
+  const build = $("#build-vision-release");
+  const canGovern = ["owner", "admin", "reviewer"].includes(cloud.role);
+  build.disabled = !canGovern;
+  approve.hidden = true;
+  status.className = "vision-release-status";
+
+  if (!visionRelease) {
+    state.textContent = "No governed release yet";
+    $("#vision-release-version").textContent = "—";
+    status.textContent = canGovern
+      ? "Build a release after the plan baseline, field work, and room evidence have been reviewed."
+      : "A project reviewer must build and approve the first Vision release.";
+    renderVisionReadiness();
+    updatePipeline();
+    return;
+  }
+
+  $("#vision-release-version").textContent = `v${visionRelease.version}`;
+  if (visionRelease.state === "approved") {
+    state.textContent = "Approved · available to Vision client";
+    status.classList.add("approved");
+    status.textContent = `Version ${visionRelease.version} is the current immutable release. The Vision client receives temporary private media links on demand.`;
+  } else if (visionRelease.blockers.length) {
+    state.textContent = `Draft · ${visionRelease.blockers.length} blocker${visionRelease.blockers.length === 1 ? "" : "s"}`;
+    status.classList.add("blocked");
+    const production = approvedVisionRelease
+      ? ` Approved v${approvedVisionRelease.version} remains live.`
+      : " Nothing is live yet.";
+    status.textContent = `${visionRelease.blockers.slice(0, 3).map(visionBlockerLabel).join(" · ")}.${production}`;
+  } else {
+    state.textContent = "Draft · ready for named approval";
+    status.textContent = "Every governance check passed. A reviewer can approve this exact version for the Vision client.";
+    approve.hidden = !canGovern;
+  }
+  renderVisionReadiness();
+  updatePipeline();
+}
+
+async function invokeVisionRelease(body) {
+  const { data, error } = await cloud.client.functions.invoke("vision-release", { body });
+  if (error) throw await functionInvocationError(error);
+  if (data?.error) throw new Error(data.error);
+  return data;
+}
+
+async function refreshVisionReleaseStatus() {
+  if (!cloud.client || !cloud.propertyId) return;
+  const data = await invokeVisionRelease({ action: "status", property_id: cloud.propertyId });
+  const releases = (data?.releases || []).map(normalizedVisionRelease);
+  visionRelease = releases[0] || null;
+  approvedVisionRelease = releases.find((release) => release.state === "approved") || null;
+  renderVisionReleaseStatus();
+}
+
 function currentRoom() {
   return rooms.find((room) => room.id === activeRoomId) || rooms[0];
 }
@@ -757,9 +839,14 @@ function renderVisionReadiness() {
         : "Supabase Storage not connected",
     },
     {
-      label: "visionOS client build",
-      ready: false,
-      note: "Native client not built",
+      label: "Governed Vision release",
+      ready: visionRelease?.state === "approved",
+      note:
+        visionRelease?.state === "approved"
+          ? `Version ${visionRelease.version} approved`
+          : visionRelease
+            ? `Version ${visionRelease.version} is ${visionRelease.blockers?.length ? "blocked" : "awaiting approval"}`
+            : "Build a versioned release",
     },
   ];
   const readyCount = checks.filter((item) => item.ready).length;
@@ -785,7 +872,7 @@ function updatePipeline() {
     rooms.length > 0,
     jobs.some((job) => job.status === "Completed"),
     allReviewed,
-    false,
+    visionRelease?.state === "approved",
   ];
   $("#pipeline-steps")
     .querySelectorAll("li")
@@ -1114,10 +1201,15 @@ async function hydrateCloudRecord() {
 
 async function openProperty(propertyId) {
   cloud.propertyId = propertyId;
+  visionRelease = null;
+  approvedVisionRelease = null;
   const plansHref = `plans/?property=${encodeURIComponent(propertyId)}`;
+  const operationsHref = `operations/?property=${encodeURIComponent(propertyId)}`;
   const plansNavigation = $("#plans-navigation");
+  const operationsNavigation = $("#operations-navigation");
   const projectPlansLink = $("#project-plans-link");
   if (plansNavigation) plansNavigation.href = plansHref;
+  if (operationsNavigation) operationsNavigation.href = operationsHref;
   if (projectPlansLink) projectPlansLink.href = plansHref;
   elements.propertyGate.hidden = true;
   elements.shell.hidden = false;
@@ -1128,6 +1220,7 @@ async function openProperty(propertyId) {
     elements.autosave.textContent = `Cloud connected · ${cloud.role}`;
     activateView("property");
     render();
+    refreshVisionReleaseStatus().catch((error) => console.error("Vision release status", error));
   } catch (error) {
     console.error(error);
     elements.shell.hidden = true;
@@ -1252,6 +1345,9 @@ function activateView(name) {
     );
   $("#sidebar").classList.remove("open");
   window.scrollTo({ top: 0, behavior: "smooth" });
+  if (name === "vision" && cloud.propertyId) {
+    refreshVisionReleaseStatus().catch((error) => console.error("Vision release status", error));
+  }
 }
 
 $("#continue-google").addEventListener("click", async () => {
@@ -2115,11 +2211,54 @@ $("#export-record").addEventListener("click", () => {
   notify("Property record exported");
 });
 
+$("#build-vision-release").addEventListener("click", async () => {
+  const button = $("#build-vision-release");
+  button.disabled = true;
+  button.textContent = "Building governed release…";
+  try {
+    const data = await invokeVisionRelease({ action: "build", property_id: cloud.propertyId });
+    visionRelease = normalizedVisionRelease(data.release);
+    renderVisionReleaseStatus();
+    notify(
+      visionRelease.blockers.length
+        ? `Draft v${visionRelease.version} built with ${visionRelease.blockers.length} blocker${visionRelease.blockers.length === 1 ? "" : "s"}`
+        : `Draft v${visionRelease.version} is ready for approval`,
+      5000,
+    );
+  } catch (error) {
+    notify(error.message || "Vision release could not be built", 5000);
+  } finally {
+    button.textContent = "Build governed release →";
+    button.disabled = !["owner", "admin", "reviewer"].includes(cloud.role);
+  }
+});
+
+$("#approve-vision-release").addEventListener("click", async () => {
+  if (!visionRelease || visionRelease.blockers.length) return;
+  const button = $("#approve-vision-release");
+  button.disabled = true;
+  button.textContent = "Approving…";
+  try {
+    await invokeVisionRelease({
+      action: "approve",
+      property_id: cloud.propertyId,
+      release_id: visionRelease.id,
+    });
+    await refreshVisionReleaseStatus();
+    notify(`Vision release v${visionRelease.version} approved`);
+  } catch (error) {
+    notify(error.message || "Vision release could not be approved", 5000);
+  } finally {
+    button.textContent = "Approve release";
+    button.disabled = false;
+  }
+});
+
 $("#export-vision-manifest").addEventListener("click", () => {
   const manifest = {
     schema: "com.measureddecision.spatial-record/0.1",
     packageType: "visionos-release-manifest",
-    status: "draft-not-installable",
+    status: "local-draft-not-governed",
     property: propertyRecord,
     generatedAt: new Date().toISOString(),
     governance: {
@@ -2145,7 +2284,7 @@ $("#export-vision-manifest").addEventListener("click", () => {
       rooms.every((room) => room.evidence.every((item) => item.storagePath))
         ? []
         : ["private_storage_not_connected"]),
-      "visionos_client_not_built",
+      "local_draft_requires_governed_release",
     ],
   };
   downloadJson(manifest, "private-property-vision-manifest-v0.1.json");

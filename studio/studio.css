@@ -1377,6 +1377,22 @@ dialog textarea { min-height:78px; resize:vertical; }
   font-size: 12px;
   line-height: 1.7;
 }
+.vision-actions {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 8px;
+  max-width: 520px;
+}
+.vision-actions .text-button {
+  min-height: 38px;
+  padding: 0 10px;
+  border: 0;
+  background: transparent;
+  color: var(--muted);
+  cursor: pointer;
+  font-size: 10px;
+}
 .intake-layout {
   display: grid;
   grid-template-columns: 1.45fr 0.75fr;
@@ -1740,6 +1756,18 @@ dialog textarea { min-height:78px; resize:vertical; }
 .vision-preview > p:not(.eyebrow) {
   color: var(--muted);
   font-size: 11px;
+}
+.vision-preview .vision-release-status {
+  max-width: 560px;
+  margin: 12px 0 0;
+  color: #b7c7d4;
+  line-height: 1.55;
+}
+.vision-preview .vision-release-status.blocked {
+  color: var(--amber);
+}
+.vision-preview .vision-release-status.approved {
+  color: var(--green);
 }
 .vision-orbit {
   position: relative;

@@ -9,7 +9,7 @@
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
-    <link rel="stylesheet" href="plans.css?v=20260808-analysis-progress">
+    <link rel="stylesheet" href="plans.css?v=20260809-field-operations">
   </head>
   <body>
     <div class="boot-screen" id="boot-screen">
@@ -35,6 +35,7 @@
         <nav>
           <a class="nav-item" href="../"><span>⌂</span>Property record</a>
           <button class="nav-item active" type="button"><span>▤</span>Project plans</button>
+          <a class="nav-item" href="../operations/"><span>◎</span>Field operations</a>
           <a class="nav-item" href="../"><span>?</span>Capture guide</a>
           <a class="nav-item" href="../"><span>⇧</span>Evidence intake</a>
           <a class="nav-item" href="../"><span>⌁</span>AI processing</a>
@@ -201,6 +202,26 @@
           <section><span>Completion check</span><ul id="task-dialog-criteria"></ul></section>
           <section class="wide concealment"><span>Capture before</span><p id="task-dialog-before"></p></section>
           <section class="wide"><span>Plan references</span><p id="task-dialog-refs"></p></section>
+          <section class="wide assignment-panel">
+            <div class="assignment-heading">
+              <div><span>Send this field task</span><p>One worker receives one private link with only the steps and upload button needed for this capture.</p></div>
+              <strong id="task-assignment-state">Not sent</strong>
+            </div>
+            <div class="assignment-form" id="assignment-form">
+              <label>Worker name<input id="assignment-worker-name" type="text" maxlength="100" autocomplete="name" placeholder="Field worker"></label>
+              <label>Worker email<input id="assignment-worker-email" type="email" maxlength="240" autocomplete="email" placeholder="worker@company.com"></label>
+              <label>Due date<input id="assignment-due" type="datetime-local"></label>
+              <button class="button primary" id="send-field-task" type="button">Send field task</button>
+            </div>
+            <div class="assignment-result" id="assignment-result" hidden>
+              <p id="assignment-result-copy"></p>
+              <div>
+                <button class="button secondary" id="copy-field-link" type="button">Copy private link</button>
+                <a class="button secondary" id="open-field-link" target="_blank" rel="noopener">Preview worker view</a>
+                <a class="button secondary" href="../operations/">Open operations hub</a>
+              </div>
+            </div>
+          </section>
         </div>
         <div class="dialog-actions">
           <button class="button secondary" value="cancel">Close</button>
@@ -213,6 +234,6 @@
     <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2.106.2"></script>
     <script src="../config.js"></script>
     <script src="../s3-upload.js?v=20260809-s3"></script>
-    <script src="plans.js?v=20260809-s3"></script>
+    <script src="plans.js?v=20260809-field-operations"></script>
   </body>
 </html>

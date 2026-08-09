@@ -19,6 +19,10 @@ const state = {
   planSpaces: [],
   requirements: [],
   tasks: [],
+  assignments: [],
+  qualityChecks: [],
+  selectedRequirementId: null,
+  generatedFieldLink: null,
   pendingFiles: [],
   selectedDocumentIds: new Set(),
   busy: false,
@@ -184,6 +188,10 @@ function taskForRequirement(requirementId) {
   return state.tasks.find((task) => task.requirement_id === requirementId) || { status: "blocked" };
 }
 
+function latestAssignmentForTask(taskId) {
+  return state.assignments.find((assignment) => assignment.capture_task_id === taskId) || null;
+}
+
 function planSpace(planSpaceId) {
   return state.planSpaces.find((space) => space.id === planSpaceId) || null;
 }
@@ -299,19 +307,25 @@ async function openProperty(propertyId) {
   state.planSpaces = [];
   state.requirements = [];
   state.tasks = [];
+  state.assignments = [];
+  state.qualityChecks = [];
   if (state.baseline) {
-    const [phaseResult, spaceResult, requirementResult, taskResult] = await Promise.all([
+    const [phaseResult, spaceResult, requirementResult, taskResult, assignmentResult, qualityResult] = await Promise.all([
       client.from("construction_phases").select("*").eq("baseline_id", state.baseline.id).order("sequence"),
       client.from("plan_spaces").select("*").eq("baseline_id", state.baseline.id),
       client.from("capture_requirements").select("*").eq("baseline_id", state.baseline.id).order("created_at"),
       client.from("capture_tasks").select("*").eq("baseline_id", state.baseline.id).order("created_at"),
+      client.from("field_assignments").select("id, capture_task_id, worker_name, worker_email, status, due_at, email_delivery_state, created_at, updated_at").eq("baseline_id", state.baseline.id).order("created_at", { ascending: false }),
+      client.from("field_quality_checks").select("id, assignment_id, capture_task_id, state, result, created_at, completed_at").eq("property_id", propertyId).order("created_at", { ascending: false }),
     ]);
-    const loadError = phaseResult.error || spaceResult.error || requirementResult.error || taskResult.error;
+    const loadError = phaseResult.error || spaceResult.error || requirementResult.error || taskResult.error || assignmentResult.error || qualityResult.error;
     if (loadError) notify(loadError.message, "error");
     state.phases = phaseResult.data || [];
     state.planSpaces = spaceResult.data || [];
     state.requirements = requirementResult.data || [];
     state.tasks = taskResult.data || [];
+    state.assignments = assignmentResult.data || [];
+    state.qualityChecks = qualityResult.data || [];
   }
   render();
   elements.sync.textContent = `Cloud connected · ${state.role}`;
@@ -419,6 +433,7 @@ function renderRoadmap() {
 
 function taskCard(requirement, phase) {
   const task = taskForRequirement(requirement.id);
+  const assignment = latestAssignmentForTask(task.id);
   const space = planSpace(requirement.plan_space_id);
   const location = space ? `${space.building} · ${space.level} · ${space.name}` : "Project-wide / location to confirm";
   const refs = Array.isArray(requirement.plan_refs) ? requirement.plan_refs : [];
@@ -428,6 +443,7 @@ function taskCard(requirement, phase) {
       <h3>${escapeHtml(requirement.title)}</h3>
       <p class="task-location">${escapeHtml(location)}</p>
       <p class="task-why">${escapeHtml(requirement.rationale)}</p>
+      ${assignment ? `<span class="task-assignment ${escapeHtml(assignment.status)}">${escapeHtml(assignment.worker_name)} · ${escapeHtml(label(assignment.status))}</span>` : ""}
       <div class="task-bottom"><strong>${escapeHtml(requirement.capture_type)}</strong><span>${refs.length} plan reference${refs.length === 1 ? "" : "s"} · ${escapeHtml(phase.code)}</span></div>
     </button>`;
 }
@@ -435,6 +451,8 @@ function taskCard(requirement, phase) {
 function openTask(requirementId) {
   const requirement = state.requirements.find((item) => item.id === requirementId);
   if (!requirement) return;
+  state.selectedRequirementId = requirementId;
+  state.generatedFieldLink = null;
   const phase = phaseForRequirement(requirement);
   const space = planSpace(requirement.plan_space_id);
   $("#task-dialog-phase").textContent = `${phase?.code || "Capture"} · ${label(requirement.priority)} priority`;
@@ -453,7 +471,60 @@ function openTask(requirementId) {
   $("#task-dialog-before").textContent = requirement.before_concealment;
   $("#task-dialog-refs").textContent = (requirement.plan_refs || []).join(" · ") || "No exact sheet reference was legible; see baseline gaps.";
   $("#task-open-intake").href = `../?capture_task=${encodeURIComponent(taskForRequirement(requirement.id).id || "")}`;
+  const task = taskForRequirement(requirement.id);
+  const assignment = latestAssignmentForTask(task.id);
+  $("#task-assignment-state").textContent = assignment ? label(assignment.status) : "Not sent";
+  $("#assignment-worker-name").value = assignment?.worker_name || "";
+  $("#assignment-worker-email").value = assignment?.worker_email || "";
+  $("#assignment-due").value = assignment?.due_at ? new Date(new Date(assignment.due_at).valueOf() - new Date().getTimezoneOffset() * 60000).toISOString().slice(0, 16) : "";
+  $("#assignment-result").hidden = true;
+  $("#send-field-task").disabled = !canApproveBaseline() || ["blocked", "waived", "submitted", "verified"].includes(task.status);
   $("#task-dialog").showModal();
+}
+
+async function createFieldAssignment() {
+  const requirement = state.requirements.find((item) => item.id === state.selectedRequirementId);
+  const task = requirement ? taskForRequirement(requirement.id) : null;
+  const workerName = $("#assignment-worker-name").value.trim();
+  const workerEmail = $("#assignment-worker-email").value.trim();
+  const dueInput = $("#assignment-due").value;
+  if (!task?.id) return notify("This capture task is not ready to send.", "error");
+  if (!workerName || !/^\S+@\S+\.\S+$/.test(workerEmail)) return notify("Enter the worker name and a valid email.", "error");
+  const button = $("#send-field-task");
+  button.disabled = true;
+  button.textContent = "Creating private link…";
+  try {
+    const { data, error } = await client.functions.invoke("field-workflow", { body: {
+      action: "create_assignment",
+      capture_task_id: task.id,
+      worker_name: workerName,
+      worker_email: workerEmail,
+      due_at: dueInput ? new Date(dueInput).toISOString() : null,
+    } });
+    if (error) throw await functionInvocationError(error, "Field assignment could not be created");
+    if (data?.error) throw new Error(data.error);
+    state.generatedFieldLink = data.link;
+    $("#task-assignment-state").textContent = data.email_sent ? "Email sent" : "Private link ready";
+    $("#assignment-result-copy").textContent = data.email_sent
+      ? `Sent to ${workerEmail}. The worker can open the task without a Studio account.`
+      : `Email delivery is not configured yet. The protected field link is ready to copy and send.`;
+    $("#open-field-link").href = data.link;
+    $("#assignment-result").hidden = false;
+    notify(data.email_sent ? "Field task emailed." : "Private field link created.");
+    await openProperty(state.property.id);
+  } catch (error) {
+    console.error(error);
+    notify(error.message || "Field assignment failed", "error");
+  } finally {
+    button.disabled = false;
+    button.textContent = "Send field task";
+  }
+}
+
+async function copyFieldLink() {
+  if (!state.generatedFieldLink) return;
+  await navigator.clipboard.writeText(state.generatedFieldLink);
+  notify("Private field link copied.");
 }
 
 async function savePendingFiles() {
@@ -588,6 +659,8 @@ $("#cancel-upload").addEventListener("click", () => {
 $("#confirm-upload").addEventListener("click", savePendingFiles);
 elements.analyze.addEventListener("click", analyzePlans);
 $("#approve-baseline").addEventListener("click", approveBaseline);
+$("#send-field-task").addEventListener("click", createFieldAssignment);
+$("#copy-field-link").addEventListener("click", copyFieldLink);
 $("#phase-filter").addEventListener("change", renderRoadmap);
 $("#status-filter").addEventListener("change", renderRoadmap);
 $("#sign-out").addEventListener("click", async () => {

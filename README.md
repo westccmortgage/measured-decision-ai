@@ -46,16 +46,24 @@ governing PDF plan set instead of from an unstructured site walk:
 2. Run the server-side `plan-analyze` worker against an explicit document set.
 3. Review the versioned project baseline, source references, conflicts, and gaps.
 4. Approve the baseline to create rooms and activate phase-based capture tasks.
-5. Open a task in Evidence Intake; uploaded evidence is linked to that exact requirement.
+5. Send one ready task from the roadmap to a field worker by email or private link.
+6. The worker follows four mobile steps at `/field/` and uploads directly to private S3 without a Studio account.
+7. Field Quality checks usability; a remote reviewer completes the task or asks for one clear retake from `/studio/operations/`.
+8. Build and human-approve a governed Vision release. Drafts and stale evidence never replace the live package.
 
-Apply `supabase/migrations/005_plan_intelligence.sql` and deploy the
-`plan-analyze` Edge Function before enabling the page in production. The worker
+Production also requires migrations `006_external_object_storage.sql` and
+`007_field_operations.sql` plus `object-storage`, `field-workflow`,
+`field-quality-check`, and `vision-release`. The plan worker
 uses `OPENAI_PLAN_MODEL`, then `OPENAI_MODEL`, and requires the same server-only
 `OPENAI_API_KEY` already used by evidence analysis. See
 [`docs/AI_OPERATING_CONTRACT.md`](docs/AI_OPERATING_CONTRACT.md) for its scope
 and non-inference rules. The versioned specialist responsibilities, routing,
 training loop, and current activation status are defined in
 [`docs/AGENT_OPERATING_MODEL.md`](docs/AGENT_OPERATING_MODEL.md).
+
+Field emails use `RESEND_API_KEY` and `FIELD_EMAIL_FROM`. When those secrets are
+not configured, Studio still creates the protected assignment and presents a
+copyable link; it never pretends that an email was sent.
 
 ## Vision chapters
 

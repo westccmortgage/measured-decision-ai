@@ -34,8 +34,8 @@
     return data;
   }
 
-  function fingerprint(entityType, organizationId, propertyId, file) {
-    return ["mdai-s3-upload-v1", entityType, organizationId, propertyId, file.name, file.size, file.lastModified || 0].join(":");
+  function fingerprint(entityType, organizationId, propertyId, file, fieldAccess) {
+    return ["mdai-s3-upload-v1", entityType, organizationId, propertyId, fieldAccess?.assignment_id || "account", file.name, file.size, file.lastModified || 0].join(":");
   }
 
   function readSession(key) {
@@ -98,17 +98,18 @@
   async function upload(options) {
     const {
       client, entityType, organizationId, propertyId, spaceId = null,
-      file, metadata = {}, onProgress = () => undefined,
+      file, metadata = {}, fieldAccess = null, onProgress = () => undefined,
     } = options;
     if (!client || !file || !organizationId || !propertyId) throw new Error("Upload context is incomplete");
 
-    const storageKey = fingerprint(entityType, organizationId, propertyId, file);
+    const storageKey = fingerprint(entityType, organizationId, propertyId, file, fieldAccess);
+    const authorized = (payload) => fieldAccess ? { ...payload, field_access: fieldAccess } : payload;
     const prior = readSession(storageKey);
     let session;
     let resumed = false;
     if (prior) {
       try {
-        session = await invoke(client, { operation: "resume_upload", session_id: prior.session_id });
+        session = await invoke(client, authorized({ operation: "resume_upload", session_id: prior.session_id }));
         if (session.status === "completed" && session.record) {
           clearSession(storageKey);
           onProgress({ stage: "complete", percent: 100, uploadedBytes: file.size, totalBytes: file.size, resumed: true, label: `${humanBytes(file.size)} of ${humanBytes(file.size)}` });
@@ -121,7 +122,7 @@
       }
     }
     if (!session) {
-      session = await invoke(client, {
+      session = await invoke(client, authorized({
         operation: "create_upload",
         entity_type: entityType,
         organization_id: organizationId,
@@ -129,7 +130,7 @@
         space_id: spaceId,
         file: { name: file.name, type: file.type || "application/octet-stream", size: file.size, last_modified: file.lastModified || null },
         metadata,
-      });
+      }));
       saveSession(storageKey, session.session_id);
     }
 
@@ -153,7 +154,7 @@
 
     for (let batchStart = 0; batchStart < missing.length; batchStart += SIGN_BATCH_SIZE) {
       const batch = missing.slice(batchStart, batchStart + SIGN_BATCH_SIZE);
-      const signed = await invoke(client, { operation: "sign_parts", session_id: session.session_id, part_numbers: batch });
+      const signed = await invoke(client, authorized({ operation: "sign_parts", session_id: session.session_id, part_numbers: batch }));
       const urlByPart = new Map((signed.urls || []).map((item) => [Number(item.part_number), item.url]));
       let next = 0;
       async function worker() {
@@ -179,11 +180,11 @@
     }
 
     report("finalizing");
-    const result = await invoke(client, {
+    const result = await invoke(client, authorized({
       operation: "complete_upload",
       session_id: session.session_id,
       parts: [...completed.values()].sort((a, b) => a.part_number - b.part_number),
-    });
+    }));
     clearSession(storageKey);
     report("complete");
     return result;

@@ -204,6 +204,12 @@ select:focus, input:focus { border-color: var(--cyan); box-shadow: 0 0 0 2px rgb
 .task-priority.normal { color: #87a0b3; }
 .task-status.ready, .task-status.verified { color: var(--green); }
 .task-status.blocked { color: #758b9c; }
+.task-status.in_progress, .task-status.submitted { color: var(--cyan); }
+.task-status.needs_more { color: var(--red); }
+.task-assignment { margin-top: 10px; display: inline-flex; align-items: center; gap: 6px; color: #78a4b8; font-size: 9px; }
+.task-assignment::before { content: ""; width: 6px; height: 6px; border-radius: 50%; background: currentColor; }
+.task-assignment.retake { color: var(--red); }
+.task-assignment.completed { color: var(--green); }
 .task-card h3 { margin-bottom: 7px; }
 .task-location { color: #778ea1; font-size: 10px; }
 .task-why { color: #a3b3be; display: -webkit-box; -webkit-line-clamp: 3; -webkit-box-orient: vertical; overflow: hidden; }
@@ -223,6 +229,16 @@ dialog form { padding: 0; }
 .task-dialog-grid p { margin-bottom: 0; color: #b1c0ca; }
 .task-dialog-grid ol, .task-dialog-grid ul { margin: 0; padding-left: 20px; color: #adbdc7; }
 .task-dialog-grid li + li { margin-top: 6px; }
+.task-dialog-grid section.assignment-panel { padding: 16px; border-color: rgba(72,211,232,.32); background: linear-gradient(135deg, rgba(72,211,232,.07), #081522 50%); }
+.assignment-heading { display: flex; justify-content: space-between; gap: 18px; align-items: flex-start; }
+.assignment-heading p { max-width: 610px; color: #8197a8; }
+.assignment-heading strong { padding: 6px 9px; border: 1px solid #31546c; border-radius: 999px; color: #a7bbc8; text-transform: uppercase; letter-spacing: .07em; font-size: 9px; white-space: nowrap; }
+.assignment-form { margin-top: 14px; display: grid; grid-template-columns: 1fr 1.2fr 1fr auto; gap: 10px; align-items: end; }
+.assignment-form label { display: grid; gap: 6px; color: #728a9c; text-transform: uppercase; letter-spacing: .07em; font-size: 8px; font-weight: 700; }
+.assignment-form input { width: 100%; }
+.assignment-result { margin-top: 14px; padding-top: 13px; border-top: 1px solid rgba(72,211,232,.18); }
+.assignment-result p { color: #9eb3c1; }
+.assignment-result > div { display: flex; flex-wrap: wrap; gap: 8px; }
 .dialog-actions { padding: 14px 18px; display: flex; justify-content: flex-end; gap: 10px; border-top: 1px solid var(--line); }
 
 .toast { position: fixed; right: 22px; bottom: 22px; z-index: 100; max-width: 380px; padding: 12px 16px; border: 1px solid #2c5b6d; border-radius: 7px; background: #0e2a37; color: #d7e9ee; opacity: 0; transform: translateY(10px); pointer-events: none; transition: .2s ease; }
@@ -236,4 +252,7 @@ dialog form { padding: 0; }
   .contract, .analysis-progress, .ai-button, .action-message { grid-column: 2; }
   .contract { grid-row: 1 / span 3; margin-top: 20px; }
   .task-grid { grid-template-columns: repeat(2, minmax(0,1fr)); }
+}
+@media (max-width: 900px) {
+  .assignment-form { grid-template-columns: 1fr; }
 }

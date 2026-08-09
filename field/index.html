@@ -1,0 +1,42 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+    <meta name="robots" content="noindex,nofollow,noarchive">
+    <meta name="referrer" content="no-referrer">
+    <meta name="theme-color" content="#071421">
+    <title>Field Task · Measured Decision</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="field.css?v=20260809-field-1">
+  </head>
+  <body>
+    <header><span class="mark"><i></i></span><div>Measured Decision<strong>Field</strong></div><span class="private">Private task</span></header>
+    <main>
+      <section class="loading" id="loading"><span class="spinner"></span><h1>Opening your field task…</h1><p>This link shows only the assignment sent to you.</p></section>
+      <section id="error" class="error" hidden><strong>Task unavailable</strong><p id="error-message"></p></section>
+      <div id="task" hidden>
+        <section class="task-hero">
+          <div class="status-row"><span id="phase">FIELD TASK</span><span id="status" class="status">Ready</span></div>
+          <h1 id="title"></h1>
+          <p id="project"></p>
+          <div class="facts"><span><small>WHERE</small><strong id="location"></strong></span><span><small>CAPTURE</small><strong id="method"></strong></span><span><small>DUE</small><strong id="due"></strong></span></div>
+        </section>
+
+        <section class="step"><span class="step-number">1</span><div><h2>Go to this location</h2><p id="why"></p><div class="warning"><small>Do this before</small><strong id="before"></strong></div></div></section>
+        <section class="step"><span class="step-number">2</span><div><h2>Capture exactly this</h2><ol id="instructions"></ol><h3>Make sure we can see</h3><ul id="must-show"></ul></div></section>
+        <section class="step"><span class="step-number">3</span><div><h2>Upload what you captured</h2><p id="upload-help" class="plain">Photos are best for the automatic check. Add video, 360, or the requested PDF when the task asks for it.</p><label id="capture-label" class="capture-button" for="files">Take photos or choose files <span>＋</span></label><input id="files" type="file" accept="image/*,video/*,application/pdf,.pdf,.mp4,.mov" capture="environment" multiple hidden><div id="uploads" class="uploads"></div><div id="upload-progress" class="upload-progress" hidden><div><span id="progress-label">Uploading</span><strong id="progress-value">0%</strong></div><i><b id="progress-fill"></b></i><small id="progress-detail"></small></div></div></section>
+        <section class="step"><span class="step-number">4</span><div><h2>Send for automatic check</h2><ul id="criteria"></ul><button id="submit" class="submit" type="button" disabled>Submit this task</button><p id="submit-note" class="submit-note">Upload at least one file first.</p></div></section>
+
+        <section id="result" class="result" hidden><span id="result-icon">✓</span><div><h2 id="result-title"></h2><p id="result-summary"></p><p id="retake" class="retake" hidden></p></div></section>
+      </div>
+    </main>
+    <footer>Files go directly to the private project record. This page does not approve construction work.</footer>
+    <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2.106.2"></script>
+    <script src="../studio/config.js"></script>
+    <script src="../studio/s3-upload.js?v=20260809-field-2"></script>
+    <script src="field.js?v=20260809-field-2"></script>
+  </body>
+</html>

@@ -7,4 +7,13 @@ verify_jwt = true
 verify_jwt = true
 
 [functions.object-storage]
+verify_jwt = false
+
+[functions.field-workflow]
+verify_jwt = false
+
+[functions.field-quality-check]
+verify_jwt = false
+
+[functions.vision-release]
 verify_jwt = true

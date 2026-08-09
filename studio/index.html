@@ -124,6 +124,9 @@
           <a class="nav-item" id="plans-navigation" href="plans/">
             <span>▤</span>Project plans <small>Start here</small>
           </a>
+          <a class="nav-item" id="operations-navigation" href="operations/">
+            <span>◎</span>Field operations
+          </a>
           <button class="nav-item" data-view-target="guide" type="button">
             <span>?</span>Capture guide
           </button>
@@ -557,22 +560,29 @@
               record.
             </p>
           </div>
-          <button
-            class="primary-button"
-            id="export-vision-manifest"
-            type="button"
-          >
-            Export Vision manifest <span>↓</span>
-          </button>
+          <div class="vision-actions">
+            <button class="primary-button" id="build-vision-release" type="button">
+              Build governed release <span>→</span>
+            </button>
+            <button class="secondary-button" id="approve-vision-release" type="button" hidden>
+              Approve release
+            </button>
+            <button class="text-button" id="export-vision-manifest" type="button">
+              Download local draft ↓
+            </button>
+          </div>
         </section>
         <section class="vision-grid">
           <article class="vision-preview">
             <div class="vision-orbit" aria-hidden="true">
               <i></i><i></i><span></span>
             </div>
-            <p class="eyebrow">Release candidate</p>
-            <h2><span id="vision-property-name">Private Pilot Property</span> · v0.1</h2>
+            <p class="eyebrow" id="vision-release-state">No governed release yet</p>
+            <h2><span id="vision-property-name">Private Pilot Property</span> · <span id="vision-release-version">—</span></h2>
             <p>Room-by-room review experience for Apple Vision Pro.</p>
+            <p class="vision-release-status" id="vision-release-status">
+              Build a release after the plan baseline, field work, and room evidence have been reviewed.
+            </p>
             <div class="vision-flow">
               <span>Physical space</span><i>→</i><span>Evidence</span><i>→</i
               ><span>Context</span><i>→</i><span>Human decision</span>
@@ -588,9 +598,9 @@
             </div>
             <div id="readiness-list" class="readiness-list"></div>
             <p class="manifest-note">
-              The current export is a platform-neutral manifest for the future
-              visionOS client. It is not an installable Vision Pro application
-              or USDZ model.
+              Drafts never become visible to the Vision client automatically.
+              A named reviewer must approve a blocker-free version. Media URLs
+              are generated temporarily and are never stored in the manifest.
             </p>
           </article>
         </section>

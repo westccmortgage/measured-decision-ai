@@ -77,3 +77,24 @@ jobs:
         run: >-
           supabase functions deploy spatial-analyze
           --project-ref hbqlhplgqwuesrovbiye
+
+      - name: Deploy field assignment workflow
+        env:
+          SUPABASE_ACCESS_TOKEN: ${{ secrets.SUPABASE_ACCESS_TOKEN }}
+        run: >-
+          supabase functions deploy field-workflow
+          --project-ref hbqlhplgqwuesrovbiye
+
+      - name: Deploy field quality worker
+        env:
+          SUPABASE_ACCESS_TOKEN: ${{ secrets.SUPABASE_ACCESS_TOKEN }}
+        run: >-
+          supabase functions deploy field-quality-check
+          --project-ref hbqlhplgqwuesrovbiye
+
+      - name: Deploy governed Vision release worker
+        env:
+          SUPABASE_ACCESS_TOKEN: ${{ secrets.SUPABASE_ACCESS_TOKEN }}
+        run: >-
+          supabase functions deploy vision-release
+          --project-ref hbqlhplgqwuesrovbiye
