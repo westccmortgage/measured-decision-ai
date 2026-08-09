@@ -70,6 +70,8 @@ select:focus, input:focus { border-color: var(--cyan); box-shadow: 0 0 0 2px rgb
 .state-pill.intake, .state-pill.analyzing_plans { color: #f0c879; border-color: rgba(229,172,75,.42); background: rgba(229,172,75,.08); }
 .state-pill.baseline_review { color: #8ce8f3; border-color: rgba(72,211,232,.42); background: rgba(72,211,232,.08); }
 .state-pill.active, .state-pill.approved { color: #7ee1ad; border-color: rgba(84,211,154,.42); background: rgba(84,211,154,.08); }
+.approval-guidance { margin: 0; padding: 13px 17px; border-bottom: 1px solid rgba(255,123,118,.28); background: rgba(255,123,118,.07); color: #ffaaa6; font-size: 12px; line-height: 1.5; }
+.heading-actions .approve:disabled { border-color: rgba(255,123,118,.38); background: rgba(255,123,118,.08); color: #ffaaa6; opacity: 1; cursor: not-allowed; }
 
 .metrics { display: grid; grid-template-columns: repeat(4, 1fr); margin: 25px 0 18px; border: 1px solid var(--line); }
 .metrics article { min-height: 82px; padding: 15px 17px; display: grid; align-content: center; border-right: 1px solid var(--line); }

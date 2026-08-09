@@ -251,11 +251,21 @@ function canApproveBaseline() {
   return ["owner", "admin", "reviewer"].includes(state.role);
 }
 
+function blockingBaselineGaps() {
+  return Array.isArray(state.baseline?.gaps)
+    ? state.baseline.gaps.filter((gap) => gap?.blocks_activation === true)
+    : [];
+}
+
+function baselineApprovalBlocked() {
+  return blockingBaselineGaps().length > 0;
+}
+
 function setBusy(busy, message = "") {
   state.busy = busy;
   elements.analyze.disabled = busy || !canAnalyzePlans() || !state.selectedDocumentIds.size;
   $("#confirm-upload").disabled = busy || !canUploadPlans();
-  $("#approve-baseline").disabled = busy || !canApproveBaseline() || state.baseline?.state === "approved";
+  $("#approve-baseline").disabled = busy || !canApproveBaseline() || state.baseline?.state === "approved" || baselineApprovalBlocked();
   elements.propertySelect.disabled = busy;
   if (message) elements.sync.textContent = message;
 }
@@ -431,7 +441,20 @@ function renderBaseline() {
   $("#baseline-state").textContent = `${label(state.baseline.state)} · v${state.baseline.version}`;
   $("#baseline-state").className = `state-pill ${state.baseline.state}`;
   $("#approve-baseline").hidden = state.baseline.state === "approved" || !canApproveBaseline();
-  $("#approve-baseline").disabled = state.busy || !canApproveBaseline();
+  const blockingGaps = blockingBaselineGaps();
+  const approvalButton = $("#approve-baseline");
+  const approvalGuidance = $("#approval-guidance");
+  approvalButton.disabled = state.busy || !canApproveBaseline() || blockingGaps.length > 0;
+  approvalButton.textContent = blockingGaps.length
+    ? `Resolve ${blockingGaps.length} blocker${blockingGaps.length === 1 ? "" : "s"} before activation`
+    : "Approve baseline & activate roadmap";
+  approvalButton.title = blockingGaps.length
+    ? "Upload the missing or corrected governing documents and generate a new baseline."
+    : "Approve this reviewed baseline and activate field capture tasks.";
+  approvalGuidance.hidden = !blockingGaps.length;
+  approvalGuidance.textContent = blockingGaps.length
+    ? `Activation is blocked by ${blockingGaps.length} unresolved plan question${blockingGaps.length === 1 ? "" : "s"}. Review the red items, upload the missing or corrected governing documents, then run a new baseline analysis.`
+    : "";
   $("#project-summary").textContent = state.baseline.project_summary;
   const analysis = state.baseline.analysis || {};
   const chips = [
@@ -758,7 +781,7 @@ async function analyzePlans() {
 
 async function approveBaseline() {
   if (!state.baseline || state.busy) return;
-  const criticalGaps = (state.baseline.gaps || []).filter((gap) => gap.blocks_activation);
+  const criticalGaps = blockingBaselineGaps();
   if (criticalGaps.length) {
     const message = `${criticalGaps.length} blocking plan gap${criticalGaps.length === 1 ? "" : "s"} must be resolved. Upload the missing or corrected document and generate a new baseline.`;
     notify(message, "error");
