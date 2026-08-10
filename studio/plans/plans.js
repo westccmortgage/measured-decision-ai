@@ -333,6 +333,9 @@ async function openProperty(propertyId) {
   state.property = state.properties.find((property) => property.id === propertyId) || null;
   if (!state.property) return;
   window.history.replaceState({}, "", `${window.location.pathname}?property=${encodeURIComponent(propertyId)}`);
+  document.querySelectorAll('a[href="../operations/"],a[href^="../operations/?property="]').forEach((link) => {
+    link.href = `../operations/?property=${encodeURIComponent(propertyId)}`;
+  });
   elements.sync.textContent = "Loading project…";
   setMessage("");
   const [documentsResult, baselinesResult, activeJobResult] = await Promise.all([
