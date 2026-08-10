@@ -1,5 +1,6 @@
 :root { --bg:#050e19; --panel:#081624; --panel2:#0b1d2d; --line:#18344a; --text:#edf5f7; --muted:#7c93a5; --cyan:#48d3e8; --green:#54d39a; --amber:#e5ac4b; --red:#ff7b76; --sidebar:190px; font-family:Inter,system-ui,sans-serif; color-scheme:dark; }
 * { box-sizing:border-box; }
+[hidden] { display:none !important; }
 body { margin:0; background:var(--bg); color:var(--text); font-size:13px; }
 a { color:inherit; text-decoration:none; }
 button,select,textarea { font:inherit; }
