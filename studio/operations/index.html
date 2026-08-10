@@ -9,10 +9,21 @@
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
-    <link rel="stylesheet" href="operations.css?v=20260809">
+    <link rel="stylesheet" href="operations.css?v=20260810-recovery-1">
   </head>
   <body>
-    <div class="boot" id="boot">Opening field operations…</div>
+    <div class="boot" id="boot" role="status" aria-live="polite">
+      <div class="boot-card">
+        <i class="boot-spinner" aria-hidden="true"></i>
+        <p class="eyebrow">Private operations workspace</p>
+        <h1 id="boot-title">Opening field operations…</h1>
+        <p id="boot-detail">Connecting the approved roadmap to the live field queue.</p>
+        <div class="boot-actions" id="boot-actions" hidden>
+          <button class="button" id="boot-retry" type="button">Try again</button>
+          <a class="button secondary" id="boot-plans" href="../plans/">Return to project plans</a>
+        </div>
+      </div>
+    </div>
     <div class="app" id="app" hidden>
       <header>
         <a class="brand" href="../"><i></i>Measured Decision <strong>Studio</strong></a>
@@ -35,6 +46,10 @@
           <label>Active project<select id="property-select"></select></label>
         </section>
         <section class="metrics" id="metrics"></section>
+        <section class="next-step" id="next-step" hidden>
+          <div><p class="eyebrow">Next action</p><h2 id="next-step-title">Field tasks are ready to send.</h2><p id="next-step-copy"></p></div>
+          <a class="button next-step-button" id="next-step-link" href="../plans/">Choose a task and send it →</a>
+        </section>
         <section class="toolbar">
           <div><p class="eyebrow">Live field queue</p><h2>Assignments</h2></div>
           <div><select id="status-filter"><option value="all">All assignments</option><option value="active">In the field</option><option value="review">Ready for review</option><option value="retake">Retake</option><option value="completed">Completed</option></select><button class="button secondary" id="refresh">Refresh</button></div>
@@ -57,6 +72,6 @@
     <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2.106.2"></script>
     <script src="../config.js"></script>
     <script src="../s3-upload.js?v=20260809-field-2"></script>
-    <script src="operations.js?v=20260809"></script>
+    <script src="operations.js?v=20260810-recovery-1"></script>
   </body>
 </html>
