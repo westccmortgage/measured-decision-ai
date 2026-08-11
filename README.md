@@ -61,9 +61,19 @@ and non-inference rules. The versioned specialist responsibilities, routing,
 training loop, and current activation status are defined in
 [`docs/AGENT_OPERATING_MODEL.md`](docs/AGENT_OPERATING_MODEL.md).
 
-Field emails use `RESEND_API_KEY` and `FIELD_EMAIL_FROM`. When those secrets are
-not configured, Studio still creates the protected assignment and presents a
-copyable link; it never pretends that an email was sent.
+Field emails use Resend. Configure these Supabase Edge Function secrets before
+testing delivery:
+
+- `RESEND_API_KEY`
+- `FIELD_EMAIL_FROM`, for example
+  `Measured Decision <field@updates.measureddecision.com>`
+- `FIELD_EMAIL_REPLY_TO` (optional)
+
+The sender domain must be verified in Resend. When email is not configured or
+the provider rejects a request, Studio still saves the assignment, presents the
+protected field link, and shows the exact delivery error; it never labels a
+generated link as a delivered email. A `sent` state means that Resend accepted
+the message for delivery, not that the recipient opened or received it.
 
 ## Vision chapters
 
