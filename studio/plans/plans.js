@@ -308,6 +308,18 @@ function analyzeSelectionState() {
   const unavailable = documents.find((document) => document.status !== "ready");
   if (unavailable) return { disabled: true, label: "Wait for PDFs to be ready", message: `${unavailable.original_filename} is not ready for analysis yet.`, kind: "info" };
 
+  if (state.baseline && sameDocumentSet(documents.map((document) => document.id), state.baseline.source_document_ids || [])) {
+    const approved = state.baseline.state === "approved";
+    return {
+      disabled: true,
+      label: approved ? `Baseline v${state.baseline.version} is active` : `Baseline v${state.baseline.version} is ready`,
+      message: approved
+        ? "This exact plan set is already active. Select a different ready PDF set only when you need a new baseline."
+        : "This exact plan set is already analyzed. Next: review the baseline below and activate the roadmap.",
+      kind: "success",
+    };
+  }
+
   const totalBytes = documents.reduce((sum, document) => sum + Number(document.byte_size || 0), 0);
   const oversized = documents.find((document) => Number(document.byte_size || 0) > AI_INPUT_LIMIT_BYTES);
   if (oversized || totalBytes > AI_INPUT_LIMIT_BYTES) {
@@ -318,18 +330,6 @@ function analyzeSelectionState() {
         ? `${oversized.original_filename} exceeds the 49 MB analysis limit. Keep the original here and add an optimized PDF copy.`
         : `${documents.length} selected PDFs total ${formatMegabytes(totalBytes)}. Select a set below 49 MB or add optimized PDF copies.`,
       kind: "warning",
-    };
-  }
-
-  if (state.baseline && sameDocumentSet(documents.map((document) => document.id), state.baseline.source_document_ids || [])) {
-    const approved = state.baseline.state === "approved";
-    return {
-      disabled: true,
-      label: approved ? `Baseline v${state.baseline.version} is active` : `Baseline v${state.baseline.version} is ready`,
-      message: approved
-        ? "This exact plan set is already active. Select a different ready PDF set only when you need a new baseline."
-        : "This exact plan set is already analyzed. Next: review the baseline below and activate the roadmap.",
-      kind: "success",
     };
   }
 
