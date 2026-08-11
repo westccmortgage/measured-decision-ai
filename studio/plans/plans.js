@@ -554,7 +554,8 @@ function renderDocuments() {
   elements.documentList.innerHTML = state.documents.map((document) => {
     const selectable = document.status === "ready";
     const choiceTitle = selectable ? "Include in a new baseline" : `Available after the PDF is ready (${label(document.status)})`;
-    const baselineVersion = (state.baseline?.source_document_ids || []).includes(document.id)
+    const baselineVersion = state.baseline?.id === state.property?.active_baseline_id
+      && (state.baseline?.source_document_ids || []).includes(document.id)
       ? state.baseline.version
       : null;
     const deleteTitle = baselineVersion
