@@ -449,16 +449,18 @@ Deno.serve(async (request) => {
         throw Object.assign(new Error("Only an owner or administrator can delete project plans"), { status: 403 });
       }
 
-      const { data: baseline } = await admin.from("document_baselines")
+      const { data: baselineReferences, error: baselineError } = await admin.from("document_baselines")
         .select("id, version, state")
         .eq("organization_id", record.organization_id)
         .eq("property_id", record.property_id)
         .contains("source_document_ids", [record.id])
-        .order("version", { ascending: false })
-        .limit(1)
-        .maybeSingle();
-      if (baseline) {
-        throw Object.assign(new Error(`This plan is part of baseline v${baseline.version} (${baseline.state}) and cannot be deleted. Create a new baseline without it to preserve the project record.`), { status: 409 });
+        .order("version", { ascending: false });
+      if (baselineError) throw baselineError;
+      const protectedBaseline = (baselineReferences || []).find((baseline) =>
+        !["superseded", "rejected"].includes(baseline.state)
+      );
+      if (protectedBaseline) {
+        throw Object.assign(new Error(`This plan is part of the current baseline v${protectedBaseline.version} (${protectedBaseline.state}) and cannot be deleted. Create a new baseline without it first.`), { status: 409 });
       }
 
       const { data: activeJob } = await admin.from("plan_analysis_jobs")
@@ -496,7 +498,13 @@ Deno.serve(async (request) => {
         action: "project_document.deleted",
         entity_type: "project_documents",
         entity_id: record.id,
-        detail: { property_id: record.property_id, original_filename: record.original_filename },
+        detail: {
+          property_id: record.property_id,
+          original_filename: record.original_filename,
+          historical_baseline_versions: (baselineReferences || [])
+            .filter((baseline) => ["superseded", "rejected"].includes(baseline.state))
+            .map((baseline) => baseline.version),
+        },
       });
       if (auditError) console.error("Project plan deletion audit event could not be recorded", auditError);
       return json(request, { deleted: true, record_id: record.id });
