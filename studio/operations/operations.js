@@ -9,7 +9,7 @@ const labels = { sent:"Sent", opened:"Opened", in_progress:"In field", uploading
 
 function escapeHtml(value="") { return String(value).replaceAll("&","&amp;").replaceAll("<","&lt;").replaceAll(">","&gt;").replaceAll('"',"&quot;").replaceAll("'","&#039;"); }
 function label(value="") { return labels[value] || String(value).replaceAll("_"," ").replace(/\b\w/g,(letter)=>letter.toUpperCase()); }
-function notify(message,kind="success") { const toast=$("#toast"); toast.textContent=message; toast.className=`toast show ${kind === "error" ? "error" : ""}`; clearTimeout(notify.timer); notify.timer=setTimeout(()=>toast.classList.remove("show"),4500); }
+function notify(message,kind="success") { const key=`${kind}:${message}`; const now=Date.now(); if(notify.lastKey===key&&now-(notify.lastAt||0)<8000)return; notify.lastKey=key; notify.lastAt=now; const toast=$("#toast"); toast.textContent=message; toast.className=`toast show ${kind === "error" ? "error" : ""}`; clearTimeout(notify.timer); notify.timer=setTimeout(()=>toast.classList.remove("show"),4500); }
 function shortDate(value) { if(!value) return "No deadline"; const d=new Date(value); return Number.isNaN(d.valueOf()) ? value : new Intl.DateTimeFormat("en-US",{month:"short",day:"numeric",hour:"numeric",minute:"2-digit"}).format(d); }
 async function invoke(body) { const {data,error}=await client.functions.invoke("field-workflow",{body}); if(error){ let message=error.message; try{message=(await error.context.clone().json()).error||message}catch{} throw new Error(message)} if(data?.error) throw new Error(data.error); return data; }
 function latestBy(items,key) { const map=new Map(); for(const item of items) if(!map.has(item[key])) map.set(item[key],item); return map; }
@@ -147,5 +147,5 @@ $("#sign-out").addEventListener("click",async()=>{await client.auth.signOut();lo
 $("#boot-retry").addEventListener("click",()=>initialize().catch(showLoadFailure));
 initialize().catch(showLoadFailure);
 
-document.addEventListener("visibilitychange",()=>{ if(document.visibilityState==="visible"&&state.propertyId) load().catch(error=>notify(error.message,"error")); });
+document.addEventListener("visibilitychange",()=>{ if(document.visibilityState==="visible"&&state.propertyId) load().catch(error=>console.warn("Background field refresh interrupted",error)); });
 state.pollTimer=window.setInterval(()=>{ if(document.visibilityState==="visible"&&state.propertyId) load().catch(console.error); },15000);
