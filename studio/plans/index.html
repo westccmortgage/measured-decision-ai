@@ -9,7 +9,7 @@
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
-    <link rel="stylesheet" href="plans.css?v=20260810-field-recovery-1">
+    <link rel="stylesheet" href="plans.css?v=20260811-reliability-1">
   </head>
   <body>
     <div class="boot-screen" id="boot-screen">
@@ -127,7 +127,7 @@
             </ul>
             <section class="analysis-progress" id="analysis-progress" aria-live="polite" hidden>
               <div class="analysis-progress-heading">
-                <span>Analysis in progress</span>
+                <span id="analysis-progress-status">Analysis in progress</span>
                 <strong id="analysis-progress-value">0%</strong>
               </div>
               <div class="analysis-progress-track" id="analysis-progress-track" role="progressbar" aria-label="Estimated plan analysis progress" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0">
@@ -264,6 +264,6 @@
     <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2.106.2"></script>
     <script src="../config.js"></script>
     <script src="../s3-upload.js?v=20260809-s3"></script>
-    <script src="plans.js?v=20260810-field-recovery-1"></script>
+    <script src="plans.js?v=20260811-reliability-1"></script>
   </body>
 </html>
