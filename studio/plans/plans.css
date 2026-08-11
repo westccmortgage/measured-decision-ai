@@ -98,7 +98,7 @@ select:focus, input:focus { border-color: var(--cyan); box-shadow: 0 0 0 2px rgb
 .upload-fields label { display: grid; gap: 5px; color: #71889b; font-size: 9px; text-transform: uppercase; letter-spacing: .06em; }
 .upload-fields .selected-files { grid-column: 1 / -1; margin: 2px 0 0; color: #9bb0c0; font-size: 11px; }
 .document-list { display: grid; }
-.document-row { min-height: 66px; padding: 11px 18px; display: grid; grid-template-columns: 38px minmax(0,1fr) 120px 110px 90px; gap: 12px; align-items: center; border-bottom: 1px solid rgba(27,51,71,.7); }
+.document-row { min-height: 66px; padding: 11px 18px; display: grid; grid-template-columns: 38px minmax(0,1fr) 120px 110px 70px 58px; gap: 12px; align-items: center; border-bottom: 1px solid rgba(27,51,71,.7); }
 .document-row:last-child { border-bottom: 0; }
 .document-icon { width: 34px; height: 40px; display: grid; place-items: center; color: #86deea; border: 1px solid #2b5868; background: var(--cyan-soft); border-radius: 4px; font-size: 9px; font-weight: 700; }
 .document-choice { width: 38px; height: 48px; display: grid; place-items: center; position: relative; cursor: pointer; }
@@ -114,6 +114,9 @@ select:focus, input:focus { border-color: var(--cyan); box-shadow: 0 0 0 2px rgb
 .document-status.ready { color: var(--green); }
 .document-status.processing { color: var(--cyan); }
 .document-status.failed { color: var(--red); }
+.document-delete { min-height: 34px; padding: 0 9px; border: 1px solid rgba(255,112,112,.45); border-radius: 5px; background: transparent; color: #ff8a8a; font: inherit; font-size: 9px; text-transform: uppercase; letter-spacing: .05em; cursor: pointer; }
+.document-delete:hover { border-color: var(--red); background: rgba(255,92,92,.09); color: #ffb1b1; }
+.document-delete:disabled { opacity: .28; cursor: not-allowed; }
 .empty-state { padding: 42px 25px; text-align: center; color: #71889b; }
 .empty-state > span { width: 54px; height: 64px; margin: 0 auto 15px; display: grid; place-items: center; border: 1px solid #29485e; border-radius: 6px; color: var(--cyan); font-weight: 700; }
 .empty-state h3 { color: #dbe6ec; margin-bottom: 8px; }
