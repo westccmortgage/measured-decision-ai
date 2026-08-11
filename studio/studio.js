@@ -894,9 +894,14 @@ function render() {
   updatePipeline();
 }
 function notify(message, duration = 2600) {
+  const now = Date.now();
+  if (notify.lastMessage === message && now - (notify.lastAt || 0) < 8000) return;
+  notify.lastMessage = message;
+  notify.lastAt = now;
   elements.toast.textContent = message;
   elements.toast.classList.add("show");
-  setTimeout(() => elements.toast.classList.remove("show"), duration);
+  window.clearTimeout(notify.timer);
+  notify.timer = window.setTimeout(() => elements.toast.classList.remove("show"), duration);
 }
 
 function setAuthMessage(message, tone = "neutral") {
