@@ -103,6 +103,7 @@ select:focus, input:focus { border-color: var(--cyan); box-shadow: 0 0 0 2px rgb
 .document-icon { width: 34px; height: 40px; display: grid; place-items: center; color: #86deea; border: 1px solid #2b5868; background: var(--cyan-soft); border-radius: 4px; font-size: 9px; font-weight: 700; }
 .document-choice { width: 38px; height: 48px; display: grid; place-items: center; position: relative; cursor: pointer; }
 .document-choice input { position: absolute; min-height: 0; width: 14px; height: 14px; right: -2px; top: 0; margin: 0; accent-color: var(--cyan); }
+.document-choice:has(input:disabled) { cursor: not-allowed; opacity: .55; }
 .document-choice input:not(:checked) + .document-icon { opacity: .42; }
 .document-name { min-width: 0; }
 .document-name strong { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
@@ -127,6 +128,9 @@ select:focus, input:focus { border-color: var(--cyan); box-shadow: 0 0 0 2px rgb
 .contract i { display: inline-block; width: 7px; height: 7px; margin-right: 9px; border: 1px solid var(--cyan); border-radius: 50%; }
 .ai-button { width: calc(100% - 40px); color: #06141a; border-color: var(--cyan); background: rgba(72,211,232,.92); }
 .action-message { min-height: 20px; margin-top: 10px; margin-bottom: 0; color: #8399aa; font-size: 11px; }
+.action-message.info { color: #91a8b8; }
+.action-message.warning { color: var(--amber); }
+.action-message.success { color: var(--green); }
 .action-message.error { color: var(--red); }
 
 .analysis-progress { margin-top: 18px; margin-bottom: 18px; padding: 15px; border: 1px solid rgba(72,211,232,.3); border-radius: 8px; background: linear-gradient(145deg, rgba(72,211,232,.09), rgba(6,16,28,.72)); overflow: hidden; }
