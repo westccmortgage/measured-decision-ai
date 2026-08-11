@@ -1,6 +1,7 @@
 const config = window.MDAI_CONFIG || {};
 const $ = (selector) => document.querySelector(selector);
 const AI_INPUT_LIMIT_BYTES = 49 * 1024 * 1024;
+const ANALYZABLE_DOCUMENT_STATUSES = new Set(["uploaded", "ready", "failed"]);
 
 const client = window.supabase?.createClient && config.supabaseUrl && config.supabasePublishableKey
   ? window.supabase.createClient(config.supabaseUrl, config.supabasePublishableKey, {
@@ -291,6 +292,10 @@ function selectedDocuments() {
   return state.documents.filter((document) => state.selectedDocumentIds.has(document.id));
 }
 
+function canAnalyzeDocument(document) {
+  return ANALYZABLE_DOCUMENT_STATUSES.has(document?.status);
+}
+
 function sameDocumentSet(left = [], right = []) {
   const leftSet = new Set(left || []);
   const rightSet = new Set(right || []);
@@ -324,10 +329,10 @@ function analyzeSelectionState() {
           kind: "success",
         };
   }
-  if (!documents.length) return { disabled: true, label: "Select ready PDFs", message: "Select one or more ready PDFs to build a new baseline.", kind: "info" };
+  if (!documents.length) return { disabled: true, label: "Select PDFs", message: "Select one or more uploaded PDFs to build a new baseline.", kind: "info" };
 
-  const unavailable = documents.find((document) => document.status !== "ready");
-  if (unavailable) return { disabled: true, label: "Wait for PDFs to be ready", message: `${unavailable.original_filename} is not ready for analysis yet.`, kind: "info" };
+  const unavailable = documents.find((document) => !canAnalyzeDocument(document));
+  if (unavailable) return { disabled: true, label: "PDF is unavailable", message: `${unavailable.original_filename} cannot be analyzed while its status is ${label(unavailable.status)}.`, kind: "info" };
 
   if (state.baseline && sameDocumentSet(documents.map((document) => document.id), state.baseline.source_document_ids || [])) {
     const approved = state.baseline.state === "approved";
@@ -358,7 +363,7 @@ function analyzeSelectionState() {
   return {
     disabled: false,
     label: "Analyze selected PDFs",
-    message: `${documents.length} ready PDF${documents.length === 1 ? "" : "s"} selected · ${formatMegabytes(totalBytes)} of 49 MB.`,
+    message: `${documents.length} PDF${documents.length === 1 ? "" : "s"} selected · ${formatMegabytes(totalBytes)} of 49 MB.`,
     kind: "info",
   };
 }
@@ -482,9 +487,9 @@ async function openProperty(propertyId) {
   state.documents = documentsResult.data || [];
   state.baseline = baselinesResult.data?.[0] || null;
   state.activeAnalysisJob = activeJobResult.data?.[0] || null;
-  const readyDocumentIds = new Set(state.documents.filter((document) => document.status === "ready").map((document) => document.id));
-  const baselineDocumentIds = (state.baseline?.source_document_ids || []).filter((id) => readyDocumentIds.has(id));
-  state.selectedDocumentIds = new Set(baselineDocumentIds.length ? baselineDocumentIds : readyDocumentIds);
+  const analyzableDocumentIds = new Set(state.documents.filter(canAnalyzeDocument).map((document) => document.id));
+  const baselineDocumentIds = (state.baseline?.source_document_ids || []).filter((id) => analyzableDocumentIds.has(id));
+  state.selectedDocumentIds = new Set(baselineDocumentIds.length ? baselineDocumentIds : analyzableDocumentIds);
   state.phases = [];
   state.planSpaces = [];
   state.requirements = [];
@@ -552,8 +557,12 @@ function renderDocuments() {
   elements.documentEmpty.hidden = state.documents.length > 0;
   elements.documentList.hidden = state.documents.length === 0;
   elements.documentList.innerHTML = state.documents.map((document) => {
-    const selectable = document.status === "ready";
-    const choiceTitle = selectable ? "Include in a new baseline" : `Available after the PDF is ready (${label(document.status)})`;
+    const selectable = canAnalyzeDocument(document);
+    const choiceTitle = document.status === "failed"
+      ? "Select to retry analysis"
+      : selectable
+        ? "Include in a new baseline"
+        : `Unavailable while ${label(document.status)}`;
     const baselineVersion = state.baseline?.id === state.property?.active_baseline_id
       && (state.baseline?.source_document_ids || []).includes(document.id)
       ? state.baseline.version
@@ -787,10 +796,11 @@ async function savePendingFiles() {
   const documentType = $("#document-type").value;
   const revision = $("#document-revision").value.trim() || null;
   const issuedAt = $("#document-issued").value || null;
+  const uploadedDocumentIds = [];
   try {
     if (!window.MDAIObjectStorage) throw new Error("The secure S3 uploader did not load. Reload the page and retry.");
     for (const file of state.pendingFiles) {
-      await window.MDAIObjectStorage.upload({
+      const uploadResult = await window.MDAIObjectStorage.upload({
         client,
         entityType: "project_document",
         organizationId: state.organizationId,
@@ -812,12 +822,18 @@ async function savePendingFiles() {
             : `${resumeLabel}Uploading ${file.name} · ${progress.percent}% · ${progress.label}`;
         },
       });
+      if (uploadResult?.record?.id) uploadedDocumentIds.push(uploadResult.record.id);
     }
     notify(`${state.pendingFiles.length} plan document${state.pendingFiles.length === 1 ? "" : "s"} saved`);
     state.pendingFiles = [];
     elements.fileInput.value = "";
     elements.uploadFields.hidden = true;
     await openProperty(state.property.id);
+    if (uploadedDocumentIds.length) {
+      state.selectedDocumentIds = new Set(uploadedDocumentIds);
+      render();
+      setMessage(`${uploadedDocumentIds.length} new PDF${uploadedDocumentIds.length === 1 ? " is" : "s are"} selected and ready for analysis.`, "success");
+    }
   } catch (error) {
     console.error(error);
     notify(error.message || "Upload failed", "error");
