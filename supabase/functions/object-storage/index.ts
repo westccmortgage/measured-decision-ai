@@ -449,6 +449,14 @@ Deno.serve(async (request) => {
         throw Object.assign(new Error("Only an owner or administrator can delete project plans"), { status: 403 });
       }
 
+      const { data: property, error: propertyError } = await admin.from("properties")
+        .select("active_baseline_id")
+        .eq("id", record.property_id)
+        .eq("organization_id", record.organization_id)
+        .maybeSingle();
+      if (propertyError) throw propertyError;
+      if (!property) throw Object.assign(new Error("Project not found"), { status: 404 });
+
       const { data: baselineReferences, error: baselineError } = await admin.from("document_baselines")
         .select("id, version, state")
         .eq("organization_id", record.organization_id)
@@ -457,10 +465,10 @@ Deno.serve(async (request) => {
         .order("version", { ascending: false });
       if (baselineError) throw baselineError;
       const protectedBaseline = (baselineReferences || []).find((baseline) =>
-        !["superseded", "rejected"].includes(baseline.state)
+        baseline.id === property.active_baseline_id
       );
       if (protectedBaseline) {
-        throw Object.assign(new Error(`This plan is part of the current baseline v${protectedBaseline.version} (${protectedBaseline.state}) and cannot be deleted. Create a new baseline without it first.`), { status: 409 });
+        throw Object.assign(new Error(`This plan is part of the active baseline v${protectedBaseline.version} and cannot be deleted. Activate a replacement baseline without it first.`), { status: 409 });
       }
 
       const { data: activeJob } = await admin.from("plan_analysis_jobs")
@@ -501,9 +509,7 @@ Deno.serve(async (request) => {
         detail: {
           property_id: record.property_id,
           original_filename: record.original_filename,
-          historical_baseline_versions: (baselineReferences || [])
-            .filter((baseline) => ["superseded", "rejected"].includes(baseline.state))
-            .map((baseline) => baseline.version),
+          historical_baseline_versions: (baselineReferences || []).map((baseline) => baseline.version),
         },
       });
       if (auditError) console.error("Project plan deletion audit event could not be recorded", auditError);
