@@ -303,6 +303,23 @@ function analyzeSelectionState() {
   if (state.busy) return { disabled: true, label: "Working…", message: "", kind: "info" };
 
   const documents = selectedDocuments();
+  if (!documents.length && state.baseline) {
+    const approved = state.baseline.state === "approved";
+    return approved
+      ? {
+          disabled: false,
+          label: "Open Field Operations",
+          message: `Baseline v${state.baseline.version} is approved and the roadmap is active. Continue in Field Operations.`,
+          kind: "success",
+          action: "operations",
+        }
+      : {
+          disabled: true,
+          label: `Baseline v${state.baseline.version} is ready`,
+          message: "Review the saved baseline below and activate the roadmap. Select PDFs only when you need a new baseline.",
+          kind: "success",
+        };
+  }
   if (!documents.length) return { disabled: true, label: "Select ready PDFs", message: "Select one or more ready PDFs to build a new baseline.", kind: "info" };
 
   const unavailable = documents.find((document) => document.status !== "ready");
@@ -311,12 +328,13 @@ function analyzeSelectionState() {
   if (state.baseline && sameDocumentSet(documents.map((document) => document.id), state.baseline.source_document_ids || [])) {
     const approved = state.baseline.state === "approved";
     return {
-      disabled: true,
-      label: approved ? `Baseline v${state.baseline.version} is active` : `Baseline v${state.baseline.version} is ready`,
+      disabled: !approved,
+      label: approved ? "Open Field Operations" : `Baseline v${state.baseline.version} is ready`,
       message: approved
-        ? "This exact plan set is already active. Select a different ready PDF set only when you need a new baseline."
+        ? `Baseline v${state.baseline.version} is approved and the roadmap is active. Continue in Field Operations.`
         : "This exact plan set is already analyzed. Next: review the baseline below and activate the roadmap.",
       kind: "success",
+      action: approved ? "operations" : "analyze",
     };
   }
 
@@ -344,6 +362,7 @@ function analyzeSelectionState() {
 function updateAnalyzeAction({ updateMessage = false } = {}) {
   const selection = analyzeSelectionState();
   elements.analyze.disabled = selection.disabled;
+  elements.analyze.dataset.action = selection.action || "analyze";
   elements.analyze.innerHTML = `${escapeHtml(selection.label)} <span>↗</span>`;
   if (updateMessage && selection.message) setMessage(selection.message, selection.kind);
 }
@@ -509,10 +528,11 @@ function render() {
   renderBaseline();
   renderRoadmap();
   if (state.baseline && !state.activeAnalysisJob && state.analysisOutcome !== "failed") {
+    const approved = state.baseline.state === "approved";
     renderAnalysisProgress(100, analysisStages.length - 1, {
       success: true,
-      title: "Baseline ready for review",
-      detail: state.baseline.state === "approved"
+      title: approved ? "Roadmap active" : "Baseline ready for review",
+      detail: approved
         ? "The governed roadmap is active. Open Field Operations to continue."
         : "The roadmap is saved and ready for human approval.",
       elapsedLabel: "Saved",
@@ -956,7 +976,13 @@ $("#cancel-upload").addEventListener("click", () => {
   elements.uploadFields.hidden = true;
 });
 $("#confirm-upload").addEventListener("click", savePendingFiles);
-elements.analyze.addEventListener("click", analyzePlans);
+elements.analyze.addEventListener("click", () => {
+  if (elements.analyze.dataset.action === "operations" && state.property?.id) {
+    window.location.assign(`../operations/?property=${encodeURIComponent(state.property.id)}`);
+    return;
+  }
+  void analyzePlans();
+});
 $("#approve-baseline").addEventListener("click", approveBaseline);
 $("#attestation-reference").addEventListener("input", updateAttestationAction);
 $("#attestation-confirmed").addEventListener("change", updateAttestationAction);
