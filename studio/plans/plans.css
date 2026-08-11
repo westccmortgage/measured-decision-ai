@@ -245,6 +245,9 @@ dialog form { padding: 0; }
 .assignment-result { margin-top: 14px; padding-top: 13px; border-top: 1px solid rgba(72,211,232,.18); }
 .assignment-result p { color: #9eb3c1; }
 .assignment-result > div { display: flex; flex-wrap: wrap; gap: 8px; }
+.assignment-result.success p { color: var(--green); }
+.assignment-result.warning p { color: var(--amber); }
+.assignment-result.error p { color: var(--red); }
 .dialog-actions { padding: 14px 18px; display: flex; justify-content: flex-end; gap: 10px; border-top: 1px solid var(--line); }
 .attestation-dialog { width: min(720px, calc(100vw - 40px)); }
 .attestation-body { padding: 18px; display: grid; gap: 16px; }
