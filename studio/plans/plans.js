@@ -493,7 +493,7 @@ async function openProperty(propertyId) {
       client.from("plan_spaces").select("*").eq("baseline_id", state.baseline.id),
       client.from("capture_requirements").select("*").eq("baseline_id", state.baseline.id).order("created_at"),
       client.from("capture_tasks").select("*").eq("baseline_id", state.baseline.id).order("created_at"),
-      client.from("field_assignments").select("id, capture_task_id, worker_name, worker_email, status, due_at, email_delivery_state, created_at, updated_at").eq("baseline_id", state.baseline.id).order("created_at", { ascending: false }),
+      client.from("field_assignments").select("id, capture_task_id, worker_name, worker_email, status, due_at, email_delivery_state, email_delivery_error, email_last_attempt_at, created_at, updated_at").eq("baseline_id", state.baseline.id).order("created_at", { ascending: false }),
       client.from("field_quality_checks").select("id, assignment_id, capture_task_id, state, result, created_at, completed_at").eq("property_id", propertyId).order("created_at", { ascending: false }),
     ]);
     const loadError = phaseResult.error || spaceResult.error || requirementResult.error || taskResult.error || assignmentResult.error || qualityResult.error;
@@ -687,6 +687,7 @@ function openTask(requirementId) {
   $("#assignment-due").value = assignment?.due_at ? new Date(new Date(assignment.due_at).valueOf() - new Date().getTimezoneOffset() * 60000).toISOString().slice(0, 16) : "";
   $("#assignment-result").hidden = true;
   $("#send-field-task").disabled = !canApproveBaseline() || ["blocked", "waived", "submitted", "verified"].includes(task.status);
+  $("#send-field-task").textContent = assignment ? "Send again" : "Send field task";
   $("#task-dialog").showModal();
 }
 
@@ -712,20 +713,27 @@ async function createFieldAssignment() {
     if (error) throw await functionInvocationError(error, "Field assignment could not be created");
     if (data?.error) throw new Error(data.error);
     state.generatedFieldLink = data.link;
-    $("#task-assignment-state").textContent = data.email_sent ? "Email sent" : "Private link ready";
-    $("#assignment-result-copy").textContent = data.email_sent
-      ? `Sent to ${workerEmail}. The worker can open the task without a Studio account.`
-      : `Email delivery is not configured yet. The protected field link is ready to copy and send.`;
+    const emailState = data.email_state || (data.email_sent ? "sent" : "failed");
+    const result = $("#assignment-result");
+    result.classList.toggle("success", emailState === "sent");
+    result.classList.toggle("error", emailState === "failed");
+    result.classList.toggle("warning", emailState === "not_configured");
+    $("#task-assignment-state").textContent = emailState === "sent" ? "Provider accepted email" : "Email not sent";
+    $("#assignment-result-copy").textContent = emailState === "sent"
+      ? `The delivery service accepted the email for ${workerEmail}. Check Inbox and Spam; the private link is also available below.`
+      : emailState === "not_configured"
+        ? `No email was sent: ${data.email_error || "email delivery is not configured"}. Copy the private link below for now.`
+        : `No email was sent: ${data.email_error || "the delivery service rejected the request"}. Copy the private link below or correct the email setup and send again.`;
     $("#open-field-link").href = data.link;
-    $("#assignment-result").hidden = false;
-    notify(data.email_sent ? "Field task emailed." : "Private field link created.");
+    result.hidden = false;
+    notify(emailState === "sent" ? "Email accepted by delivery service." : "Assignment saved, but email was not sent.", emailState === "sent" ? "success" : "error");
     await openProperty(state.property.id);
   } catch (error) {
     console.error(error);
     notify(error.message || "Field assignment failed", "error");
   } finally {
     button.disabled = false;
-    button.textContent = "Send field task";
+    button.textContent = "Send again";
   }
 }
 
