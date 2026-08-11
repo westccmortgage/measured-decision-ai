@@ -1,5 +1,6 @@
 const config = window.MDAI_CONFIG || {};
 const $ = (selector) => document.querySelector(selector);
+const AI_INPUT_LIMIT_BYTES = 49 * 1024 * 1024;
 
 const client = window.supabase?.createClient && config.supabaseUrl && config.supabasePublishableKey
   ? window.supabase.createClient(config.supabaseUrl, config.supabasePublishableKey, {
@@ -32,6 +33,7 @@ const state = {
   analysisStage: 0,
   activeAnalysisJob: null,
   analysisPolling: false,
+  analysisOutcome: null,
 };
 
 const elements = {
@@ -48,6 +50,7 @@ const elements = {
   analyze: $("#analyze-plans"),
   message: $("#action-message"),
   analysisProgress: $("#analysis-progress"),
+  analysisProgressStatus: $("#analysis-progress-status"),
   analysisProgressTrack: $("#analysis-progress-track"),
   analysisProgressFill: $("#analysis-progress-fill"),
   analysisProgressValue: $("#analysis-progress-value"),
@@ -78,6 +81,11 @@ function label(value = "") {
 }
 
 function notify(message, kind = "success") {
+  const notificationKey = `${kind}:${message}`;
+  const now = Date.now();
+  if (notify.lastKey === notificationKey && now - (notify.lastAt || 0) < 8000) return;
+  notify.lastKey = notificationKey;
+  notify.lastAt = now;
   elements.toast.textContent = message;
   elements.toast.className = `toast show ${kind === "error" ? "error" : ""}`;
   window.clearTimeout(notify.timer);
@@ -133,12 +141,19 @@ function renderAnalysisProgress(percent, stageIndex, options = {}) {
   elements.analysisProgress.hidden = false;
   elements.analysisProgress.classList.toggle("success", Boolean(options.success));
   elements.analysisProgress.classList.toggle("failed", Boolean(options.failed));
+  elements.analysisProgressStatus.textContent = options.success
+    ? "Analysis complete"
+    : options.failed
+      ? "Analysis stopped"
+      : "Analysis in progress";
   elements.analysisProgressValue.textContent = `${bounded}%`;
   elements.analysisProgressFill.style.width = `${bounded}%`;
   elements.analysisProgressTrack.setAttribute("aria-valuenow", String(bounded));
   elements.analysisStageTitle.textContent = options.title || stage.title;
   elements.analysisStageDetail.textContent = options.detail || stage.detail;
-  elements.analysisElapsed.textContent = formatElapsed((Date.now() - state.analysisStartedAt) / 1000);
+  elements.analysisElapsed.textContent = options.elapsedLabel || (state.analysisStartedAt
+    ? formatElapsed((Date.now() - state.analysisStartedAt) / 1000)
+    : "Saved");
   elements.analysisProgress.querySelectorAll("[data-analysis-step]").forEach((item, index) => {
     item.classList.toggle("done", options.success || index < stageIndex);
     item.classList.toggle("active", !options.success && !options.failed && index === stageIndex);
@@ -161,6 +176,7 @@ function startAnalysisProgress() {
   state.analysisStartedAt = Date.now();
   state.analysisProgress = 0;
   state.analysisStage = 0;
+  state.analysisOutcome = null;
   elements.analysisProgress.className = "analysis-progress";
   updateAnalysisProgress();
   state.analysisProgressTimer = window.setInterval(updateAnalysisProgress, 500);
@@ -169,6 +185,7 @@ function startAnalysisProgress() {
 function finishAnalysisProgress(success, detail = "") {
   window.clearInterval(state.analysisProgressTimer);
   state.analysisProgressTimer = null;
+  state.analysisOutcome = success ? "success" : "failed";
   if (success) {
     renderAnalysisProgress(100, analysisStages.length - 1, {
       success: true,
@@ -266,9 +283,74 @@ function updateAttestationAction() {
   $("#confirm-governing-set").disabled = state.busy || reference.length < 3 || !$("#attestation-confirmed").checked;
 }
 
+function selectedDocuments() {
+  return state.documents.filter((document) => state.selectedDocumentIds.has(document.id));
+}
+
+function sameDocumentSet(left = [], right = []) {
+  const leftSet = new Set(left || []);
+  const rightSet = new Set(right || []);
+  return leftSet.size === rightSet.size && [...leftSet].every((id) => rightSet.has(id));
+}
+
+function formatMegabytes(bytes = 0) {
+  return `${(Number(bytes || 0) / 1048576).toFixed(1)} MB`;
+}
+
+function analyzeSelectionState() {
+  if (!canAnalyzePlans()) return { disabled: true, label: "Analysis unavailable for this role", message: "A project contributor or reviewer can run plan analysis.", kind: "info" };
+  if (state.activeAnalysisJob) return { disabled: true, label: "Analysis is running", message: "The saved analysis is running in the background. No action is needed.", kind: "info" };
+  if (state.busy) return { disabled: true, label: "Working…", message: "", kind: "info" };
+
+  const documents = selectedDocuments();
+  if (!documents.length) return { disabled: true, label: "Select ready PDFs", message: "Select one or more ready PDFs to build a new baseline.", kind: "info" };
+
+  const unavailable = documents.find((document) => document.status !== "ready");
+  if (unavailable) return { disabled: true, label: "Wait for PDFs to be ready", message: `${unavailable.original_filename} is not ready for analysis yet.`, kind: "info" };
+
+  const totalBytes = documents.reduce((sum, document) => sum + Number(document.byte_size || 0), 0);
+  const oversized = documents.find((document) => Number(document.byte_size || 0) > AI_INPUT_LIMIT_BYTES);
+  if (oversized || totalBytes > AI_INPUT_LIMIT_BYTES) {
+    return {
+      disabled: true,
+      label: "Select a smaller PDF set",
+      message: oversized
+        ? `${oversized.original_filename} exceeds the 49 MB analysis limit. Keep the original here and add an optimized PDF copy.`
+        : `${documents.length} selected PDFs total ${formatMegabytes(totalBytes)}. Select a set below 49 MB or add optimized PDF copies.`,
+      kind: "warning",
+    };
+  }
+
+  if (state.baseline && sameDocumentSet(documents.map((document) => document.id), state.baseline.source_document_ids || [])) {
+    const approved = state.baseline.state === "approved";
+    return {
+      disabled: true,
+      label: approved ? `Baseline v${state.baseline.version} is active` : `Baseline v${state.baseline.version} is ready`,
+      message: approved
+        ? "This exact plan set is already active. Select a different ready PDF set only when you need a new baseline."
+        : "This exact plan set is already analyzed. Next: review the baseline below and activate the roadmap.",
+      kind: "success",
+    };
+  }
+
+  return {
+    disabled: false,
+    label: "Analyze selected PDFs",
+    message: `${documents.length} ready PDF${documents.length === 1 ? "" : "s"} selected · ${formatMegabytes(totalBytes)} of 49 MB.`,
+    kind: "info",
+  };
+}
+
+function updateAnalyzeAction({ updateMessage = false } = {}) {
+  const selection = analyzeSelectionState();
+  elements.analyze.disabled = selection.disabled;
+  elements.analyze.innerHTML = `${escapeHtml(selection.label)} <span>↗</span>`;
+  if (updateMessage && selection.message) setMessage(selection.message, selection.kind);
+}
+
 function setBusy(busy, message = "") {
   state.busy = busy;
-  elements.analyze.disabled = busy || !canAnalyzePlans() || !state.selectedDocumentIds.size;
+  updateAnalyzeAction();
   $("#confirm-upload").disabled = busy || !canUploadPlans();
   $("#approve-baseline").disabled = busy || !canApproveBaseline() || state.baseline?.state === "approved";
   updateAttestationAction();
@@ -330,6 +412,16 @@ async function initialize() {
 }
 
 async function openProperty(propertyId) {
+  const propertyChanged = state.property?.id !== propertyId;
+  if (propertyChanged) {
+    window.clearInterval(state.analysisProgressTimer);
+    state.analysisProgressTimer = null;
+    state.analysisStartedAt = null;
+    state.analysisProgress = 0;
+    state.analysisStage = 0;
+    state.analysisOutcome = null;
+    elements.analysisProgress.hidden = true;
+  }
   state.property = state.properties.find((property) => property.id === propertyId) || null;
   if (!state.property) return;
   window.history.replaceState({}, "", `${window.location.pathname}?property=${encodeURIComponent(propertyId)}`);
@@ -365,11 +457,11 @@ async function openProperty(propertyId) {
     return;
   }
   state.documents = documentsResult.data || [];
-  state.selectedDocumentIds = new Set(
-    state.documents.filter((document) => document.status !== "superseded").map((document) => document.id),
-  );
   state.baseline = baselinesResult.data?.[0] || null;
   state.activeAnalysisJob = activeJobResult.data?.[0] || null;
+  const readyDocumentIds = new Set(state.documents.filter((document) => document.status === "ready").map((document) => document.id));
+  const baselineDocumentIds = (state.baseline?.source_document_ids || []).filter((id) => readyDocumentIds.has(id));
+  state.selectedDocumentIds = new Set(baselineDocumentIds.length ? baselineDocumentIds : readyDocumentIds);
   state.phases = [];
   state.planSpaces = [];
   state.requirements = [];
@@ -412,11 +504,21 @@ function render() {
   $("#metric-tasks").textContent = state.tasks.length;
   const verified = state.tasks.filter((task) => task.status === "verified").length;
   $("#metric-tasks-copy").textContent = state.tasks.length ? `${verified} verified · ${state.tasks.length - verified} open` : "Waiting for plans";
-  elements.analyze.disabled = state.busy || !canAnalyzePlans() || !state.selectedDocumentIds.size;
   $("#upload-plans-label").hidden = !canUploadPlans();
   renderDocuments();
   renderBaseline();
   renderRoadmap();
+  if (state.baseline && !state.activeAnalysisJob && state.analysisOutcome !== "failed") {
+    renderAnalysisProgress(100, analysisStages.length - 1, {
+      success: true,
+      title: "Baseline ready for review",
+      detail: state.baseline.state === "approved"
+        ? "The governed roadmap is active. Open Field Operations to continue."
+        : "The roadmap is saved and ready for human approval.",
+      elapsedLabel: "Saved",
+    });
+  }
+  updateAnalyzeAction({ updateMessage: state.analysisOutcome !== "failed" });
   $("#step-analyze").classList.toggle("done", Boolean(state.baseline));
   $("#step-approve").classList.toggle("done", state.baseline?.state === "approved");
   $("#step-capture").classList.toggle("done", state.tasks.some((task) => ["submitted", "verified"].includes(task.status)));
@@ -425,21 +527,24 @@ function render() {
 function renderDocuments() {
   elements.documentEmpty.hidden = state.documents.length > 0;
   elements.documentList.hidden = state.documents.length === 0;
-  elements.documentList.innerHTML = state.documents.map((document) => `
+  elements.documentList.innerHTML = state.documents.map((document) => {
+    const selectable = document.status === "ready";
+    const choiceTitle = selectable ? "Include in a new baseline" : `Available after the PDF is ready (${label(document.status)})`;
+    return `
     <article class="document-row">
-      <label class="document-choice" title="Include in the next baseline"><input type="checkbox" data-document-select="${document.id}" ${state.selectedDocumentIds.has(document.id) ? "checked" : ""}><span class="document-icon">PDF</span></label>
+      <label class="document-choice" title="${escapeHtml(choiceTitle)}"><input type="checkbox" data-document-select="${document.id}" ${state.selectedDocumentIds.has(document.id) ? "checked" : ""} ${selectable ? "" : "disabled"}><span class="document-icon">PDF</span></label>
       <div class="document-name"><strong title="${escapeHtml(document.original_filename)}">${escapeHtml(document.original_filename)}</strong><small>${document.byte_size ? `${(document.byte_size / 1048576).toFixed(1)} MB` : "Private source"}</small></div>
       <div class="document-cell"><span>Discipline</span><strong>${escapeHtml(label(document.document_type))}</strong></div>
       <div class="document-cell"><span>Revision</span><strong>${escapeHtml(display(document.revision_label, "Not stated"))}</strong></div>
       <span class="document-status ${document.status}" title="${escapeHtml(document.processing_error || "")}">${escapeHtml(label(document.status))}</span>
     </article>
-  `).join("");
+  `;
+  }).join("");
   elements.documentList.querySelectorAll("[data-document-select]").forEach((input) => {
     input.addEventListener("change", () => {
       if (input.checked) state.selectedDocumentIds.add(input.dataset.documentSelect);
       else state.selectedDocumentIds.delete(input.dataset.documentSelect);
-      elements.analyze.disabled = state.busy || !canAnalyzePlans() || !state.selectedDocumentIds.size;
-      setMessage(`${state.selectedDocumentIds.size} document${state.selectedDocumentIds.size === 1 ? "" : "s"} selected for the next baseline.`);
+      updateAnalyzeAction({ updateMessage: true });
     });
   });
 }
@@ -736,18 +841,12 @@ async function monitorAnalysisJob(jobId, options = {}) {
 }
 
 async function analyzePlans() {
-  if (!state.selectedDocumentIds.size || state.busy) return;
-  const activeDocuments = state.documents.filter((document) => state.selectedDocumentIds.has(document.id));
-  const totalBytes = activeDocuments.reduce((sum, document) => sum + Number(document.byte_size || 0), 0);
-  const oversized = activeDocuments.find((document) => Number(document.byte_size || 0) > 49 * 1024 * 1024);
-  if (oversized || totalBytes > 49 * 1024 * 1024) {
-    const message = oversized
-      ? `${oversized.original_filename} is larger than the AI input limit. Preserve it here, then upload an optimized PDF copy for analysis.`
-      : "The active plan set is larger than the AI input limit. Analyze smaller discipline sets or add optimized PDF copies.";
-    setMessage(message, "error");
-    notify(message, "error");
+  const eligibility = analyzeSelectionState();
+  if (eligibility.disabled) {
+    if (eligibility.message) setMessage(eligibility.message, eligibility.kind);
     return;
   }
+  const activeDocuments = selectedDocuments();
   startAnalysisProgress();
   setBusy(true, "AI is reading the plan set…");
   setMessage("Creating a governed analysis job. Large drawing sets may take several minutes.");
