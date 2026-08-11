@@ -434,6 +434,74 @@ Deno.serve(async (request) => {
       return json(request, { deleted: true });
     }
 
+    if (operation === "delete_project_document") {
+      if (fieldAssignment) throw Object.assign(new Error("Field links cannot delete project plans"), { status: 403 });
+      const recordId = text(body?.record_id);
+      if (!isUuid(recordId)) throw Object.assign(new Error("A valid project plan is required"), { status: 400 });
+      const { data: record, error: recordError } = await admin.from("project_documents")
+        .select("id, organization_id, property_id, storage_provider, storage_bucket, storage_path, object_version_id, original_filename")
+        .eq("id", recordId)
+        .maybeSingle();
+      if (recordError) throw recordError;
+      if (!record) throw Object.assign(new Error("Project plan not found"), { status: 404 });
+      const role = await membership(record.organization_id);
+      if (!role || !["owner", "admin"].includes(role)) {
+        throw Object.assign(new Error("Only an owner or administrator can delete project plans"), { status: 403 });
+      }
+
+      const { data: baseline } = await admin.from("document_baselines")
+        .select("id, version, state")
+        .eq("organization_id", record.organization_id)
+        .eq("property_id", record.property_id)
+        .contains("source_document_ids", [record.id])
+        .order("version", { ascending: false })
+        .limit(1)
+        .maybeSingle();
+      if (baseline) {
+        throw Object.assign(new Error(`This plan is part of baseline v${baseline.version} (${baseline.state}) and cannot be deleted. Create a new baseline without it to preserve the project record.`), { status: 409 });
+      }
+
+      const { data: activeJob } = await admin.from("plan_analysis_jobs")
+        .select("id")
+        .eq("organization_id", record.organization_id)
+        .eq("property_id", record.property_id)
+        .contains("document_ids", [record.id])
+        .in("state", ["queued", "processing"])
+        .limit(1)
+        .maybeSingle();
+      if (activeJob) {
+        throw Object.assign(new Error("This plan is currently being analyzed. Wait for the analysis to finish before deleting it."), { status: 409 });
+      }
+
+      if (record.storage_provider === "aws-s3") {
+        if (record.storage_bucket !== bucket) throw Object.assign(new Error("This plan is outside the configured S3 bucket"), { status: 409 });
+        await s3.send(new DeleteObjectCommand({
+          Bucket: record.storage_bucket,
+          Key: record.storage_path,
+        }));
+      } else if (record.storage_provider === "supabase") {
+        const sourceBucket = text(record.storage_bucket, "project-plans");
+        const { error: storageError } = await admin.storage.from(sourceBucket).remove([record.storage_path]);
+        if (storageError) throw storageError;
+      } else {
+        throw Object.assign(new Error("This plan uses an unsupported storage provider"), { status: 409 });
+      }
+
+      const { error: deleteError } = await admin.from("project_documents").delete().eq("id", record.id);
+      if (deleteError) throw deleteError;
+      await admin.from("object_uploads").delete().eq("id", record.id);
+      const { error: auditError } = await admin.from("audit_events").insert({
+        organization_id: record.organization_id,
+        actor_id: userId,
+        action: "project_document.deleted",
+        entity_type: "project_documents",
+        entity_id: record.id,
+        detail: { property_id: record.property_id, original_filename: record.original_filename },
+      });
+      if (auditError) console.error("Project plan deletion audit event could not be recorded", auditError);
+      return json(request, { deleted: true, record_id: record.id });
+    }
+
     if (operation === "abort_upload") {
       const { row } = await uploadSession(body?.session_id);
       if (row.status === "pending") {
