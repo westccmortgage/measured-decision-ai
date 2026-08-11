@@ -199,5 +199,9 @@
     return await invoke(client, { operation: "delete_evidence", record_id: recordId });
   }
 
-  window.MDAIObjectStorage = { upload, getSignedUrl, deleteEvidence, humanBytes };
+  async function deleteProjectDocument(client, recordId) {
+    return await invoke(client, { operation: "delete_project_document", record_id: recordId });
+  }
+
+  window.MDAIObjectStorage = { upload, getSignedUrl, deleteEvidence, deleteProjectDocument, humanBytes };
 })();
