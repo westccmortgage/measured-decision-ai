@@ -268,6 +268,10 @@ function canApproveBaseline() {
   return ["owner", "admin", "reviewer"].includes(state.role);
 }
 
+function canDeletePlans() {
+  return ["owner", "admin"].includes(state.role);
+}
+
 function blockingBaselineGaps() {
   return Array.isArray(state.baseline?.gaps)
     ? state.baseline.gaps.filter((gap) => gap?.blocks_activation === true)
@@ -550,6 +554,12 @@ function renderDocuments() {
   elements.documentList.innerHTML = state.documents.map((document) => {
     const selectable = document.status === "ready";
     const choiceTitle = selectable ? "Include in a new baseline" : `Available after the PDF is ready (${label(document.status)})`;
+    const baselineVersion = (state.baseline?.source_document_ids || []).includes(document.id)
+      ? state.baseline.version
+      : null;
+    const deleteTitle = baselineVersion
+      ? `Included in baseline v${baselineVersion}; create a replacement baseline before deleting`
+      : `Delete ${document.original_filename}`;
     return `
     <article class="document-row">
       <label class="document-choice" title="${escapeHtml(choiceTitle)}"><input type="checkbox" data-document-select="${document.id}" ${state.selectedDocumentIds.has(document.id) ? "checked" : ""} ${selectable ? "" : "disabled"}><span class="document-icon">PDF</span></label>
@@ -557,6 +567,7 @@ function renderDocuments() {
       <div class="document-cell"><span>Discipline</span><strong>${escapeHtml(label(document.document_type))}</strong></div>
       <div class="document-cell"><span>Revision</span><strong>${escapeHtml(display(document.revision_label, "Not stated"))}</strong></div>
       <span class="document-status ${document.status}" title="${escapeHtml(document.processing_error || "")}">${escapeHtml(label(document.status))}</span>
+      ${canDeletePlans() ? `<button class="document-delete" type="button" data-document-delete="${document.id}" title="${escapeHtml(deleteTitle)}" aria-label="${escapeHtml(deleteTitle)}" ${baselineVersion ? "disabled" : ""}>Delete</button>` : ""}
     </article>
   `;
   }).join("");
@@ -567,6 +578,30 @@ function renderDocuments() {
       updateAnalyzeAction({ updateMessage: true });
     });
   });
+  elements.documentList.querySelectorAll("[data-document-delete]").forEach((button) => {
+    button.addEventListener("click", () => deletePlanDocument(button.dataset.documentDelete));
+  });
+}
+
+async function deletePlanDocument(documentId) {
+  const document = state.documents.find((item) => item.id === documentId);
+  if (!document || state.busy || !canDeletePlans()) return;
+  const confirmed = window.confirm(`Delete “${document.original_filename}”?\n\nThis removes the plan from the project and active storage. It cannot be restored from Studio.`);
+  if (!confirmed) return;
+  setBusy(true, `Deleting ${document.original_filename}…`);
+  try {
+    if (!window.MDAIObjectStorage?.deleteProjectDocument) throw new Error("The secure deletion service did not load. Reload the page and retry.");
+    await window.MDAIObjectStorage.deleteProjectDocument(client, document.id);
+    state.selectedDocumentIds.delete(document.id);
+    notify(`${document.original_filename} deleted.`);
+    await openProperty(state.property.id);
+  } catch (error) {
+    console.error(error);
+    notify(error.message || "Plan could not be deleted", "error");
+  } finally {
+    setBusy(false, `Cloud connected · ${state.role}`);
+    render();
+  }
 }
 
 function renderBaseline() {
