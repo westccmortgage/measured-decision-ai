@@ -229,34 +229,59 @@ Deno.serve(async (request) => {
       const link = `${portal}?assignment=${encodeURIComponent(assignment.id)}&token=${encodeURIComponent(token)}`;
       const resendKey = Deno.env.get("RESEND_API_KEY");
       const emailFrom = Deno.env.get("FIELD_EMAIL_FROM");
+      const emailReplyTo = Deno.env.get("FIELD_EMAIL_REPLY_TO");
       let emailState = "not_configured";
       let emailMessageId: string | null = null;
       let emailError: string | null = null;
       if (resendKey && emailFrom) {
-        const emailResponse = await fetch("https://api.resend.com/emails", {
-          method: "POST",
-          headers: { Authorization: `Bearer ${resendKey}`, "Content-Type": "application/json" },
-          body: JSON.stringify({
-            from: emailFrom,
-            to: [workerEmail],
-            subject: `${property.name}: ${requirement.title}`,
-            html: `<div style="font-family:Arial,sans-serif;max-width:620px;color:#10202f"><p style="color:#168da1;font-weight:700">MEASURED DECISION · FIELD TASK</p><h1 style="font-size:25px">${html(requirement.title)}</h1><p><strong>Project:</strong> ${html(property.name)}<br><strong>Location:</strong> ${html(space ? `${space.building} · ${space.level} · ${space.name}` : "Confirm on site")}<br><strong>Due:</strong> ${html(dateLabel(dueAt))}</p><p>${html(requirement.rationale)}</p><p><a href="${html(link)}" style="display:inline-block;background:#24bfd5;color:#06101c;padding:14px 20px;border-radius:6px;text-decoration:none;font-weight:700">Open field task</a></p><p style="font-size:12px;color:#607386">No Studio account is required. This private link opens only this assignment and expires automatically.</p></div>`,
-          }),
-        });
-        const emailPayload = await emailResponse.json().catch(() => ({}));
-        if (emailResponse.ok) {
-          emailState = "sent";
-          emailMessageId = emailPayload?.id || null;
-        } else {
+        try {
+          const locationLabel = space ? `${space.building} · ${space.level} · ${space.name}` : "Confirm on site";
+          const emailResponse = await fetch("https://api.resend.com/emails", {
+            method: "POST",
+            headers: { Authorization: `Bearer ${resendKey}`, "Content-Type": "application/json" },
+            body: JSON.stringify({
+              from: emailFrom,
+              to: [workerEmail],
+              ...(emailReplyTo ? { reply_to: emailReplyTo } : {}),
+              subject: `${property.name}: ${requirement.title}`,
+              text: `Measured Decision field task\n\n${requirement.title}\nProject: ${property.name}\nLocation: ${locationLabel}\nDue: ${dateLabel(dueAt)}\n\n${requirement.rationale}\n\nOpen field task: ${link}\n\nNo Studio account is required. This private link opens only this assignment and expires automatically.`,
+              html: `<div style="font-family:Arial,sans-serif;max-width:620px;color:#10202f"><p style="color:#168da1;font-weight:700">MEASURED DECISION · FIELD TASK</p><h1 style="font-size:25px">${html(requirement.title)}</h1><p><strong>Project:</strong> ${html(property.name)}<br><strong>Location:</strong> ${html(locationLabel)}<br><strong>Due:</strong> ${html(dateLabel(dueAt))}</p><p>${html(requirement.rationale)}</p><p><a href="${html(link)}" style="display:inline-block;background:#24bfd5;color:#06101c;padding:14px 20px;border-radius:6px;text-decoration:none;font-weight:700">Open field task</a></p><p style="font-size:12px;color:#607386">No Studio account is required. This private link opens only this assignment and expires automatically.</p></div>`,
+            }),
+          });
+          const emailPayload = await emailResponse.json().catch(() => ({}));
+          if (emailResponse.ok) {
+            emailState = "sent";
+            emailMessageId = emailPayload?.id || null;
+          } else {
+            emailState = "failed";
+            emailError = emailPayload?.message || `Email provider rejected the request (${emailResponse.status})`;
+          }
+        } catch (emailRequestError) {
           emailState = "failed";
-          emailError = emailPayload?.message || `Email provider rejected the request (${emailResponse.status})`;
+          emailError = `Email provider could not be reached: ${emailRequestError instanceof Error ? emailRequestError.message : "network error"}`;
         }
+      } else {
+        emailError = !resendKey
+          ? "RESEND_API_KEY is not configured in Supabase Edge Function secrets"
+          : "FIELD_EMAIL_FROM is not configured in Supabase Edge Function secrets";
       }
-      await admin.from("field_assignments").update({
-        email_delivery_state: emailState,
-        email_message_id: emailMessageId,
-        updated_at: new Date().toISOString(),
-      }).eq("id", assignment.id);
+      const emailAttemptedAt = new Date().toISOString();
+      await Promise.all([
+        admin.from("field_assignments").update({
+          email_delivery_state: emailState,
+          email_message_id: emailMessageId,
+          email_delivery_error: emailError,
+          email_last_attempt_at: emailAttemptedAt,
+          updated_at: emailAttemptedAt,
+        }).eq("id", assignment.id),
+        admin.from("field_assignment_events").insert({
+          organization_id: task.organization_id,
+          assignment_id: assignment.id,
+          event_type: `assignment.email_${emailState}`,
+          actor_id: user.id,
+          detail: { worker_email: workerEmail, provider: "resend", message_id: emailMessageId, error: emailError },
+        }),
+      ]);
       return json(request, { assignment_id: assignment.id, link, email_sent: emailState === "sent", email_state: emailState, email_error: emailError });
     }
 
