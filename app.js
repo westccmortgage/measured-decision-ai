@@ -44,8 +44,8 @@ const reducedMotion = matchMedia("(prefers-reduced-motion: reduce)");
 
 if (proofStage && proofVideos.length && proofTabs.length && heroVideoToggle) {
   const contexts = {
-    commercial: "High-rise construction",
-    residential: "Custom-home construction"
+    commercial: "Commercial environment",
+    residential: "Field environment"
   };
   let activeName = "commercial";
   let transitionTimer;
