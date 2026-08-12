@@ -694,6 +694,52 @@
       </form>
     </dialog>
 
+    <dialog id="edit-space-dialog">
+      <form id="edit-space-form">
+        <div class="dialog-heading">
+          <div>
+            <p class="eyebrow">Workspace structure</p>
+            <h2>Edit space</h2>
+          </div>
+          <button type="button" data-close-space-dialog aria-label="Close">×</button>
+        </div>
+        <label>Space name<input id="edit-space-name" type="text" required maxlength="140"></label>
+        <label>Building or area<input id="edit-space-building" type="text" maxlength="140" placeholder="e.g. Main House"></label>
+        <label>Level<input id="edit-space-level" type="text" maxlength="140" placeholder="e.g. Level 1"></label>
+        <p class="dialog-notice">Changes appear throughout the property workspace and its future exports.</p>
+        <div class="space-dialog-footer">
+          <div>
+            <button class="danger-button" type="button" id="request-space-delete">Remove space</button>
+            <small id="space-delete-help"></small>
+          </div>
+          <div class="dialog-actions">
+            <button class="secondary-button" type="button" data-close-space-dialog>Cancel</button>
+            <button class="primary-button" type="submit" id="save-space-edit">Save changes</button>
+          </div>
+        </div>
+      </form>
+    </dialog>
+
+    <dialog id="delete-space-dialog" class="danger-dialog">
+      <form method="dialog" id="delete-space-form">
+        <div class="dialog-heading">
+          <div>
+            <p class="eyebrow">Workspace structure</p>
+            <h2>Remove this space?</h2>
+          </div>
+          <button type="submit" value="cancel" aria-label="Close">×</button>
+        </div>
+        <div class="delete-evidence-summary">
+          <strong id="delete-space-name">Space</strong>
+          <p>This removes the empty space from the current property record. This action cannot be undone.</p>
+        </div>
+        <div class="dialog-actions">
+          <button class="secondary-button" type="submit" value="cancel">Keep space</button>
+          <button class="danger-button" type="button" id="confirm-space-delete">Remove space</button>
+        </div>
+      </form>
+    </dialog>
+
     <dialog id="property-dialog" class="property-dialog">
       <form method="dialog" id="property-form">
         <div class="dialog-heading">
