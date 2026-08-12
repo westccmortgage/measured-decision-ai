@@ -67,6 +67,8 @@ let activeRoomId = rooms[0]?.id;
 let pendingFiles = [];
 let editingEvidenceId = null;
 let deletingEvidenceId = null;
+let editingSpaceId = null;
+let deletingSpaceId = null;
 let activeEvidenceId = null;
 let visionRelease = null;
 let approvedVisionRelease = null;
@@ -112,6 +114,8 @@ const elements = {
   accountSecurityForm: $("#account-security-form"),
   accountSecurityMessage: $("#account-security-message"),
   roomDialog: $("#room-dialog"),
+  editSpaceDialog: $("#edit-space-dialog"),
+  deleteSpaceDialog: $("#delete-space-dialog"),
   uploadDialog: $("#upload-dialog"),
   editEvidenceDialog: $("#edit-evidence-dialog"),
   deleteEvidenceDialog: $("#delete-evidence-dialog"),
@@ -775,7 +779,8 @@ function renderJobs() {
 
 function renderReviewQueue() {
   const queue = $("#review-queue");
-  queue.innerHTML = rooms
+  queue.innerHTML = rooms.length
+    ? rooms
     .map((room) => {
       const activeJob = jobs.find(
         (job) =>
@@ -787,15 +792,22 @@ function renderReviewQueue() {
         : activeJob
           ? activeJob.status
           : "No AI suggestion";
-      return `<article class="review-queue-card"><div class="review-room-thumb">${evidenceThumbnail(room.evidence.find((item) => item.src), "review-thumb-media")}</div><div><p>${escapeText(room.building)} · ${escapeText(room.level)}</p><h2>${escapeText(room.name)}</h2><small>${room.evidence.length} source item${room.evidence.length === 1 ? "" : "s"} · ${escapeText(aiStatus)}</small></div><span class="review-badge ${room.status === "confirmed" ? "confirmed" : "needs"}">${room.status === "confirmed" ? "Human confirmed" : "Needs verification"}</span><button class="secondary-button" data-review-room="${room.id}" type="button">Open record</button></article>`;
+      const editAction = canManageSpaces()
+        ? `<button class="mini-button" data-edit-space="${room.id}" type="button">Edit</button>`
+        : "";
+      return `<article class="review-queue-card"><div class="review-room-thumb">${evidenceThumbnail(room.evidence.find((item) => item.src), "review-thumb-media")}</div><div><p>${escapeText(room.building)} · ${escapeText(room.level)}</p><h2>${escapeText(room.name)}</h2><small>${room.evidence.length} source item${room.evidence.length === 1 ? "" : "s"} · ${escapeText(aiStatus)}</small></div><span class="review-badge ${room.status === "confirmed" ? "confirmed" : "needs"}">${room.status === "confirmed" ? "Human confirmed" : "Needs verification"}</span><div class="review-card-actions">${editAction}<button class="secondary-button" data-review-room="${room.id}" type="button">Open record</button></div></article>`;
     })
-    .join("");
+    .join("")
+    : `<div class="empty-state"><strong>No spaces in this property</strong><p>Add a room or area when you are ready to begin a new record.</p></div>`;
   queue.querySelectorAll("[data-review-room]").forEach((button) =>
     button.addEventListener("click", () => {
       activeRoomId = button.dataset.reviewRoom;
       activateView("property");
       render();
     }),
+  );
+  queue.querySelectorAll("[data-edit-space]").forEach((button) =>
+    button.addEventListener("click", () => openSpaceEditor(button.dataset.editSpace)),
   );
 }
 
@@ -1645,6 +1657,125 @@ async function createRoomRecord({ name, building, level }) {
   rooms.push(room);
   return room;
 }
+
+function canManageSpaces() {
+  return !cloud.schemaReady || ["owner", "admin", "reviewer", "contributor"].includes(cloud.role);
+}
+
+function openSpaceEditor(spaceId) {
+  if (!canManageSpaces()) return;
+  const room = rooms.find((item) => item.id === spaceId);
+  if (!room) return;
+  editingSpaceId = room.id;
+  $("#edit-space-name").value = room.name || "";
+  $("#edit-space-building").value = room.building || "";
+  $("#edit-space-level").value = room.level || "";
+  const removeButton = $("#request-space-delete");
+  const hasEvidence = room.evidence.length > 0;
+  removeButton.disabled = hasEvidence;
+  $("#space-delete-help").textContent = hasEvidence
+    ? `Move or delete ${room.evidence.length} source item${room.evidence.length === 1 ? "" : "s"} before removing this space.`
+    : "Available because this space has no source material.";
+  elements.editSpaceDialog.showModal();
+}
+
+document.querySelectorAll("[data-close-space-dialog]").forEach((button) =>
+  button.addEventListener("click", () => {
+    editingSpaceId = null;
+    elements.editSpaceDialog.close();
+  }),
+);
+
+$("#edit-space-form").addEventListener("submit", async (event) => {
+  event.preventDefault();
+  const room = rooms.find((item) => item.id === editingSpaceId);
+  const name = $("#edit-space-name").value.trim();
+  const building = $("#edit-space-building").value.trim() || "Property";
+  const level = $("#edit-space-level").value.trim() || "Unspecified level";
+  if (!room || !name) return;
+  const button = $("#save-space-edit");
+  button.disabled = true;
+  button.textContent = "Saving…";
+  try {
+    if (cloud.schemaReady && cloud.propertyId) {
+      const { data, error } = await cloud.client
+        .from("spaces")
+        .update({ name, building, level })
+        .eq("id", room.id)
+        .eq("property_id", cloud.propertyId)
+        .select("id");
+      if (error) throw error;
+      if (!data?.length) throw new Error("Update is not authorized or the space no longer exists");
+    }
+    room.name = name;
+    room.building = building;
+    room.level = level;
+    jobs.forEach((job) => {
+      if (job.roomId === room.id) job.roomName = name;
+    });
+    saveRooms(cloud.schemaReady ? "Space updated in cloud record" : "Space updated locally");
+    elements.editSpaceDialog.close();
+    editingSpaceId = null;
+    render();
+    notify(`${name} updated`);
+  } catch (error) {
+    notify(`Space was not updated: ${error.message}`, 5000);
+  } finally {
+    button.disabled = false;
+    button.textContent = "Save changes";
+  }
+});
+
+$("#request-space-delete").addEventListener("click", () => {
+  const room = rooms.find((item) => item.id === editingSpaceId);
+  if (!room || room.evidence.length) return;
+  deletingSpaceId = room.id;
+  $("#delete-space-name").textContent = room.name;
+  elements.editSpaceDialog.close();
+  elements.deleteSpaceDialog.showModal();
+});
+
+$("#confirm-space-delete").addEventListener("click", async () => {
+  const room = rooms.find((item) => item.id === deletingSpaceId);
+  if (!room || room.evidence.length) return;
+  const button = $("#confirm-space-delete");
+  button.disabled = true;
+  button.textContent = "Removing…";
+  try {
+    if (cloud.schemaReady && cloud.propertyId) {
+      const { data, error } = await cloud.client
+        .from("spaces")
+        .delete()
+        .eq("id", room.id)
+        .eq("property_id", cloud.propertyId)
+        .select("id");
+      if (error) throw error;
+      if (!data?.length) throw new Error("Removal is not authorized or the space no longer exists");
+    }
+    rooms = rooms.filter((item) => item.id !== room.id);
+    jobs = jobs.filter((job) => job.roomId !== room.id);
+    if (activeRoomId === room.id) {
+      activeRoomId = rooms[0]?.id || null;
+      activeEvidenceId = rooms[0]?.evidence[0]?.id || null;
+    }
+    saveRooms(cloud.schemaReady ? "Space removed from cloud record" : "Space removed locally");
+    saveJobs();
+    elements.deleteSpaceDialog.close();
+    deletingSpaceId = null;
+    editingSpaceId = null;
+    render();
+    notify(`${room.name} removed`);
+  } catch (error) {
+    notify(`Space was not removed: ${error.message}`, 5000);
+  } finally {
+    button.disabled = false;
+    button.textContent = "Remove space";
+  }
+});
+
+elements.deleteSpaceDialog.addEventListener("close", () => {
+  deletingSpaceId = null;
+});
 
 $("#add-room").addEventListener("click", () => elements.roomDialog.showModal());
 $("#save-room").addEventListener("click", async (event) => {

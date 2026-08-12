@@ -1710,6 +1710,34 @@ dialog textarea { min-height:78px; resize:vertical; }
   border: 1px solid var(--line);
   background: var(--panel);
 }
+.review-card-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.review-card-actions .mini-button {
+  color: #a9c0d0;
+}
+.space-dialog-footer {
+  display: flex;
+  align-items: flex-end;
+  justify-content: space-between;
+  gap: 24px;
+  margin-top: 22px;
+}
+.space-dialog-footer > div:first-child {
+  display: grid;
+  gap: 7px;
+  max-width: 255px;
+}
+.space-dialog-footer small {
+  color: var(--muted);
+  font-size: 8px;
+  line-height: 1.45;
+}
+.space-dialog-footer .dialog-actions {
+  margin-top: 0;
+}
 .review-room-thumb {
   width: 92px;
   height: 70px;
@@ -1971,8 +1999,16 @@ dialog textarea { min-height:78px; resize:vertical; }
     height: 60px;
   }
   .review-queue-card > .review-badge,
-  .review-queue-card > button {
+  .review-queue-card > button,
+  .review-queue-card > .review-card-actions {
     grid-column: 2;
+  }
+  .space-dialog-footer {
+    align-items: stretch;
+    flex-direction: column-reverse;
+  }
+  .space-dialog-footer > div:first-child {
+    max-width: none;
   }
   .vision-flow {
     flex-wrap: wrap;
