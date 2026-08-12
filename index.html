@@ -12,7 +12,7 @@
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
-    <link rel="stylesheet" href="styles.css?v=20260811-1">
+    <link rel="stylesheet" href="styles.css?v=20260812-1">
     <script>
       try {
         const saved = localStorage.getItem("mdai-theme");
@@ -34,7 +34,7 @@
           <a href="#intelligence">AI System</a>
           <a href="#environments">Environments</a>
           <a href="#films">Watch</a>
-          <a href="#company">Company</a>
+          <a href="/team/">Our Team</a>
         </nav>
         <div class="header-actions">
           <button class="theme-toggle" type="button" aria-label="Switch theme">
@@ -114,28 +114,44 @@
           </div>
           <p>Measured Decision uses multiple specialized AI agents to process different parts of the same real-world situation, then brings their findings together for human review.</p>
         </div>
-        <div class="unified-record-grid">
-          <div class="unified-record-column">
-            <p class="unified-record-label">Five core intelligence roles</p>
-            <dl class="unified-platform-layers">
-              <div><dt><b>01</b> Observation Agent</dt><dd>Identifies objects, conditions, activity, and visible change in the physical environment.</dd></div>
-              <div><dt><b>02</b> Evidence Agent</dt><dd>Organizes video, images, documents, timestamps, location, and source records.</dd></div>
-              <div><dt><b>03</b> Comparison Agent</dt><dd>Compares observed reality with prior conditions, plans, requirements, or expected progress.</dd></div>
-              <div><dt><b>04</b> Risk Agent</dt><dd>Surfaces discrepancies, missing evidence, unusual conditions, and potential downstream impact.</dd></div>
-              <div><dt><b>05</b> Decision Agent</dt><dd>Combines findings into a structured recommendation, alternatives, and explanation.</dd></div>
-            </dl>
-          </div>
-          <div class="unified-record-column">
-            <p class="unified-record-label">Physical-world intelligence stack</p>
-            <div class="unified-lifecycle-path">
-              <p><span>Vision</span><strong>Visual & Spatial Intelligence</strong><em>Images, video, 360 capture, LiDAR, fixed cameras, and drones</em></p>
-              <p><span>Time</span><strong>Temporal Intelligence</strong><em>What changed between moments, visits, stages, or inspections</em></p>
-              <p><span>Context</span><strong>Document Intelligence</strong><em>Plans, schedules, specifications, reports, contracts, and operating records</em></p>
-              <p><span>Control</span><strong>Human Decision Layer</strong><em>AI recommends and explains; authorized people retain responsibility</em></p>
-            </div>
-          </div>
+        <div class="decision-pipeline" aria-label="Physical environment to human decision pipeline">
+          <article class="pipeline-node pipeline-source">
+            <span>01 · Reality</span>
+            <h3>Physical environment</h3>
+            <p>A site, set, facility, room, asset, or operational area.</p>
+          </article>
+          <div class="pipeline-connector" aria-hidden="true"><i></i><b>Capture</b></div>
+          <article class="pipeline-node pipeline-capture">
+            <span>02 · Evidence</span>
+            <h3>Connected inputs</h3>
+            <p>Video · 360 · images · documents · schedules · sensors · time</p>
+          </article>
+          <div class="pipeline-connector" aria-hidden="true"><i></i><b>Analyze</b></div>
+          <article class="pipeline-node pipeline-agents">
+            <span>03 · Multi-agent AI</span>
+            <h3>Specialists work together</h3>
+            <ol>
+              <li><b>Observation</b><small>What is present?</small></li>
+              <li><b>Evidence</b><small>What supports it?</small></li>
+              <li><b>Comparison</b><small>What changed?</small></li>
+              <li><b>Risk</b><small>What may be affected?</small></li>
+              <li><b>Decision</b><small>What are the options?</small></li>
+            </ol>
+          </article>
+          <div class="pipeline-connector" aria-hidden="true"><i></i><b>Explain</b></div>
+          <article class="pipeline-node pipeline-output">
+            <span>04 · Review</span>
+            <h3>Evidence layer</h3>
+            <p>Findings, sources, uncertainty, alternatives, and missing information stay visible.</p>
+          </article>
+          <div class="pipeline-connector" aria-hidden="true"><i></i><b>Approve</b></div>
+          <article class="pipeline-node pipeline-human">
+            <span>05 · Responsibility</span>
+            <h3>Human decision</h3>
+            <p>An authorized person reviews the evidence and decides what happens next.</p>
+          </article>
         </div>
-        <p class="roadmap-note unified-record-note"><span>Architecture</span> AI findings remain connected to their source evidence rather than becoming untraceable conclusions.</p>
+        <p class="pipeline-principle"><span>Core architecture</span><strong>No unexplained conclusion.</strong> Every material finding keeps a path back to its evidence.</p>
       </section>
 
       <section class="section capital-section capital-section-compact" id="environments">
@@ -148,7 +164,7 @@
         </div>
         <ol class="capital-flow capital-flow-compact">
           <li><span>01</span><div><h3>Commercial & Construction</h3><p>Progress, condition, change, documentation, site verification, and project decisions.</p></div></li>
-          <li><span>02</span><div><h3>Film & Production Sets</h3><p>Set conditions, schedule changes, crew, equipment, locations, continuity, and operational impact.</p></div></li>
+          <li><span>02</span><div><h3>Film & Production Sets</h3><p>Set conditions, schedule changes, crew, equipment, locations, continuity, and operational impact.</p><a class="application-link" href="/film-production/">Explore film production <b>→</b></a></div></li>
           <li><span>03</span><div><h3>Medical & Controlled Environments</h3><p>Physical conditions, asset placement, changes, and operational evidence in controlled facilities.</p></div></li>
           <li><span>04</span><div><h3>Industrial & Secure Facilities</h3><p>Repeat observation, restricted workflows, asset condition, infrastructure, and high-accountability review.</p></div></li>
         </ol>
@@ -230,20 +246,13 @@
 
       <section class="section company-section v3-company-section" id="company">
         <div class="company-statement">
-          <p class="eyebrow">Company</p>
-          <h2>Built around a simple question: what actually happened?</h2>
+          <p class="eyebrow">Our Team</p>
+          <h2>Domain experience inside the problem.</h2>
         </div>
         <div class="company-copy">
-          <p>Measured Decision AI is building an intelligence layer for the physical world: observe reality, preserve evidence, measure change, and support the next human decision.</p>
-          <p>Our initial work grew from real estate, construction, finance, and physical project oversight. The underlying system is intentionally broader: any complex environment where conditions change and decisions depend on evidence can become a Measured Decision environment.</p>
-          <div class="founder-line"><span>Founder &amp; product direction</span><strong>Anatoliy Kanevsky</strong><em>Real-estate, mortgage, construction, and project experience since 2004</em></div>
-          <section class="team-strip" aria-label="Independent specialist network">
-            <article><span>Construction</span><strong>Jose L. Cardoso</strong><small>JLC Builders · CA License #1127473</small></article>
-            <article><span>Real estate</span><strong>Marco Rufo</strong><small>Managing Partner · The Agency Palisades</small></article>
-            <article><span>SEO &amp; digital strategy</span><strong>Viktoriia Kotova</strong><small>MARKEVITA</small></article>
-            <article><span>Legal</span><strong>Edward Shkolnikov</strong><small>Attorney · California Bar #237116</small></article>
-          </section>
-          <p class="network-note">Independent specialist network presented by professional discipline. Inclusion does not imply employment, product endorsement, or automated decision authority.</p>
+          <p>Measured Decision AI brings together practical experience across mortgage finance, real estate, construction, legal, and digital strategy.</p>
+          <p>The full team page includes the founder introduction and the independent specialist network contributing domain perspective to the company.</p>
+          <a class="button button-secondary" href="/team/">Meet the team <span>→</span></a>
         </div>
       </section>
 
@@ -261,6 +270,6 @@
         <span>© 2026 Measured Decision AI</span>
       </footer>
     </main>
-    <script src="app.js?v=20260811-1" defer></script>
+    <script src="app.js?v=20260812-1" defer></script>
   </body>
 </html>
