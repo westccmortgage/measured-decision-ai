@@ -1,5 +1,5 @@
 # Our Team page
 
-This directory contains the public Our Team page and founder introduction presentation for Measured Decision AI.
+This directory contains the public Our Team page for Measured Decision AI.
 
-The founder film is served directly from the site through a native HTML5 video player.
+The founder introduction film remains archived in the site assets, but it is not currently displayed on the public page.
