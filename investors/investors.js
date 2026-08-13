@@ -46,3 +46,29 @@ chapters.forEach((chapter) => {
     player.play().catch(() => {});
   });
 });
+
+const qualificationForm = document.querySelector("#investor-qualification");
+const qualificationStatus = document.querySelector("#qualification-status");
+
+qualificationForm?.addEventListener("submit", async (event) => {
+  event.preventDefault();
+  const submit = qualificationForm.querySelector('button[type="submit"]');
+  submit.disabled = true;
+  qualificationStatus.textContent = "Submitting your request…";
+
+  try {
+    const response = await fetch("/", {
+      method: "POST",
+      headers: { "Content-Type": "application/x-www-form-urlencoded" },
+      body: new URLSearchParams(new FormData(qualificationForm)).toString(),
+    });
+
+    if (!response.ok) throw new Error("The request could not be submitted.");
+    qualificationForm.reset();
+    qualificationStatus.textContent = "Thank you. Your investor access request has been received.";
+  } catch (_) {
+    qualificationStatus.textContent = "We could not submit the form. Please email hello@measureddecision.com.";
+  } finally {
+    submit.disabled = false;
+  }
+});

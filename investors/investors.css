@@ -167,6 +167,19 @@ h1 {
   max-width: 920px;
 }
 .section-heading > p { color: var(--muted); font-size: 16px; line-height: 1.65; margin: 0; max-width: 640px; }
+.status-section { background: var(--panel); }
+.status-columns { display: grid; grid-template-columns: repeat(3, 1fr); margin: 0 auto; max-width: 1500px; }
+.status-column { border: 1px solid var(--line); min-height: 480px; padding: clamp(28px, 3vw, 46px); }
+.status-column + .status-column { border-left: 0; }
+.status-column > span { color: var(--accent); display: inline-flex; font-size: 9px; font-weight: 750; letter-spacing: .15em; text-transform: uppercase; }
+.status-column.pilot > span { color: #efbd6d; }
+.status-column.roadmap > span { color: #a7a9dc; }
+.status-column h3 { font-family: var(--serif); font-size: clamp(27px, 2.3vw, 38px); font-weight: 500; margin: 24px 0 42px; }
+.status-column ul { list-style: none; margin: 0; padding: 0; }
+.status-column li { border-top: 1px solid var(--line); padding: 22px 0; }
+.status-column strong, .status-column small { display: block; }
+.status-column strong { font-size: 14px; margin-bottom: 8px; }
+.status-column small { color: var(--muted); font-size: 11px; line-height: 1.6; }
 
 .vision-section { background: var(--panel); }
 .vision-player, .chapter-selector { margin-left: auto; margin-right: auto; max-width: 1260px; }
@@ -207,6 +220,13 @@ h1 {
 .guardrail { font-size: 10px; margin: 20px auto 0; max-width: 1500px; }
 
 .model-grid, .validation-grid { display: grid; grid-template-columns: repeat(4, 1fr); margin: 0 auto; max-width: 1500px; }
+.opportunity-grid, .capital-grid { display: grid; grid-template-columns: repeat(4, 1fr); margin: 0 auto; max-width: 1500px; }
+.opportunity-grid article, .capital-grid article { border: 1px solid var(--line); min-height: 280px; padding: clamp(27px, 3vw, 44px); }
+.opportunity-grid article + article, .capital-grid article + article { border-left: 0; }
+.opportunity-grid span, .capital-grid span { color: var(--accent); font-size: 9px; font-weight: 750; letter-spacing: .15em; text-transform: uppercase; }
+.opportunity-grid h3, .capital-grid h3 { font-family: var(--serif); font-size: clamp(23px, 2vw, 32px); font-weight: 500; margin: 62px 0 17px; }
+.opportunity-grid p, .capital-grid p { color: var(--muted); font-size: 13px; line-height: 1.65; }
+.capital-section { background: var(--panel); }
 .model-grid article, .validation-grid article { border: 1px solid var(--line); min-height: 250px; padding: clamp(27px, 3vw, 44px); }
 .model-grid article + article, .validation-grid article + article { border-left: 0; }
 .model-grid span { color: var(--accent); font-size: 9px; font-weight: 750; letter-spacing: .15em; text-transform: uppercase; }
@@ -228,8 +248,24 @@ h1 {
 .data-room-section { align-items: center; display: grid; gap: clamp(50px, 9vw, 150px); grid-template-columns: 1fr .8fr; }
 .data-room-section h2 { font-family: var(--serif); font-size: clamp(44px, 5vw, 76px); font-weight: 500; letter-spacing: -.055em; line-height: .98; margin: 18px 0 28px; }
 .data-room-section p:not(.eyebrow) { color: var(--muted); font-size: 16px; line-height: 1.65; max-width: 760px; }
-.data-room-actions { align-items: stretch; display: flex; flex-direction: column; gap: 12px; }
-.data-room-actions small { color: var(--muted); font-size: 10px; line-height: 1.5; margin-top: 8px; }
+.qualification-notes { border-top: 1px solid var(--line); margin-top: 38px; max-width: 620px; }
+.qualification-notes p { align-items: center; border-bottom: 1px solid var(--line); display: flex; font-size: 12px !important; gap: 18px; margin: 0; padding: 15px 0; }
+.qualification-notes span { color: var(--accent); font-family: monospace; font-size: 9px; }
+.qualification-form { background: var(--panel); border: 1px solid var(--line); border-radius: 12px; padding: clamp(24px, 3vw, 42px); }
+.form-grid { display: grid; gap: 18px; grid-template-columns: 1fr 1fr; }
+.qualification-form label { color: var(--muted); display: grid; font-size: 9px; font-weight: 700; gap: 8px; letter-spacing: .1em; text-transform: uppercase; }
+.qualification-form .wide { grid-column: 1 / -1; }
+.qualification-form input, .qualification-form select, .qualification-form textarea { background: var(--bg); border: 1px solid var(--line); border-radius: 6px; color: var(--ink); font: 14px/1.4 var(--sans); min-height: 48px; padding: 12px 13px; text-transform: none; width: 100%; }
+.qualification-form textarea { min-height: 112px; resize: vertical; }
+.qualification-form input:focus, .qualification-form select:focus, .qualification-form textarea:focus { border-color: var(--accent); outline: 2px solid var(--accent-soft); }
+.check-row { align-items: start; display: grid !important; gap: 12px !important; grid-template-columns: 18px 1fr; letter-spacing: 0 !important; margin-top: 20px; text-transform: none !important; }
+.check-row input { accent-color: var(--accent); height: 18px; min-height: 0; padding: 0; width: 18px; }
+.check-row span { color: var(--muted); font-size: 11px; font-weight: 400; line-height: 1.55; }
+.form-submit { cursor: pointer; margin-top: 26px; width: 100%; }
+.form-submit:disabled { cursor: wait; opacity: .65; }
+.form-status { color: var(--accent); font-size: 12px; min-height: 18px; margin: 14px 0 0; }
+.offering-notice { color: var(--muted); display: block; font-size: 9px; line-height: 1.6; margin-top: 12px; }
+.honeypot { display: none; }
 
 footer { align-items: center; border-top: 1px solid var(--line); display: grid; gap: 22px; grid-template-columns: 1.1fr .9fr 1fr auto; min-height: 130px; padding: 30px clamp(24px, 5vw, 84px); }
 footer > p, footer > span { color: var(--muted); font-size: 11px; margin: 0; }
@@ -245,10 +281,15 @@ footer > div a:hover { color: var(--accent); }
   .thesis-bar { grid-template-columns: repeat(2, 1fr); }
   .thesis-bar p:nth-child(3) { border-left: 0; border-top: 1px solid var(--line); }
   .thesis-bar p:nth-child(4) { border-top: 1px solid var(--line); }
-  .chapter-selector, .model-grid, .validation-grid { grid-template-columns: repeat(2, 1fr); }
+  .chapter-selector, .model-grid, .validation-grid, .opportunity-grid, .capital-grid { grid-template-columns: repeat(2, 1fr); }
   .model-grid article:nth-child(3), .validation-grid article:nth-child(3) { border-left: 1px solid var(--line); }
   .model-grid article:nth-child(n+3), .validation-grid article:nth-child(n+3) { border-top: 0; }
+  .opportunity-grid article:nth-child(3), .capital-grid article:nth-child(3) { border-left: 1px solid var(--line); }
+  .opportunity-grid article:nth-child(n+3), .capital-grid article:nth-child(n+3) { border-top: 0; }
   .data-room-section { grid-template-columns: 1fr; }
+  .status-columns { grid-template-columns: 1fr; }
+  .status-column { min-height: 0; }
+  .status-column + .status-column { border-left: 1px solid var(--line); border-top: 0; }
   footer { grid-template-columns: 1fr 1fr; }
 }
 
@@ -259,7 +300,7 @@ footer > div a:hover { color: var(--accent); }
   .investor-hero { min-height: auto; padding: 130px 20px 58px; }
   h1 { font-size: clamp(49px, 14vw, 68px); }
   .hero-actions { align-items: stretch; flex-direction: column; }
-  .thesis-bar, .section-heading, .chapter-selector, .model-grid, .validation-grid { grid-template-columns: 1fr; }
+  .thesis-bar, .section-heading, .chapter-selector, .model-grid, .validation-grid, .opportunity-grid, .capital-grid, .form-grid { grid-template-columns: 1fr; }
   .thesis-bar p { border-left: 0 !important; border-top: 1px solid var(--line); min-height: 0; padding: 24px 0; }
   .thesis-bar p:first-child { border-top: 0; }
   .section { padding: 64px 20px; }
@@ -275,6 +316,10 @@ footer > div a:hover { color: var(--accent); }
   .model-grid article, .validation-grid article { border-left: 1px solid var(--line) !important; border-top: 0; min-height: 0; }
   .model-grid article:first-child, .validation-grid article:first-child { border-top: 1px solid var(--line); }
   .model-grid h3, .validation-grid h3 { margin-top: 40px; }
+  .opportunity-grid article, .capital-grid article { border-left: 1px solid var(--line) !important; border-top: 0; min-height: 0; }
+  .opportunity-grid article:first-child, .capital-grid article:first-child { border-top: 1px solid var(--line); }
+  .opportunity-grid h3, .capital-grid h3 { margin-top: 40px; }
+  .qualification-form .wide { grid-column: auto; }
   .lifecycle li { align-items: start; gap: 10px; grid-template-columns: 1fr; padding: 26px 0; }
   footer { align-items: start; grid-template-columns: 1fr; }
   footer > div { flex-direction: column; }
