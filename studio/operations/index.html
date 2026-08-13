@@ -9,7 +9,7 @@
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
-    <link rel="stylesheet" href="operations.css?v=20260810-recovery-2">
+    <link rel="stylesheet" href="operations.css?v=20260812-capture-1">
   </head>
   <body>
     <div class="boot" id="boot" role="status" aria-live="polite">
@@ -43,9 +43,13 @@
       <main>
         <section class="hero">
           <div><p class="eyebrow">Remote project management</p><h1>Know what is happening on site.</h1><p>Send one clear task, follow its progress, review the upload, and decide what happens next.</p></div>
-          <label>Active project<select id="property-select"></select></label>
+          <div class="hero-actions"><label>Active project<select id="property-select"></select></label><button class="button capture-session-button" id="new-capture-session" type="button">New room capture session</button></div>
         </section>
         <section class="metrics" id="metrics"></section>
+        <section class="capture-sessions" id="capture-sessions" hidden>
+          <div><p class="eyebrow">Customer uploads</p><h2>Room capture sessions</h2></div>
+          <div id="capture-session-list"></div>
+        </section>
         <section class="next-step" id="next-step" hidden>
           <div><p class="eyebrow">Next action</p><h2 id="next-step-title">Field tasks are ready to send.</h2><p id="next-step-copy"></p></div>
           <a class="button next-step-button" id="next-step-link" href="../plans/">Choose a task and send it →</a>
@@ -68,10 +72,23 @@
         <footer><button class="button secondary" value="cancel">Close</button><button class="button danger" id="request-retake" type="button">Request retake</button><button class="button approve" id="complete-task" type="button">Complete task</button></footer>
       </form>
     </dialog>
+    <dialog id="capture-dialog">
+      <form method="dialog">
+        <header><div><p class="eyebrow">Private customer upload</p><h2>Create room capture session</h2></div><button value="cancel" aria-label="Close">×</button></header>
+        <section class="review-body">
+          <p class="dialog-copy">The customer receives one private link. They upload all room videos, name each room, confirm the suggested trim, and submit—without a Studio account.</p>
+          <label>Session title<input id="capture-label" value="Room capture session" required></label>
+          <label>Recipient name<input id="capture-recipient-name" placeholder="Field photographer or customer" required></label>
+          <label>Recipient email<input id="capture-recipient-email" type="email" placeholder="name@example.com" required></label>
+          <div id="capture-link-result" class="capture-link-result" hidden><strong>Private link ready</strong><input id="capture-link" readonly><small id="capture-email-state"></small><div><button class="button secondary" id="copy-capture-link" type="button">Copy link</button><a class="button secondary" id="open-capture-link" target="_blank" rel="noopener">Preview</a></div></div>
+        </section>
+        <footer><button class="button secondary" value="cancel">Close</button><button class="button approve" id="create-capture-session" type="button">Create & send</button></footer>
+      </form>
+    </dialog>
     <div class="toast" id="toast"></div>
     <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2.106.2"></script>
     <script src="../config.js"></script>
-    <script src="../s3-upload.js?v=20260809-field-2"></script>
-    <script src="operations.js?v=20260811-field-email-1"></script>
+    <script src="../s3-upload.js?v=20260812-capture-1"></script>
+    <script src="operations.js?v=20260812-capture-1"></script>
   </body>
 </html>

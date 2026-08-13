@@ -9,6 +9,9 @@ verify_jwt = true
 [functions.object-storage]
 verify_jwt = false
 
+[functions.capture-session]
+verify_jwt = false
+
 [functions.field-workflow]
 verify_jwt = false
 
