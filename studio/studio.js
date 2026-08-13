@@ -1293,6 +1293,7 @@ async function hydrateCloudContext() {
 
 async function enterWorkspace(session) {
   cloud.session = session;
+  window.MDAIProjectIntake?.hide();
   elements.gate.hidden = true;
   elements.shell.hidden = true;
   elements.propertyGate.hidden = false;
@@ -1335,8 +1336,9 @@ async function initializeAuth() {
       cloud.session = null;
       elements.shell.hidden = true;
       elements.propertyGate.hidden = true;
-      elements.gate.hidden = false;
-      setAuthMessage("Signed out. Authorized accounts only.");
+      elements.gate.hidden = true;
+      window.MDAIProjectIntake?.showLanding();
+      setAuthMessage("Team workspace sign-in ready.");
     } else if (event === "PASSWORD_RECOVERY" && session) {
       elements.gate.hidden = false;
       openAccountSecurity("recovery", session);

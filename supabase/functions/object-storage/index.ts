@@ -38,6 +38,7 @@ type UploadRow = {
   created_by: string;
   field_assignment_id: string | null;
   capture_session_id: string | null;
+  project_intake_access_id: string | null;
 };
 
 type FieldAssignment = {
@@ -65,6 +66,7 @@ type CaptureSession = {
   expires_at: string;
   created_by: string;
 };
+type ProjectIntakeAccess={id:string;organization_id:string;property_id:string;default_space_id:string;status:string;code_hash:string;created_by:string};
 
 function corsHeaders(request: Request) {
   const origin = request.headers.get("origin") || "";
@@ -115,6 +117,7 @@ function errorMessage(error: unknown) {
 function isUuid(value: unknown) {
   return /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(String(value || ""));
 }
+function normalizeProjectCode(value:unknown){return String(value||"").toUpperCase().replace(/[^A-Z2-9]/g,"")}
 
 function bytesToHex(bytes: Uint8Array) {
   return Array.from(bytes).map((byte) => byte.toString(16).padStart(2, "0")).join("");
@@ -143,6 +146,7 @@ Deno.serve(async (request) => {
     let userId = "";
     let fieldAssignment: FieldAssignment | null = null;
     let captureSession: CaptureSession | null = null;
+    let projectAccess: ProjectIntakeAccess | null = null;
     if (body?.field_access?.assignment_id && body?.field_access?.token) {
       const assignmentId = text(body.field_access.assignment_id);
       const token = text(body.field_access.token);
@@ -171,6 +175,11 @@ Deno.serve(async (request) => {
       }
       captureSession = session as CaptureSession;
       userId = captureSession.created_by;
+    } else if(body?.project_access?.code){
+      const code=normalizeProjectCode(body.project_access.code);if(code.length!==12)throw Object.assign(new Error("Invalid project code"),{status:401});
+      const{data:access}=await admin.from("project_intake_access").select("*").eq("code_hash",await hashToken(code)).maybeSingle();
+      if(!access||access.status==="closed")throw Object.assign(new Error("This project is not available"),{status:410});
+      projectAccess=access as ProjectIntakeAccess;userId=projectAccess.created_by;
     } else {
       if (!authorization.startsWith("Bearer ")) throw Object.assign(new Error("Authentication required"), { status: 401 });
       const userClient = createClient(supabaseUrl, anonKey, {
@@ -189,6 +198,7 @@ Deno.serve(async (request) => {
     async function membership(organizationId: string) {
       if (fieldAssignment) return "field_worker";
       if (captureSession) return "capture_guest";
+      if(projectAccess)return "project_guest";
       const { data } = await admin.from("organization_members")
         .select("role")
         .eq("organization_id", organizationId)
@@ -202,7 +212,7 @@ Deno.serve(async (request) => {
       const { data, error } = await admin.from("object_uploads")
         .select("*")
         .eq("id", sessionId)
-        .eq(fieldAssignment ? "field_assignment_id" : captureSession ? "capture_session_id" : "created_by", fieldAssignment ? fieldAssignment.id : captureSession ? captureSession.id : userId)
+        .eq(fieldAssignment?"field_assignment_id":captureSession?"capture_session_id":projectAccess?"project_intake_access_id":"created_by",fieldAssignment?fieldAssignment.id:captureSession?captureSession.id:projectAccess?projectAccess.id:userId)
         .maybeSingle();
       if (error || !data) throw Object.assign(new Error("Upload session not found"), { status: 404 });
       const role = await membership(data.organization_id);
@@ -225,12 +235,13 @@ Deno.serve(async (request) => {
       const fieldCaptureType = text(fieldAssignment?.instructions_snapshot?.capture_type).toLowerCase();
       const entityType = captureSession
         ? "evidence"
+        : projectAccess ? "evidence"
         : fieldAssignment
         ? fieldCaptureType === "document" ? "project_document" : "evidence"
         : text(body?.entity_type);
-      const organizationId = captureSession?.organization_id || fieldAssignment?.organization_id || text(body?.organization_id);
-      const propertyId = captureSession?.property_id || fieldAssignment?.property_id || text(body?.property_id);
-      const spaceId = captureSession?.default_space_id || fieldAssignment?.space_id || (body?.space_id ? text(body.space_id) : null);
+      const organizationId=captureSession?.organization_id||projectAccess?.organization_id||fieldAssignment?.organization_id||text(body?.organization_id);
+      const propertyId=captureSession?.property_id||projectAccess?.property_id||fieldAssignment?.property_id||text(body?.property_id);
+      const spaceId=captureSession?.default_space_id||projectAccess?.default_space_id||fieldAssignment?.space_id||(body?.space_id?text(body.space_id):null);
       const filename = text(body?.file?.name);
       const mimeType = text(body?.file?.type, "application/octet-stream");
       const byteSize = numberValue(body?.file?.size);
@@ -250,12 +261,13 @@ Deno.serve(async (request) => {
           .in("status", ["pending", "completed"]);
         if (Number(count || 0) >= 100) throw Object.assign(new Error("This capture session already contains 100 videos"), { status: 409 });
       }
+      if(projectAccess){const accepted=mimeType.startsWith("image/")||mimeType.startsWith("video/")||mimeType==="application/pdf"||filename.toLowerCase().endsWith(".pdf");if(!accepted)throw Object.assign(new Error("Add photos, videos, 360 videos, or PDF documents"),{status:415});if(byteSize>50*1024*1024*1024)throw Object.assign(new Error("A single evidence file cannot exceed 50 GB"),{status:413});const{count}=await admin.from("object_uploads").select("id",{count:"exact",head:true}).eq("project_intake_access_id",projectAccess.id).in("status",["pending","completed"]);if(Number(count||0)>=500)throw Object.assign(new Error("This project already contains 500 evidence files"),{status:409})}
 
       const role = await membership(organizationId);
       const allowedRoles = entityType === "project_document"
         ? ["owner", "admin", "contributor"]
         : ["owner", "admin", "contributor"];
-      if (!role || (!fieldAssignment && !captureSession && !allowedRoles.includes(role))) throw Object.assign(new Error("Not authorized to upload this file"), { status: 403 });
+      if(!role||(!fieldAssignment&&!captureSession&&!projectAccess&&!allowedRoles.includes(role)))throw Object.assign(new Error("Not authorized to upload this file"),{status:403});
 
       const { data: property } = await admin.from("properties")
         .select("id")
@@ -300,7 +312,7 @@ Deno.serve(async (request) => {
           source: "secure-capture-session",
           capture_session_id: captureSession.id,
         },
-      } : fieldAssignment ? {
+      } : projectAccess ? {...suppliedMetadata,media_type:text((suppliedMetadata as Record<string,unknown>).media_type,"Project evidence"),project_intake_access_id:projectAccess.id,source_metadata:{...((suppliedMetadata as Record<string,Record<string,unknown>>)?.source_metadata||{}),source:"passwordless-studio",project_intake_access_id:projectAccess.id}} : fieldAssignment ? {
         ...suppliedMetadata,
         capture_task_id: fieldAssignment.capture_task_id,
         baseline_id: fieldAssignment.baseline_id,
@@ -327,6 +339,7 @@ Deno.serve(async (request) => {
         created_by: userId,
         field_assignment_id: fieldAssignment?.id || null,
         capture_session_id: captureSession?.id || null,
+        project_intake_access_id:projectAccess?.id||null,
       });
       if (insertError) {
         await s3.send(new AbortMultipartUploadCommand({ Bucket: bucket, Key: objectKey, UploadId: created.UploadId })).catch(() => undefined);
@@ -432,6 +445,7 @@ Deno.serve(async (request) => {
           baseline_id: metadata.baseline_id || null,
           field_assignment_id: metadata.field_assignment_id || row.field_assignment_id || null,
           capture_session_id: metadata.capture_session_id || row.capture_session_id || null,
+          project_intake_access_id:metadata.project_intake_access_id||row.project_intake_access_id||null,
         };
       const { data: inserted, error: insertError } = await admin.from(table).insert(record).select("*").single();
       if (insertError) {
@@ -481,11 +495,11 @@ Deno.serve(async (request) => {
       await admin.from("object_uploads").update({ status: "completed", completed_at: completedAt, updated_at: completedAt }).eq("id", row.id);
       const { error: auditError } = await admin.from("audit_events").insert({
         organization_id: row.organization_id,
-        actor_id: fieldAssignment || captureSession ? null : userId,
+        actor_id:fieldAssignment||captureSession||projectAccess?null:userId,
         action: `${row.entity_type}.uploaded_to_s3`,
         entity_type: table,
         entity_id: row.id,
-        detail: { bucket: row.storage_bucket, object_key: row.object_key, byte_size: row.byte_size, field_assignment_id: row.field_assignment_id, capture_session_id: row.capture_session_id },
+        detail:{bucket:row.storage_bucket,object_key:row.object_key,byte_size:row.byte_size,field_assignment_id:row.field_assignment_id,capture_session_id:row.capture_session_id,project_intake_access_id:row.project_intake_access_id},
       });
       if (auditError) console.error("Object upload audit event could not be recorded", auditError);
       return json(request, { record: inserted, signed_url: await signedObjectReadUrl(row.object_key, URL_TTL_SECONDS) });
@@ -497,7 +511,7 @@ Deno.serve(async (request) => {
       const table = entityType === "project_document" ? "project_documents" : entityType === "evidence" ? "evidence_items" : "";
       if (!table || !isUuid(recordId)) throw Object.assign(new Error("A valid record is required"), { status: 400 });
       const { data: record } = await admin.from(table)
-        .select("id, organization_id, storage_provider, storage_bucket, storage_path, field_assignment_id, capture_session_id")
+        .select("id,organization_id,property_id,storage_provider,storage_bucket,storage_path,field_assignment_id,capture_session_id,project_intake_access_id")
         .eq("id", recordId)
         .maybeSingle();
       if (!record) throw Object.assign(new Error("Stored object not found"), { status: 404 });
@@ -505,6 +519,8 @@ Deno.serve(async (request) => {
         if ((record as Record<string, unknown>).field_assignment_id !== fieldAssignment.id) throw Object.assign(new Error("This file is outside the field assignment"), { status: 403 });
       } else if (captureSession) {
         if ((record as Record<string, unknown>).capture_session_id !== captureSession.id) throw Object.assign(new Error("This file is outside the capture session"), { status: 403 });
+      } else if(projectAccess){
+        if((record as Record<string,unknown>).project_intake_access_id!==projectAccess.id||(record as Record<string,unknown>).property_id!==projectAccess.property_id)throw Object.assign(new Error("This file is outside the project"),{status:403});
       } else if (!await membership(record.organization_id)) {
         throw Object.assign(new Error("Not authorized to open this file"), { status: 403 });
       }
