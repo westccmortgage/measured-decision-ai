@@ -34,8 +34,8 @@
     return data;
   }
 
-  function fingerprint(entityType, organizationId, propertyId, file, fieldAccess) {
-    return ["mdai-s3-upload-v1", entityType, organizationId, propertyId, fieldAccess?.assignment_id || "account", file.name, file.size, file.lastModified || 0].join(":");
+  function fingerprint(entityType, organizationId, propertyId, file, fieldAccess, captureAccess) {
+    return ["mdai-s3-upload-v2", entityType, organizationId, propertyId, fieldAccess?.assignment_id || captureAccess?.session_id || "account", file.name, file.size, file.lastModified || 0].join(":");
   }
 
   function readSession(key) {
@@ -98,12 +98,16 @@
   async function upload(options) {
     const {
       client, entityType, organizationId, propertyId, spaceId = null,
-      file, metadata = {}, fieldAccess = null, onProgress = () => undefined,
+      file, metadata = {}, fieldAccess = null, captureAccess = null, onProgress = () => undefined,
     } = options;
     if (!client || !file || !organizationId || !propertyId) throw new Error("Upload context is incomplete");
 
-    const storageKey = fingerprint(entityType, organizationId, propertyId, file, fieldAccess);
-    const authorized = (payload) => fieldAccess ? { ...payload, field_access: fieldAccess } : payload;
+    const storageKey = fingerprint(entityType, organizationId, propertyId, file, fieldAccess, captureAccess);
+    const authorized = (payload) => fieldAccess
+      ? { ...payload, field_access: fieldAccess }
+      : captureAccess
+      ? { ...payload, capture_access: captureAccess }
+      : payload;
     const prior = readSession(storageKey);
     let session;
     let resumed = false;
@@ -190,9 +194,18 @@
     return result;
   }
 
-  async function getSignedUrl(client, entityType, recordId) {
-    const data = await invoke(client, { operation: "get_url", entity_type: entityType, record_id: recordId });
+  async function getSignedUrl(client, entityType, recordId, captureAccess = null) {
+    const payload = { operation: "get_url", entity_type: entityType, record_id: recordId };
+    const data = await invoke(client, captureAccess ? { ...payload, capture_access: captureAccess } : payload);
     return data.signed_url || "";
+  }
+
+  async function removeCaptureEvidence(client, recordId, captureAccess) {
+    return await invoke(client, {
+      operation: "remove_capture_evidence",
+      record_id: recordId,
+      capture_access: captureAccess,
+    });
   }
 
   async function deleteEvidence(client, recordId) {
@@ -203,5 +216,5 @@
     return await invoke(client, { operation: "delete_project_document", record_id: recordId });
   }
 
-  window.MDAIObjectStorage = { upload, getSignedUrl, deleteEvidence, deleteProjectDocument, humanBytes };
+  window.MDAIObjectStorage = { upload, getSignedUrl, removeCaptureEvidence, deleteEvidence, deleteProjectDocument, humanBytes };
 })();

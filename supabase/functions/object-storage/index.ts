@@ -37,6 +37,7 @@ type UploadRow = {
   status: "pending" | "completed" | "aborted" | "failed";
   created_by: string;
   field_assignment_id: string | null;
+  capture_session_id: string | null;
 };
 
 type FieldAssignment = {
@@ -52,6 +53,17 @@ type FieldAssignment = {
   expires_at: string;
   created_by: string;
   instructions_snapshot: Record<string, unknown>;
+};
+
+type CaptureSession = {
+  id: string;
+  organization_id: string;
+  property_id: string;
+  default_space_id: string;
+  status: string;
+  token_hash: string;
+  expires_at: string;
+  created_by: string;
 };
 
 function corsHeaders(request: Request) {
@@ -130,6 +142,7 @@ Deno.serve(async (request) => {
     const operation = text(body?.operation);
     let userId = "";
     let fieldAssignment: FieldAssignment | null = null;
+    let captureSession: CaptureSession | null = null;
     if (body?.field_access?.assignment_id && body?.field_access?.token) {
       const assignmentId = text(body.field_access.assignment_id);
       const token = text(body.field_access.token);
@@ -144,6 +157,20 @@ Deno.serve(async (request) => {
       }
       fieldAssignment = assignment as FieldAssignment;
       userId = fieldAssignment.created_by;
+    } else if (body?.capture_access?.session_id && body?.capture_access?.token) {
+      const sessionId = text(body.capture_access.session_id);
+      const token = text(body.capture_access.token);
+      if (!isUuid(sessionId) || token.length < 32) throw Object.assign(new Error("Invalid capture session"), { status: 401 });
+      const { data: session } = await admin.from("capture_sessions")
+        .select("*")
+        .eq("id", sessionId)
+        .eq("token_hash", await hashToken(token))
+        .maybeSingle();
+      if (!session || ["revoked", "expired", "completed"].includes(session.status) || new Date(session.expires_at).valueOf() <= Date.now()) {
+        throw Object.assign(new Error("This capture session is no longer available"), { status: 410 });
+      }
+      captureSession = session as CaptureSession;
+      userId = captureSession.created_by;
     } else {
       if (!authorization.startsWith("Bearer ")) throw Object.assign(new Error("Authentication required"), { status: 401 });
       const userClient = createClient(supabaseUrl, anonKey, {
@@ -155,9 +182,13 @@ Deno.serve(async (request) => {
       userId = userData.user.id;
     }
     const { bucket, client: s3 } = awsObjectStore();
+    if (captureSession && ["submitted", "processing", "ready_for_review", "completed"].includes(captureSession.status) && operation !== "get_url") {
+      throw Object.assign(new Error("This capture session has already been submitted"), { status: 409 });
+    }
 
     async function membership(organizationId: string) {
       if (fieldAssignment) return "field_worker";
+      if (captureSession) return "capture_guest";
       const { data } = await admin.from("organization_members")
         .select("role")
         .eq("organization_id", organizationId)
@@ -171,7 +202,7 @@ Deno.serve(async (request) => {
       const { data, error } = await admin.from("object_uploads")
         .select("*")
         .eq("id", sessionId)
-        .eq(fieldAssignment ? "field_assignment_id" : "created_by", fieldAssignment ? fieldAssignment.id : userId)
+        .eq(fieldAssignment ? "field_assignment_id" : captureSession ? "capture_session_id" : "created_by", fieldAssignment ? fieldAssignment.id : captureSession ? captureSession.id : userId)
         .maybeSingle();
       if (error || !data) throw Object.assign(new Error("Upload session not found"), { status: 404 });
       const role = await membership(data.organization_id);
@@ -192,24 +223,39 @@ Deno.serve(async (request) => {
 
     if (operation === "create_upload") {
       const fieldCaptureType = text(fieldAssignment?.instructions_snapshot?.capture_type).toLowerCase();
-      const entityType = fieldAssignment
+      const entityType = captureSession
+        ? "evidence"
+        : fieldAssignment
         ? fieldCaptureType === "document" ? "project_document" : "evidence"
         : text(body?.entity_type);
-      const organizationId = fieldAssignment?.organization_id || text(body?.organization_id);
-      const propertyId = fieldAssignment?.property_id || text(body?.property_id);
-      const spaceId = fieldAssignment?.space_id || (body?.space_id ? text(body.space_id) : null);
+      const organizationId = captureSession?.organization_id || fieldAssignment?.organization_id || text(body?.organization_id);
+      const propertyId = captureSession?.property_id || fieldAssignment?.property_id || text(body?.property_id);
+      const spaceId = captureSession?.default_space_id || fieldAssignment?.space_id || (body?.space_id ? text(body.space_id) : null);
       const filename = text(body?.file?.name);
       const mimeType = text(body?.file?.type, "application/octet-stream");
       const byteSize = numberValue(body?.file?.size);
       if (!["project_document", "evidence"].includes(entityType)) throw Object.assign(new Error("Unsupported upload type"), { status: 400 });
       if (!isUuid(organizationId) || !isUuid(propertyId) || !filename || byteSize <= 0) throw Object.assign(new Error("Upload metadata is incomplete"), { status: 400 });
       if (byteSize > 5 * 1024 * 1024 * 1024 * 1024) throw Object.assign(new Error("File exceeds the S3 multipart limit"), { status: 413 });
+      if (captureSession) {
+        if (mimeType !== "video/mp4" && !filename.toLowerCase().endsWith(".mp4")) {
+          throw Object.assign(new Error("Capture sessions accept full 360 MP4 video only"), { status: 415 });
+        }
+        if (byteSize > 50 * 1024 * 1024 * 1024) {
+          throw Object.assign(new Error("A capture-session video cannot exceed 50 GB"), { status: 413 });
+        }
+        const { count } = await admin.from("object_uploads")
+          .select("id", { count: "exact", head: true })
+          .eq("capture_session_id", captureSession.id)
+          .in("status", ["pending", "completed"]);
+        if (Number(count || 0) >= 100) throw Object.assign(new Error("This capture session already contains 100 videos"), { status: 409 });
+      }
 
       const role = await membership(organizationId);
       const allowedRoles = entityType === "project_document"
         ? ["owner", "admin", "contributor"]
         : ["owner", "admin", "contributor"];
-      if (!role || (!fieldAssignment && !allowedRoles.includes(role))) throw Object.assign(new Error("Not authorized to upload this file"), { status: 403 });
+      if (!role || (!fieldAssignment && !captureSession && !allowedRoles.includes(role))) throw Object.assign(new Error("Not authorized to upload this file"), { status: 403 });
 
       const { data: property } = await admin.from("properties")
         .select("id")
@@ -245,7 +291,16 @@ Deno.serve(async (request) => {
       if (!created.UploadId) throw new Error("S3 did not create a multipart upload");
 
       const suppliedMetadata = body?.metadata && typeof body.metadata === "object" ? body.metadata : {};
-      const entityMetadata = fieldAssignment ? {
+      const entityMetadata = captureSession ? {
+        ...suppliedMetadata,
+        media_type: "360 capture",
+        capture_session_id: captureSession.id,
+        source_metadata: {
+          ...((suppliedMetadata as Record<string, Record<string, unknown>>)?.source_metadata || {}),
+          source: "secure-capture-session",
+          capture_session_id: captureSession.id,
+        },
+      } : fieldAssignment ? {
         ...suppliedMetadata,
         capture_task_id: fieldAssignment.capture_task_id,
         baseline_id: fieldAssignment.baseline_id,
@@ -271,6 +326,7 @@ Deno.serve(async (request) => {
         entity_metadata: entityMetadata,
         created_by: userId,
         field_assignment_id: fieldAssignment?.id || null,
+        capture_session_id: captureSession?.id || null,
       });
       if (insertError) {
         await s3.send(new AbortMultipartUploadCommand({ Bucket: bucket, Key: objectKey, UploadId: created.UploadId })).catch(() => undefined);
@@ -375,22 +431,61 @@ Deno.serve(async (request) => {
           capture_task_id: metadata.capture_task_id || null,
           baseline_id: metadata.baseline_id || null,
           field_assignment_id: metadata.field_assignment_id || row.field_assignment_id || null,
+          capture_session_id: metadata.capture_session_id || row.capture_session_id || null,
         };
       const { data: inserted, error: insertError } = await admin.from(table).insert(record).select("*").single();
       if (insertError) {
-        await s3.send(new DeleteObjectCommand({ Bucket: row.storage_bucket, Key: row.object_key })).catch(() => undefined);
+        await s3.send(new DeleteObjectCommand({ Bucket: row.storage_bucket, Key: row.object_key, VersionId: completed.VersionId })).catch(() => undefined);
         await admin.from("object_uploads").update({ status: "failed", updated_at: new Date().toISOString() }).eq("id", row.id);
         throw insertError;
       }
       const completedAt = new Date().toISOString();
+      if (captureSession && row.entity_type === "evidence") {
+        const source = (metadata.source_metadata || {}) as Record<string, unknown>;
+        const duration = numberValue(source.duration_seconds) || null;
+        const width = numberValue(source.width) || null;
+        const height = numberValue(source.height) || null;
+        const ratio = width && height ? width / height : 0;
+        const projection = source.projection === "equirectangular" && ratio >= 1.9 && ratio <= 2.1
+          ? "equirectangular"
+          : "unknown";
+        const guard = duration ? Math.min(3, Math.max(0.5, duration * 0.1)) : null;
+        const suggestedEnd = duration && guard && duration - guard > guard ? duration - guard : duration;
+        const { error: itemError } = await admin.from("capture_session_items").insert({
+          id: row.id,
+          organization_id: row.organization_id,
+          property_id: row.property_id,
+          session_id: captureSession.id,
+          state: duration ? "trim_review" : "uploaded",
+          source_duration_seconds: duration,
+          source_width: width,
+          source_height: height,
+          projection,
+          suggested_trim_start_seconds: guard,
+          suggested_trim_end_seconds: suggestedEnd,
+        });
+        if (itemError) {
+          // The source is accepted only after both governed records exist.
+          // Roll back the object and evidence row so a retry cannot create an
+          // orphan if the capture-session write fails.
+          await admin.from("evidence_items").delete().eq("id", inserted.id);
+          await s3.send(new DeleteObjectCommand({ Bucket: row.storage_bucket, Key: row.object_key, VersionId: completed.VersionId })).catch(() => undefined);
+          await admin.from("object_uploads").update({ status: "failed", updated_at: completedAt }).eq("id", row.id);
+          throw itemError;
+        }
+        await admin.from("capture_sessions").update({
+          status: "reviewing",
+          updated_at: completedAt,
+        }).eq("id", captureSession.id);
+      }
       await admin.from("object_uploads").update({ status: "completed", completed_at: completedAt, updated_at: completedAt }).eq("id", row.id);
       const { error: auditError } = await admin.from("audit_events").insert({
         organization_id: row.organization_id,
-        actor_id: fieldAssignment ? null : userId,
+        actor_id: fieldAssignment || captureSession ? null : userId,
         action: `${row.entity_type}.uploaded_to_s3`,
         entity_type: table,
         entity_id: row.id,
-        detail: { bucket: row.storage_bucket, object_key: row.object_key, byte_size: row.byte_size, field_assignment_id: row.field_assignment_id },
+        detail: { bucket: row.storage_bucket, object_key: row.object_key, byte_size: row.byte_size, field_assignment_id: row.field_assignment_id, capture_session_id: row.capture_session_id },
       });
       if (auditError) console.error("Object upload audit event could not be recorded", auditError);
       return json(request, { record: inserted, signed_url: await signedObjectReadUrl(row.object_key, URL_TTL_SECONDS) });
@@ -402,12 +497,14 @@ Deno.serve(async (request) => {
       const table = entityType === "project_document" ? "project_documents" : entityType === "evidence" ? "evidence_items" : "";
       if (!table || !isUuid(recordId)) throw Object.assign(new Error("A valid record is required"), { status: 400 });
       const { data: record } = await admin.from(table)
-        .select("id, organization_id, storage_provider, storage_bucket, storage_path, field_assignment_id")
+        .select("id, organization_id, storage_provider, storage_bucket, storage_path, field_assignment_id, capture_session_id")
         .eq("id", recordId)
         .maybeSingle();
       if (!record) throw Object.assign(new Error("Stored object not found"), { status: 404 });
       if (fieldAssignment) {
         if ((record as Record<string, unknown>).field_assignment_id !== fieldAssignment.id) throw Object.assign(new Error("This file is outside the field assignment"), { status: 403 });
+      } else if (captureSession) {
+        if ((record as Record<string, unknown>).capture_session_id !== captureSession.id) throw Object.assign(new Error("This file is outside the capture session"), { status: 403 });
       } else if (!await membership(record.organization_id)) {
         throw Object.assign(new Error("Not authorized to open this file"), { status: 403 });
       }
@@ -416,21 +513,43 @@ Deno.serve(async (request) => {
     }
 
     if (operation === "delete_evidence") {
-      if (fieldAssignment) throw Object.assign(new Error("Field links cannot delete submitted evidence"), { status: 403 });
+      if (fieldAssignment || captureSession) throw Object.assign(new Error("Guest links cannot delete submitted evidence"), { status: 403 });
       const recordId = text(body?.record_id);
       if (!isUuid(recordId)) throw Object.assign(new Error("A valid evidence record is required"), { status: 400 });
       const { data: record } = await admin.from("evidence_items")
-        .select("id, organization_id, property_id, storage_provider, storage_bucket, storage_path")
+        .select("id, organization_id, property_id, storage_provider, storage_bucket, storage_path, object_version_id")
         .eq("id", recordId)
         .maybeSingle();
       if (!record) throw Object.assign(new Error("Evidence not found"), { status: 404 });
       const role = await membership(record.organization_id);
       if (!role || !["owner", "admin"].includes(role)) throw Object.assign(new Error("Only an owner or administrator can delete evidence"), { status: 403 });
       if (record.storage_provider === "aws-s3") {
-        await s3.send(new DeleteObjectCommand({ Bucket: record.storage_bucket || bucket, Key: record.storage_path }));
+        await s3.send(new DeleteObjectCommand({ Bucket: record.storage_bucket || bucket, Key: record.storage_path, VersionId: record.object_version_id || undefined }));
       }
       const { error: deleteError } = await admin.from("evidence_items").delete().eq("id", record.id);
       if (deleteError) throw deleteError;
+      return json(request, { deleted: true });
+    }
+
+    if (operation === "remove_capture_evidence") {
+      if (!captureSession) throw Object.assign(new Error("A capture-session link is required"), { status: 403 });
+      if (["submitted", "processing", "ready_for_review", "completed"].includes(captureSession.status)) {
+        throw Object.assign(new Error("Submitted captures can no longer be removed from this link"), { status: 409 });
+      }
+      const recordId = text(body?.record_id);
+      if (!isUuid(recordId)) throw Object.assign(new Error("A valid capture is required"), { status: 400 });
+      const { data: record } = await admin.from("evidence_items")
+        .select("id, storage_provider, storage_bucket, storage_path, object_version_id")
+        .eq("id", recordId)
+        .eq("capture_session_id", captureSession.id)
+        .maybeSingle();
+      if (!record) throw Object.assign(new Error("Capture not found in this session"), { status: 404 });
+      if (record.storage_provider === "aws-s3") {
+        await s3.send(new DeleteObjectCommand({ Bucket: record.storage_bucket || bucket, Key: record.storage_path, VersionId: record.object_version_id || undefined }));
+      }
+      const { error: deleteError } = await admin.from("evidence_items").delete().eq("id", record.id);
+      if (deleteError) throw deleteError;
+      await admin.from("object_uploads").delete().eq("id", record.id).eq("capture_session_id", captureSession.id);
       return json(request, { deleted: true });
     }
 
