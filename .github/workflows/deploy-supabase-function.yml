@@ -78,6 +78,13 @@ jobs:
           supabase functions deploy capture-session
           --project-ref hbqlhplgqwuesrovbiye
 
+      - name: Deploy passwordless project intake
+        env:
+          SUPABASE_ACCESS_TOKEN: ${{ secrets.SUPABASE_ACCESS_TOKEN }}
+        run: >-
+          supabase functions deploy project-intake
+          --project-ref hbqlhplgqwuesrovbiye
+
       - name: Deploy spatial analysis worker
         env:
           SUPABASE_ACCESS_TOKEN: ${{ secrets.SUPABASE_ACCESS_TOKEN }}

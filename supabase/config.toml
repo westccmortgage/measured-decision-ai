@@ -12,6 +12,9 @@ verify_jwt = false
 [functions.capture-session]
 verify_jwt = false
 
+[functions.project-intake]
+verify_jwt = false
+
 [functions.field-workflow]
 verify_jwt = false
 

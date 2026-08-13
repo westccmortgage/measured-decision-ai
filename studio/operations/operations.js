@@ -68,22 +68,19 @@ async function load() {
   document.querySelectorAll('a[href="../plans/"],a[href^="../plans/?property="]').forEach(link=>{link.href=propertyUrl()});
   document.querySelectorAll('a[href="./"],a[href^="./?property="]').forEach(link=>{link.href=`./?property=${encodeURIComponent(state.propertyId)}`});
   const baselineId=property?.active_baseline_id;
-  const [assignmentResult,checkResult,taskResult,requirementResult,evidenceResult,documentResult,captureSessionResult,captureItemResult]=await withTimeout(Promise.all([
+  const [assignmentResult,checkResult,taskResult,requirementResult,evidenceResult,documentResult]=await withTimeout(Promise.all([
     client.from("field_assignments").select("*").eq("organization_id",state.organizationId).eq("property_id",state.propertyId).order("created_at",{ascending:false}),
     client.from("field_quality_checks").select("*").eq("organization_id",state.organizationId).eq("property_id",state.propertyId).order("created_at",{ascending:false}),
     baselineId ? client.from("capture_tasks").select("*").eq("baseline_id",baselineId) : Promise.resolve({data:[],error:null}),
     baselineId ? client.from("capture_requirements").select("*").eq("baseline_id",baselineId) : Promise.resolve({data:[],error:null}),
     client.from("evidence_items").select("id,field_assignment_id,original_filename,mime_type,byte_size,created_at").eq("organization_id",state.organizationId).eq("property_id",state.propertyId).not("field_assignment_id","is",null).order("created_at",{ascending:false}),
     client.from("project_documents").select("id,field_assignment_id,original_filename,mime_type,byte_size,created_at").eq("organization_id",state.organizationId).eq("property_id",state.propertyId).not("field_assignment_id","is",null).order("created_at",{ascending:false}),
-    client.from("capture_sessions").select("*").eq("organization_id",state.organizationId).eq("property_id",state.propertyId).order("created_at",{ascending:false}),
-    client.from("capture_session_items").select("id,session_id,state,room_name,trim_confirmed").eq("organization_id",state.organizationId).eq("property_id",state.propertyId).order("created_at",{ascending:false}),
   ]),"The live field queue timed out. No data was changed; try again.",20000);
   state.assignments=requireResult(assignmentResult,"Assignments");
   state.checks=requireResult(checkResult,"Quality checks");
   state.tasks=requireResult(taskResult,"Capture tasks");
   state.requirements=requireResult(requirementResult,"Capture requirements");
-  state.captureSessions=requireResult(captureSessionResult,"Capture sessions");
-  state.captureItems=requireResult(captureItemResult,"Capture session items");
+  state.captureSessions=[];state.captureItems=[];
   const evidence=requireResult(evidenceResult,"Submitted evidence");
   const documents=requireResult(documentResult,"Submitted documents");
   state.evidence=[
@@ -118,16 +115,7 @@ function render() {
 }
 
 function renderCaptureSessions() {
-  const container=$("#capture-sessions");
-  container.hidden=!state.captureSessions.length;
-  if(!state.captureSessions.length)return;
-  $("#capture-session-list").innerHTML=state.captureSessions.map(session=>{
-    const items=state.captureItems.filter(item=>item.session_id===session.id);
-    const confirmed=items.filter(item=>item.trim_confirmed).length;
-    const canRevoke=!['submitted','processing','ready_for_review','completed','revoked','expired'].includes(session.status);
-    return `<div class="capture-session-row"><div><strong>${escapeHtml(session.label)}</strong><small>${escapeHtml(session.recipient_name)} · ${escapeHtml(session.recipient_email)} · ${confirmed}/${items.length} rooms confirmed</small></div><span class="status ${escapeHtml(session.status)}">${escapeHtml(label(session.status))}</span><div><small>${escapeHtml(shortDate(session.updated_at))}</small>${canRevoke?`<button class="capture-revoke" type="button" data-revoke-capture="${session.id}">Revoke</button>`:""}</div></div>`;
-  }).join("");
-  document.querySelectorAll("[data-revoke-capture]").forEach(button=>button.addEventListener("click",()=>revokeCaptureSession(button.dataset.revokeCapture)));
+  $("#capture-sessions").hidden=true;
 }
 
 async function revokeCaptureSession(id) {

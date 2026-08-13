@@ -34,9 +34,7 @@
     return data;
   }
 
-  function fingerprint(entityType, organizationId, propertyId, file, fieldAccess, captureAccess) {
-    return ["mdai-s3-upload-v2", entityType, organizationId, propertyId, fieldAccess?.assignment_id || captureAccess?.session_id || "account", file.name, file.size, file.lastModified || 0].join(":");
-  }
+  function fingerprint(entityType,organizationId,propertyId,file,fieldAccess,captureAccess,projectAccess){return["mdai-s3-upload-v3",entityType,organizationId,propertyId,fieldAccess?.assignment_id||captureAccess?.session_id||projectAccess?.code||"account",file.name,file.size,file.lastModified||0].join(":")}
 
   function readSession(key) {
     try {
@@ -98,15 +96,16 @@
   async function upload(options) {
     const {
       client, entityType, organizationId, propertyId, spaceId = null,
-      file, metadata = {}, fieldAccess = null, captureAccess = null, onProgress = () => undefined,
+      file, metadata = {}, fieldAccess = null, captureAccess = null, projectAccess = null, onProgress = () => undefined,
     } = options;
     if (!client || !file || !organizationId || !propertyId) throw new Error("Upload context is incomplete");
 
-    const storageKey = fingerprint(entityType, organizationId, propertyId, file, fieldAccess, captureAccess);
+    const storageKey=fingerprint(entityType,organizationId,propertyId,file,fieldAccess,captureAccess,projectAccess);
     const authorized = (payload) => fieldAccess
       ? { ...payload, field_access: fieldAccess }
       : captureAccess
       ? { ...payload, capture_access: captureAccess }
+      : projectAccess ? {...payload,project_access:projectAccess}
       : payload;
     const prior = readSession(storageKey);
     let session;
