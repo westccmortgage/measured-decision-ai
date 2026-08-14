@@ -141,6 +141,38 @@ function isImage(item) {
   );
 }
 
+function insta360CaptureKey(item) {
+  if (item?.sourceMetadata?.insta360?.capture_key) return item.sourceMetadata.insta360.capture_key;
+  const match = String(item?.name || "").toLowerCase().match(/^(.*)_(00|10)_([0-9]+)\.insv$/i);
+  return match ? `${match[1]}_${match[3]}` : null;
+}
+
+function collapseInsta360Sources(items) {
+  const grouped = new Map();
+  const ordinary = [];
+  items.forEach((item) => {
+    const key = insta360CaptureKey(item);
+    if (!key) { ordinary.push(item); return; }
+    if (!grouped.has(key)) grouped.set(key, []);
+    grouped.get(key).push(item);
+  });
+  grouped.forEach((sources, key) => {
+    const clip = key.split("_").pop();
+    const paired = sources.length >= 2;
+    ordinary.push({
+      ...sources[0],
+      src: "",
+      name: `360 capture ${clip || ""}`.trim(),
+      type: "360 capture",
+      mimeType: "application/x-insta360-capture",
+      sourceIds: sources.map((source) => source.id),
+      sourceMetadata: { ...sources[0].sourceMetadata, insta360_capture_key: key },
+      status: paired ? "Original pair verified · VR processing prepared" : "Waiting for the matching camera original",
+    });
+  });
+  return ordinary;
+}
+
 function waitForMediaEvent(target, eventName, timeoutMs = 20000) {
   return new Promise((resolve, reject) => {
     const timeout = setTimeout(() => {
@@ -659,6 +691,20 @@ function showEvidence(item, roomName = currentRoom()?.name || "Room") {
   elements.video.removeAttribute("src");
   elements.documentOpen.removeAttribute("href");
 
+  if (item?.mimeType === "application/x-insta360-capture") {
+    elements.documentName.textContent = item.name || "360 capture";
+    elements.document.hidden = false;
+    elements.documentOpen.hidden = true;
+    elements.type.textContent = "360 capture · paired camera originals";
+    elements.sourceName.textContent = `${item.sourceIds?.length || 1} protected INSV originals`;
+    elements.sourceDate.textContent = item.date || "—";
+    elements.sourceSubject.textContent = item.subject || "Full-room 360 evidence";
+    elements.sourceStatus.textContent = item.status;
+    $("#expand-image").hidden = true;
+    $("#delete-selected-evidence").hidden = true;
+    return;
+  }
+
   if (!item?.src) {
     elements.image.alt = "No evidence uploaded";
     elements.type.textContent = "No evidence selected";
@@ -681,6 +727,7 @@ function showEvidence(item, roomName = currentRoom()?.name || "Room") {
   } else {
     elements.documentName.textContent = item.name || "Document evidence";
     elements.documentOpen.href = item.src;
+    elements.documentOpen.hidden = false;
     elements.document.hidden = false;
   }
 
@@ -1120,7 +1167,7 @@ async function hydrateCloudRecord() {
   if (spacesError) throw spacesError;
   if (evidenceError) throw evidenceError;
 
-  const evidenceWithUrls = await Promise.all(
+  const evidenceWithUrls = collapseInsta360Sources(await Promise.all(
     (evidenceRows || []).map(async (item) => ({
       id: item.id,
       src: await signedEvidenceUrl(item.storage_path, item),
@@ -1137,7 +1184,7 @@ async function hydrateCloudRecord() {
       context: item.source_metadata?.context || "",
       sourceMetadata: item.source_metadata || {},
     })),
-  );
+  ));
 
   rooms = (spaceRows || []).map((space) => ({
     id: space.id,
