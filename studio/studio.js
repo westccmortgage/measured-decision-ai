@@ -80,6 +80,7 @@ const $ = (selector) => document.querySelector(selector);
 const elements = {
   gate: $("#prototype-gate"),
   propertyGate: $("#property-gate"),
+  focusStudio: $("#focus-studio"),
   shell: $("#app-shell"),
   propertyDirectory: $("#property-directory"),
   roomList: $("#room-list"),
@@ -373,6 +374,9 @@ async function uploadEvidenceToCloud(file, room, mediaType, metadata, onProgress
         last_modified: file.lastModified || null,
         subject: metadata.subject || null,
         context: metadata.context || null,
+        intake_mode: metadata.intakeMode || null,
+        evidence_category: metadata.evidenceCategory || null,
+        vr: metadata.vr || null,
       },
     },
     onProgress,
@@ -398,6 +402,9 @@ async function uploadEvidenceToCloud(file, room, mediaType, metadata, onProgress
       last_modified: file.lastModified || null,
       subject: metadata.subject || null,
       context: metadata.context || null,
+      intake_mode: metadata.intakeMode || null,
+      evidence_category: metadata.evidenceCategory || null,
+      vr: metadata.vr || null,
     },
   };
 }
@@ -1070,24 +1077,11 @@ function renderPropertyDirectory() {
   const properties = cloud.properties || [];
   elements.propertyDirectory.innerHTML = properties
     .map((property) => {
-      const address = property.address || {};
-      const profile = address.profile || {};
-      const location =
-        [address.street, address.city, address.state, address.postal_code]
-          .filter(Boolean)
-          .join(", ") || "Address not yet entered";
-      const facts = [
-        profile.bedrooms ? `${profile.bedrooms} bedrooms` : "",
-        profile.bathrooms ? `${profile.bathrooms} bathrooms` : "",
-        profile.square_feet ? `${Number(profile.square_feet).toLocaleString()} sq ft` : "",
-      ]
-        .filter(Boolean)
-        .join(" · ");
       return `<button class="property-directory-card" type="button" data-property-id="${escapeText(property.id)}">
-        <span>${escapeText(propertyTypeLabel(profile.property_type))}</span>
+        <span>Project</span>
         <h2>${escapeText(property.name)}</h2>
-        <p>${escapeText(location)}</p>
-        <small>${escapeText(facts || "Open property workspace")} →</small>
+        <p>Evidence, AI processing, and spatial results</p>
+        <small>Open project →</small>
       </button>`;
     })
     .join("");
@@ -1276,18 +1270,26 @@ async function openProperty(propertyId) {
   if (operationsNavigation) operationsNavigation.href = operationsHref;
   if (projectPlansLink) projectPlansLink.href = plansHref;
   elements.propertyGate.hidden = true;
-  elements.shell.hidden = false;
+  elements.focusStudio.hidden = true;
+  elements.shell.hidden = true;
   elements.autosave.textContent = "Loading property…";
   try {
     await hydrateCloudRecord();
     $("#connector-status").innerHTML = "<i></i> Supabase connected";
     elements.autosave.textContent = `Cloud connected · ${cloud.role}`;
-    activateView("property");
-    render();
-    refreshVisionReleaseStatus().catch((error) => console.error("Vision release status", error));
+    if (new URLSearchParams(window.location.search).get("advanced") === "1") {
+      elements.shell.hidden = false;
+      activateView("property");
+      render();
+      refreshVisionReleaseStatus().catch((error) => console.error("Vision release status", error));
+    } else {
+      elements.focusStudio.hidden = false;
+      openFocusStudio();
+    }
   } catch (error) {
     console.error(error);
     elements.shell.hidden = true;
+    elements.focusStudio.hidden = true;
     elements.propertyGate.hidden = false;
     notify("This property could not be opened.");
   }
@@ -1295,6 +1297,7 @@ async function openProperty(propertyId) {
 
 function showPropertyDirectory() {
   elements.shell.hidden = true;
+  elements.focusStudio.hidden = true;
   elements.propertyGate.hidden = false;
   renderPropertyDirectory();
 }
@@ -1343,6 +1346,7 @@ async function enterWorkspace(session) {
   window.MDAIProjectIntake?.hide();
   elements.gate.hidden = true;
   elements.shell.hidden = true;
+  elements.focusStudio.hidden = true;
   elements.propertyGate.hidden = false;
   $(".avatar").textContent = sessionInitials(session);
   await hydrateEvidenceFiles();
@@ -1382,6 +1386,7 @@ async function initializeAuth() {
     if (event === "SIGNED_OUT") {
       cloud.session = null;
       elements.shell.hidden = true;
+      elements.focusStudio.hidden = true;
       elements.propertyGate.hidden = true;
       elements.gate.hidden = true;
       window.MDAIProjectIntake?.showLanding();
@@ -1510,7 +1515,7 @@ $("#forgot-password").addEventListener("click", async () => {
 $("#account-security").addEventListener("click", () =>
   openAccountSecurity("set"),
 );
-$("#property-account-security").addEventListener("click", () =>
+$("#property-account-security")?.addEventListener("click", () =>
   openAccountSecurity("set"),
 );
 $("#close-account-security").addEventListener("click", () => {
@@ -1561,7 +1566,12 @@ $("#sign-out").addEventListener("click", async () => {
 $("#property-gate-sign-out").addEventListener("click", async () => {
   if (cloud.client) await cloud.client.auth.signOut();
 });
+$("#focus-sign-out").addEventListener("click", async () => {
+  if (cloud.client) await cloud.client.auth.signOut();
+});
 $("#switch-property").addEventListener("click", showPropertyDirectory);
+$("#focus-projects").addEventListener("click", showPropertyDirectory);
+$("#focus-switch-project").addEventListener("click", showPropertyDirectory);
 
 async function ensurePersonalOrganization() {
   if (cloud.organizationId) return true;
@@ -1614,9 +1624,9 @@ $("#property-form").addEventListener("submit", async (event) => {
   event.preventDefault();
   const submit = $("#save-property");
   const name = $("#profile-property-name").value.trim();
-  const city = $("#profile-city").value.trim();
-  const state = $("#profile-state").value.trim();
-  if (!name || !city || !state) return;
+  const city = $("#profile-city").value.trim() || "Project";
+  const state = $("#profile-state").value.trim() || "Private";
+  if (!name) return;
   const numberOrNull = (selector) => {
     const value = $(selector).value;
     return value === "" ? null : Number(value);
@@ -1638,7 +1648,7 @@ $("#property-form").addEventListener("submit", async (event) => {
     },
   };
   submit.disabled = true;
-  submit.textContent = "Creating property…";
+  submit.textContent = "Creating project…";
   const { data, error } = await cloud.client
     .from("properties")
     .insert({
@@ -1651,15 +1661,15 @@ $("#property-form").addEventListener("submit", async (event) => {
     .select("id, name, address, access_classification, created_at")
     .single();
   submit.disabled = false;
-  submit.textContent = "Create property and enter Studio";
+  submit.textContent = "Create project";
   if (error) {
-    $("#property-form-message").textContent = `Property was not created: ${error.message}`;
+    $("#property-form-message").textContent = `Project was not created: ${error.message}`;
     return;
   }
   cloud.properties.push(data);
   $("#property-dialog").close();
   renderPropertyDirectory();
-  notify(`${name} property profile created`);
+  notify(`${name} project created`);
   await openProperty(data.id);
 });
 $("#mobile-menu").addEventListener("click", () =>
@@ -1706,6 +1716,392 @@ async function createRoomRecord({ name, building, level }) {
   rooms.push(room);
   return room;
 }
+
+let focusStage = "upload";
+let focusUploadBusy = false;
+let focusProcessingComplete = false;
+
+function focusAllEvidence() {
+  return rooms.flatMap((room) => room.evidence || []);
+}
+
+function focusSourceCount(item) {
+  return Array.isArray(item?.sourceIds) && item.sourceIds.length
+    ? item.sourceIds.length
+    : 1;
+}
+
+function focusEvidenceCategory(item) {
+  const name = String(item?.name || "").toLowerCase();
+  if (item?.mimeType === "application/x-insta360-capture" || /\.(insv|insp|lrv)$/.test(name)) return "360";
+  if (isImage(item)) return "photo";
+  if (isVideo(item)) return "video";
+  if (item?.mimeType === "application/pdf" || name.endsWith(".pdf")) return "document";
+  return "file";
+}
+
+function focusEvidenceStats() {
+  const items = focusAllEvidence();
+  const spaces = rooms.filter((room) => room.evidence?.length);
+  const categories = { photo: 0, video: 0, document: 0, "360": 0, file: 0 };
+  items.forEach((item) => {
+    categories[focusEvidenceCategory(item)] += focusSourceCount(item);
+  });
+  const paired360 = items.filter(
+    (item) => focusEvidenceCategory(item) === "360" && (item.sourceIds?.length || 0) >= 2,
+  ).length;
+  const waiting360 = items.filter(
+    (item) => focusEvidenceCategory(item) === "360" && (item.sourceIds?.length || 0) < 2,
+  ).length;
+  const vrPlayback = items.filter(
+    (item) => isVideo(item) && item.sourceMetadata?.vr?.playback_ready,
+  ).length;
+  const analyzableRooms = spaces.filter((room) => room.evidence.some((item) => isImage(item) || isVideo(item)));
+  const analyzedRooms = spaces.filter((room) => room.analysis);
+  return {
+    items,
+    spaces,
+    categories,
+    rawFiles: items.reduce((total, item) => total + focusSourceCount(item), 0),
+    paired360,
+    waiting360,
+    vrPlayback,
+    analyzableRooms,
+    analyzedRooms,
+  };
+}
+
+function inferFocusMediaType(file) {
+  const name = String(file?.name || "").toLowerCase();
+  if (/\.(insv|insp|lrv)$/.test(name)) return "360 camera original";
+  if (file?.type?.startsWith("image/")) return "Photo";
+  if (file?.type?.startsWith("video/")) return "Video";
+  if (file?.type === "application/pdf" || name.endsWith(".pdf")) return "Plan or document";
+  return "Project evidence";
+}
+
+function focusVrMetadata(file) {
+  const name = String(file?.name || "").toLowerCase();
+  if (/\.(insv|insp|lrv)$/.test(name)) {
+    return {
+      role: "camera_original",
+      format: name.split(".").pop(),
+      original_preserved: true,
+      playback_ready: false,
+    };
+  }
+  const looksSpatial = file?.type?.startsWith("video/") && /(360|equirect|spatial)/.test(name);
+  return {
+    role: looksSpatial ? "equirectangular_playback" : "supporting_evidence",
+    original_preserved: true,
+    playback_ready: Boolean(looksSpatial),
+  };
+}
+
+function focusFileAllowed(file) {
+  const name = String(file?.name || "").toLowerCase();
+  return Boolean(
+    file?.type?.startsWith("image/") ||
+    file?.type?.startsWith("video/") ||
+    file?.type === "application/pdf" ||
+    /\.(pdf|insv|insp|lrv)$/.test(name),
+  );
+}
+
+async function ensureFocusDestination(file) {
+  const normalizedName = String(file?.name || "").toLowerCase().replace(/[^a-z0-9]+/g, " ");
+  const namedRoom = rooms.find((room) => {
+    if (!room.name || /evidence inbox|unsorted evidence/i.test(room.name)) return false;
+    const tokens = room.name.toLowerCase().split(/[^a-z0-9]+/).filter((token) => token.length > 2);
+    return tokens.length > 0 && tokens.every((token) => normalizedName.includes(token));
+  });
+  if (namedRoom) return namedRoom;
+  const existingInbox = rooms.find((room) => /evidence inbox|unsorted evidence/i.test(room.name));
+  if (existingInbox) return existingInbox;
+  return createRoomRecord({
+    name: "Evidence inbox",
+    building: "Automatic intake",
+    level: "AI organized",
+  });
+}
+
+function focusStageLabel(name) {
+  return name === "process" ? "process" : name;
+}
+
+function showFocusStage(name) {
+  focusStage = focusStageLabel(name);
+  $("#focus-upload-stage").hidden = focusStage !== "upload";
+  $("#focus-processing-stage").hidden = focusStage !== "process";
+  $("#focus-results-stage").hidden = focusStage !== "results";
+  const stats = focusEvidenceStats();
+  document.querySelectorAll("[data-focus-step]").forEach((item) => {
+    const step = item.dataset.focusStep;
+    const order = { upload: 1, process: 2, results: 3 };
+    item.classList.toggle("active", step === focusStage);
+    item.classList.toggle(
+      "complete",
+      (step === "upload" && stats.rawFiles > 0 && focusStage !== "upload") ||
+      (step === "process" && focusProcessingComplete && focusStage === "results") ||
+      order[step] < order[focusStage],
+    );
+  });
+  window.scrollTo({ top: 0, behavior: "smooth" });
+}
+
+function focusReadyCopy(stats) {
+  if (!stats.rawFiles) return "Ready for evidence.";
+  const captureCopy = stats.paired360
+    ? ` · ${stats.paired360} paired 360 capture${stats.paired360 === 1 ? "" : "s"}`
+    : "";
+  return `${stats.rawFiles} file${stats.rawFiles === 1 ? "" : "s"} ready${captureCopy}.`;
+}
+
+function renderFocusResults() {
+  const stats = focusEvidenceStats();
+  const aiProgress = stats.analyzableRooms.length
+    ? `${stats.analyzedRooms.length}/${stats.analyzableRooms.length}`
+    : "Not required";
+  $("#focus-result-metrics").innerHTML = `
+    <article><strong>${stats.rawFiles}</strong><small>Original files preserved</small></article>
+    <article><strong>${stats.spaces.length}</strong><small>Evidence groups organized</small></article>
+    <article><strong>${aiProgress}</strong><small>Visual AI analysis</small></article>`;
+
+  const vrCard = $("#focus-vr-card");
+  if (stats.vrPlayback) {
+    vrCard.innerHTML = `<header><h3>Vision Pro playback</h3><span class="focus-vr-badge">VR-ready</span></header><p>${stats.vrPlayback} spatial video${stats.vrPlayback === 1 ? " is" : "s are"} linked to this record for headset playback. Camera originals remain preserved beside the playback export.</p>`;
+  } else if (stats.paired360 || stats.waiting360) {
+    const pairText = `${stats.paired360} paired 360 capture${stats.paired360 === 1 ? "" : "s"}`;
+    const waitingText = stats.waiting360 ? ` ${stats.waiting360} capture${stats.waiting360 === 1 ? " is" : "s are"} waiting for a matching lens file.` : "";
+    vrCard.innerHTML = `<header><h3>Vision Pro preparation</h3><span class="focus-vr-badge">Originals secured</span></header><p>${pairText} preserved and linked to the project.${waitingText} Export an equirectangular 360 MP4 from Insta360 Studio to make each capture immediately playable in Vision Pro.</p>`;
+  } else {
+    vrCard.innerHTML = `<header><h3>Vision Pro preparation</h3><span class="focus-vr-badge">Record prepared</span></header><p>The evidence record preserves source files and spatial metadata. Add a 360 original pair or equirectangular 360 MP4 when headset playback is required.</p>`;
+  }
+
+  $("#focus-result-list").innerHTML = stats.spaces
+    .map((room) => {
+      const rawCount = room.evidence.reduce((total, item) => total + focusSourceCount(item), 0);
+      const has360 = room.evidence.some((item) => focusEvidenceCategory(item) === "360");
+      const status = room.analysis ? "AI analyzed" : has360 ? "360 linked" : "Organized";
+      const summary = room.analysis?.summary || room.visible?.[0] ||
+        (has360
+          ? "Camera originals are preserved as a spatial capture. No visual findings are claimed until a playable export is analyzed."
+          : "Evidence is preserved and assigned to this project group.");
+      return `<article><header><h3>${escapeText(room.name)}</h3><b>${escapeText(status)}</b></header><p>${rawCount} source file${rawCount === 1 ? "" : "s"} · ${escapeText(summary)}</p></article>`;
+    })
+    .join("");
+}
+
+function renderFocusStudio() {
+  const stats = focusEvidenceStats();
+  $("#focus-project-name").textContent = propertyRecord.name || "Project";
+  $("#focus-project-summary").textContent = focusReadyCopy(stats);
+  const ready = $("#focus-ready-summary");
+  if (!stats.rawFiles) {
+    ready.innerHTML = "";
+  } else {
+    const organizedCopy = `${stats.spaces.length} evidence group${stats.spaces.length === 1 ? "" : "s"}`;
+    const vrCopy = stats.paired360
+      ? `${stats.paired360} complete camera pair${stats.paired360 === 1 ? "" : "s"}`
+      : stats.waiting360
+        ? `${stats.waiting360} incomplete 360 capture${stats.waiting360 === 1 ? "" : "s"}`
+        : "No 360 originals yet";
+    ready.innerHTML = `
+      <article><div><strong>${stats.rawFiles} source file${stats.rawFiles === 1 ? "" : "s"}</strong><small>${organizedCopy} · Originals unchanged</small></div><b>READY</b></article>
+      <article><div><strong>VR connection</strong><small>${vrCopy}</small></div><b>${stats.paired360 ? "LINKED" : "PREPARED"}</b></article>`;
+  }
+  $("#focus-process").disabled = !stats.rawFiles || focusUploadBusy;
+  renderFocusResults();
+  showFocusStage(focusStage);
+}
+
+function openFocusStudio() {
+  focusStage = "upload";
+  focusUploadBusy = false;
+  focusProcessingComplete = window.localStorage.getItem(`mdai-focus-processed:${cloud.propertyId}`) === "1";
+  renderFocusStudio();
+}
+
+async function uploadFocusEvidence(fileList) {
+  const files = [...fileList].filter(focusFileAllowed);
+  if (!files.length || focusUploadBusy) {
+    if (fileList?.length) notify("Choose photos, video, PDF, INSV, INSP, or LRV files");
+    return;
+  }
+  focusUploadBusy = true;
+  focusProcessingComplete = false;
+  window.localStorage.removeItem(`mdai-focus-processed:${cloud.propertyId}`);
+  const progressBox = $("#focus-upload-progress");
+  const progressBar = $("#focus-upload-progress-bar");
+  const progressPercent = $("#focus-upload-progress-percent");
+  const progressDetail = $("#focus-upload-progress-detail");
+  progressBox.hidden = false;
+  $("#focus-process").disabled = true;
+  $("#focus-evidence-files").value = "";
+  try {
+    for (let index = 0; index < files.length; index += 1) {
+      const file = files[index];
+      const room = await ensureFocusDestination(file);
+      $("#focus-upload-progress-title").textContent = `Uploading ${index + 1} of ${files.length}`;
+      progressDetail.textContent = file.name;
+      const item = await uploadEvidenceToCloud(
+        file,
+        room,
+        inferFocusMediaType(file),
+        {
+          subject: file.name,
+          context: "Automatic project evidence intake",
+          intakeMode: "focus-studio",
+          evidenceCategory: inferFocusMediaType(file),
+          vr: focusVrMetadata(file),
+        },
+        (progress) => {
+          const totalPercent = Math.round(((index + progress.percent / 100) / files.length) * 100);
+          progressBar.value = totalPercent;
+          progressPercent.textContent = `${totalPercent}%`;
+          progressDetail.textContent = `${file.name} · ${progress.label}`;
+        },
+      );
+      room.evidence.push(item);
+    }
+    progressBar.value = 100;
+    progressPercent.textContent = "100%";
+    progressDetail.textContent = "Evidence secured. Organizing the project record…";
+    await hydrateCloudRecord();
+    $("#focus-upload-progress-title").textContent = "Upload complete";
+    progressDetail.textContent = "Original files preserved and linked to this project.";
+    notify(`${files.length} evidence file${files.length === 1 ? "" : "s"} uploaded`);
+  } catch (error) {
+    console.error(error);
+    $("#focus-upload-progress-title").textContent = "Upload needs attention";
+    progressDetail.textContent = error.message || "The upload could not be completed.";
+    notify(error.message || "Upload failed", 10000);
+  } finally {
+    focusUploadBusy = false;
+    renderFocusStudio();
+  }
+}
+
+async function analyzeFocusRoom(room, onStatus) {
+  if (room.analysis) return { skipped: true };
+  const evidenceIds = room.evidence
+    .filter((item) => item.storagePath && (isImage(item) || isVideo(item)))
+    .map((item) => item.id);
+  if (!evidenceIds.length) return { skipped: true };
+  const { data: jobRow, error: jobError } = await cloud.client
+    .from("analysis_jobs")
+    .insert({
+      organization_id: cloud.organizationId,
+      property_id: cloud.propertyId,
+      space_id: room.id,
+      state: "queued",
+      profile: "property-evidence-conservative",
+      profile_version: "0.1",
+      evidence_ids: evidenceIds,
+      requested_by: cloud.session.user.id,
+    })
+    .select("id")
+    .single();
+  if (jobError) throw new Error(`Processing request failed: ${jobError.message}`);
+  const localJob = {
+    id: jobRow.id,
+    roomId: room.id,
+    roomName: room.name,
+    evidenceCount: evidenceIds.length,
+    profile: "Property evidence · conservative",
+    status: "Preparing evidence",
+    createdAt: new Date().toLocaleString("en-US", { month: "short", day: "numeric", hour: "numeric", minute: "2-digit" }),
+  };
+  jobs.unshift(localJob);
+  saveJobs();
+  try {
+    onStatus(`Preparing ${room.name}`);
+    const { frames, warnings } = await prepareVideoFrames(room);
+    localJob.status = "Analyzing evidence";
+    saveJobs();
+    onStatus(`AI is reviewing ${room.name}`);
+    const { data, error } = await cloud.client.functions.invoke(config.aiFunctionName, {
+      body: { job_id: jobRow.id, video_frames: frames },
+    });
+    if (error) throw await functionInvocationError(error);
+    if (!data?.analysis) throw new Error(data?.error || "AI returned no result");
+    localJob.status = "Completed";
+    applyAnalysisResult(room, data.analysis, data.suggestion_id);
+    saveJobs();
+    return { warnings, analyzed: true };
+  } catch (error) {
+    localJob.status = "Failed";
+    localJob.errorCode = error.message || "analysis_failed";
+    saveJobs();
+    throw error;
+  }
+}
+
+async function processFocusEvidence() {
+  const stats = focusEvidenceStats();
+  if (!stats.rawFiles) return;
+  const button = $("#focus-process");
+  button.disabled = true;
+  showFocusStage("process");
+  const progress = $("#focus-processing-progress");
+  const status = $("#focus-processing-status");
+  const resultsButton = $("#focus-view-results");
+  resultsButton.disabled = true;
+  progress.value = 12;
+  status.textContent = "Classifying files and preserving originals…";
+  await new Promise((resolve) => window.setTimeout(resolve, 180));
+  progress.value = 28;
+  status.textContent = stats.paired360
+    ? `Paired ${stats.paired360} Insta360 capture${stats.paired360 === 1 ? "" : "s"} for the VR pipeline.`
+    : "Evidence organized by type and project context.";
+
+  const candidates = stats.analyzableRooms.filter((room) => !room.analysis);
+  const failures = [];
+  for (let index = 0; index < candidates.length; index += 1) {
+    const room = candidates[index];
+    try {
+      await analyzeFocusRoom(room, (message) => { status.textContent = message; });
+    } catch (error) {
+      console.error(error);
+      failures.push(room.name);
+    }
+    progress.value = 28 + Math.round(((index + 1) / Math.max(1, candidates.length)) * 62);
+  }
+  progress.value = 100;
+  focusProcessingComplete = true;
+  window.localStorage.setItem(`mdai-focus-processed:${cloud.propertyId}`, "1");
+  renderFocusResults();
+  $("#focus-processing-title").textContent = "The record is ready.";
+  $("#focus-processing-copy").textContent = failures.length
+    ? "The evidence is organized and preserved. Some compatible visual files need another AI attempt."
+    : "The evidence is organized, originals are preserved, and available visual files have been analyzed.";
+  status.textContent = failures.length
+    ? `${failures.length} visual group${failures.length === 1 ? "" : "s"} could not be analyzed; the source record is still complete.`
+    : stats.paired360 && !stats.vrPlayback
+      ? "360 originals are linked. Add equirectangular MP4 exports for headset playback."
+      : "Processing complete.";
+  resultsButton.disabled = false;
+  document.querySelector('[data-focus-step="upload"]')?.classList.add("complete");
+  button.disabled = false;
+}
+
+$("#focus-evidence-files").addEventListener("change", (event) => uploadFocusEvidence(event.target.files));
+const focusUploadCard = document.querySelector(".focus-upload-card");
+["dragenter", "dragover"].forEach((eventName) => focusUploadCard.addEventListener(eventName, (event) => {
+  event.preventDefault();
+  focusUploadCard.classList.add("dragging");
+}));
+["dragleave", "drop"].forEach((eventName) => focusUploadCard.addEventListener(eventName, (event) => {
+  event.preventDefault();
+  focusUploadCard.classList.remove("dragging");
+}));
+focusUploadCard.addEventListener("drop", (event) => uploadFocusEvidence(event.dataTransfer.files));
+$("#focus-process").addEventListener("click", processFocusEvidence);
+$("#focus-view-results").addEventListener("click", () => {
+  renderFocusResults();
+  showFocusStage("results");
+});
+$("#focus-add-more").addEventListener("click", () => showFocusStage("upload"));
 
 function canManageSpaces() {
   return !cloud.schemaReady || ["owner", "admin", "reviewer", "contributor"].includes(cloud.role);
