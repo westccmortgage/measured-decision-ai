@@ -28,6 +28,17 @@ This is the production intake contract for a person who does not have a Studio a
 
 ## Processing boundary
 
+### Serverless MVP path
+
+For the initial demonstration release, Insta360 Studio performs the licensed
+stitching step on the operator's Mac. Export a full 2:1 equirectangular MP4 at
+the source resolution and keep the camera filename. Uploading that MP4 causes
+Studio to register it as the capture's VR master immediately; no persistent EC2
+worker is required. The protected INSV files remain the immutable originals.
+
+The GPU worker remains an optional scale path for later unattended batch
+stitching. It is not a dependency for creating or demonstrating a project.
+
 `capture_processing_jobs` is the durable queue for the media processor. The processor must:
 
 1. verify the real stream geometry and codec server-side;
