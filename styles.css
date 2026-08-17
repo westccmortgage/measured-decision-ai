@@ -1843,7 +1843,7 @@ footer a:hover { color: var(--accent); }
 }
 
 .proof-stage {
-  aspect-ratio: 16 / 10;
+  aspect-ratio: 16 / 9;
   background: #040812;
   border: 1px solid color-mix(in srgb, var(--accent) 35%, var(--line));
   border-radius: 22px;
@@ -1855,6 +1855,14 @@ footer a:hover { color: var(--accent); }
   position: relative;
   right: auto;
   top: auto;
+  width: 100%;
+}
+.hero-film::after { display: none; }
+.hero-feature-video {
+  background: #040812;
+  display: block;
+  height: 100%;
+  object-fit: contain;
   width: 100%;
 }
 .proof-stage::after {
