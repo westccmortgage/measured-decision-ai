@@ -457,6 +457,14 @@ Deno.serve(async (request) => {
         const { error: captureGroupError } = await admin.rpc("reconcile_insta360_capture", { p_evidence_id: inserted.id });
         if (captureGroupError) console.error("Insta360 capture grouping could not be completed", captureGroupError);
       }
+      if (
+        row.entity_type === "evidence" &&
+        /\.(mp4|mov|m4v)$/i.test(row.original_filename) &&
+        metadata?.source_metadata?.projection === "equirectangular"
+      ) {
+        const { error: vrMasterError } = await admin.rpc("reconcile_prestitched_360", { p_evidence_id: inserted.id });
+        if (vrMasterError) console.error("Pre-stitched 360 master could not be registered", vrMasterError);
+      }
       const completedAt = new Date().toISOString();
       if (captureSession && row.entity_type === "evidence") {
         const source = (metadata.source_metadata || {}) as Record<string, unknown>;
