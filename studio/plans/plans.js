@@ -455,6 +455,7 @@ async function openProperty(propertyId) {
   }
   state.property = state.properties.find((property) => property.id === propertyId) || null;
   if (!state.property) return;
+  window.MDAIRecentProjects?.remember({ id: state.property.id, name: state.property.name });
   window.history.replaceState({}, "", `${window.location.pathname}?property=${encodeURIComponent(propertyId)}${
     state.requestedBaselineId ? `&baseline=${encodeURIComponent(state.requestedBaselineId)}` : ""
   }`);

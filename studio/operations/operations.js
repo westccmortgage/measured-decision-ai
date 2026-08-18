@@ -64,6 +64,7 @@ async function initialize() {
 
 async function load() {
   const property=state.properties.find(p=>p.id===state.propertyId);
+  window.MDAIRecentProjects?.remember({id:property?.id,name:property?.name});
   history.replaceState({},"",`${location.pathname}?property=${encodeURIComponent(state.propertyId)}`);
   document.querySelectorAll('a[href="../plans/"],a[href^="../plans/?property="]').forEach(link=>{link.href=propertyUrl()});
   document.querySelectorAll('a[href="./"],a[href^="./?property="]').forEach(link=>{link.href=`./?property=${encodeURIComponent(state.propertyId)}`});
