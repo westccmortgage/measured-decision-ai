@@ -57,7 +57,7 @@ nav a.active:first-letter { color:var(--cyan); }
 
 .agent-note p { margin:8px 0 0; font-size:10px; line-height:1.5; }
 
-main { margin-left:var(--sidebar); padding:94px 30px 60px; min-height:100vh; }
+main { margin:0 auto; padding:94px clamp(20px,5vw,48px) 60px; width:min(1320px,100%); min-height:100vh; }
 
 .hero { display:flex; justify-content:space-between; align-items:end; gap:30px; padding:20px 0 28px; border-bottom:1px solid var(--line); }
 

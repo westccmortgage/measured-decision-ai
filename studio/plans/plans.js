@@ -563,9 +563,8 @@ function render() {
     });
   }
   updateAnalyzeAction({ updateMessage: state.analysisOutcome !== "failed" });
-  $("#step-analyze").classList.toggle("done", Boolean(state.baseline));
-  $("#step-approve").classList.toggle("done", state.baseline?.state === "approved");
-  $("#step-capture").classList.toggle("done", state.tasks.some((task) => ["submitted", "verified"].includes(task.status)));
+  /* The activation checklist lived in the sidebar that this page no longer has.
+     The baseline section and the roadmap carry the same state in place. */
 }
 
 function renderDocuments() {

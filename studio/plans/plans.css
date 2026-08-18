@@ -11,7 +11,7 @@
   --green: #54d39a;
   --amber: #e5ac4b;
   --red: #ff7b76;
-  --sidebar: 205px;
+  --sidebar: 0px;
 }
 
 * { box-sizing: border-box; }
@@ -53,7 +53,7 @@ a { color: inherit; text-decoration: none; }
 .sidebar-footer li.done::before { background: var(--green); border-color: var(--green); }
 .sidebar-footer small { color: #536a7d; font-size: 9px; line-height: 1.5; }
 
-.workspace { margin-left: var(--sidebar); padding: 94px 31px 60px; min-height: 100vh; }
+.workspace { margin: 0 auto; padding: 94px clamp(20px, 5vw, 48px) 60px; width: min(1320px, 100%); min-height: 100vh; }
 .hero { display: flex; justify-content: space-between; align-items: flex-end; gap: 40px; padding: 22px 0 27px; border-bottom: 1px solid var(--line); }
 .eyebrow { color: var(--cyan); margin: 0 0 9px; text-transform: uppercase; letter-spacing: .14em; font-size: 10px; font-weight: 700; }
 h1, h2, h3, p { margin-top: 0; }
