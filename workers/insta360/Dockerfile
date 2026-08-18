@@ -9,7 +9,7 @@ RUN g++ /src/stitch360.cc -O2 -std=c++11 -I/usr/local/include -L/usr/local/lib -
 
 FROM nvidia/cuda:11.7.1-runtime-ubuntu22.04
 ENV DEBIAN_FRONTEND=noninteractive PYTHONUNBUFFERED=1
-RUN apt-get update && apt-get install -y --no-install-recommends python3 python3-pip xz-utils libx11-6 libgomp1 libxcb1 libpng16-16 libgl1 libegl1 libglx0 libglvnd0 libjpeg-turbo8 libxdmcp6 libbsd0 libxau6 libmd0 libxext6 libvulkan1 libglfw3 libdc1394-25 && rm -rf /var/lib/apt/lists/*
+RUN apt-get update && apt-get install -y --no-install-recommends python3 python3-pip ffmpeg xz-utils libx11-6 libgomp1 libxcb1 libpng16-16 libgl1 libegl1 libglx0 libglvnd0 libjpeg-turbo8 libxdmcp6 libbsd0 libxau6 libmd0 libxext6 libvulkan1 libglfw3 libdc1394-25 && rm -rf /var/lib/apt/lists/*
 COPY install-sdk.sh /usr/local/bin/install-sdk.sh
 RUN --mount=type=secret,id=insta360_sdk sh /usr/local/bin/install-sdk.sh /run/secrets/insta360_sdk
 COPY --from=build /usr/local/bin/stitch360 /usr/local/bin/stitch360

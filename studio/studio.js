@@ -212,6 +212,13 @@ async function extractVideoFrames(item, frameLimit = 4) {
     if (!Number.isFinite(duration) || duration <= 0) {
       throw new Error("The video duration is unavailable");
     }
+    /* The head and tail of a 360 walkthrough are the operator leaving and
+       returning. Reading them as evidence produces findings about a doorway
+       and a person, not about the space. */
+    const trim = evidenceTrimWindow(item, duration);
+    const windowStart = trim?.applied ? Math.max(0, trim.start_seconds) : 0;
+    const windowEnd = trim?.applied ? Math.min(duration, trim.end_seconds) : duration;
+    const windowSpan = Math.max(0.2, windowEnd - windowStart);
     const positions = [0.1, 0.35, 0.6, 0.85].slice(0, frameLimit);
     const canvas = document.createElement("canvas");
     const scale = Math.min(1, 960 / Math.max(1, video.videoWidth));
@@ -223,8 +230,8 @@ async function extractVideoFrames(item, frameLimit = 4) {
     const frames = [];
     for (const position of positions) {
       const timestamp = Math.min(
-        Math.max(0.05, duration * position),
-        Math.max(0.05, duration - 0.05),
+        Math.max(0.05, windowStart + windowSpan * position),
+        Math.max(0.05, windowEnd - 0.05),
       );
       if (Math.abs(video.currentTime - timestamp) > 0.02) {
         const frameReady = waitForMediaEvent(video, "seeked");
@@ -1808,6 +1815,29 @@ function focusIsSpatial(item) {
   return /(360|equirect|spatial|pano)/.test(String(item.name || "").toLowerCase());
 }
 
+/* One policy decides the usable window, so the AI, the sphere viewer and the
+   GPU master all read the same capture. Evidence uploaded before the policy
+   existed still gets a window, computed from the stream that is playing. */
+function evidenceTrimWindow(item, durationSeconds) {
+  if (!window.MDAITrim360 || !item) return null;
+  if (!isVideo(item) || !focusIsSpatial(item)) return null;
+  return window.MDAITrim360.resolve(item.sourceMetadata || {}, durationSeconds);
+}
+
+/* Say what is hidden, wherever the file is listed. A window nobody is told
+   about is indistinguishable from evidence quietly going missing. */
+function focusEvidenceTrimNote(item) {
+  const recorded = item?.sourceMetadata?.trim;
+  if (recorded?.mode === "cut_at_processing") {
+    return `${recorded.head_seconds}s cut from each end`;
+  }
+  const usable = evidenceTrimWindow(item, item?.sourceMetadata?.duration_seconds);
+  if (!usable?.applied) return "";
+  return usable.head_seconds === usable.tail_seconds
+    ? `first and last ${usable.head_seconds}s hidden`
+    : `first ${usable.head_seconds}s and last ${usable.tail_seconds}s hidden`;
+}
+
 function focusEvidenceLabel(item) {
   if (focusIsSpatial(item)) return "360";
   const category = focusEvidenceCategory(item);
@@ -2485,8 +2515,11 @@ function openEvidenceViewer(item, room) {
     src: item.src,
     mediaType: item.mimeType || "",
     spatial,
+    trim: evidenceTrimWindow(item, item.sourceMetadata?.duration_seconds),
     title: item.subject || item.name || "Evidence",
-    subtitle: `${roomName} · ${focusEvidenceLabel(item)} · ${item.date || "date unavailable"}`,
+    subtitle: [roomName, focusEvidenceLabel(item), item.date || "date unavailable", focusEvidenceTrimNote(item)]
+      .filter(Boolean)
+      .join(" · "),
     actions,
   });
 }
@@ -2543,7 +2576,7 @@ function renderFocusSheet() {
           const preview = isImage(item) && item.src
             ? `<img src="${escapeText(item.src)}" alt="" loading="lazy">`
             : `<span class="sheet-evidence-icon">${escapeText(label === "360" ? "360" : label === "Video" ? "▶" : label === "Document" ? "PDF" : label === "Camera original" ? "INSV" : "IMG")}</span>`;
-          return `<button class="sheet-evidence-item" type="button" data-evidence="${index}">${preview}<span><strong>${escapeText(item.subject || item.name || "Evidence")}</strong><small>${escapeText(label)} · ${escapeText(item.date || "date unavailable")}</small></span></button>`;
+          return `<button class="sheet-evidence-item" type="button" data-evidence="${index}">${preview}<span><strong>${escapeText(item.subject || item.name || "Evidence")}</strong><small>${escapeText([label, item.date || "date unavailable", focusEvidenceTrimNote(item)].filter(Boolean).join(" · "))}</small></span></button>`;
         })
         .join("")
     : `<p class="sheet-empty">No evidence is attached to this space yet.</p>`;
@@ -2794,6 +2827,12 @@ async function uploadFocusEvidence(fileList) {
       const measured = await measureMediaFile(file);
       const projection = equirectangularProjection(measured);
       const captureKey = projection ? exportCaptureKey(file.name) : null;
+      const vr = focusVrMetadata(file, measured);
+      /* Recorded, never cut: the upload keeps the whole original and states
+         which part of it is the space rather than the operator. */
+      const trim = file.type?.startsWith("video/") && vr.playback_ready && window.MDAITrim360
+        ? window.MDAITrim360.plan(measured.duration_seconds)
+        : null;
       const item = await uploadEvidenceToCloud(
         file,
         room,
@@ -2810,7 +2849,8 @@ async function uploadFocusEvidence(fileList) {
           ...(captureKey
             ? { ready_360: { capture_key: captureKey, projection, processing_mode: "insta360-studio-export" } }
             : {}),
-          vr: focusVrMetadata(file, measured),
+          ...(trim ? { trim } : {}),
+          vr,
         },
         (progress) => {
           const totalPercent = Math.round(((index + progress.percent / 100) / files.length) * 100);

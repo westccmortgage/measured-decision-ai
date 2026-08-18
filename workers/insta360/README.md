@@ -125,3 +125,20 @@ that both originals are downloaded, the master is uploaded, exactly one evidence
 row is written with the right projection and provenance, progress climbs, and the
 capture group ends at `vr_ready`. It proves the parts this project owns; it cannot
 prove the stitch itself, which needs the licensed library and a GPU.
+
+## Camera handling window
+
+After stitching, the worker cuts the operator's entry and exit out of the master
+with `ffmpeg -ss … -t … -c copy` — a stream copy, so nothing is re-encoded and
+no quality is lost. The window follows the same policy as the Studio
+(`studio/trim360.js`): ten seconds off each end, five when ten would not leave
+enough, nothing under fifteen seconds of remaining footage. `FFMPEG_COMMAND`,
+`FFPROBE_COMMAND`, `TRIM_PREFERRED_SECONDS`, `TRIM_MINIMUM_SECONDS` and
+`TRIM_KEEP_AT_LEAST_SECONDS` override it.
+
+The protected INSV originals are never touched. If ffprobe or ffmpeg fails the
+whole master is published and the window is recorded on the evidence instead, so
+the Studio still opens the capture inside it.
+
+`python3 workers/insta360/test_worker.py` exercises the cut with stubs for the
+stitcher, ffmpeg and ffprobe — no SDK, GPU, S3 or Supabase.

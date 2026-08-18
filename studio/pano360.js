@@ -6,7 +6,7 @@
    media all open through the same entry point, which keeps "open the evidence"
    a single action everywhere in the Studio.
 
-   window.MDAIPano360.open({ src, mediaType, title, subtitle, projection, actions })
+   window.MDAIPano360.open({ src, mediaType, title, subtitle, projection, trim, actions })
 */
 (() => {
   const VERTEX_SHADER = `
@@ -62,6 +62,9 @@
     .pano-playback{position:absolute;left:50%;bottom:calc(74px + env(safe-area-inset-bottom));transform:translateX(-50%);display:flex;align-items:center;gap:10px;padding:8px 12px;border-radius:999px;background:rgba(4,9,15,.78);z-index:2}
     .pano-playback button{min-width:44px;min-height:36px;border:0;border-radius:8px;background:rgba(255,255,255,.08);color:#edf4f7;font:inherit;cursor:pointer}
     .pano-playback input{width:min(46vw,260px)}
+    .pano-playback .pano-window{min-width:auto;padding:0 12px;font-size:12px;white-space:nowrap}
+    .pano-playback .pano-window[aria-pressed="true"]{background:rgba(82,210,223,.18);color:#52d2df}
+    .pano-trim-note{position:absolute;left:50%;bottom:calc(122px + env(safe-area-inset-bottom));transform:translateX(-50%);max-width:calc(100% - 32px);text-align:center;padding:6px 12px;border-radius:999px;background:rgba(4,9,15,.72);color:#a5b8c8;font-size:12px;z-index:2;pointer-events:none}
     @media(max-width:640px){.pano-bar small{display:none}}
   `;
 
@@ -73,6 +76,7 @@
   let hintNode = null;
   let gyroButton = null;
   let playback = null;
+  let trimNote = null;
   let session = null;
   let restoreOverflow = "";
 
@@ -295,13 +299,30 @@
     window.setTimeout(() => node.remove(), 400);
   }
 
-  function buildPlayback(video) {
+  /* The window is a window, not a cut: playback, the scrubber and the loop all
+     stay inside it, and one button plays the untouched original when a reviewer
+     needs to see everything that was filmed. */
+  function trimBounds(video, trim, active) {
+    const duration = Number(video.duration) || 0;
+    if (!active || !trim || !trim.applied) return { start: 0, end: duration };
+    const start = Math.max(0, Math.min(Number(trim.start_seconds) || 0, Math.max(0, duration - 1)));
+    const end = duration ? Math.min(Number(trim.end_seconds) || duration, duration) : Number(trim.end_seconds) || 0;
+    return end > start + 0.5 ? { start, end } : { start: 0, end: duration };
+  }
+
+  function buildPlayback(video, trim) {
+    const trimmable = Boolean(trim && trim.applied);
+    let windowed = trimmable;
     playback = document.createElement("div");
     playback.className = "pano-playback";
-    playback.innerHTML = `<button type="button" data-pano-play aria-label="Play or pause">▶</button><input type="range" min="0" max="1000" value="0" step="1" aria-label="Playback position">`;
+    playback.innerHTML = `<button type="button" data-pano-play aria-label="Play or pause">▶</button><input type="range" min="0" max="1000" value="0" step="1" aria-label="Playback position">` +
+      (trimmable ? `<button type="button" class="pano-window" data-pano-window aria-pressed="true">Full clip</button>` : "");
     stage.appendChild(playback);
     const button = playback.querySelector("[data-pano-play]");
     const range = playback.querySelector("input");
+    const windowButton = playback.querySelector("[data-pano-window]");
+    const bounds = () => trimBounds(video, trim, windowed);
+
     button.addEventListener("click", () => {
       if (video.paused) video.play().catch(() => {});
       else video.pause();
@@ -309,14 +330,71 @@
     video.addEventListener("play", () => { button.textContent = "❚❚"; });
     video.addEventListener("pause", () => { button.textContent = "▶"; });
     video.addEventListener("timeupdate", () => {
-      if (!video.duration || range.dataset.seeking === "1") return;
-      range.value = String(Math.round((video.currentTime / video.duration) * 1000));
+      const { start, end } = bounds();
+      if (windowed && end > start && (video.currentTime >= end - 0.05 || video.currentTime < start - 0.5)) {
+        video.currentTime = start;
+        return;
+      }
+      if (range.dataset.seeking === "1" || end <= start) return;
+      range.value = String(Math.round(((video.currentTime - start) / (end - start)) * 1000));
     });
     range.addEventListener("pointerdown", () => { range.dataset.seeking = "1"; });
     range.addEventListener("change", () => {
       range.dataset.seeking = "0";
-      if (video.duration) video.currentTime = (Number(range.value) / 1000) * video.duration;
+      const { start, end } = bounds();
+      if (end > start) video.currentTime = start + (Number(range.value) / 1000) * (end - start);
     });
+
+    if (windowButton) {
+      windowButton.addEventListener("click", () => {
+        windowed = !windowed;
+        windowButton.setAttribute("aria-pressed", windowed ? "true" : "false");
+        windowButton.textContent = windowed ? "Full clip" : "Trimmed";
+        if (trimNote) trimNote.hidden = !windowed;
+        const { start, end } = bounds();
+        if (video.currentTime < start || video.currentTime > end) video.currentTime = start;
+      });
+    }
+  }
+
+  function trimText(trim) {
+    if (!trim || !trim.applied) return "";
+    const head = Number(trim.head_seconds) || 0;
+    const tail = Number(trim.tail_seconds) || 0;
+    return head === tail
+      ? `First and last ${head}s hidden — camera handling`
+      : `First ${head}s and last ${tail}s hidden — camera handling`;
+  }
+
+  function showTrimNote(trim) {
+    const text = trimText(trim);
+    if (!text) return;
+    trimNote = document.createElement("p");
+    trimNote.className = "pano-trim-note";
+    trimNote.textContent = text;
+    stage.appendChild(trimNote);
+  }
+
+  /* A capture uploaded before the policy existed carries no window, so the
+     policy is applied to the stream that is playing. Non-spatial evidence is
+     never passed a window at all and is therefore never trimmed. */
+  function resolveTrim(trim, video) {
+    if (!trim) return null;
+    if (!window.MDAITrim360) return trim.applied ? trim : null;
+    const resolved = window.MDAITrim360.resolve({ trim }, Number(video && video.duration) || 0);
+    return resolved.applied ? resolved : null;
+  }
+
+  function seekToWindowStart(video, trim) {
+    if (!trim) return;
+    const seek = () => {
+      const resolved = resolveTrim(trim, video);
+      if (!resolved) return;
+      const { start } = trimBounds(video, resolved, true);
+      if (start > 0 && Math.abs(video.currentTime - start) > 0.2) video.currentTime = start;
+    };
+    if (video.readyState >= 1) seek();
+    else video.addEventListener("loadedmetadata", seek, { once: true });
   }
 
   function renderFooter(actions = []) {
@@ -340,6 +418,7 @@
     session = null;
     stage.innerHTML = "";
     playback = null;
+    trimNote = null;
   }
 
   function close() {
@@ -349,7 +428,7 @@
     document.body.style.overflow = restoreOverflow;
   }
 
-  function open({ src, mediaType = "", title = "Evidence", subtitle = "", spatial = false, actions = [] } = {}) {
+  function open({ src, mediaType = "", title = "Evidence", subtitle = "", spatial = false, trim = null, actions = [] } = {}) {
     if (!root) build();
     teardown();
     titleNode.textContent = title;
@@ -391,6 +470,7 @@
         media.controls = true;
         media.muted = false;
         media.className = "pano-flat";
+        seekToWindowStart(media, trim);
       }
       media.alt = title;
       stage.appendChild(media);
@@ -413,7 +493,10 @@
           },
         };
         if (isVideo) {
-          buildPlayback(media);
+          const window360 = resolveTrim(trim, media);
+          showTrimNote(window360);
+          buildPlayback(media, window360);
+          seekToWindowStart(media, window360);
           media.play().catch(() => {});
         }
       } catch (error) {
@@ -422,6 +505,7 @@
         if (isVideo) {
           media.controls = true;
           media.className = "pano-flat";
+          seekToWindowStart(media, trim);
         }
         stage.appendChild(media);
         const note = document.createElement("p");
@@ -446,6 +530,7 @@
           flat.controls = true;
           flat.playsInline = true;
           flat.className = "pano-flat";
+          seekToWindowStart(flat, trim);
         }
         stage.appendChild(flat);
         const note = document.createElement("p");
