@@ -28,6 +28,12 @@ of 0"*. `g4dn.xlarge` needs 4.
 On-Demand G and VT instances** → **Request increase at account level** → 8 →
 submit. Approval takes anywhere from minutes to a day, so do it first.
 
+This account's quota was approved on 18 August 2026: *[US East (Ohio)]: EC2
+Instances / All G and VT instances, New Limit = 8*, effective within thirty
+minutes of the approval mail. Eight vCPUs is two `g4dn.xlarge` at once, or one
+`g4dn.2xlarge`. The quota is per region — a launch in any region other than
+`us-east-2` still fails at a limit of 0.
+
 ## Launch
 
 From the EC2 dashboard in **us-east-2**, **Launch instance**:
@@ -138,26 +144,44 @@ docker run --rm --gpus all nvidia/cuda:11.7.1-base-ubuntu22.04 nvidia-smi
 
 The second command is the one that matters: it proves Docker can reach the GPU.
 
-## Build
+## Getting the SDK onto the instance
 
-Copy the MediaSDK package to the instance (from your Mac):
+Session Manager gives a terminal, not a file transfer: there is no `scp` without
+a key pair and an open port 22. The licensed package must not go into git
+either. Route it through the private bucket the instance can already read.
+
+**From the Mac, in the browser:** S3 console → the
+`measured-decision-production-…` bucket → **Create folder** `private-sdk` →
+open it → **Upload** → add the `libMediaSDK-dev-*-amd64.deb` **and** the whole
+`models` folder (Upload accepts a dragged folder) → **Upload**.
+
+**On the instance:**
+
+```bash
+mkdir -p /home/ubuntu/private
+aws s3 cp --recursive s3://measured-decision-production-808454010303/private-sdk/ /home/ubuntu/private/
+ls -R /home/ubuntu/private
+```
+
+The instance role already allows `s3:GetObject` on this bucket, so nothing else
+needs configuring. Delete the `private-sdk/` prefix from the bucket once the
+image is built — a licensed package has no reason to sit next to evidence.
+
+If a key pair was set at launch, `scp` still works and is fine:
 
 ```bash
 scp -i /path/key.pem \
   ~/Downloads/Linux_CameraSDK-2.1.1_MediaSDK-3.1.1/libMediaSDK-dev-*-amd64/libMediaSDK-dev-*-amd64.deb \
   ubuntu@<public-dns>:/home/ubuntu/private/
-```
-
-Send the `models/` directory as well — the AI weights are not inside the `.deb`:
-
-```bash
 scp -i /path/key.pem -r \
   ~/Downloads/Linux_CameraSDK-2.1.1_MediaSDK-3.1.1/libMediaSDK-dev-*-amd64/models \
   ubuntu@<public-dns>:/home/ubuntu/private/
 ```
 
-Then build with the folder as the secret, so the package and the weights are
-picked up together:
+## Build
+
+The build needs the package and the AI weights together in one directory (the
+`models/` folder is not inside the `.deb`):
 
 ```bash
 git clone https://github.com/westccmortgage/measured-decision-ai.git
@@ -169,6 +193,14 @@ DOCKER_BUILDKIT=1 docker build \
 
 The build stops with a named error if the package is wrong — a CameraSDK
 archive, or one with no `libMediaSDK` on the loader path.
+
+Before pointing the image at real captures, run the worker's own test from the
+clone. It stubs the stitcher, ffmpeg and ffprobe, so it proves claiming,
+progress, trimming and publishing without touching a capture or the database:
+
+```bash
+python3 ~/measured-decision-ai/workers/insta360/test_worker.py
+```
 
 ## Run one batch, then stop
 
