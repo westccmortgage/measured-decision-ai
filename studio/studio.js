@@ -1173,6 +1173,8 @@ async function hydrateCloudRecord() {
       mimeType: item.mime_type,
       byteSize: item.byte_size,
       date: formatEvidenceDate(item.captured_at || item.created_at),
+      capturedAt: item.captured_at || item.created_at || null,
+      createdAt: item.created_at || null,
       status: "Private cloud original · Awaiting analysis",
       subject: item.source_metadata?.subject || "",
       context: item.source_metadata?.context || "",
@@ -1352,6 +1354,28 @@ async function enterWorkspace(session) {
   await hydrateEvidenceFiles();
   await hydrateCloudContext();
   renderPropertyDirectory();
+  await openStudioDeepLink();
+}
+
+/* A shared link is how spatial evidence reaches a headset: the same project
+   route opens straight on the file that has to be inspected. */
+async function openStudioDeepLink() {
+  const params = new URLSearchParams(window.location.search);
+  const propertyId = params.get("property");
+  if (!propertyId || !cloud.organizationId) return;
+  await openProperty(propertyId);
+  const evidenceId = params.get("evidence");
+  if (!evidenceId) return;
+  const room = rooms.find((candidate) =>
+    (candidate.evidence || []).some(
+      (item) => item.id === evidenceId || (item.sourceIds || []).includes(evidenceId),
+    ),
+  );
+  const item = room?.evidence.find(
+    (candidate) => candidate.id === evidenceId || (candidate.sourceIds || []).includes(evidenceId),
+  );
+  if (item) openEvidenceViewer(item, room);
+  else notify("That evidence is not part of this project, or it has been removed.", 6000);
 }
 
 async function initializeAuth() {
@@ -1717,9 +1741,23 @@ async function createRoomRecord({ name, building, level }) {
   return room;
 }
 
-let focusStage = "upload";
+/* ---------------------------------------------------------------------------
+   Focus Studio.
+
+   One route, no dead ends:
+     Project today → Evidence → AI findings → Verification → Next action
+
+   Every number on screen is attached to the thing it counts, and every status
+   either opens something or explains why it cannot be opened yet.
+   --------------------------------------------------------------------------- */
+
+const FOCUS_STAGE_ORDER = { today: 1, upload: 2, process: 3, results: 4 };
+let focusStage = "today";
 let focusUploadBusy = false;
 let focusProcessingComplete = false;
+let focusProcessingRows = [];
+let focusSheetRoomId = null;
+let focusSheetReturnStage = "today";
 
 function focusAllEvidence() {
   return rooms.flatMap((room) => room.evidence || []);
@@ -1731,13 +1769,70 @@ function focusSourceCount(item) {
     : 1;
 }
 
-function focusEvidenceCategory(item) {
+function focusIsCameraOriginal(item) {
   const name = String(item?.name || "").toLowerCase();
-  if (item?.mimeType === "application/x-insta360-capture" || /\.(insv|insp|lrv)$/.test(name)) return "360";
+  return Boolean(
+    item?.mimeType === "application/x-insta360-capture" || /\.(insv|insp|lrv)$/.test(name),
+  );
+}
+
+function focusIsDocument(item) {
+  const name = String(item?.name || "").toLowerCase();
+  return Boolean(item?.mimeType === "application/pdf" || name.endsWith(".pdf"));
+}
+
+function focusEvidenceCategory(item) {
+  if (focusIsCameraOriginal(item)) return "360";
   if (isImage(item)) return "photo";
   if (isVideo(item)) return "video";
-  if (item?.mimeType === "application/pdf" || name.endsWith(".pdf")) return "document";
+  if (focusIsDocument(item)) return "document";
   return "file";
+}
+
+/* A file is spatial when it can actually be rendered as a sphere: an
+   equirectangular export, not a protected camera original. */
+function focusIsSpatial(item) {
+  if (focusIsCameraOriginal(item) || !item?.src) return false;
+  if (!isVideo(item) && !isImage(item)) return false;
+  const meta = item.sourceMetadata || {};
+  if (meta.vr?.playback_ready) return true;
+  if (meta.ready_360) return true;
+  if (meta.projection === "equirectangular") return true;
+  const width = Number(meta.width);
+  const height = Number(meta.height);
+  if (width && height) {
+    const ratio = width / height;
+    if (ratio >= 1.9 && ratio <= 2.1) return true;
+  }
+  return /(360|equirect|spatial|pano)/.test(String(item.name || "").toLowerCase());
+}
+
+function focusEvidenceLabel(item) {
+  if (focusIsSpatial(item)) return "360";
+  const category = focusEvidenceCategory(item);
+  if (category === "360") return "Camera original";
+  if (category === "photo") return "Photo";
+  if (category === "video") return "Video";
+  if (category === "document") return "Document";
+  return "File";
+}
+
+function focusTimestamp(item) {
+  const value = Date.parse(item?.createdAt || item?.capturedAt || "");
+  return Number.isFinite(value) ? value : 0;
+}
+
+function focusDayKey(time) {
+  return time ? new Date(time).toISOString().slice(0, 10) : "";
+}
+
+function focusRelativeDay(time) {
+  if (!time) return "date unavailable";
+  const days = Math.round((Date.now() - time) / 86400000);
+  if (days <= 0) return "today";
+  if (days === 1) return "yesterday";
+  if (days < 7) return `${days} days ago`;
+  return new Date(time).toLocaleDateString("en-US", { month: "short", day: "numeric" });
 }
 
 function focusEvidenceStats() {
@@ -1748,16 +1843,33 @@ function focusEvidenceStats() {
     categories[focusEvidenceCategory(item)] += focusSourceCount(item);
   });
   const paired360 = items.filter(
-    (item) => focusEvidenceCategory(item) === "360" && (item.sourceIds?.length || 0) >= 2,
+    (item) => focusIsCameraOriginal(item) && (item.sourceIds?.length || 0) >= 2,
   ).length;
   const waiting360 = items.filter(
-    (item) => focusEvidenceCategory(item) === "360" && (item.sourceIds?.length || 0) < 2,
+    (item) => focusIsCameraOriginal(item) && (item.sourceIds?.length || 0) < 2,
   ).length;
-  const vrPlayback = items.filter(
-    (item) => isVideo(item) && item.sourceMetadata?.vr?.playback_ready,
-  ).length;
-  const analyzableRooms = spaces.filter((room) => room.evidence.some((item) => isImage(item) || isVideo(item)));
+  const spatial = items.filter(focusIsSpatial);
+  const documents = items.filter(focusIsDocument);
+  const analyzableRooms = spaces.filter((room) =>
+    room.evidence.some((item) => isImage(item) || isVideo(item)),
+  );
   const analyzedRooms = spaces.filter((room) => room.analysis);
+  const awaitingReview = spaces.filter((room) => room.analysis && room.status !== "confirmed");
+  const confirmedRooms = spaces.filter((room) => room.status === "confirmed");
+  const unanalyzedRooms = analyzableRooms.filter((room) => !room.analysis);
+  const followUps = spaces.flatMap((room) =>
+    (room.analysis?.follow_up_captures || []).map((entry) => ({
+      room,
+      request: entry.request || "Additional capture",
+      reason: entry.reason || "",
+    })),
+  );
+  const openQuestions = spaces.flatMap((room) =>
+    room.analysis ? (room.unknown || []).map((text) => ({ room, text })) : [],
+  );
+  const lastUpdate = items.reduce((latest, item) => Math.max(latest, focusTimestamp(item)), 0);
+  const lastDay = focusDayKey(lastUpdate);
+  const latestBatch = lastDay ? items.filter((item) => focusDayKey(focusTimestamp(item)) === lastDay) : [];
   return {
     items,
     spaces,
@@ -1765,9 +1877,18 @@ function focusEvidenceStats() {
     rawFiles: items.reduce((total, item) => total + focusSourceCount(item), 0),
     paired360,
     waiting360,
-    vrPlayback,
+    spatial,
+    documents,
+    vrPlayback: spatial.length,
     analyzableRooms,
     analyzedRooms,
+    awaitingReview,
+    confirmedRooms,
+    unanalyzedRooms,
+    followUps,
+    openQuestions,
+    lastUpdate,
+    latestBatch,
   };
 }
 
@@ -1825,29 +1946,602 @@ async function ensureFocusDestination(file) {
   });
 }
 
-function focusStageLabel(name) {
-  return name === "process" ? "process" : name;
-}
-
 function showFocusStage(name) {
-  focusStage = focusStageLabel(name);
+  focusStage = FOCUS_STAGE_ORDER[name] ? name : "today";
+  closeFocusSheet(false);
+  $("#focus-today-stage").hidden = focusStage !== "today";
   $("#focus-upload-stage").hidden = focusStage !== "upload";
   $("#focus-processing-stage").hidden = focusStage !== "process";
   $("#focus-results-stage").hidden = focusStage !== "results";
+  const roadmap = document.querySelector(".focus-roadmap");
+  if (roadmap) roadmap.hidden = focusStage === "today";
   const stats = focusEvidenceStats();
   document.querySelectorAll("[data-focus-step]").forEach((item) => {
     const step = item.dataset.focusStep;
-    const order = { upload: 1, process: 2, results: 3 };
     item.classList.toggle("active", step === focusStage);
     item.classList.toggle(
       "complete",
       (step === "upload" && stats.rawFiles > 0 && focusStage !== "upload") ||
       (step === "process" && focusProcessingComplete && focusStage === "results") ||
-      order[step] < order[focusStage],
+      FOCUS_STAGE_ORDER[step] < FOCUS_STAGE_ORDER[focusStage],
     );
   });
   window.scrollTo({ top: 0, behavior: "smooth" });
 }
+
+/* -------------------------------------------------------------- Project today */
+
+function focusNextAction(stats) {
+  if (!stats.rawFiles) {
+    return {
+      title: "Add the first evidence",
+      copy: "Plans, photos, video, or Insta360 originals. Nothing can be understood before something is observed.",
+      label: "Add evidence",
+      owner: "Field operator or project manager",
+      run: () => showFocusStage("upload"),
+    };
+  }
+  if (stats.unanalyzedRooms.length) {
+    const names = stats.unanalyzedRooms.slice(0, 2).map((room) => room.name).join(", ");
+    return {
+      title: `Run the AI review on ${stats.unanalyzedRooms.length} space${stats.unanalyzedRooms.length === 1 ? "" : "s"}`,
+      copy: `${names}${stats.unanalyzedRooms.length > 2 ? " and others" : ""} hold visual evidence that has not been interpreted yet.`,
+      label: "Start AI review",
+      owner: "Automatic · you stay in control of the result",
+      run: () => processFocusEvidence(),
+    };
+  }
+  if (stats.awaitingReview.length) {
+    const room = stats.awaitingReview[0];
+    return {
+      title: `Verify what the AI found in ${room.name}`,
+      copy: "The AI interpretation is a suggestion. It becomes part of the record only after a person confirms it.",
+      label: `Open ${room.name}`,
+      owner: "Project manager or reviewer",
+      run: () => openFocusSheet(room.id, "today"),
+    };
+  }
+  if (stats.followUps.length) {
+    const followUp = stats.followUps[0];
+    return {
+      title: "Request another capture",
+      copy: `${followUp.room.name}: ${followUp.request}${followUp.reason ? ` — ${followUp.reason}` : ""}`,
+      label: "Open field operations",
+      owner: "Field operator",
+      run: () => openFieldOperations(),
+    };
+  }
+  if (!stats.spatial.length && (stats.paired360 || stats.waiting360)) {
+    return {
+      title: "Add the 360 export for headset review",
+      copy: "Camera originals are preserved, but a full equirectangular MP4 is what makes the space walkable in the viewer and in Vision Pro.",
+      label: "Upload the 360 export",
+      owner: "Field operator",
+      run: () => showFocusStage("upload"),
+    };
+  }
+  if (stats.spatial.length) {
+    return {
+      title: "Walk the verified record",
+      copy: "Every space with evidence has been reviewed. Open the spatial record to inspect the result in place.",
+      label: "Open 360 view",
+      owner: "Project manager",
+      run: () => openFirstSpatial(),
+    };
+  }
+  return {
+    title: "Capture the next round",
+    copy: "The current record is verified. The next observation is what shows whether anything changed.",
+    label: "Add evidence",
+    owner: "Field operator",
+    run: () => showFocusStage("upload"),
+  };
+}
+
+function focusChainItems(stats) {
+  const analyzed = stats.analyzedRooms.length;
+  const analyzable = stats.analyzableRooms.length;
+  const confirmed = stats.confirmedRooms.length;
+  const verifiable = stats.spaces.length;
+  const decided = stats.spaces.filter((room) => room.status === "confirmed" && (room.note || "").trim()).length;
+  return [
+    {
+      key: "plans",
+      label: "Plans and documents received",
+      state: stats.documents.length ? "done" : "waiting",
+      detail: stats.documents.length
+        ? `${stats.documents.length} document${stats.documents.length === 1 ? "" : "s"} in the record`
+        : "No plan or specification has been uploaded yet",
+      actionLabel: "Open plans",
+      run: () => openProjectPlans(),
+    },
+    {
+      key: "evidence",
+      label: "Evidence received",
+      state: stats.rawFiles ? "done" : "waiting",
+      detail: stats.rawFiles
+        ? `${stats.rawFiles} original file${stats.rawFiles === 1 ? "" : "s"} across ${stats.spaces.length} space${stats.spaces.length === 1 ? "" : "s"}`
+        : "Nothing has been observed yet",
+      actionLabel: stats.rawFiles ? "See evidence" : "Add evidence",
+      run: () => (stats.rawFiles ? showFocusStage("results") : showFocusStage("upload")),
+    },
+    {
+      key: "ai",
+      label: "AI review completed",
+      state: analyzable && analyzed >= analyzable ? "done" : analyzed ? "active" : "waiting",
+      detail: analyzable
+        ? `${analyzed} of ${analyzable} visual space${analyzable === 1 ? "" : "s"} interpreted`
+        : "No photo or video evidence to interpret yet",
+      actionLabel: analyzable && analyzed < analyzable ? "Start AI review" : "See findings",
+      run: () =>
+        analyzable && analyzed < analyzable ? processFocusEvidence() : showFocusStage("results"),
+      blocked: analyzable ? "" : "Upload a photo or video before the AI can interpret a space.",
+    },
+    {
+      key: "verify",
+      label: "Human verification",
+      state: verifiable && confirmed >= verifiable ? "done" : confirmed ? "active" : "waiting",
+      detail: verifiable
+        ? `${confirmed} of ${verifiable} space${verifiable === 1 ? "" : "s"} confirmed by a person`
+        : "No space is ready for verification",
+      actionLabel: "Open verification",
+      run: () => {
+        const target = stats.awaitingReview[0] || stats.spaces[0];
+        if (target) openFocusSheet(target.id, "today");
+      },
+      blocked: verifiable ? "" : "Verification opens once a space holds evidence.",
+    },
+    {
+      key: "decision",
+      label: "Decision recorded",
+      state: verifiable && decided >= verifiable ? "done" : decided ? "active" : "waiting",
+      detail: verifiable
+        ? `${decided} of ${verifiable} confirmed space${verifiable === 1 ? "" : "s"} carry a written factual note`
+        : "A decision needs a verified space first",
+      actionLabel: "Write the note",
+      run: () => {
+        const target =
+          stats.spaces.find((room) => room.status === "confirmed" && !(room.note || "").trim()) ||
+          stats.awaitingReview[0] ||
+          stats.spaces[0];
+        if (target) openFocusSheet(target.id, "today");
+      },
+      blocked: verifiable ? "" : "Add evidence and verify a space before recording a decision.",
+    },
+    {
+      key: "spatial",
+      label: "Spatial 360 record",
+      state: stats.spatial.length ? "done" : stats.paired360 || stats.waiting360 ? "active" : "waiting",
+      detail: stats.spatial.length
+        ? `${stats.spatial.length} space capture${stats.spatial.length === 1 ? "" : "s"} playable in the viewer and in a headset`
+        : stats.paired360 || stats.waiting360
+          ? `${stats.paired360 + stats.waiting360} camera original${stats.paired360 + stats.waiting360 === 1 ? "" : "s"} preserved, no playable export yet`
+          : "No 360 capture in this project yet",
+      actionLabel: stats.spatial.length ? "Open 360 view" : "Add the export",
+      run: () => (stats.spatial.length ? openFirstSpatial() : showFocusStage("upload")),
+    },
+  ];
+}
+
+function focusAttentionItems(stats) {
+  const entries = [];
+  stats.unanalyzedRooms.forEach((room) => {
+    entries.push({
+      tone: "wait",
+      title: room.name,
+      copy: "Visual evidence is stored but has not been interpreted.",
+      actionLabel: "Start AI review",
+      run: () => processFocusEvidence(),
+    });
+  });
+  stats.awaitingReview.forEach((room) => {
+    entries.push({
+      tone: "review",
+      title: room.name,
+      copy: room.analysis?.summary || "AI interpretation is waiting for human verification.",
+      actionLabel: "Open and verify",
+      run: () => openFocusSheet(room.id, "today"),
+    });
+  });
+  stats.openQuestions.slice(0, 4).forEach((question) => {
+    entries.push({
+      tone: "unknown",
+      title: `${question.room.name} · not established`,
+      copy: question.text,
+      actionLabel: "Open the evidence",
+      run: () => openFocusSheet(question.room.id, "today"),
+    });
+  });
+  stats.followUps.slice(0, 4).forEach((followUp) => {
+    entries.push({
+      tone: "capture",
+      title: `${followUp.room.name} · capture requested`,
+      copy: [followUp.request, followUp.reason].filter(Boolean).join(" — "),
+      actionLabel: "Send a field task",
+      run: () => openFieldOperations(),
+    });
+  });
+  if (stats.waiting360) {
+    entries.push({
+      tone: "capture",
+      title: "Incomplete 360 capture",
+      copy: `${stats.waiting360} capture${stats.waiting360 === 1 ? " is" : "s are"} missing the matching camera original.`,
+      actionLabel: "Upload the missing file",
+      run: () => showFocusStage("upload"),
+    });
+  }
+  return entries;
+}
+
+function focusChangeItems(stats) {
+  if (!stats.rawFiles) return [];
+  const entries = [];
+  const batchFiles = stats.latestBatch.reduce((total, item) => total + focusSourceCount(item), 0);
+  const batchSpaces = new Set();
+  stats.latestBatch.forEach((item) => {
+    const room = rooms.find((candidate) => candidate.evidence.includes(item));
+    if (room) batchSpaces.add(room.name);
+  });
+  if (batchFiles) {
+    entries.push({
+      title: `${batchFiles} file${batchFiles === 1 ? "" : "s"} added ${focusRelativeDay(stats.lastUpdate)}`,
+      copy: batchSpaces.size
+        ? `In ${[...batchSpaces].slice(0, 3).join(", ")}${batchSpaces.size > 3 ? " and other spaces" : ""}.`
+        : "Waiting to be assigned to a space.",
+    });
+  }
+  stats.analyzedRooms
+    .filter((room) => room.status !== "confirmed")
+    .slice(0, 3)
+    .forEach((room) => {
+      entries.push({
+        title: `${room.name}: new AI interpretation`,
+        copy: room.analysis?.summary || "The AI produced a suggestion that no person has confirmed yet.",
+      });
+    });
+  stats.confirmedRooms.slice(0, 3).forEach((room) => {
+    entries.push({
+      title: `${room.name}: confirmed by a person`,
+      copy: (room.note || "").trim() || "Confirmed without a written note.",
+    });
+  });
+  if (entries.length === 1 && !stats.analyzedRooms.length) {
+    entries.push({
+      title: "No comparison is possible yet",
+      copy: "A change can only be shown against an earlier observation of the same space. This is the first round.",
+    });
+  }
+  return entries;
+}
+
+function focusHeadline(stats) {
+  if (!stats.rawFiles) return "Nothing has been observed yet.";
+  if (stats.unanalyzedRooms.length) {
+    return `${stats.rawFiles} file${stats.rawFiles === 1 ? "" : "s"} received. ${stats.unanalyzedRooms.length} space${stats.unanalyzedRooms.length === 1 ? "" : "s"} still waiting for the AI review.`;
+  }
+  if (stats.awaitingReview.length) {
+    return `${stats.awaitingReview.length} space${stats.awaitingReview.length === 1 ? "" : "s"} need${stats.awaitingReview.length === 1 ? "s" : ""} human verification.`;
+  }
+  if (stats.spaces.length && stats.confirmedRooms.length >= stats.spaces.length) {
+    return `All ${stats.spaces.length} space${stats.spaces.length === 1 ? "" : "s"} are verified against the evidence.`;
+  }
+  return `${stats.rawFiles} file${stats.rawFiles === 1 ? "" : "s"} preserved across ${stats.spaces.length} space${stats.spaces.length === 1 ? "" : "s"}.`;
+}
+
+function renderFocusToday() {
+  const stats = focusEvidenceStats();
+  $("#today-headline").textContent = focusHeadline(stats);
+  $("#today-updated").textContent = stats.lastUpdate
+    ? `Last evidence ${focusRelativeDay(stats.lastUpdate)} · ${new Date(stats.lastUpdate).toLocaleDateString("en-US", { month: "long", day: "numeric", year: "numeric" })}`
+    : "No evidence has been uploaded to this project.";
+
+  const next = focusNextAction(stats);
+  $("#today-next-title").textContent = next.title;
+  $("#today-next-copy").textContent = next.copy;
+  $("#today-next-owner").textContent = `Who does it: ${next.owner}`;
+  const nextButton = $("#today-next-action");
+  nextButton.innerHTML = `${escapeText(next.label)} <span>&rarr;</span>`;
+  nextButton.onclick = () => next.run();
+
+  const attention = focusAttentionItems(stats);
+  $("#today-attention-block").hidden = !attention.length;
+  const attentionList = $("#today-attention");
+  attentionList.innerHTML = attention
+    .map(
+      (entry, index) =>
+        `<article class="today-item tone-${escapeText(entry.tone)}"><div><strong>${escapeText(entry.title)}</strong><p>${escapeText(entry.copy)}</p></div><button type="button" data-attention="${index}">${escapeText(entry.actionLabel)}</button></article>`,
+    )
+    .join("");
+  attentionList.querySelectorAll("[data-attention]").forEach((button) => {
+    button.addEventListener("click", () => attention[Number(button.dataset.attention)]?.run());
+  });
+
+  const changes = focusChangeItems(stats);
+  $("#today-changed-block").hidden = !changes.length;
+  $("#today-changed").innerHTML = changes
+    .map((entry) => `<article class="today-item"><div><strong>${escapeText(entry.title)}</strong><p>${escapeText(entry.copy)}</p></div></article>`)
+    .join("");
+
+  const chain = focusChainItems(stats);
+  const chainList = $("#today-chain");
+  chainList.innerHTML = chain
+    .map(
+      (step, index) =>
+        `<li class="chain-${escapeText(step.state)}"><i aria-hidden="true"></i><div><strong>${escapeText(step.label)}</strong><small>${escapeText(step.detail)}</small></div><button type="button" data-chain="${index}">${escapeText(step.actionLabel)}</button></li>`,
+    )
+    .join("");
+  chainList.querySelectorAll("[data-chain]").forEach((button) => {
+    const step = chain[Number(button.dataset.chain)];
+    button.addEventListener("click", () => {
+      if (step.blocked) {
+        notify(step.blocked, 5200);
+        return;
+      }
+      step.run();
+    });
+  });
+
+  const spatialButton = document.querySelector('[data-today-action="spatial"]');
+  if (spatialButton) spatialButton.disabled = !stats.spatial.length && !stats.paired360 && !stats.waiting360;
+  const findingsButton = document.querySelector('[data-today-action="findings"]');
+  if (findingsButton) findingsButton.disabled = !stats.analyzedRooms.length;
+  const evidenceButton = document.querySelector('[data-today-action="evidence"]');
+  if (evidenceButton) evidenceButton.disabled = !stats.rawFiles;
+}
+
+function openProjectPlans() {
+  if (!cloud.propertyId) {
+    notify("Open a project before its plans can be reviewed");
+    return;
+  }
+  window.location.href = `plans/?property=${encodeURIComponent(cloud.propertyId)}`;
+}
+
+function openFieldOperations() {
+  if (!cloud.propertyId) {
+    notify("Open a project before a field task can be sent");
+    return;
+  }
+  window.location.href = `operations/?property=${encodeURIComponent(cloud.propertyId)}`;
+}
+
+function openFirstSpatial() {
+  const stats = focusEvidenceStats();
+  const item = stats.spatial[0];
+  if (!item) {
+    notify("This project has no playable 360 export yet. Upload an equirectangular MP4 to open the space.", 6000);
+    showFocusStage("upload");
+    return;
+  }
+  const room = rooms.find((candidate) => candidate.evidence.includes(item));
+  openEvidenceViewer(item, room);
+}
+
+/* ------------------------------------------------------------- Evidence viewer */
+
+function focusEvidenceUrl(item) {
+  if (!cloud.propertyId || !item?.id) return "";
+  return `${window.location.origin}${window.location.pathname}?property=${encodeURIComponent(cloud.propertyId)}&evidence=${encodeURIComponent(item.id)}`;
+}
+
+async function copyFocusLink(item) {
+  const url = focusEvidenceUrl(item);
+  if (!url) return;
+  try {
+    await navigator.clipboard.writeText(url);
+    notify("Link copied. Open it in Vision Pro Safari to inspect the space in the headset.", 6000);
+  } catch {
+    window.prompt("Copy this link and open it in Vision Pro Safari:", url);
+  }
+}
+
+function openEvidenceViewer(item, room) {
+  if (!item) return;
+  if (!window.MDAIPano360) {
+    if (item.src) window.open(item.src, "_blank", "noopener");
+    return;
+  }
+  const spatial = focusIsSpatial(item);
+  const roomName = room?.name || "Project evidence";
+  const actions = [];
+
+  if (focusIsCameraOriginal(item)) {
+    const paired = (item.sourceIds?.length || 0) >= 2;
+    window.MDAIPano360.open({
+      src: "",
+      title: item.name || "360 camera original",
+      subtitle: paired
+        ? "Both camera originals are preserved. A browser cannot play the protected INSV format — export a full 360 MP4 in Insta360 Studio and upload it to make this space walkable."
+        : "One camera original is missing. Upload the matching INSV file, then export a full 360 MP4 to make this space walkable.",
+      actions: [
+        { label: "Upload the 360 export", primary: true, onSelect: () => { window.MDAIPano360.close(); showFocusStage("upload"); } },
+        room ? { label: `Back to ${roomName}`, onSelect: () => { window.MDAIPano360.close(); openFocusSheet(room.id, focusStage); } } : null,
+      ].filter(Boolean),
+    });
+    return;
+  }
+
+  if (spatial) {
+    actions.push({ label: "Copy link for Vision Pro", primary: true, onSelect: () => copyFocusLink(item) });
+  }
+  if (room) {
+    actions.push({
+      label: `Findings for ${roomName}`,
+      onSelect: () => {
+        window.MDAIPano360.close();
+        openFocusSheet(room.id, focusStage);
+      },
+    });
+  }
+  if (item.src) {
+    actions.push({ label: "Open the original file", onSelect: () => window.open(item.src, "_blank", "noopener") });
+  }
+
+  window.MDAIPano360.open({
+    src: item.src,
+    mediaType: item.mimeType || "",
+    spatial,
+    title: item.subject || item.name || "Evidence",
+    subtitle: `${roomName} · ${focusEvidenceLabel(item)} · ${item.date || "date unavailable"}`,
+    actions,
+  });
+}
+
+/* --------------------------------------------------------------- Space detail */
+
+function focusSheetRoom() {
+  return rooms.find((room) => room.id === focusSheetRoomId) || null;
+}
+
+function openFocusSheet(roomId, returnStage = focusStage) {
+  const room = rooms.find((candidate) => candidate.id === roomId);
+  if (!room) return;
+  focusSheetRoomId = roomId;
+  focusSheetReturnStage = FOCUS_STAGE_ORDER[returnStage] ? returnStage : "today";
+  renderFocusSheet();
+  $("#focus-sheet").hidden = false;
+  document.body.style.overflow = "hidden";
+  window.scrollTo({ top: 0 });
+}
+
+function closeFocusSheet(restoreStage = true) {
+  const sheet = $("#focus-sheet");
+  if (!sheet || sheet.hidden) return;
+  sheet.hidden = true;
+  focusSheetRoomId = null;
+  document.body.style.overflow = "";
+  if (restoreStage) showFocusStage(focusSheetReturnStage);
+}
+
+function renderFocusSheet() {
+  const room = focusSheetRoom();
+  if (!room) return;
+  const spatialItems = room.evidence.filter(focusIsSpatial);
+  const confirmed = room.status === "confirmed";
+
+  $("#sheet-title").textContent = room.name;
+  $("#sheet-subtitle").textContent = [room.building, room.level].filter(Boolean).join(" · ");
+  const status = $("#sheet-status");
+  status.textContent = confirmed
+    ? "Human verified"
+    : room.analysis
+      ? "Needs verification"
+      : "Not interpreted yet";
+  status.className = `sheet-status ${confirmed ? "is-confirmed" : room.analysis ? "is-review" : "is-waiting"}`;
+
+  const sources = room.evidence.reduce((total, item) => total + focusSourceCount(item), 0);
+  $("#sheet-evidence-count").textContent = `${sources} original file${sources === 1 ? "" : "s"}`;
+  const evidenceList = $("#sheet-evidence");
+  evidenceList.innerHTML = room.evidence.length
+    ? room.evidence
+        .map((item, index) => {
+          const label = focusEvidenceLabel(item);
+          const preview = isImage(item) && item.src
+            ? `<img src="${escapeText(item.src)}" alt="" loading="lazy">`
+            : `<span class="sheet-evidence-icon">${escapeText(label === "360" ? "360" : label === "Video" ? "▶" : label === "Document" ? "PDF" : label === "Camera original" ? "INSV" : "IMG")}</span>`;
+          return `<button class="sheet-evidence-item" type="button" data-evidence="${index}">${preview}<span><strong>${escapeText(item.subject || item.name || "Evidence")}</strong><small>${escapeText(label)} · ${escapeText(item.date || "date unavailable")}</small></span></button>`;
+        })
+        .join("")
+    : `<p class="sheet-empty">No evidence is attached to this space yet.</p>`;
+  evidenceList.querySelectorAll("[data-evidence]").forEach((button) => {
+    button.addEventListener("click", () => openEvidenceViewer(room.evidence[Number(button.dataset.evidence)], room));
+  });
+
+  const findings = $("#sheet-findings");
+  if (room.analysis) {
+    const visible = room.visible?.length ? room.visible : [];
+    const unknown = room.unknown?.length ? room.unknown : [];
+    const followUps = room.analysis.follow_up_captures || [];
+    findings.innerHTML = `
+      <p class="sheet-summary">${escapeText(room.analysis.summary || "The AI produced no written summary.")}</p>
+      <p class="sheet-confidence">Capture quality: ${escapeText(room.analysis.capture_quality || "not stated")} · Source: ${sources} file${sources === 1 ? "" : "s"} in this space</p>
+      <div class="sheet-findings-group"><h4>Visible in the evidence</h4><ul>${
+        (visible.length ? visible : ["Nothing was recorded as visible."]).map((text) => `<li>${escapeText(text)}</li>`).join("")
+      }</ul></div>
+      <div class="sheet-findings-group"><h4>Not established</h4><ul>${
+        (unknown.length ? unknown : ["No open questions were recorded."]).map((text) => `<li>${escapeText(text)}</li>`).join("")
+      }</ul></div>
+      ${followUps.length
+        ? `<div class="sheet-findings-group"><h4>Capture requested</h4><ul>${followUps
+            .map((entry) => `<li><strong>${escapeText(entry.request || "Additional capture")}</strong>${entry.reason ? ` — ${escapeText(entry.reason)}` : ""}</li>`)
+            .join("")}</ul></div>`
+        : ""}`;
+  } else {
+    const analyzable = room.evidence.some((item) => isImage(item) || isVideo(item));
+    findings.innerHTML = `<p class="sheet-empty">${
+      analyzable
+        ? "No AI interpretation has been produced for this space yet."
+        : "The AI can only interpret photos or video. This space holds documents or camera originals only."
+    }</p>`;
+  }
+
+  $("#sheet-note").value = room.note || "";
+  $("#sheet-verify-state").textContent = confirmed
+    ? "A person confirmed this record."
+    : "Nothing here counts as a fact until a person confirms it.";
+  $("#sheet-confirm").disabled = !room.evidence.length;
+
+  const foot = $("#sheet-foot");
+  const actions = [
+    spatialItems.length
+      ? { label: "Open 360 view", primary: true, run: () => openEvidenceViewer(spatialItems[0], room) }
+      : { label: "Open 360 view", disabled: true, reason: "This space has no playable equirectangular export yet. Upload one from Insta360 Studio.", run: () => showFocusStage("upload") },
+    room.analysis
+      ? { label: "Re-run AI interpretation", run: () => runFocusRoomAnalysis(room) }
+      : { label: "Request AI interpretation", run: () => runFocusRoomAnalysis(room) },
+    { label: "Request another capture", run: () => openFieldOperations() },
+    { label: "Add evidence", run: () => { closeFocusSheet(false); showFocusStage("upload"); } },
+  ];
+  foot.innerHTML = actions
+    .map(
+      (action, index) =>
+        `<button type="button" class="${action.primary ? "primary" : ""}${action.disabled ? " muted" : ""}" data-sheet-action="${index}">${escapeText(action.label)}</button>`,
+    )
+    .join("");
+  foot.querySelectorAll("[data-sheet-action]").forEach((button) => {
+    const action = actions[Number(button.dataset.sheetAction)];
+    button.addEventListener("click", () => {
+      if (action.disabled && action.reason) notify(action.reason, 6000);
+      action.run();
+    });
+  });
+}
+
+async function runFocusRoomAnalysis(room) {
+  if (!room.evidence.some((item) => isImage(item) || isVideo(item))) {
+    notify("The AI can only interpret photos or video. Add a visual capture first.", 5200);
+    return;
+  }
+  if (!cloud.schemaReady || !cloud.propertyId) {
+    notify("A secure Supabase connection is required for AI analysis");
+    return;
+  }
+  const previous = room.analysis;
+  room.analysis = null;
+  focusProcessingComplete = false;
+  closeFocusSheet(false);
+  showFocusStage("process");
+  focusProcessingRows = [{ roomId: room.id, name: room.name, state: "queued", detail: "Queued" }];
+  renderFocusProcessing(10, "Preparing the evidence…");
+  try {
+    await analyzeFocusRoom(room, (message) => {
+      focusProcessingRows[0].state = "running";
+      focusProcessingRows[0].detail = message;
+      renderFocusProcessing(55, message);
+    });
+    focusProcessingRows[0].state = "done";
+    focusProcessingRows[0].detail = "Interpretation ready";
+  } catch (error) {
+    console.error(error);
+    room.analysis = previous;
+    focusProcessingRows[0].state = "failed";
+    focusProcessingRows[0].detail = error.message || "The analysis failed";
+  }
+  focusProcessingComplete = true;
+  finishFocusProcessing();
+}
+
+/* --------------------------------------------------------------- Results view */
 
 function focusReadyCopy(stats) {
   if (!stats.rawFiles) return "Ready for evidence.";
@@ -1859,37 +2553,81 @@ function focusReadyCopy(stats) {
 
 function renderFocusResults() {
   const stats = focusEvidenceStats();
-  const aiProgress = stats.analyzableRooms.length
-    ? `${stats.analyzedRooms.length}/${stats.analyzableRooms.length}`
-    : "Not required";
-  $("#focus-result-metrics").innerHTML = `
-    <article><strong>${stats.rawFiles}</strong><small>Original files preserved</small></article>
-    <article><strong>${stats.spaces.length}</strong><small>Evidence groups organized</small></article>
-    <article><strong>${aiProgress}</strong><small>Visual AI analysis</small></article>`;
+  const metrics = [
+    {
+      value: String(stats.rawFiles),
+      label: "Original files preserved",
+      hint: "Nothing is altered or re-encoded",
+    },
+    {
+      value: String(stats.spaces.length),
+      label: "Spaces with evidence",
+      hint: "Open one to see its record",
+    },
+    {
+      value: stats.analyzableRooms.length ? `${stats.analyzedRooms.length}/${stats.analyzableRooms.length}` : "—",
+      label: "Spaces interpreted by AI",
+      hint: stats.analyzableRooms.length ? "Suggestions, not verified facts" : "No visual evidence yet",
+    },
+    {
+      value: stats.spaces.length ? `${stats.confirmedRooms.length}/${stats.spaces.length}` : "—",
+      label: "Confirmed by a person",
+      hint: "Only these count as record",
+    },
+  ];
+  $("#focus-result-metrics").innerHTML = metrics
+    .map(
+      (metric) =>
+        `<article><strong>${escapeText(metric.value)}</strong><small>${escapeText(metric.label)}</small><em>${escapeText(metric.hint)}</em></article>`,
+    )
+    .join("");
 
   const vrCard = $("#focus-vr-card");
-  if (stats.vrPlayback) {
-    vrCard.innerHTML = `<header><h3>Vision Pro playback</h3><span class="focus-vr-badge">VR-ready</span></header><p>${stats.vrPlayback} spatial video${stats.vrPlayback === 1 ? " is" : "s are"} linked to this record for headset playback. Camera originals remain preserved beside the playback export.</p>`;
+  if (stats.spatial.length) {
+    vrCard.innerHTML = `<header><h3>Spatial evidence</h3><span class="focus-vr-badge">VR-ready</span></header><p>${stats.spatial.length} capture${stats.spatial.length === 1 ? " is" : "s are"} playable as a full sphere. Open one here, or send the link to a headset for review in place.</p><div class="focus-vr-actions"><button class="focus-primary-action" type="button" data-vr-action="open">Open 360 view <span>&rarr;</span></button><button class="focus-secondary-action" type="button" data-vr-action="copy">Copy link for Vision Pro</button></div>`;
   } else if (stats.paired360 || stats.waiting360) {
     const pairText = `${stats.paired360} paired 360 capture${stats.paired360 === 1 ? "" : "s"}`;
-    const waitingText = stats.waiting360 ? ` ${stats.waiting360} capture${stats.waiting360 === 1 ? " is" : "s are"} waiting for a matching lens file.` : "";
-    vrCard.innerHTML = `<header><h3>Vision Pro preparation</h3><span class="focus-vr-badge">Originals secured</span></header><p>${pairText} preserved and linked to the project.${waitingText} Export an equirectangular 360 MP4 from Insta360 Studio to make each capture immediately playable in Vision Pro.</p>`;
+    const waitingText = stats.waiting360
+      ? ` ${stats.waiting360} capture${stats.waiting360 === 1 ? " is" : "s are"} waiting for a matching lens file.`
+      : "";
+    vrCard.innerHTML = `<header><h3>Spatial evidence</h3><span class="focus-vr-badge">Originals secured</span></header><p>${pairText} preserved and linked to the project.${waitingText} A browser cannot play the protected camera format — export a full 360 MP4 in Insta360 Studio and upload it to make the space walkable.</p><div class="focus-vr-actions"><button class="focus-secondary-action" type="button" data-vr-action="upload">Upload the 360 export</button></div>`;
   } else {
-    vrCard.innerHTML = `<header><h3>Vision Pro preparation</h3><span class="focus-vr-badge">Record prepared</span></header><p>The evidence record preserves source files and spatial metadata. Add a 360 original pair or equirectangular 360 MP4 when headset playback is required.</p>`;
+    vrCard.innerHTML = `<header><h3>Spatial evidence</h3><span class="focus-vr-badge">Not captured</span></header><p>This project has no 360 capture yet. A photo record still works, but only a full sphere lets a reviewer stand inside the space.</p><div class="focus-vr-actions"><button class="focus-secondary-action" type="button" data-vr-action="upload">Add a 360 capture</button></div>`;
   }
+  vrCard.querySelectorAll("[data-vr-action]").forEach((button) => {
+    const action = button.dataset.vrAction;
+    button.addEventListener("click", () => {
+      if (action === "open") openFirstSpatial();
+      else if (action === "copy") copyFocusLink(stats.spatial[0]);
+      else showFocusStage("upload");
+    });
+  });
 
-  $("#focus-result-list").innerHTML = stats.spaces
-    .map((room) => {
-      const rawCount = room.evidence.reduce((total, item) => total + focusSourceCount(item), 0);
-      const has360 = room.evidence.some((item) => focusEvidenceCategory(item) === "360");
-      const status = room.analysis ? "AI analyzed" : has360 ? "360 linked" : "Organized";
-      const summary = room.analysis?.summary || room.visible?.[0] ||
-        (has360
-          ? "Camera originals are preserved as a spatial capture. No visual findings are claimed until a playable export is analyzed."
-          : "Evidence is preserved and assigned to this project group.");
-      return `<article><header><h3>${escapeText(room.name)}</h3><b>${escapeText(status)}</b></header><p>${rawCount} source file${rawCount === 1 ? "" : "s"} · ${escapeText(summary)}</p></article>`;
-    })
-    .join("");
+  const list = $("#focus-result-list");
+  list.innerHTML = stats.spaces.length
+    ? stats.spaces
+        .map((room) => {
+          const rawCount = room.evidence.reduce((total, item) => total + focusSourceCount(item), 0);
+          const spatialCount = room.evidence.filter(focusIsSpatial).length;
+          const status = room.status === "confirmed"
+            ? "Human verified"
+            : room.analysis
+              ? "Needs verification"
+              : "Not interpreted";
+          const tone = room.status === "confirmed" ? "ok" : room.analysis ? "review" : "wait";
+          const summary = room.analysis?.summary || room.visible?.[0] ||
+            "Evidence is preserved. No interpretation has been produced for this space yet.";
+          const tags = [
+            `${rawCount} file${rawCount === 1 ? "" : "s"}`,
+            spatialCount ? `${spatialCount} × 360` : "",
+          ].filter(Boolean).join(" · ");
+          return `<button class="focus-result-card tone-${tone}" type="button" data-space="${escapeText(room.id)}"><header><h3>${escapeText(room.name)}</h3><b>${escapeText(status)}</b></header><p>${escapeText(summary)}</p><footer><small>${escapeText(tags)}</small><span>Open evidence &rarr;</span></footer></button>`;
+        })
+        .join("")
+    : `<p class="sheet-empty">No space holds evidence yet. Upload files and they will be organized here.</p>`;
+  list.querySelectorAll("[data-space]").forEach((button) => {
+    button.addEventListener("click", () => openFocusSheet(button.dataset.space, "results"));
+  });
 }
 
 function renderFocusStudio() {
@@ -1900,27 +2638,34 @@ function renderFocusStudio() {
   if (!stats.rawFiles) {
     ready.innerHTML = "";
   } else {
-    const organizedCopy = `${stats.spaces.length} evidence group${stats.spaces.length === 1 ? "" : "s"}`;
-    const vrCopy = stats.paired360
-      ? `${stats.paired360} complete camera pair${stats.paired360 === 1 ? "" : "s"}`
-      : stats.waiting360
-        ? `${stats.waiting360} incomplete 360 capture${stats.waiting360 === 1 ? "" : "s"}`
-        : "No 360 originals yet";
+    const organizedCopy = `${stats.spaces.length} space${stats.spaces.length === 1 ? "" : "s"}`;
+    const vrCopy = stats.spatial.length
+      ? `${stats.spatial.length} playable 360 capture${stats.spatial.length === 1 ? "" : "s"}`
+      : stats.paired360
+        ? `${stats.paired360} complete camera pair${stats.paired360 === 1 ? "" : "s"}`
+        : stats.waiting360
+          ? `${stats.waiting360} incomplete 360 capture${stats.waiting360 === 1 ? "" : "s"}`
+          : "No 360 originals yet";
     ready.innerHTML = `
       <article><div><strong>${stats.rawFiles} source file${stats.rawFiles === 1 ? "" : "s"}</strong><small>${organizedCopy} · Originals unchanged</small></div><b>READY</b></article>
-      <article><div><strong>VR connection</strong><small>${vrCopy}</small></div><b>${stats.paired360 ? "LINKED" : "PREPARED"}</b></article>`;
+      <article><div><strong>Spatial record</strong><small>${vrCopy}</small></div><b>${stats.spatial.length ? "PLAYABLE" : stats.paired360 ? "LINKED" : "PREPARED"}</b></article>`;
   }
   $("#focus-process").disabled = !stats.rawFiles || focusUploadBusy;
+  renderFocusToday();
   renderFocusResults();
+  if ($("#focus-sheet") && !$("#focus-sheet").hidden) renderFocusSheet();
   showFocusStage(focusStage);
 }
 
 function openFocusStudio() {
-  focusStage = "upload";
   focusUploadBusy = false;
+  focusProcessingRows = [];
   focusProcessingComplete = window.localStorage.getItem(`mdai-focus-processed:${cloud.propertyId}`) === "1";
+  focusStage = focusAllEvidence().length ? "today" : "upload";
   renderFocusStudio();
 }
+
+/* --------------------------------------------------------------------- Upload */
 
 async function uploadFocusEvidence(fileList) {
   const files = [...fileList].filter(focusFileAllowed);
@@ -1982,8 +2727,9 @@ async function uploadFocusEvidence(fileList) {
   }
 }
 
+/* ----------------------------------------------------------------- Processing */
+
 async function analyzeFocusRoom(room, onStatus) {
-  if (room.analysis) return { skipped: true };
   const evidenceIds = room.evidence
     .filter((item) => item.storagePath && (isImage(item) || isVideo(item)))
     .map((item) => item.id);
@@ -2037,53 +2783,108 @@ async function analyzeFocusRoom(room, onStatus) {
   }
 }
 
+function renderFocusProcessing(percent, message) {
+  const progress = $("#focus-processing-progress");
+  progress.value = Math.max(0, Math.min(100, percent));
+  $("#focus-processing-percent").textContent = `${Math.round(progress.value)}%`;
+  $("#focus-processing-status").textContent = message;
+  const list = $("#focus-processing-list");
+  list.innerHTML = focusProcessingRows
+    .map((row, index) => {
+      const badge = { queued: "Waiting", running: "Working", done: "Ready", failed: "Failed" }[row.state] || row.state;
+      const retry = row.state === "failed"
+        ? `<button type="button" data-retry="${index}">Retry</button>`
+        : "";
+      return `<article class="processing-row state-${escapeText(row.state)}"><div><strong>${escapeText(row.name)}</strong><small>${escapeText(row.detail)}</small></div><span>${escapeText(badge)}</span>${retry}</article>`;
+    })
+    .join("");
+  list.querySelectorAll("[data-retry]").forEach((button) => {
+    const row = focusProcessingRows[Number(button.dataset.retry)];
+    button.addEventListener("click", () => {
+      const room = rooms.find((candidate) => candidate.id === row.roomId);
+      if (room) runFocusRoomAnalysis(room);
+    });
+  });
+}
+
+function finishFocusProcessing() {
+  const failed = focusProcessingRows.filter((row) => row.state === "failed");
+  const done = focusProcessingRows.filter((row) => row.state === "done");
+  window.localStorage.setItem(`mdai-focus-processed:${cloud.propertyId}`, "1");
+  renderFocusProcessing(100, failed.length
+    ? `${failed.length} space${failed.length === 1 ? "" : "s"} could not be interpreted. The evidence is still preserved and can be retried.`
+    : "Processing complete.");
+  $("#focus-processing-title").textContent = failed.length ? "Partly complete." : "The record is ready.";
+  $("#focus-processing-copy").textContent = failed.length
+    ? "The evidence is organized and preserved. Retry the spaces that failed, or open the results and continue."
+    : "The evidence is organized, originals are preserved, and available visual files have been interpreted.";
+  const resultsButton = $("#focus-view-results");
+  resultsButton.disabled = false;
+  resultsButton.innerHTML = `${done.length ? "See what was found" : "Open the record"} <span>&rarr;</span>`;
+  $("#focus-process").disabled = false;
+  renderFocusToday();
+  renderFocusResults();
+  document.querySelector('[data-focus-step="upload"]')?.classList.add("complete");
+}
+
 async function processFocusEvidence() {
   const stats = focusEvidenceStats();
-  if (!stats.rawFiles) return;
-  const button = $("#focus-process");
-  button.disabled = true;
-  showFocusStage("process");
-  const progress = $("#focus-processing-progress");
-  const status = $("#focus-processing-status");
-  const resultsButton = $("#focus-view-results");
-  resultsButton.disabled = true;
-  progress.value = 12;
-  status.textContent = "Classifying files and preserving originals…";
-  await new Promise((resolve) => window.setTimeout(resolve, 180));
-  progress.value = 28;
-  status.textContent = stats.paired360
-    ? `Paired ${stats.paired360} Insta360 capture${stats.paired360 === 1 ? "" : "s"} for the VR pipeline.`
-    : "Evidence organized by type and project context.";
-
+  if (!stats.rawFiles) {
+    notify("Add evidence before starting the AI review");
+    showFocusStage("upload");
+    return;
+  }
   const candidates = stats.analyzableRooms.filter((room) => !room.analysis);
-  const failures = [];
+  $("#focus-process").disabled = true;
+  closeFocusSheet(false);
+  showFocusStage("process");
+  $("#focus-view-results").disabled = true;
+  $("#focus-processing-title").textContent = "Reading the evidence.";
+  $("#focus-processing-copy").textContent =
+    "Originals are preserved, 360 captures are paired, and every compatible visual file is interpreted space by space.";
+  focusProcessingRows = candidates.map((room) => ({
+    roomId: room.id,
+    name: room.name,
+    state: "queued",
+    detail: `${room.evidence.length} file${room.evidence.length === 1 ? "" : "s"} queued`,
+  }));
+  renderFocusProcessing(8, "Classifying files and preserving originals…");
+  await new Promise((resolve) => window.setTimeout(resolve, 180));
+  renderFocusProcessing(
+    18,
+    stats.paired360
+      ? `Paired ${stats.paired360} Insta360 capture${stats.paired360 === 1 ? "" : "s"} for the spatial pipeline.`
+      : "Evidence organized by type and project context.",
+  );
+
   for (let index = 0; index < candidates.length; index += 1) {
     const room = candidates[index];
+    const row = focusProcessingRows[index];
+    const base = 18 + Math.round((index / Math.max(1, candidates.length)) * 78);
+    row.state = "running";
+    row.detail = "Preparing the evidence";
+    renderFocusProcessing(base, `Reading ${room.name}…`);
     try {
-      await analyzeFocusRoom(room, (message) => { status.textContent = message; });
+      await analyzeFocusRoom(room, (message) => {
+        row.detail = message;
+        renderFocusProcessing(base + 4, message);
+      });
+      row.state = "done";
+      row.detail = room.analysis?.summary
+        ? room.analysis.summary.slice(0, 120)
+        : "Interpretation ready";
     } catch (error) {
       console.error(error);
-      failures.push(room.name);
+      row.state = "failed";
+      row.detail = error.message || "The analysis failed";
     }
-    progress.value = 28 + Math.round(((index + 1) / Math.max(1, candidates.length)) * 62);
+    renderFocusProcessing(18 + Math.round(((index + 1) / Math.max(1, candidates.length)) * 78), `Reading ${room.name}…`);
   }
-  progress.value = 100;
   focusProcessingComplete = true;
-  window.localStorage.setItem(`mdai-focus-processed:${cloud.propertyId}`, "1");
-  renderFocusResults();
-  $("#focus-processing-title").textContent = "The record is ready.";
-  $("#focus-processing-copy").textContent = failures.length
-    ? "The evidence is organized and preserved. Some compatible visual files need another AI attempt."
-    : "The evidence is organized, originals are preserved, and available visual files have been analyzed.";
-  status.textContent = failures.length
-    ? `${failures.length} visual group${failures.length === 1 ? "" : "s"} could not be analyzed; the source record is still complete.`
-    : stats.paired360 && !stats.vrPlayback
-      ? "360 originals are linked. Add equirectangular MP4 exports for headset playback."
-      : "Processing complete.";
-  resultsButton.disabled = false;
-  document.querySelector('[data-focus-step="upload"]')?.classList.add("complete");
-  button.disabled = false;
+  finishFocusProcessing();
 }
+
+/* -------------------------------------------------------------------- Wiring */
 
 $("#focus-evidence-files").addEventListener("change", (event) => uploadFocusEvidence(event.target.files));
 const focusUploadCard = document.querySelector(".focus-upload-card");
@@ -2102,6 +2903,53 @@ $("#focus-view-results").addEventListener("click", () => {
   showFocusStage("results");
 });
 $("#focus-add-more").addEventListener("click", () => showFocusStage("upload"));
+$("#focus-back-today").addEventListener("click", () => {
+  renderFocusToday();
+  showFocusStage("today");
+});
+document.querySelectorAll("[data-today-action]").forEach((button) => {
+  button.addEventListener("click", () => {
+    const action = button.dataset.todayAction;
+    if (action === "evidence") showFocusStage("results");
+    else if (action === "findings") {
+      const stats = focusEvidenceStats();
+      const target = stats.awaitingReview[0] || stats.analyzedRooms[0];
+      if (target) openFocusSheet(target.id, "today");
+      else notify("No AI interpretation exists yet. Start the AI review first.", 5200);
+    } else if (action === "spatial") openFirstSpatial();
+    else showFocusStage("upload");
+  });
+});
+$("#sheet-back").addEventListener("click", () => closeFocusSheet(true));
+$("#sheet-confirm").addEventListener("click", async () => {
+  const room = focusSheetRoom();
+  if (!room) return;
+  const note = $("#sheet-note").value.trim();
+  if (!(await persistSuggestionReview(room, "confirmed", note))) return;
+  if (!(await persistRoomReview(room, "confirmed"))) return;
+  room.status = "confirmed";
+  room.note = note;
+  saveRooms(cloud.schemaReady ? "Human review saved to cloud" : "Human review saved");
+  renderFocusSheet();
+  renderFocusToday();
+  renderFocusResults();
+  notify("Visible record confirmed by human review");
+});
+$("#sheet-flag").addEventListener("click", async () => {
+  const room = focusSheetRoom();
+  if (!room) return;
+  const note = $("#sheet-note").value.trim();
+  if (!(await persistSuggestionReview(room, "needs_review", note))) return;
+  if (!(await persistRoomReview(room, "needs_review"))) return;
+  room.status = "needs";
+  room.note = note;
+  saveRooms("Verification flag saved");
+  renderFocusSheet();
+  renderFocusToday();
+  renderFocusResults();
+  notify("This space stays in the verification queue");
+});
+
 
 function canManageSpaces() {
   return !cloud.schemaReady || ["owner", "admin", "reviewer", "contributor"].includes(cloud.role);
@@ -2580,7 +3428,7 @@ async function persistRoomReview(room, reviewState) {
   return true;
 }
 
-async function persistSuggestionReview(room, reviewState) {
+async function persistSuggestionReview(room, reviewState, note = elements.note.value) {
   if (
     !cloud.schemaReady ||
     !cloud.propertyId ||
@@ -2593,7 +3441,7 @@ async function persistSuggestionReview(room, reviewState) {
       organization_id: cloud.organizationId,
       suggestion_id: room.suggestionId,
       state: reviewState,
-      reviewer_note: elements.note.value.trim() || null,
+      reviewer_note: String(note || "").trim() || null,
       reviewed_by: cloud.session.user.id,
       reviewed_at: new Date().toISOString(),
     },
