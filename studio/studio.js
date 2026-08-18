@@ -1902,7 +1902,65 @@ function inferFocusMediaType(file) {
   return "Project evidence";
 }
 
-function focusVrMetadata(file) {
+/* Measure the file instead of guessing from its name. An Insta360 Studio export
+   keeps the camera's filename — VID_20250222_043654_00_027.mp4 — which contains
+   no hint that it is a sphere, so name matching alone silently files a real 360
+   master as ordinary video. */
+function measureMediaFile(file) {
+  const isVideo = Boolean(file?.type?.startsWith("video/"));
+  const isImage = Boolean(file?.type?.startsWith("image/"));
+  if (!isVideo && !isImage) return Promise.resolve({});
+  return new Promise((resolve) => {
+    const url = URL.createObjectURL(file);
+    const element = document.createElement(isVideo ? "video" : "img");
+    const finish = (measured = {}) => {
+      URL.revokeObjectURL(url);
+      resolve(measured);
+    };
+    const timeout = window.setTimeout(() => finish(), 15000);
+    const done = (measured) => {
+      window.clearTimeout(timeout);
+      finish(measured);
+    };
+    if (isVideo) {
+      element.preload = "metadata";
+      element.onloadedmetadata = () => done({
+        width: Number(element.videoWidth || 0),
+        height: Number(element.videoHeight || 0),
+        duration_seconds: Number(element.duration || 0),
+      });
+    } else {
+      element.onload = () => done({
+        width: Number(element.naturalWidth || 0),
+        height: Number(element.naturalHeight || 0),
+      });
+    }
+    element.onerror = () => done({});
+    element.src = url;
+  });
+}
+
+/* A full sphere is 2:1. The tolerance matches the rest of the pipeline, including
+   the database function that links an export back to its camera originals. */
+function equirectangularProjection(measured) {
+  const width = Number(measured?.width || 0);
+  const height = Number(measured?.height || 0);
+  if (!width || !height) return null;
+  const ratio = width / height;
+  return ratio >= 1.9 && ratio <= 2.1 ? "equirectangular" : null;
+}
+
+/* Insta360 Studio keeps the camera name, so the export and its protected pair
+   share a capture key once the lens marker is dropped. */
+function exportCaptureKey(name) {
+  const lower = String(name || "").toLowerCase();
+  if (!/\.(mp4|mov|m4v)$/.test(lower)) return null;
+  const stem = lower.replace(/\.(mp4|mov|m4v)$/, "");
+  const match = stem.match(/^(.*)_(00|10)_([0-9]+)$/);
+  return match ? `${match[1]}_${match[3]}` : stem;
+}
+
+function focusVrMetadata(file, measured = {}) {
   const name = String(file?.name || "").toLowerCase();
   if (/\.(insv|insp|lrv)$/.test(name)) {
     return {
@@ -1912,11 +1970,13 @@ function focusVrMetadata(file) {
       playback_ready: false,
     };
   }
-  const looksSpatial = file?.type?.startsWith("video/") && /(360|equirect|spatial)/.test(name);
+  const projection = equirectangularProjection(measured);
+  const namedSpatial = file?.type?.startsWith("video/") && /(360|equirect|spatial|pano)/.test(name);
+  const spatial = Boolean(projection) || namedSpatial;
   return {
-    role: looksSpatial ? "equirectangular_playback" : "supporting_evidence",
+    role: spatial ? "equirectangular_playback" : "supporting_evidence",
     original_preserved: true,
-    playback_ready: Boolean(looksSpatial),
+    playback_ready: spatial,
   };
 }
 
@@ -1931,6 +1991,19 @@ function focusFileAllowed(file) {
 }
 
 async function ensureFocusDestination(file) {
+  /* An export belongs with the capture it came from, not in a general inbox:
+     same room, so the sphere sits beside the protected originals. */
+  const captureKey = exportCaptureKey(file?.name);
+  if (captureKey) {
+    const pairedRoom = rooms.find((room) =>
+      (room.evidence || []).some(
+        (item) =>
+          item.sourceMetadata?.insta360_capture_key === captureKey ||
+          insta360CaptureKey(item) === captureKey,
+      ),
+    );
+    if (pairedRoom) return pairedRoom;
+  }
   const normalizedName = String(file?.name || "").toLowerCase().replace(/[^a-z0-9]+/g, " ");
   const namedRoom = rooms.find((room) => {
     if (!room.name || /evidence inbox|unsorted evidence/i.test(room.name)) return false;
@@ -1954,9 +2027,16 @@ function showFocusStage(name) {
   $("#focus-processing-stage").hidden = focusStage !== "process";
   $("#focus-results-stage").hidden = focusStage !== "results";
   const stats = focusEvidenceStats();
+  /* Several actions jump to Upload — add the export, upload more, send a task
+     from an empty space. Without a way back that jump is a trapdoor, so every
+     step already reached stays clickable. */
+  const reachable = {
+    upload: true,
+    process: focusProcessingComplete || focusProcessingRows.length > 0,
+    results: stats.rawFiles > 0,
+  };
   document.querySelectorAll("[data-focus-step]").forEach((item) => {
     const step = item.dataset.focusStep;
-    /* The project is open, so step one is always behind you. */
     if (step === "project") {
       item.classList.add("complete");
       item.classList.remove("active");
@@ -1969,6 +2049,10 @@ function showFocusStage(name) {
       (step === "process" && focusProcessingComplete && focusStage === "results") ||
       FOCUS_STAGE_ORDER[step] < FOCUS_STAGE_ORDER[focusStage],
     );
+    const canOpen = Boolean(reachable[step]) && step !== focusStage;
+    item.classList.toggle("reachable", canOpen);
+    item.setAttribute("role", canOpen ? "button" : "presentation");
+    item.tabIndex = canOpen ? 0 : -1;
   });
   window.scrollTo({ top: 0, behavior: "smooth" });
 }
@@ -2707,6 +2791,9 @@ async function uploadFocusEvidence(fileList) {
       const room = await ensureFocusDestination(file);
       $("#focus-upload-progress-title").textContent = `Uploading ${index + 1} of ${files.length}`;
       progressDetail.textContent = file.name;
+      const measured = await measureMediaFile(file);
+      const projection = equirectangularProjection(measured);
+      const captureKey = projection ? exportCaptureKey(file.name) : null;
       const item = await uploadEvidenceToCloud(
         file,
         room,
@@ -2716,7 +2803,14 @@ async function uploadFocusEvidence(fileList) {
           context: "Automatic project evidence intake",
           intakeMode: "focus-studio",
           evidenceCategory: inferFocusMediaType(file),
-          vr: focusVrMetadata(file),
+          ...measured,
+          ...(projection ? { projection } : {}),
+          /* reconcile_prestitched_360 reads this to attach the export to the
+             INSV pair it was stitched from. */
+          ...(captureKey
+            ? { ready_360: { capture_key: captureKey, projection, processing_mode: "insta360-studio-export" } }
+            : {}),
+          vr: focusVrMetadata(file, measured),
         },
         (progress) => {
           const totalPercent = Math.round(((index + progress.percent / 100) / files.length) * 100);
@@ -2921,6 +3015,19 @@ $("#focus-view-results").addEventListener("click", () => {
 });
 $("#focus-add-more").addEventListener("click", () => showFocusStage("upload"));
 $("#focus-upload-more").addEventListener("click", () => $("#focus-evidence-files").click());
+document.querySelectorAll("[data-focus-step]").forEach((item) => {
+  const open = () => {
+    if (!item.classList.contains("reachable")) return;
+    showFocusStage(item.dataset.focusStep);
+  };
+  item.addEventListener("click", open);
+  item.addEventListener("keydown", (event) => {
+    if (event.key === "Enter" || event.key === " ") {
+      event.preventDefault();
+      open();
+    }
+  });
+});
 $("#sheet-back").addEventListener("click", () => closeFocusSheet(true));
 $("#sheet-confirm").addEventListener("click", async () => {
   const room = focusSheetRoom();

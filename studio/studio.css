@@ -2686,3 +2686,9 @@ dialog textarea { min-height:78px; resize:vertical; }
   .focus-roadmap li > span { margin: 0 auto 6px; }
   .focus-roadmap strong { font-size: 11px; line-height: 1.2; overflow-wrap: anywhere; }
 }
+/* A step already reached is a way back, so it has to look like one. */
+.focus-roadmap li.reachable { cursor: pointer; }
+.focus-roadmap li.reachable:hover,
+.focus-roadmap li.reachable:focus-visible { background: rgba(82, 210, 223, 0.1); color: var(--text); outline: none; }
+.focus-roadmap li.reachable:hover > span,
+.focus-roadmap li.reachable:focus-visible > span { border-color: var(--cyan); color: var(--cyan); }
