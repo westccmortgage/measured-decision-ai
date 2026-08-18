@@ -18,6 +18,37 @@ NVIDIA Container Toolkit. On a plain Ubuntu image all three must be installed by
 hand, which is the usual reason a first attempt fails with
 `could not select device driver "" with capabilities: [[gpu]]`.
 
+## Before launching: the GPU quota
+
+Most accounts start with a limit of **0** vCPUs for G instances, and the launch
+fails with *"You have requested more vCPU capacity than your current vCPU limit
+of 0"*. `g4dn.xlarge` needs 4.
+
+**Service Quotas** → **AWS services** → **Amazon EC2** → search **Running
+On-Demand G and VT instances** → **Request increase at account level** → 8 →
+submit. Approval takes anywhere from minutes to a day, so do it first.
+
+## Launch
+
+From the EC2 dashboard in **us-east-2**, **Launch instance**:
+
+| Field | Value |
+| --- | --- |
+| Name | `mdai-360-worker` |
+| AMI | **Browse more AMIs** → search *Deep Learning Base OSS Nvidia Driver GPU AMI (Ubuntu 22.04)* |
+| Instance type | `g4dn.xlarge` |
+| Key pair | any existing one, or *Proceed without a key pair* — Session Manager does not use it |
+| Network → Auto-assign public IP | **Enable** |
+| Configure storage | **120** GiB, gp3 |
+| Advanced details → IAM instance profile | `measured-decision-worker` |
+| Advanced details → Shutdown behavior | **Stop** |
+
+Auto-assign public IP matters: without it, and without VPC endpoints for SSM,
+the instance cannot reach Session Manager and Connect stays greyed out.
+
+Shutdown behavior matters because the batch run ends with `shutdown -h now`. Set
+to *Terminate*, that command destroys the machine and everything installed on it.
+
 ## Connect
 
 Use **Session Manager**, not SSH: no key pair to lose, no port 22 open to the
