@@ -24,6 +24,9 @@ const state = {
   assignments: [],
   qualityChecks: [],
   selectedRequirementId: null,
+  requestedBaselineId: new URLSearchParams(window.location.search).get("baseline"),
+  baselines: [],
+  activeBaseline: null,
   generatedFieldLink: null,
   pendingFiles: [],
   selectedDocumentIds: new Set(),
@@ -452,7 +455,9 @@ async function openProperty(propertyId) {
   }
   state.property = state.properties.find((property) => property.id === propertyId) || null;
   if (!state.property) return;
-  window.history.replaceState({}, "", `${window.location.pathname}?property=${encodeURIComponent(propertyId)}`);
+  window.history.replaceState({}, "", `${window.location.pathname}?property=${encodeURIComponent(propertyId)}${
+    state.requestedBaselineId ? `&baseline=${encodeURIComponent(state.requestedBaselineId)}` : ""
+  }`);
   document.querySelectorAll('a[href="../operations/"],a[href^="../operations/?property="]').forEach((link) => {
     link.href = `../operations/?property=${encodeURIComponent(propertyId)}`;
   });
@@ -469,7 +474,7 @@ async function openProperty(propertyId) {
       .eq("organization_id", state.organizationId)
       .eq("property_id", propertyId)
       .order("version", { ascending: false })
-      .limit(1),
+      .limit(12),
     client.from("plan_analysis_jobs")
       .select("id, state, baseline_id, progress_stage, progress_percent, error_code, error_message, started_at, created_at")
       .eq("organization_id", state.organizationId)
@@ -485,7 +490,15 @@ async function openProperty(propertyId) {
     return;
   }
   state.documents = documentsResult.data || [];
-  state.baseline = baselinesResult.data?.[0] || null;
+  /* Field Operations runs the approved baseline, while a newer one may still be
+     under review here. A link can name the baseline it means; otherwise the
+     newest is shown, because that is the one waiting for a decision. */
+  const baselines = baselinesResult.data || [];
+  const requestedBaselineId = state.requestedBaselineId;
+  state.baselines = baselines;
+  state.activeBaseline = baselines.find((item) => item.id === state.property?.active_baseline_id) || null;
+  state.baseline =
+    baselines.find((item) => item.id === requestedBaselineId) || baselines[0] || null;
   state.activeAnalysisJob = activeJobResult.data?.[0] || null;
   const analyzableDocumentIds = new Set(state.documents.filter(canAnalyzeDocument).map((document) => document.id));
   const baselineDocumentIds = (state.baseline?.source_document_ids || []).filter((id) => analyzableDocumentIds.has(id));
@@ -533,6 +546,7 @@ function render() {
   const verified = state.tasks.filter((task) => task.status === "verified").length;
   $("#metric-tasks-copy").textContent = state.tasks.length ? `${verified} verified · ${state.tasks.length - verified} open` : "Waiting for plans";
   $("#upload-plans-label").hidden = !canUploadPlans();
+  renderRoadmapDivergence();
   renderDocuments();
   renderBaseline();
   renderRoadmap();
@@ -612,6 +626,81 @@ async function deletePlanDocument(documentId) {
     setBusy(false, `Cloud connected · ${state.role}`);
     render();
   }
+}
+
+/* The roadmap shown here and the roadmap the field is running can be different
+   versions. Saying so is the difference between "nothing works" and "approve
+   this one first". */
+function renderRoadmapDivergence() {
+  const banner = $("#roadmap-divergence");
+  if (!banner) return;
+  const active = state.activeBaseline;
+  const shown = state.baseline;
+  const newest = state.baselines?.[0] || null;
+  const approveButton = $("#divergence-approve");
+  const openButton = $("#divergence-open-active");
+  if (!shown || !active) {
+    banner.hidden = true;
+    return;
+  }
+
+  const approvedOn = active.approved_at
+    ? new Date(active.approved_at).toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" })
+    : "an earlier date";
+  const notApprovedCopy = {
+    draft: "is still a draft",
+    review: "is still under review",
+    superseded: "was superseded",
+  };
+
+  if (shown.id !== active.id) {
+    banner.hidden = false;
+    $("#divergence-eyebrow").textContent = "Two roadmaps";
+    $("#divergence-title").textContent = `You are reading v${shown.version}. Field Operations is running v${active.version}.`;
+    $("#divergence-copy").textContent =
+      `v${shown.version} ${notApprovedCopy[shown.state] || "has not been approved"}, so its capture tasks stay blocked and cannot be sent. ` +
+      `v${active.version} was approved on ${approvedOn}, and its tasks are the ones a worker can receive today. ` +
+      `Approving v${shown.version} replaces v${active.version} and unblocks the tasks you see here.`;
+    approveButton.hidden = !canApproveBaseline() || shown.state === "approved";
+    approveButton.textContent = `Approve v${shown.version} & replace v${active.version}`;
+    openButton.hidden = false;
+    openButton.textContent = `Open v${active.version}, the live roadmap`;
+    openButton.dataset.baseline = active.id;
+    return;
+  }
+
+  /* The live roadmap is on screen, but a newer analysis may be sitting
+     unapproved. Nothing is broken here — it just needs a decision. */
+  if (newest && newest.id !== active.id && newest.state !== "superseded") {
+    banner.hidden = false;
+    $("#divergence-eyebrow").textContent = "Live roadmap";
+    $("#divergence-title").textContent = `You are reading v${active.version}, the roadmap the field is running.`;
+    $("#divergence-copy").textContent =
+      `Its tasks can be sent. A newer baseline, v${newest.version}, ${notApprovedCopy[newest.state] || "has not been approved"} and its tasks stay blocked until someone approves it.`;
+    approveButton.hidden = true;
+    openButton.hidden = false;
+    openButton.textContent = `Review v${newest.version}`;
+    openButton.dataset.baseline = newest.id;
+    return;
+  }
+
+  banner.hidden = true;
+}
+
+/* A disabled button that never says why is the reason a person gives up on a
+   screen. Every refusal to send has to name itself. */
+function sendBlockedReason(task) {
+  if (!canApproveBaseline()) return "Your role cannot send field tasks. An owner, admin, or reviewer can send this one.";
+  if (!task?.id) return "This capture task does not exist in the current baseline.";
+  if (task.status === "blocked") {
+    return state.baseline?.state === "approved"
+      ? "This task is blocked in the approved baseline."
+      : `Baseline v${state.baseline?.version || "?"} has not been approved, so every task in it is blocked. Approve the baseline to activate these tasks.`;
+  }
+  if (task.status === "waived") return "This capture was waived, so no worker is sent to it.";
+  if (task.status === "submitted") return "A worker already submitted this capture. It is waiting for review.";
+  if (task.status === "verified") return "This capture is verified. Nothing more is needed.";
+  return "";
 }
 
 function renderBaseline() {
@@ -731,8 +820,12 @@ function openTask(requirementId) {
   $("#assignment-worker-email").value = assignment?.worker_email || "";
   $("#assignment-due").value = assignment?.due_at ? new Date(new Date(assignment.due_at).valueOf() - new Date().getTimezoneOffset() * 60000).toISOString().slice(0, 16) : "";
   $("#assignment-result").hidden = true;
-  $("#send-field-task").disabled = !canApproveBaseline() || ["blocked", "waived", "submitted", "verified"].includes(task.status);
+  const blockedReason = sendBlockedReason(task);
+  $("#send-field-task").disabled = Boolean(blockedReason);
   $("#send-field-task").textContent = assignment ? "Send again" : "Send field task";
+  const blocker = $("#assignment-blocker");
+  blocker.hidden = !blockedReason;
+  blocker.textContent = blockedReason;
   $("#task-dialog").showModal();
 }
 
@@ -1022,6 +1115,8 @@ async function attestAndApproveBaseline() {
 }
 
 elements.propertySelect.addEventListener("change", async () => {
+  // A different project has its own roadmap; the pinned baseline no longer applies.
+  state.requestedBaselineId = null;
   await openProperty(elements.propertySelect.value);
   if (state.activeAnalysisJob) void monitorAnalysisJob(state.activeAnalysisJob.id, { resumed: true });
 });
@@ -1044,6 +1139,16 @@ elements.analyze.addEventListener("click", () => {
   void analyzePlans();
 });
 $("#approve-baseline").addEventListener("click", approveBaseline);
+$("#divergence-approve").addEventListener("click", () => {
+  $("#baseline-section")?.scrollIntoView({ behavior: "smooth", block: "start" });
+  approveBaseline();
+});
+$("#divergence-open-active").addEventListener("click", (event) => {
+  const baselineId = event.currentTarget.dataset.baseline;
+  if (!baselineId || !state.property) return;
+  window.location.href =
+    `${window.location.pathname}?property=${encodeURIComponent(state.property.id)}&baseline=${encodeURIComponent(baselineId)}`;
+});
 $("#attestation-reference").addEventListener("input", updateAttestationAction);
 $("#attestation-confirmed").addEventListener("change", updateAttestationAction);
 $("#confirm-governing-set").addEventListener("click", attestAndApproveBaseline);

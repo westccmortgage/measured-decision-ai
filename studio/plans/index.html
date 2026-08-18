@@ -9,7 +9,7 @@
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
-    <link rel="stylesheet" href="plans.css?v=20260811-plan-delete-1">
+    <link rel="stylesheet" href="plans.css?v=20260818-roadmap-1">
   </head>
   <body>
     <div class="boot-screen" id="boot-screen">
@@ -74,6 +74,18 @@
           <article><span>Baseline</span><strong id="metric-baseline">—</strong><small id="metric-baseline-copy">Not analyzed</small></article>
           <article><span>Capture gates</span><strong id="metric-phases">0</strong><small>Construction stages</small></article>
           <article><span>Required captures</span><strong id="metric-tasks">0</strong><small id="metric-tasks-copy">Waiting for plans</small></article>
+        </section>
+
+        <section class="roadmap-divergence" id="roadmap-divergence" hidden>
+          <div>
+            <p class="eyebrow" id="divergence-eyebrow">Two roadmaps</p>
+            <h2 id="divergence-title"></h2>
+            <p id="divergence-copy"></p>
+          </div>
+          <div class="divergence-actions">
+            <button class="button primary" id="divergence-approve" type="button">Approve this baseline</button>
+            <button class="button secondary" id="divergence-open-active" type="button">Open the live roadmap</button>
+          </div>
         </section>
 
         <section class="workflow-grid">
@@ -214,6 +226,7 @@
               <label>Due date<input id="assignment-due" type="datetime-local"></label>
               <button class="button primary" id="send-field-task" type="button">Send field task</button>
             </div>
+            <p class="assignment-blocker" id="assignment-blocker" role="status" hidden></p>
             <div class="assignment-result" id="assignment-result" hidden>
               <p id="assignment-result-copy"></p>
               <div>
@@ -264,6 +277,6 @@
     <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2.106.2"></script>
     <script src="../config.js"></script>
     <script src="../s3-upload.js?v=20260811-plan-delete-1"></script>
-    <script src="plans.js?v=20260811-plan-selection-1"></script>
+    <script src="plans.js?v=20260818-roadmap-1"></script>
   </body>
 </html>
