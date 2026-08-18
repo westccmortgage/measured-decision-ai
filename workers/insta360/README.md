@@ -30,6 +30,29 @@ The build stops with a clear message if the package contains no
 **CameraSDK** is supplied by mistake. CameraSDK controls a connected camera and
 cannot stitch a file; only MediaSDK can, and only on x86_64.
 
+### AI model files
+
+The download folder holds a `models/` directory beside the `.deb`
+(`ai_stitcher_v1.ins`, `ai_stitcher_v2.ins`, `colorplus_model.ins`, deflicker,
+defringe, denoise, and the `coolingshell/` profiles). Those weights are **not**
+inside the package. A build that installs only the `.deb` leaves them behind and
+the AI passes fail at runtime rather than at build time, so `install-sdk.sh`
+copies them to `/usr/local/share/insta360/models`.
+
+Point the secret at the whole vendor folder and both the package and the models
+are picked up in one step:
+
+```bash
+DOCKER_BUILDKIT=1 docker build \
+  --secret id=insta360_sdk,src=/private/libMediaSDK-dev-3.1.1.0-amd64.tar.xz \
+  -t measured-decision/insta360-worker:3.1.1 .
+```
+
+**Open question for the first real build:** how MediaSDK 3.1.1 is told where the
+models live — a fixed path, the working directory, or an API call. The vendor
+`ReadMe.md` in the download answers it. Until that is confirmed, treat the
+models path above as a placement, not a contract.
+
 Never copy, commit, or publish the SDK archive, `.deb`, libraries, headers, or model files.
 
 ## Run

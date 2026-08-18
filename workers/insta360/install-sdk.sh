@@ -12,6 +12,7 @@ set -eu
 
 SOURCE=${1:?usage: install-sdk.sh <archive-or-package> [prefix]}
 PREFIX=${2:-/usr/local}
+MODELS_DIR=${MODELS_DIR:-$PREFIX/share/insta360/models}
 WORK=$(mktemp -d)
 trap 'rm -rf "$WORK"' EXIT
 
@@ -25,7 +26,21 @@ install_deb() {
     # Used by the test: unpack without touching the host package database.
     dpkg-deb -x "$1" "$PREFIX/.deb-root"
     copy_tree "$PREFIX/.deb-root"
+    rm -rf "$PREFIX/.deb-root"
   fi
+}
+
+# The stitcher's AI passes load weights from files that ship beside the package
+# rather than inside it: ai_stitcher_v*.ins, colorplus, deflicker, defringe,
+# denoise and the coolingshell profiles. A build that installs only the .deb
+# leaves them behind and the AI stitch fails at runtime, not at build time.
+copy_models() {
+  root=$1
+  models=$(find "$root" -type d -name models -print -quit)
+  [ -n "$models" ] || return 0
+  mkdir -p "$MODELS_DIR"
+  cp -a "$models/." "$MODELS_DIR/"
+  echo "Insta360 SDK: installed $(find "$MODELS_DIR" -type f | wc -l | tr -d ' ') model files into $MODELS_DIR"
 }
 
 copy_tree() {
@@ -50,9 +65,17 @@ copy_tree() {
 
 if dpkg-deb --info "$SOURCE" >/dev/null 2>&1; then
   install_deb "$SOURCE"
+  # A bare .deb carries no models; they live beside it in the vendor folder.
+  copy_models "$(dirname "$SOURCE")"
 elif [ -d "$SOURCE" ]; then
   echo "Insta360 SDK: using the already extracted tree"
-  copy_tree "$SOURCE"
+  inner_deb=$(find "$SOURCE" -name '*.deb' -print -quit)
+  if [ -n "$inner_deb" ]; then
+    install_deb "$inner_deb"
+  else
+    copy_tree "$SOURCE"
+  fi
+  copy_models "$SOURCE"
 else
   echo "Insta360 SDK: expanding $(basename "$SOURCE")"
   tar -xf "$SOURCE" -C "$WORK"
@@ -62,6 +85,7 @@ else
   else
     copy_tree "$WORK"
   fi
+  copy_models "$WORK"
 fi
 
 [ "$(id -u)" = "0" ] && command -v ldconfig >/dev/null 2>&1 && ldconfig || true
