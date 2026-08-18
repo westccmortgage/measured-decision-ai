@@ -77,6 +77,17 @@ finish() {
     aws s3 cp "$file" "s3://${AWS_S3_BUCKET}/worker-logs/${STAMP}-${INSTANCE_ID}-$(basename "$file")" \
       --region "$AWS_REGION" || true
   done
+  # A run whose log upload fails is a run nobody can explain: no aws CLI, no
+  # bucket write, no terminal. The serial console needs no credentials at all
+  # and the EC2 console reads it back with one button, so the story survives
+  # even when everything else is unavailable.
+  {
+    echo "===== MDAI worker log (tail) ====="
+    tail -n 250 /var/log/mdai-worker.log 2>/dev/null
+    echo "===== MDAI setup log (tail) ====="
+    tail -n 150 /var/log/mdai-setup.log 2>/dev/null
+    echo "===== MDAI end of logs ====="
+  } > /dev/console 2>&1 || true
   shutdown -h now
 }
 trap finish EXIT
