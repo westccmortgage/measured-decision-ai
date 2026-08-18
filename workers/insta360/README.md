@@ -2,6 +2,23 @@
 
 Private runtime for paired X3 INSV sources. The licensed Insta360 package is intentionally excluded from GitHub and must be supplied as a Docker BuildKit secret.
 
+## What the vendor documents
+
+The `ReadMe.md` shipped with MediaSDK 3.1.1 states:
+
+- install with `apt-get install ./libMediaSDK-dev*-amd64.deb`, remove with
+  `apt-get remove libMediaSDK-dev`;
+- verify by running `stitcherSDKTest`, which the package provides;
+- build against it with `g++ main.cc -std=c++11 -lMediaSDK -lpthread` — no
+  include or library flags, because the package installs into system paths;
+- built for **CUDA 11.7** and **g++ 11.4.0 (Ubuntu 22.04)**.
+
+This image matches all of it: `nvidia/cuda:11.7.1-devel-ubuntu22.04` carries
+g++ 11.4.0, and `stitch360.cc` is compiled with `-std=c++11` rather than a newer
+standard the vendor never tested its headers against. `install-sdk.sh` fails the
+build if `libMediaSDK` is not on the loader path afterwards, so a bad package is
+caught at build time instead of at the link step.
+
 ## Runtime target
 
 - x86_64 Ubuntu 22.04
@@ -48,10 +65,13 @@ DOCKER_BUILDKIT=1 docker build \
   -t measured-decision/insta360-worker:3.1.1 .
 ```
 
-**Open question for the first real build:** how MediaSDK 3.1.1 is told where the
-models live — a fixed path, the working directory, or an API call. The vendor
-`ReadMe.md` in the download answers it. Until that is confirmed, treat the
-models path above as a placement, not a contract.
+The vendor `ReadMe.md` documents no model path and no environment variable, and
+in the download `models/` sits beside `example/main.cc` — the folder you compile
+the demo in and run it from. The SDK therefore appears to resolve the weights
+relative to the working directory, so the image also places them at
+`/app/models`, next to the worker's `WORKDIR`. Treat that as a reasoned
+placement until the first real stitch confirms it; the build-time check below
+will not catch a wrong model path, only a missing library.
 
 Never copy, commit, or publish the SDK archive, `.deb`, libraries, headers, or model files.
 

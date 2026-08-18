@@ -5,7 +5,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends g++ xz-utils fi
 COPY install-sdk.sh /usr/local/bin/install-sdk.sh
 RUN --mount=type=secret,id=insta360_sdk sh /usr/local/bin/install-sdk.sh /run/secrets/insta360_sdk
 COPY stitch360.cc /src/stitch360.cc
-RUN g++ /src/stitch360.cc -O2 -std=c++17 -I/usr/local/include -L/usr/local/lib -lMediaSDK -lpthread -Wl,--allow-shlib-undefined -o /usr/local/bin/stitch360
+RUN g++ /src/stitch360.cc -O2 -std=c++11 -I/usr/local/include -L/usr/local/lib -lMediaSDK -lpthread -Wl,--allow-shlib-undefined -o /usr/local/bin/stitch360
 
 FROM nvidia/cuda:11.7.1-runtime-ubuntu22.04
 ENV DEBIAN_FRONTEND=noninteractive PYTHONUNBUFFERED=1
@@ -16,5 +16,6 @@ COPY --from=build /usr/local/bin/stitch360 /usr/local/bin/stitch360
 COPY requirements.txt /app/requirements.txt
 RUN pip3 install --no-cache-dir -r /app/requirements.txt
 COPY worker.py /app/worker.py
+RUN mkdir -p /app/models && cp -a /usr/local/share/insta360/models/. /app/models/ 2>/dev/null || true
 WORKDIR /app
 CMD ["python3", "worker.py"]

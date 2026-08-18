@@ -13,6 +13,7 @@ set -eu
 SOURCE=${1:?usage: install-sdk.sh <archive-or-package> [prefix]}
 PREFIX=${2:-/usr/local}
 MODELS_DIR=${MODELS_DIR:-$PREFIX/share/insta360/models}
+SYSTEM_INSTALL=0
 WORK=$(mktemp -d)
 trap 'rm -rf "$WORK"' EXIT
 
@@ -22,6 +23,7 @@ install_deb() {
     apt-get update
     apt-get install -y "$1"
     rm -f "$1"
+    SYSTEM_INSTALL=1
   else
     # Used by the test: unpack without touching the host package database.
     dpkg-deb -x "$1" "$PREFIX/.deb-root"
@@ -88,4 +90,16 @@ else
   copy_models "$WORK"
 fi
 
-[ "$(id -u)" = "0" ] && command -v ldconfig >/dev/null 2>&1 && ldconfig || true
+# Only meaningful for a real system install; a test prefix is not on the
+# loader path by design.
+if [ "$SYSTEM_INSTALL" = "1" ] && command -v ldconfig >/dev/null 2>&1; then
+  ldconfig
+  # Fail here rather than at the link step, with a message that names the cause.
+  if ! ldconfig -p | grep -q MediaSDK; then
+    echo "Insta360 SDK: libMediaSDK is not on the loader path after install" >&2
+    exit 5
+  fi
+  if command -v stitcherSDKTest >/dev/null 2>&1; then
+    echo "Insta360 SDK: stitcherSDKTest is present, the package installed correctly"
+  fi
+fi
