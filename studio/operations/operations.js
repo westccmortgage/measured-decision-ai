@@ -101,7 +101,8 @@ function render() {
   if(counts.toSend>0) {
     $("#next-step-title").textContent=`${counts.toSend} field task${counts.toSend===1?" is":"s are"} ready to send.`;
     $("#next-step-copy").textContent="Choose the first approved task, enter the worker's name and email, then send the private field link.";
-    $("#next-step-link").href=propertyUrl();
+    const activeBaseline=state.properties.find(p=>p.id===state.propertyId)?.active_baseline_id;
+    $("#next-step-link").href=activeBaseline?`${propertyUrl()}&baseline=${encodeURIComponent(activeBaseline)}`:propertyUrl();
   }
   const filter=$("#status-filter").value; const latestChecks=latestBy(state.checks,"assignment_id");
   const visible=state.assignments.filter(a=>filter==="all"||(filter==="active"&&["sent","opened","in_progress","uploading","ai_check"].includes(a.status))||(filter==="review"&&a.status==="ready_for_review")||a.status===filter);
