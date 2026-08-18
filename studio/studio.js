@@ -1279,6 +1279,7 @@ async function openProperty(propertyId) {
     await hydrateCloudRecord();
     $("#connector-status").innerHTML = "<i></i> Supabase connected";
     elements.autosave.textContent = `Cloud connected · ${cloud.role}`;
+    window.MDAIRecentProjects?.remember({ id: propertyId, name: propertyRecord.name });
     if (new URLSearchParams(window.location.search).get("advanced") === "1") {
       elements.shell.hidden = false;
       activateView("property");
