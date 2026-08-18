@@ -20,23 +20,83 @@ hand, which is the usual reason a first attempt fails with
 
 ## Connect
 
-Use **Session Manager**, not SSH. No key pair to lose, no port 22 open to the
-internet, and it works from the browser.
+Use **Session Manager**, not SSH: no key pair to lose, no port 22 open to the
+internet, and a terminal in the browser. It has one prerequisite that catches
+everyone — the instance needs an IAM role. Create the role first, then launch.
 
-1. Attach an IAM role to the instance with the policies
-   `AmazonSSMManagedInstanceCore` and read/write access to the evidence bucket.
-2. EC2 console → select the instance → **Connect** → **Session Manager** →
-   **Connect**.
+### 1. Create the role (once)
 
-The same role gives the worker its S3 credentials, so no access keys are stored
-on the machine. Leave `AWS_ACCESS_KEY_ID` and `AWS_SECRET_ACCESS_KEY` unset and
-boto3 picks the role up on its own.
+1. Open the **IAM** console → **Roles** → **Create role**.
+2. Trusted entity type: **AWS service**. Use case: **EC2**. **Next**.
+3. Search for and tick **`AmazonSSMManagedInstanceCore`**. **Next**.
+4. Role name: `measured-decision-worker`. **Create role**.
+5. Open the new role → **Add permissions** → **Create inline policy** → **JSON**
+   → paste, replacing the bucket name if yours differs:
 
-If SSH is preferred anyway:
+```json
+{
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Effect": "Allow",
+      "Action": ["s3:GetObject", "s3:PutObject"],
+      "Resource": "arn:aws:s3:::measured-decision-production-808454010303/*"
+    },
+    {
+      "Effect": "Allow",
+      "Action": ["s3:ListBucket"],
+      "Resource": "arn:aws:s3:::measured-decision-production-808454010303"
+    }
+  ]
+}
+```
+
+6. Name it `evidence-bucket-access` → **Create policy**.
+
+That single role does two jobs: it lets Session Manager in, and it gives the
+worker its S3 credentials. Leave `AWS_ACCESS_KEY_ID` and
+`AWS_SECRET_ACCESS_KEY` unset — boto3 picks the role up on its own, so no keys
+are ever stored on the machine.
+
+### 2. Attach it to the instance
+
+While launching, in **Advanced details** → **IAM instance profile**, choose
+`measured-decision-worker`.
+
+On an instance that is already running: select it → **Actions** → **Security**
+→ **Modify IAM role** → choose the role → **Update IAM role**. It takes a
+minute or two before Session Manager notices.
+
+### 3. Connect
+
+EC2 console → tick the instance → **Connect** button at the top → **Session
+Manager** tab → **Connect**. A terminal opens in the browser tab.
+
+You land as `ssm-user`. Switch to the normal account before working:
+
+```bash
+sudo su - ubuntu
+```
+
+### If the Connect button is greyed out
+
+- The role is missing or was attached less than two minutes ago.
+- The instance is in a private subnet with no NAT and no VPC endpoints for SSM.
+  A default VPC public subnet has neither problem.
+- The SSM agent is not running. Official Ubuntu and Deep Learning AMIs ship it;
+  check with `snap services amazon-ssm-agent`.
+
+Nothing needs to be opened in the security group — Session Manager works over
+the instance's outbound HTTPS, which the default group already allows.
+
+### SSH instead, if preferred
 
 ```bash
 ssh -i /path/key.pem ubuntu@<public-dns>
 ```
+
+This needs a key pair at launch and port 22 open to your address, which is the
+part Session Manager exists to avoid.
 
 ## Verify the GPU before anything else
 
