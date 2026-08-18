@@ -1075,15 +1075,15 @@ function propertyTypeLabel(value) {
 
 function renderPropertyDirectory() {
   const properties = cloud.properties || [];
+  /* A list of projects, nothing else. Every row is the same one action. */
   elements.propertyDirectory.innerHTML = properties
-    .map((property) => {
-      return `<button class="property-directory-card" type="button" data-property-id="${escapeText(property.id)}">
-        <span>Project</span>
-        <h2>${escapeText(property.name)}</h2>
-        <p>Evidence, AI processing, and spatial results</p>
-        <small>Open project →</small>
-      </button>`;
-    })
+    .map(
+      (property) =>
+        `<button class="property-directory-card" type="button" data-property-id="${escapeText(property.id)}">
+        <h2>Open ${escapeText(property.name)}</h2>
+        <small>→</small>
+      </button>`,
+    )
     .join("");
   $("#empty-property-state").hidden = properties.length > 0;
   elements.propertyDirectory.hidden = properties.length === 0;
@@ -1752,8 +1752,8 @@ async function createRoomRecord({ name, building, level }) {
    either opens something or explains why it cannot be opened yet.
    --------------------------------------------------------------------------- */
 
-const FOCUS_STAGE_ORDER = { today: 1, upload: 2, process: 3, results: 4 };
-let focusStage = "today";
+const FOCUS_STAGE_ORDER = { upload: 1, process: 2, results: 3 };
+let focusStage = "upload";
 let focusUploadBusy = false;
 let focusProcessingComplete = false;
 let focusProcessingRows = [];
@@ -1948,17 +1948,20 @@ async function ensureFocusDestination(file) {
 }
 
 function showFocusStage(name) {
-  focusStage = FOCUS_STAGE_ORDER[name] ? name : "today";
+  focusStage = FOCUS_STAGE_ORDER[name] ? name : "upload";
   closeFocusSheet(false);
-  $("#focus-today-stage").hidden = focusStage !== "today";
   $("#focus-upload-stage").hidden = focusStage !== "upload";
   $("#focus-processing-stage").hidden = focusStage !== "process";
   $("#focus-results-stage").hidden = focusStage !== "results";
-  const roadmap = document.querySelector(".focus-roadmap");
-  if (roadmap) roadmap.hidden = focusStage === "today";
   const stats = focusEvidenceStats();
   document.querySelectorAll("[data-focus-step]").forEach((item) => {
     const step = item.dataset.focusStep;
+    /* The project is open, so step one is always behind you. */
+    if (step === "project") {
+      item.classList.add("complete");
+      item.classList.remove("active");
+      return;
+    }
     item.classList.toggle("active", step === focusStage);
     item.classList.toggle(
       "complete",
@@ -1999,7 +2002,7 @@ function focusNextAction(stats) {
       copy: "The AI interpretation is a suggestion. It becomes part of the record only after a person confirms it.",
       label: `Open ${room.name}`,
       owner: "Project manager or reviewer",
-      run: () => openFocusSheet(room.id, "today"),
+      run: () => openFocusSheet(room.id, "results"),
     };
   }
   if (stats.followUps.length) {
@@ -2088,7 +2091,7 @@ function focusChainItems(stats) {
       actionLabel: "Open verification",
       run: () => {
         const target = stats.awaitingReview[0] || stats.spaces[0];
-        if (target) openFocusSheet(target.id, "today");
+        if (target) openFocusSheet(target.id, "results");
       },
       blocked: verifiable ? "" : "Verification opens once a space holds evidence.",
     },
@@ -2105,7 +2108,7 @@ function focusChainItems(stats) {
           stats.spaces.find((room) => room.status === "confirmed" && !(room.note || "").trim()) ||
           stats.awaitingReview[0] ||
           stats.spaces[0];
-        if (target) openFocusSheet(target.id, "today");
+        if (target) openFocusSheet(target.id, "results");
       },
       blocked: verifiable ? "" : "Add evidence and verify a space before recording a decision.",
     },
@@ -2156,7 +2159,7 @@ function focusAttentionItems(stats) {
           .filter(Boolean)
           .join(" · "),
         actionLabel: "Open and verify",
-        run: () => openFocusSheet(room.id, "today"),
+        run: () => openFocusSheet(room.id, "results"),
       });
       return;
     }
@@ -2304,12 +2307,6 @@ function renderFocusToday() {
     });
   });
 
-  const spatialButton = document.querySelector('[data-today-action="spatial"]');
-  if (spatialButton) spatialButton.disabled = !stats.spatial.length && !stats.paired360 && !stats.waiting360;
-  const findingsButton = document.querySelector('[data-today-action="findings"]');
-  if (findingsButton) findingsButton.disabled = !stats.analyzedRooms.length;
-  const evidenceButton = document.querySelector('[data-today-action="evidence"]');
-  if (evidenceButton) evidenceButton.disabled = !stats.rawFiles;
 }
 
 function openProjectPlans() {
@@ -2420,7 +2417,7 @@ function openFocusSheet(roomId, returnStage = focusStage) {
   const room = rooms.find((candidate) => candidate.id === roomId);
   if (!room) return;
   focusSheetRoomId = roomId;
-  focusSheetReturnStage = FOCUS_STAGE_ORDER[returnStage] ? returnStage : "today";
+  focusSheetReturnStage = FOCUS_STAGE_ORDER[returnStage] ? returnStage : "results";
   renderFocusSheet();
   $("#focus-sheet").hidden = false;
   document.body.style.overflow = "hidden";
@@ -2503,6 +2500,7 @@ function renderFocusSheet() {
     ? "A person confirmed this record."
     : "Nothing here counts as a fact until a person confirms it.";
   $("#sheet-confirm").disabled = !room.evidence.length;
+  $("#sheet-confirm").textContent = confirmed ? "Reopen for verification" : "Confirm visible record";
 
   const foot = $("#sheet-foot");
   const actions = [
@@ -2510,10 +2508,9 @@ function renderFocusSheet() {
       ? { label: "Open 360 view", primary: true, run: () => openEvidenceViewer(spatialItems[0], room) }
       : { label: "Open 360 view", disabled: true, reason: "This space has no playable equirectangular export yet. Upload one from Insta360 Studio.", run: () => showFocusStage("upload") },
     room.analysis
-      ? { label: "Re-run AI interpretation", run: () => runFocusRoomAnalysis(room) }
-      : { label: "Request AI interpretation", run: () => runFocusRoomAnalysis(room) },
+      ? { label: "Re-run AI", run: () => runFocusRoomAnalysis(room) }
+      : { label: "Request AI", run: () => runFocusRoomAnalysis(room) },
     { label: "Request another capture", run: () => openFieldOperations() },
-    { label: "Add evidence", run: () => { closeFocusSheet(false); showFocusStage("upload"); } },
   ];
   foot.innerHTML = actions
     .map(
@@ -2653,26 +2650,23 @@ function renderFocusResults() {
   });
 }
 
+function focusStatusLine(stats) {
+  if (!stats.rawFiles) return "Evidence required";
+  if (!focusProcessingComplete) return "Ready for AI processing";
+  if (stats.awaitingReview.length) return "Human verification required";
+  if (stats.confirmedRooms.length && stats.confirmedRooms.length >= stats.spaces.length) return "Record verified";
+  return "Project record ready";
+}
+
 function renderFocusStudio() {
   const stats = focusEvidenceStats();
   $("#focus-project-name").textContent = propertyRecord.name || "Project";
-  $("#focus-project-summary").textContent = focusReadyCopy(stats);
-  const ready = $("#focus-ready-summary");
-  if (!stats.rawFiles) {
-    ready.innerHTML = "";
-  } else {
-    const organizedCopy = `${stats.spaces.length} space${stats.spaces.length === 1 ? "" : "s"}`;
-    const vrCopy = stats.spatial.length
-      ? `${stats.spatial.length} playable 360 capture${stats.spatial.length === 1 ? "" : "s"}`
-      : stats.paired360
-        ? `${stats.paired360} complete camera pair${stats.paired360 === 1 ? "" : "s"}`
-        : stats.waiting360
-          ? `${stats.waiting360} incomplete 360 capture${stats.waiting360 === 1 ? "" : "s"}`
-          : "No 360 originals yet";
-    ready.innerHTML = `
-      <article><div><strong>${stats.rawFiles} source file${stats.rawFiles === 1 ? "" : "s"}</strong><small>${organizedCopy} · Originals unchanged</small></div><b>READY</b></article>
-      <article><div><strong>Spatial record</strong><small>${vrCopy}</small></div><b>${stats.spatial.length ? "PLAYABLE" : stats.paired360 ? "LINKED" : "PREPARED"}</b></article>`;
-  }
+  $("#focus-project-summary").textContent = `\u25CF ${focusStatusLine(stats)}`;
+  const uploaded = $("#focus-upload-done");
+  uploaded.hidden = !stats.rawFiles;
+  $("#focus-upload-done-copy").textContent =
+    `${stats.rawFiles} file${stats.rawFiles === 1 ? "" : "s"} uploaded successfully`;
+  $("#focus-upload-more").hidden = !stats.rawFiles;
   $("#focus-process").disabled = !stats.rawFiles || focusUploadBusy;
   renderFocusToday();
   renderFocusResults();
@@ -2684,7 +2678,8 @@ function openFocusStudio() {
   focusUploadBusy = false;
   focusProcessingRows = [];
   focusProcessingComplete = window.localStorage.getItem(`mdai-focus-processed:${cloud.propertyId}`) === "1";
-  focusStage = focusAllEvidence().length ? "today" : "upload";
+  /* Opening a project always lands on the one action that moves it forward. */
+  focusStage = "upload";
   renderFocusStudio();
 }
 
@@ -2837,13 +2832,13 @@ function finishFocusProcessing() {
   renderFocusProcessing(100, failed.length
     ? `${failed.length} space${failed.length === 1 ? "" : "s"} could not be interpreted. The evidence is still preserved and can be retried.`
     : "Processing complete.");
-  $("#focus-processing-title").textContent = failed.length ? "Partly complete." : "The record is ready.";
+  $("#focus-processing-title").textContent = failed.length ? "Partly complete." : "\u2713 Project record is ready";
   $("#focus-processing-copy").textContent = failed.length
     ? "The evidence is organized and preserved. Retry the spaces that failed, or open the results and continue."
     : "The evidence is organized, originals are preserved, and available visual files have been interpreted.";
   const resultsButton = $("#focus-view-results");
   resultsButton.disabled = false;
-  resultsButton.innerHTML = `${done.length ? "See what was found" : "Open the record"} <span>&rarr;</span>`;
+  resultsButton.textContent = done.length ? "View results" : "Open the record";
   $("#focus-process").disabled = false;
   renderFocusToday();
   renderFocusResults();
@@ -2862,9 +2857,8 @@ async function processFocusEvidence() {
   closeFocusSheet(false);
   showFocusStage("process");
   $("#focus-view-results").disabled = true;
-  $("#focus-processing-title").textContent = "Reading the evidence.";
-  $("#focus-processing-copy").textContent =
-    "Originals are preserved, 360 captures are paired, and every compatible visual file is interpreted space by space.";
+  $("#focus-processing-title").textContent = "Processing evidence\u2026";
+  $("#focus-processing-copy").textContent = "Organizing files and building the project record.";
   focusProcessingRows = candidates.map((room) => ({
     roomId: room.id,
     name: room.name,
@@ -2926,51 +2920,23 @@ $("#focus-view-results").addEventListener("click", () => {
   showFocusStage("results");
 });
 $("#focus-add-more").addEventListener("click", () => showFocusStage("upload"));
-$("#focus-back-today").addEventListener("click", () => {
-  renderFocusToday();
-  showFocusStage("today");
-});
-document.querySelectorAll("[data-today-action]").forEach((button) => {
-  button.addEventListener("click", () => {
-    const action = button.dataset.todayAction;
-    if (action === "evidence") showFocusStage("results");
-    else if (action === "findings") {
-      const stats = focusEvidenceStats();
-      const target = stats.awaitingReview[0] || stats.analyzedRooms[0];
-      if (target) openFocusSheet(target.id, "today");
-      else notify("No AI interpretation exists yet. Start the AI review first.", 5200);
-    } else if (action === "spatial") openFirstSpatial();
-    else showFocusStage("upload");
-  });
-});
+$("#focus-upload-more").addEventListener("click", () => $("#focus-evidence-files").click());
 $("#sheet-back").addEventListener("click", () => closeFocusSheet(true));
 $("#sheet-confirm").addEventListener("click", async () => {
   const room = focusSheetRoom();
   if (!room) return;
+  const reopening = room.status === "confirmed";
+  const state = reopening ? "needs_review" : "confirmed";
   const note = $("#sheet-note").value.trim();
-  if (!(await persistSuggestionReview(room, "confirmed", note))) return;
-  if (!(await persistRoomReview(room, "confirmed"))) return;
-  room.status = "confirmed";
+  if (!(await persistSuggestionReview(room, state, note))) return;
+  if (!(await persistRoomReview(room, state))) return;
+  room.status = reopening ? "needs" : "confirmed";
   room.note = note;
   saveRooms(cloud.schemaReady ? "Human review saved to cloud" : "Human review saved");
   renderFocusSheet();
   renderFocusToday();
   renderFocusResults();
-  notify("Visible record confirmed by human review");
-});
-$("#sheet-flag").addEventListener("click", async () => {
-  const room = focusSheetRoom();
-  if (!room) return;
-  const note = $("#sheet-note").value.trim();
-  if (!(await persistSuggestionReview(room, "needs_review", note))) return;
-  if (!(await persistRoomReview(room, "needs_review"))) return;
-  room.status = "needs";
-  room.note = note;
-  saveRooms("Verification flag saved");
-  renderFocusSheet();
-  renderFocusToday();
-  renderFocusResults();
-  notify("This space stays in the verification queue");
+  notify(reopening ? "This space is back in the verification queue" : "Visible record confirmed by human review");
 });
 
 

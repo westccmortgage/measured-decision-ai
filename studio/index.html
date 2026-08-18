@@ -12,7 +12,7 @@
       href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap"
       rel="stylesheet"
     >
-    <link rel="stylesheet" href="studio.css?v=20260818-recent-1">
+    <link rel="stylesheet" href="studio.css?v=20260818-simple-flow-1">
   </head>
   <body>
     <section class="simple-intake" id="simple-intake">
@@ -63,9 +63,7 @@
         <header class="property-gate-header">
           <div>
             <div class="simple-intake-brand" aria-label="Measured Decision Studio"><span class="studio-mark" aria-hidden="true"><i></i><i></i><i></i></span><span>Measured Decision <strong>Studio</strong></span></div>
-            <p class="eyebrow">Your projects</p>
-            <h1>Open a project.</h1>
-            <p>Upload the evidence. Let AI organize it. Review the result.</p>
+            <h1>Your projects</h1>
             <p class="property-gate-message" id="property-gate-message" role="status" aria-live="polite"></p>
           </div>
           <div class="property-gate-actions">
@@ -101,10 +99,53 @@
           <h1 id="focus-project-name">Project</h1>
           <p id="focus-project-summary">Ready for evidence.</p>
         </div>
+        <ol class="focus-roadmap" aria-label="Project progress">
+          <li class="complete" data-focus-step="project"><span>1</span><strong>Project</strong></li>
+          <li class="active" data-focus-step="upload"><span>2</span><strong>Upload</strong></li>
+          <li data-focus-step="process"><span>3</span><strong>AI processing</strong></li>
+          <li data-focus-step="results"><span>4</span><strong>Results</strong></li>
+        </ol>
 
-        <section class="focus-stage focus-today" id="focus-today-stage" hidden>
+        <section class="focus-stage" id="focus-upload-stage">
+          <label class="focus-upload-card" for="focus-evidence-files">
+            <span class="focus-upload-plus">＋</span>
+            <strong>Upload evidence</strong>
+            <small>Plans, photos, documents, video and 360 captures</small>
+          </label>
+          <input id="focus-evidence-files" type="file" accept="image/*,video/*,.pdf,application/pdf,.insv,.insp,.lrv" multiple hidden>
+          <div class="focus-upload-progress" id="focus-upload-progress" hidden>
+            <div><strong id="focus-upload-progress-title">Uploading evidence…</strong><span id="focus-upload-progress-percent">0%</span></div>
+            <progress id="focus-upload-progress-bar" max="100" value="0"></progress>
+            <small id="focus-upload-progress-detail">Preparing secure upload</small>
+          </div>
+          <div class="focus-upload-done" id="focus-upload-done" hidden>
+            <p><b>✓</b> <span id="focus-upload-done-copy">Evidence uploaded successfully</span></p>
+          </div>
+          <div class="focus-stage-actions">
+            <button class="focus-secondary-action" id="focus-upload-more" type="button" hidden>Upload more</button>
+            <button class="focus-primary-action" id="focus-process" type="button" disabled>Process with AI</button>
+          </div>
+        </section>
+
+        <section class="focus-stage focus-processing-stage" id="focus-processing-stage" hidden>
+          <div class="focus-stage-copy">
+            <h2 id="focus-processing-title">Processing evidence…</h2>
+            <p id="focus-processing-copy">Organizing files and building the project record.</p>
+          </div>
+          <div class="focus-processing-meter">
+            <progress id="focus-processing-progress" max="100" value="0"></progress>
+            <strong id="focus-processing-percent">0%</strong>
+          </div>
+          <p class="focus-processing-status" id="focus-processing-status" role="status" aria-live="polite">Starting…</p>
+          <div class="focus-processing-list" id="focus-processing-list"></div>
+          <div class="focus-stage-actions">
+            <button class="focus-primary-action" id="focus-view-results" type="button" disabled>View results</button>
+          </div>
+        </section>
+
+        <section class="focus-stage" id="focus-results-stage" hidden>
           <header class="today-head">
-            <p class="eyebrow">Project today</p>
+            <p class="eyebrow"><b>✓</b> Project record is ready</p>
             <h2 id="today-headline">Loading the project record…</h2>
             <p class="today-updated" id="today-updated"></p>
           </header>
@@ -113,90 +154,31 @@
             <p class="eyebrow">Next action</p>
             <h3 id="today-next-title">Add the first evidence</h3>
             <p id="today-next-copy"></p>
-            <button class="focus-primary-action" id="today-next-action" type="button">Add evidence <span>&rarr;</span></button>
+            <button class="focus-primary-action" id="today-next-action" type="button">Add evidence</button>
             <small id="today-next-owner"></small>
           </article>
-
-          <section class="today-block" id="today-attention-block" hidden>
-            <h3>Needs attention</h3>
-            <div class="today-list" id="today-attention"></div>
-          </section>
 
           <section class="today-block" id="today-changed-block" hidden>
             <h3>What changed</h3>
             <div class="today-list" id="today-changed"></div>
           </section>
 
+          <section class="today-block" id="today-attention-block" hidden>
+            <h3>Needs attention</h3>
+            <div class="today-list" id="today-attention"></div>
+          </section>
+
+          <div class="focus-result-metrics" id="focus-result-metrics"></div>
+          <section class="focus-vr-card" id="focus-vr-card"></section>
+          <h3 class="focus-result-heading">Open a space to see its evidence</h3>
+          <div class="focus-result-list" id="focus-result-list"></div>
+
           <section class="today-block">
             <h3>Where the project stands</h3>
             <ol class="today-chain" id="today-chain"></ol>
           </section>
 
-          <div class="today-quick" id="today-quick">
-            <button type="button" data-today-action="evidence">See evidence</button>
-            <button type="button" data-today-action="findings">Review AI findings</button>
-            <button type="button" data-today-action="spatial">Open 360 view</button>
-            <button type="button" data-today-action="upload">Add evidence</button>
-          </div>
-        </section>
-
-        <ol class="focus-roadmap" aria-label="Project evidence progress">
-          <li data-focus-step="today"><span>1</span><strong>Today</strong><small>Project state</small></li>
-          <li class="active" data-focus-step="upload"><span>2</span><strong>Upload</strong><small>Add evidence</small></li>
-          <li data-focus-step="process"><span>3</span><strong>AI processing</strong><small>Organize and analyze</small></li>
-          <li data-focus-step="results"><span>4</span><strong>Results</strong><small>Review the record</small></li>
-        </ol>
-
-        <section class="focus-stage" id="focus-upload-stage">
-          <div class="focus-stage-copy">
-            <p class="eyebrow">Step 2 of 4</p>
-            <h2>Put your evidence here.</h2>
-            <p>Plans, photos, video, documents, and Insta360 originals. The Studio keeps the original files and prepares the record for AI and VR.</p>
-          </div>
-          <label class="focus-upload-card" for="focus-evidence-files">
-            <span class="focus-upload-plus">＋</span>
-            <strong>Upload evidence</strong>
-            <small>Choose files or drag them here</small>
-            <em>Photos · Video · PDF · INSV · INSP · LRV</em>
-          </label>
-          <input id="focus-evidence-files" type="file" accept="image/*,video/*,.pdf,application/pdf,.insv,.insp,.lrv" multiple hidden>
-          <div class="focus-upload-progress" id="focus-upload-progress" hidden>
-            <div><strong id="focus-upload-progress-title">Uploading evidence…</strong><span id="focus-upload-progress-percent">0%</span></div>
-            <progress id="focus-upload-progress-bar" max="100" value="0"></progress>
-            <small id="focus-upload-progress-detail">Preparing secure upload</small>
-          </div>
-          <div class="focus-ready-summary" id="focus-ready-summary"></div>
-          <button class="focus-primary-action" id="focus-process" type="button" disabled>Process with AI <span>→</span></button>
-        </section>
-
-        <section class="focus-stage focus-processing-stage" id="focus-processing-stage" hidden>
-          <div class="focus-stage-copy">
-            <p class="eyebrow">Step 3 of 4</p>
-            <h2 id="focus-processing-title">Preparing the record.</h2>
-            <p id="focus-processing-copy">The Studio is organizing the evidence, pairing 360 originals, and analyzing compatible visual files.</p>
-          </div>
-          <div class="focus-processing-orbit" aria-hidden="true"><i></i><i></i><i></i><b></b></div>
-          <div class="focus-processing-meter">
-            <progress id="focus-processing-progress" max="100" value="0"></progress>
-            <strong id="focus-processing-percent">0%</strong>
-          </div>
-          <p class="focus-processing-status" id="focus-processing-status" role="status" aria-live="polite">Starting…</p>
-          <div class="focus-processing-list" id="focus-processing-list"></div>
-          <button class="focus-primary-action" id="focus-view-results" type="button" disabled>View results <span>&rarr;</span></button>
-        </section>
-
-        <section class="focus-stage" id="focus-results-stage" hidden>
-          <div class="focus-stage-copy">
-            <p class="eyebrow">Step 4 of 4</p>
-            <h2>Your evidence record is ready.</h2>
-            <p>Originals remain private and unchanged. AI output is presented as a reviewable suggestion, never as a certified fact.</p>
-          </div>
-          <div class="focus-result-metrics" id="focus-result-metrics"></div>
-          <section class="focus-vr-card" id="focus-vr-card"></section>
-          <h3 class="focus-result-heading">Open a space to see its evidence</h3>
-          <div class="focus-result-list" id="focus-result-list"></div>
           <div class="focus-result-actions">
-            <button class="focus-secondary-action" id="focus-back-today" type="button">Back to project today</button>
             <button class="focus-secondary-action" id="focus-add-more" type="button">Upload more evidence</button>
           </div>
         </section>
@@ -226,7 +208,6 @@
             </label>
             <div class="sheet-verify-actions">
               <button class="focus-primary-action" id="sheet-confirm" type="button">Confirm visible record</button>
-              <button class="focus-secondary-action" id="sheet-flag" type="button">Keep verification required</button>
             </div>
           </section>
         </div>
@@ -1131,8 +1112,8 @@
     <script src="s3-upload.js?v=20260813-project-intake-1"></script>
     <script src="recent-projects.js?v=20260818-recent-1"></script>
     <script src="project-intake.js?v=20260818-recent-1"></script>
-    <script src="studio.js?v=20260818-recent-1"></script>
-    <script src="pano360.js?v=20260818-project-today-1"></script>
+    <script src="studio.js?v=20260818-simple-flow-1"></script>
+    <script src="pano360.js?v=20260818-simple-flow-1"></script>
     <script src="capture-task-bridge.js?v=20260808-plan-intelligence"></script>
   </body>
 </html>

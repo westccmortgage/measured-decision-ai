@@ -2649,3 +2649,40 @@ dialog textarea { min-height:78px; resize:vertical; }
     padding: 32px 18px;
   }
 }
+
+/* One obvious action per stage. The upload card is the project screen, the
+   record only appears once processing is done. */
+.focus-roadmap li small { display: none; }
+.focus-stage-actions { display: flex; flex-wrap: wrap; gap: 10px; margin-top: 22px; }
+.focus-stage-actions .focus-primary-action,
+.focus-stage-actions .focus-secondary-action { flex: 1 1 200px; margin: 0; justify-content: center; }
+.focus-upload-done {
+  margin: 18px 0 0;
+  padding: 16px 18px;
+  border: 1px solid rgba(126, 224, 184, .34);
+  border-radius: 11px;
+  background: rgba(23, 68, 57, .28);
+}
+.focus-upload-done[hidden] { display: none; }
+.focus-upload-done p { display: flex; align-items: center; gap: 12px; margin: 0; font-size: 15px; }
+.focus-upload-done b { color: var(--green); font-size: 19px; }
+.focus-results-stage .today-head .eyebrow b,
+#focus-results-stage .today-head .eyebrow b { color: var(--green); }
+#focus-results-stage .today-head .eyebrow { color: var(--green); }
+.property-directory-card h2 { margin: 0; font-size: clamp(19px, 2.4vw, 24px); }
+.property-directory-card small { color: var(--cyan); font-size: 18px; }
+.property-gate-header h1 { margin: 6px 0 0; }
+.property-directory-card {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 18px;
+  min-height: 78px;
+  padding: 20px 24px;
+}
+@media (max-width: 640px) {
+  .focus-roadmap { display: flex; }
+  .focus-roadmap li { flex: 1 1 0; min-width: 0; padding: 12px 6px; text-align: center; }
+  .focus-roadmap li > span { margin: 0 auto 6px; }
+  .focus-roadmap strong { font-size: 11px; line-height: 1.2; overflow-wrap: anywhere; }
+}
