@@ -2059,6 +2059,30 @@ footer a:hover { color: var(--accent); }
   .proof-stage .proof-video[data-proof-video="commercial"] { opacity: 1 !important; }
 }
 
+/* 2026-08-18 — preserve the complete Spatial Time Machine frame.
+   The previous proof-stage rules were designed for cover-style background
+   clips. This hero is a presentation film with text inside the source frame,
+   so its 16:9 geometry must never be stretched or cropped. */
+.proof-stage.hero-film {
+  align-self: center;
+  aspect-ratio: 16 / 9;
+  height: auto;
+  min-height: 0;
+}
+.proof-stage.hero-film .hero-feature-video {
+  aspect-ratio: 16 / 9;
+  height: auto;
+  max-height: none;
+  min-height: 0;
+  object-fit: contain !important;
+  object-position: center;
+  width: 100%;
+}
+
+@media (max-width: 600px) {
+  .proof-stage.hero-film { aspect-ratio: 16 / 9; }
+}
+
 /* 2026-07-27 — compact presentation scale
    Keep the Film Center and narrative chapters readable without allowing them
    to expand into full-screen compositions on large displays. */
