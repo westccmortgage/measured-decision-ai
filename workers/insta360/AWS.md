@@ -10,13 +10,20 @@ region as the evidence bucket, so downloading originals costs nothing.
 | --- | --- |
 | Instance | `g4dn.xlarge` — 4 vCPU, 16 GB RAM, 1× T4 16 GB |
 | Region | `us-east-2` — the same region as `measured-decision-production-…` |
-| AMI | Deep Learning Base OSS Nvidia Driver GPU AMI (Ubuntu 22.04) |
+| AMI | **Ubuntu Server 22.04 LTS**, from the console's Quick Start tab |
 | Root volume | 120 GB gp3 |
 
-The Deep Learning Base AMI already carries the NVIDIA driver, Docker and the
-NVIDIA Container Toolkit. On a plain Ubuntu image all three must be installed by
-hand, which is the usual reason a first attempt fails with
-`could not select device driver "" with capabilities: [[gpu]]`.
+A GPU instance needs the NVIDIA driver, Docker and the NVIDIA Container Toolkit
+before it can run anything; without them the first `docker run --gpus all` fails
+with `could not select device driver "" with capabilities: [[gpu]]`.
+
+AWS's own Deep Learning AMI carries all three, but the console's AMI search does
+not surface it — searching for it returns third-party repackagings billed by the
+hour on top of EC2, and picking a lookalike out of 500 community images is not a
+step to hand anyone. So the instance runs **stock Ubuntu 22.04** from the Quick
+Start tab, which is unmistakable and free, and `user-data.sh` installs the three
+pieces itself on first boot, then reboots so the driver's kernel module is
+loaded before the job starts.
 
 ## Before launching: the GPU quota
 
@@ -41,13 +48,14 @@ From the EC2 dashboard in **us-east-2**, **Launch instance**:
 | Field | Value |
 | --- | --- |
 | Name | `mdai-360-worker` |
-| AMI | **Browse more AMIs** → search *Deep Learning Base OSS Nvidia Driver GPU AMI (Ubuntu 22.04)* |
+| AMI | **Ubuntu Server 22.04 LTS** — first tab, *Quick Start*, no search needed |
 | Instance type | `g4dn.xlarge` |
 | Key pair | any existing one, or *Proceed without a key pair* — Session Manager does not use it |
 | Network → Auto-assign public IP | **Enable** |
 | Configure storage | **120** GiB, gp3 |
 | Advanced details → IAM instance profile | `measured-decision-worker` |
 | Advanced details → Shutdown behavior | **Stop** |
+| Advanced details → User data | the whole of `user-data.sh`, with the Supabase service role key filled in |
 
 Auto-assign public IP matters: without it, and without VPC endpoints for SSM,
 the instance cannot reach Session Manager and Connect stays greyed out.
