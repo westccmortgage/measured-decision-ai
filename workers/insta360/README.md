@@ -28,3 +28,38 @@ docker run --rm --gpus all --env-file /private/mdai-worker.env measured-decision
 ```
 
 The worker claims prepared capture jobs, downloads both protected originals, creates a 5760×2880 2:1 HEVC master using optical-flow stitching, FlowState and direction lock, uploads the derivative, and updates Studio progress from 0–100%.
+
+It then **registers the master as an evidence item** pointing at the S3 object,
+with `projection: equirectangular` and `vr.playback_ready: true`, descending from
+the first lens original through `derivative_of`. Without that row the master
+exists in the bucket and nowhere in the product — the Studio lists evidence, not
+bucket keys — so the 360 viewer and the Vision Pro link would stay dark after a
+successful stitch. Registration is keyed on `storage_path`, so a re-run updates
+the same row instead of creating a second one.
+
+A claim is a conditional write (`state=in.(waiting_for_sdk,queued)` on the PATCH
+itself), so two workers cannot take the same capture. A failed job releases its
+capture group back to `ready` rather than stranding it in `stitching`.
+
+## Optional environment
+
+| Variable | Default | Purpose |
+| --- | --- | --- |
+| `STITCH_COMMAND` | `/usr/local/bin/stitch360` | Substitute the stitcher, for testing without the SDK |
+| `MASTER_WIDTH` / `MASTER_HEIGHT` | `5760` / `2880` | Master size; must stay 2:1 |
+| `MASTER_BITRATE` | `80000000` | Encoder bitrate |
+| `SDK_LABEL` | `Insta360 MediaSDK` | Recorded in the evidence metadata and manifest |
+| `POLL_SECONDS` | `15` | Idle poll interval |
+
+## Verify without the SDK
+
+```bash
+python3 workers/insta360/test_worker.py
+```
+
+Supabase and S3 are replaced with recorders and the stitcher with `stub_stitch.py`,
+which speaks the same arguments and the same progress protocol. The test asserts
+that both originals are downloaded, the master is uploaded, exactly one evidence
+row is written with the right projection and provenance, progress climbs, and the
+capture group ends at `vr_ready`. It proves the parts this project owns; it cannot
+prove the stitch itself, which needs the licensed library and a GPU.
