@@ -27,6 +27,8 @@ MASTER_WIDTH = int(os.getenv("MASTER_WIDTH", "5760"))
 MASTER_HEIGHT = int(os.getenv("MASTER_HEIGHT", "2880"))
 MASTER_BITRATE = int(os.getenv("MASTER_BITRATE", "80000000"))
 SDK_LABEL = os.getenv("SDK_LABEL", "Insta360 MediaSDK")
+# The SDK loads its AI weights from here; the vendor example defaults to ./models/.
+MODELS_DIR = os.getenv("MODELS_DIR", "/app/models")
 
 headers = {"apikey": SERVICE_KEY, "Authorization": f"Bearer {SERVICE_KEY}", "Content-Type": "application/json"}
 s3 = boto3.client(
@@ -182,6 +184,7 @@ def process(job):
             "--width", str(MASTER_WIDTH),
             "--height", str(MASTER_HEIGHT),
             "--bitrate", str(MASTER_BITRATE),
+            "--models", MODELS_DIR,
         ]
         patch_job(job["id"], stage="Optical-flow stitching and FlowState", progress=10)
 

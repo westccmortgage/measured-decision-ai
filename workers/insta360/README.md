@@ -65,13 +65,15 @@ DOCKER_BUILDKIT=1 docker build \
   -t measured-decision/insta360-worker:3.1.1 .
 ```
 
-The vendor `ReadMe.md` documents no model path and no environment variable, and
-in the download `models/` sits beside `example/main.cc` — the folder you compile
-the demo in and run it from. The SDK therefore appears to resolve the weights
-relative to the working directory, so the image also places them at
-`/app/models`, next to the worker's `WORKDIR`. Treat that as a reasoned
-placement until the first real stitch confirms it; the build-time check below
-will not catch a wrong model path, only a missing library.
+The vendor example settles how the SDK finds them: `ins::SetModelFileRootDir()`
+is an explicit call, and the demo's own help text defaults it to `./models/`.
+Nothing is implicit. `stitch360.cc` therefore calls it with `--models`, the
+worker passes `MODELS_DIR` (default `/app/models`), and the image places the
+weights there beside the worker's `WORKDIR`.
+
+The same example shows two calls that are equally mandatory and equally silent
+when omitted: `ins::InitEnv()` starts the SDK, and `ins::SetLogLevel()` sets its
+verbosity. Constructing a `VideoStitcher` does not imply either.
 
 Never copy, commit, or publish the SDK archive, `.deb`, libraries, headers, or model files.
 

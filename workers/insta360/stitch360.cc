@@ -9,6 +9,9 @@
 int main(int argc, char** argv) {
   std::vector<std::string> inputs;
   std::string output;
+  // The SDK resolves its AI weights from this directory and the vendor example
+  // defaults it to ./models/, so the container places them beside the worker.
+  std::string model_root_dir = "./models/";
   int width = 5760;
   int height = 2880;
   int64_t bitrate = 80000000;
@@ -20,12 +23,21 @@ int main(int argc, char** argv) {
     else if (arg == "--width" && i + 1 < argc) width = std::stoi(argv[++i]);
     else if (arg == "--height" && i + 1 < argc) height = std::stoi(argv[++i]);
     else if (arg == "--bitrate" && i + 1 < argc) bitrate = std::stoll(argv[++i]);
+    else if (arg == "--models" && i + 1 < argc) model_root_dir = argv[++i];
   }
 
   if (inputs.empty() || output.empty() || width <= 0 || height <= 0 || width != height * 2) {
-    std::cerr << "Usage: stitch360 --input lens00.insv --input lens10.insv --output master.mp4 [--width 5760 --height 2880 --bitrate 80000000]\n";
+    std::cerr << "Usage: stitch360 --input lens00.insv --input lens10.insv --output master.mp4"
+                 " [--width 5760 --height 2880 --bitrate 80000000 --models ./models/]\n";
     return 2;
   }
+
+  // Both calls are mandatory and neither is implied by constructing a stitcher:
+  // without InitEnv the SDK is not started, and without a model root the passes
+  // that load weights fail at run time rather than at startup.
+  ins::SetLogLevel(ins::InsLogLevel::ERR);
+  ins::InitEnv();
+  ins::SetModelFileRootDir(model_root_dir);
 
   std::mutex mutex;
   std::condition_variable condition;
