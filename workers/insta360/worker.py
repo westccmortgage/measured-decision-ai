@@ -19,6 +19,10 @@ import requests
 SUPABASE_URL = os.environ["SUPABASE_URL"].rstrip("/")
 SERVICE_KEY = os.environ["SUPABASE_SERVICE_ROLE_KEY"]
 POLL_SECONDS = int(os.getenv("POLL_SECONDS", "15"))
+# On a rented GPU an idle loop is money burning. Zero means run forever; any
+# positive number exits cleanly after that many empty polls, so the host can
+# shut itself down between batches.
+MAX_IDLE_POLLS = int(os.getenv("MAX_IDLE_POLLS", "0"))
 OUTPUT_BUCKET = os.getenv("OUTPUT_BUCKET", os.environ["AWS_S3_BUCKET"])
 # Overridable so the pipeline can be exercised end to end before the licensed
 # SDK is installed. The substitute must accept the same arguments.
@@ -230,13 +234,19 @@ def process(job):
 
 
 def main():
+    idle_polls = 0
     while True:
         job = None
         try:
             job = claim_job()
             if job:
+                idle_polls = 0
                 process(job)
             else:
+                idle_polls += 1
+                if MAX_IDLE_POLLS and idle_polls >= MAX_IDLE_POLLS:
+                    print(f"queue empty for {idle_polls} polls, exiting", flush=True)
+                    return 0
                 time.sleep(POLL_SECONDS)
         except Exception as error:
             print(f"worker error: {error}", flush=True)
@@ -248,8 +258,9 @@ def main():
                     set_group_state(job["capture_group_id"], "ready")
                 except Exception as reset_error:
                     print(f"could not reset capture group: {reset_error}", flush=True)
+            idle_polls = 0
             time.sleep(POLL_SECONDS)
 
 
 if __name__ == "__main__":
-    main()
+    raise SystemExit(main())

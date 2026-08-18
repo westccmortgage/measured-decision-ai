@@ -77,6 +77,9 @@ verbosity. Constructing a `VideoStitcher` does not imply either.
 
 Never copy, commit, or publish the SDK archive, `.deb`, libraries, headers, or model files.
 
+Host setup, connecting, and the stop-when-idle batch run are in
+[`AWS.md`](AWS.md).
+
 ## Run
 
 Provide `SUPABASE_URL`, `SUPABASE_SERVICE_ROLE_KEY`, `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`, `AWS_REGION`, and `AWS_S3_BUCKET` through the host secret manager, then run with GPU access:
@@ -108,6 +111,7 @@ capture group back to `ready` rather than stranding it in `stitching`.
 | `MASTER_BITRATE` | `80000000` | Encoder bitrate |
 | `SDK_LABEL` | `Insta360 MediaSDK` | Recorded in the evidence metadata and manifest |
 | `POLL_SECONDS` | `15` | Idle poll interval |
+| `MAX_IDLE_POLLS` | `0` (never) | Exit after this many empty polls, so a rented GPU can shut down between batches |
 
 ## Verify without the SDK
 
