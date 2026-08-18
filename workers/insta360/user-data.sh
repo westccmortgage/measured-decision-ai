@@ -38,7 +38,18 @@ chmod 600 /opt/mdai/worker.env
 # so every apt call waits instead of failing.
 APT="apt-get -o DPkg::Lock::Timeout=600 -y"
 $APT update
-$APT install -y git curl gnupg awscli ubuntu-drivers-common
+$APT install -y git curl gnupg unzip ubuntu-drivers-common
+$APT install -y awscli || true
+
+# Everything this machine does depends on reaching the bucket: the SDK comes
+# from it and the log goes back to it. If the distribution package is missing or
+# broken the run is blind, so the official installer is the fallback rather than
+# an afterthought.
+if ! command -v aws >/dev/null; then
+  curl -fsSL "https://awscli.amazonaws.com/awscli-exe-linux-x86_64.zip" -o /tmp/awscliv2.zip &&
+    unzip -q /tmp/awscliv2.zip -d /tmp && /tmp/aws/install --update
+fi
+command -v aws || echo "MDAI: aws CLI could not be installed"
 
 # The T4 driver. --gpgpu picks the headless server build, which is what a
 # machine with no display wants.
@@ -95,6 +106,18 @@ trap finish EXIT
 nvidia-smi
 docker run --rm --gpus all nvidia/cuda:11.7.1-base-ubuntu22.04 nvidia-smi
 
+# Check the two things the whole run rests on, and say plainly which one is
+# missing. Grinding through a 20-minute build to fail on an empty secret wastes
+# GPU time and explains nothing.
+if ! command -v aws >/dev/null; then
+  echo "MDAI STOP: the aws CLI is not installed, so neither the SDK nor the log can move" > /dev/console
+  exit 90
+fi
+aws sts get-caller-identity --region "$AWS_REGION" ||
+  { echo "MDAI STOP: this instance has no working AWS identity — check its IAM role" > /dev/console; exit 91; }
+aws s3 ls "s3://${AWS_S3_BUCKET}/private-sdk/" --region "$AWS_REGION" ||
+  { echo "MDAI STOP: the role cannot read s3://${AWS_S3_BUCKET}/private-sdk/ — check the role's S3 policy" > /dev/console; exit 92; }
+
 mkdir -p /opt/mdai/private
 aws s3 cp --recursive "s3://${AWS_S3_BUCKET}/private-sdk/" /opt/mdai/private/ --region "$AWS_REGION"
 ls -R /opt/mdai/private
@@ -113,6 +136,11 @@ else
 fi
 tar -cf /opt/mdai/insta360-sdk.tar -C /opt/mdai/sdk .
 ls -R /opt/mdai/sdk | head -50
+# An empty secret builds nothing but takes the full image pull to find out.
+if ! find /opt/mdai/sdk -name 'libMediaSDK*' -print -quit | grep -q .; then
+  echo "MDAI STOP: no libMediaSDK found in the bucket folder — check what private-sdk/ holds" > /dev/console
+  exit 93
+fi
 
 rm -rf /opt/mdai/repo
 git clone --depth 1 https://github.com/westccmortgage/measured-decision-ai.git /opt/mdai/repo
