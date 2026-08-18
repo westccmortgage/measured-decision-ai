@@ -1,0 +1,67 @@
+#!/bin/sh
+# Install the licensed Insta360 MediaSDK from whatever form the vendor portal
+# handed over. The download has appeared as a .deb, as a .tar.xz wrapping that
+# .deb, and as a plain tree of lib/ and include/ — so the build accepts all
+# three rather than making the operator repackage it by hand.
+#
+#   install-sdk.sh <archive-or-package> [prefix]
+#
+# The SDK itself is never copied into this repository or into any image layer
+# that gets published; it arrives as a BuildKit secret and stays in the build.
+set -eu
+
+SOURCE=${1:?usage: install-sdk.sh <archive-or-package> [prefix]}
+PREFIX=${2:-/usr/local}
+WORK=$(mktemp -d)
+trap 'rm -rf "$WORK"' EXIT
+
+install_deb() {
+  echo "Insta360 SDK: installing Debian package $(basename "$1")"
+  if [ "$PREFIX" = "/usr/local" ] && [ "$(id -u)" = "0" ]; then
+    apt-get update
+    apt-get install -y "$1"
+    rm -f "$1"
+  else
+    # Used by the test: unpack without touching the host package database.
+    dpkg-deb -x "$1" "$PREFIX/.deb-root"
+    copy_tree "$PREFIX/.deb-root"
+  fi
+}
+
+copy_tree() {
+  root=$1
+  found_lib=$(find "$root" -name 'libMediaSDK*.so*' -print -quit)
+  if [ -z "$found_lib" ]; then
+    echo "Insta360 SDK: no libMediaSDK shared library found in the supplied package" >&2
+    exit 3
+  fi
+  mkdir -p "$PREFIX/lib" "$PREFIX/include"
+  find "$root" -name 'libMediaSDK*.so*' -exec cp -a {} "$PREFIX/lib/" \;
+  # Headers can sit in include/ or usr/include/; take whichever exists.
+  for dir in $(find "$root" -type d -name include); do
+    cp -a "$dir/." "$PREFIX/include/"
+  done
+  if [ ! -f "$PREFIX/include/ins_stitcher.h" ]; then
+    echo "Insta360 SDK: ins_stitcher.h is missing — this looks like the CameraSDK, not the MediaSDK" >&2
+    exit 4
+  fi
+  echo "Insta360 SDK: installed into $PREFIX"
+}
+
+if dpkg-deb --info "$SOURCE" >/dev/null 2>&1; then
+  install_deb "$SOURCE"
+elif [ -d "$SOURCE" ]; then
+  echo "Insta360 SDK: using the already extracted tree"
+  copy_tree "$SOURCE"
+else
+  echo "Insta360 SDK: expanding $(basename "$SOURCE")"
+  tar -xf "$SOURCE" -C "$WORK"
+  inner_deb=$(find "$WORK" -name '*.deb' -print -quit)
+  if [ -n "$inner_deb" ]; then
+    install_deb "$inner_deb"
+  else
+    copy_tree "$WORK"
+  fi
+fi
+
+[ "$(id -u)" = "0" ] && command -v ldconfig >/dev/null 2>&1 && ldconfig || true

@@ -13,9 +13,22 @@ Private runtime for paired X3 INSV sources. The licensed Insta360 package is int
 
 ```bash
 DOCKER_BUILDKIT=1 docker build \
-  --secret id=insta360_deb,src=/private/libMediaSDK-dev-3.1.1.0-amd64.deb \
+  --secret id=insta360_sdk,src=/private/libMediaSDK-dev-3.1.1.0-amd64.tar.xz \
   -t measured-decision/insta360-worker:3.1.1 .
 ```
+
+The secret may be any form the Insta360 portal hands over, because
+`install-sdk.sh` detects which one it is:
+
+- a `.deb` package,
+- a `.tar.xz` (or `.tar.gz`) wrapping that `.deb`,
+- a `.tar.xz` holding `lib/` and `include/` directly,
+- an already extracted directory.
+
+The build stops with a clear message if the package contains no
+`libMediaSDK*.so` or no `ins_stitcher.h` — which is what happens if the
+**CameraSDK** is supplied by mistake. CameraSDK controls a connected camera and
+cannot stitch a file; only MediaSDK can, and only on x86_64.
 
 Never copy, commit, or publish the SDK archive, `.deb`, libraries, headers, or model files.
 
