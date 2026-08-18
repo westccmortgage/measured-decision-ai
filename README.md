@@ -75,6 +75,38 @@ protected field link, and shows the exact delivery error; it never labels a
 generated link as a delivered email. A `sent` state means that Resend accepted
 the message for delivery, not that the recipient opened or received it.
 
+## Studio route: project today → decision
+
+Opening a project no longer lands on a bare upload box. The signed-in Studio is
+one route with no dead ends, and it is built for a phone first:
+
+1. **Project today** — what the record says right now, what changed since the
+   last upload, what needs attention, and a single next action with a named
+   owner. The chain below it (plans → evidence → AI review → human verification
+   → decision → spatial record) is interactive: every step either opens the
+   screen that advances it or says why it cannot run yet.
+2. **Upload** — originals go to private storage unchanged.
+3. **AI processing** — a real percentage, a row per space with its current
+   stage, the exact error when one fails, and a retry that reruns only that
+   space.
+4. **Results** — every metric names what it counts, and every space opens.
+
+Opening a space shows its evidence, the AI interpretation labeled as a
+suggestion, the open questions the AI could not establish, requested captures,
+and the human verification controls that turn a suggestion into a record. A
+factual note written at confirmation is the decision record for that space.
+
+Evidence opens in `studio/pano360.js`, a dependency-free viewer. Equirectangular
+photos and MP4 exports render as a real sphere with drag, pinch, and device
+orientation; flat photos, video, and documents open in the same place, so
+"see the evidence" is always one action. Protected Insta360 originals cannot be
+played by a browser, and the viewer says so and points at the export step
+instead of failing silently.
+
+`Copy link for Vision Pro` produces `/studio/?property=…&evidence=…`, which opens
+the project straight on that capture. That link is the current bridge into a
+headset; a native visionOS client is still ahead of it.
+
 ## Vision chapters
 
 The site includes four illustrated chapters explaining the company's direction:
