@@ -2123,44 +2123,66 @@ function focusChainItems(stats) {
   ];
 }
 
+/* One row per space, never one row per AI sentence: the individual questions
+   belong in the space sheet, and Today has to stay readable on a phone. */
 function focusAttentionItems(stats) {
   const entries = [];
-  stats.unanalyzedRooms.forEach((room) => {
-    entries.push({
-      tone: "wait",
-      title: room.name,
-      copy: "Visual evidence is stored but has not been interpreted.",
-      actionLabel: "Start AI review",
-      run: () => processFocusEvidence(),
-    });
+  const originalsOnly = [];
+  stats.spaces.forEach((room) => {
+    const analyzable = room.evidence.some((item) => isImage(item) || isVideo(item));
+    const followUps = room.analysis?.follow_up_captures?.length || 0;
+    const questions = room.analysis ? (room.unknown || []).length : 0;
+    const detail = [
+      questions ? `${questions} open question${questions === 1 ? "" : "s"}` : "",
+      followUps ? `${followUps} capture${followUps === 1 ? "" : "s"} requested` : "",
+    ].filter(Boolean).join(" · ");
+
+    if (analyzable && !room.analysis) {
+      entries.push({
+        tone: "wait",
+        title: room.name,
+        copy: "Visual evidence is stored but has not been interpreted.",
+        actionLabel: "Start AI review",
+        run: () => processFocusEvidence(),
+      });
+      return;
+    }
+    if (room.analysis && room.status !== "confirmed") {
+      entries.push({
+        tone: "review",
+        title: room.name,
+        copy: [room.analysis.summary || "AI interpretation is waiting for human verification.", detail]
+          .filter(Boolean)
+          .join(" · "),
+        actionLabel: "Open and verify",
+        run: () => openFocusSheet(room.id, "today"),
+      });
+      return;
+    }
+    if (room.analysis && followUps) {
+      entries.push({
+        tone: "capture",
+        title: `${room.name} · capture requested`,
+        copy: `${room.analysis.follow_up_captures[0].request}${followUps > 1 ? ` (+${followUps - 1} more)` : ""}`,
+        actionLabel: "Send a field task",
+        run: () => openFieldOperations(),
+      });
+      return;
+    }
+    if (!analyzable && room.evidence.some(focusIsCameraOriginal) && !room.evidence.some(focusIsSpatial)) {
+      originalsOnly.push(room);
+    }
   });
-  stats.awaitingReview.forEach((room) => {
-    entries.push({
-      tone: "review",
-      title: room.name,
-      copy: room.analysis?.summary || "AI interpretation is waiting for human verification.",
-      actionLabel: "Open and verify",
-      run: () => openFocusSheet(room.id, "today"),
-    });
-  });
-  stats.openQuestions.slice(0, 4).forEach((question) => {
-    entries.push({
-      tone: "unknown",
-      title: `${question.room.name} · not established`,
-      copy: question.text,
-      actionLabel: "Open the evidence",
-      run: () => openFocusSheet(question.room.id, "today"),
-    });
-  });
-  stats.followUps.slice(0, 4).forEach((followUp) => {
+
+  if (originalsOnly.length) {
     entries.push({
       tone: "capture",
-      title: `${followUp.room.name} · capture requested`,
-      copy: [followUp.request, followUp.reason].filter(Boolean).join(" — "),
-      actionLabel: "Send a field task",
-      run: () => openFieldOperations(),
+      title: `${originalsOnly.length} space${originalsOnly.length === 1 ? "" : "s"} hold camera originals only`,
+      copy: `${originalsOnly.slice(0, 3).map((room) => room.name).join(", ")}${originalsOnly.length > 3 ? " and others" : ""} — a browser and the AI both need a full 360 MP4 export before anything can be seen or interpreted.`,
+      actionLabel: "Upload the exports",
+      run: () => showFocusStage("upload"),
     });
-  });
+  }
   if (stats.waiting360) {
     entries.push({
       tone: "capture",
