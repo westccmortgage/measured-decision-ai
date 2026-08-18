@@ -656,6 +656,22 @@ function renderRoadmapDivergence() {
 
   if (shown.id !== active.id) {
     banner.hidden = false;
+    openButton.hidden = false;
+    openButton.textContent = `Open v${active.version}, the live roadmap`;
+    openButton.dataset.baseline = active.id;
+
+    /* A superseded roadmap is history. It cannot be approved again, and its
+       tasks must not be dispatched — the plan they describe was replaced. */
+    if (shown.state === "superseded") {
+      $("#divergence-eyebrow").textContent = "Replaced roadmap";
+      $("#divergence-title").textContent = `v${shown.version} was replaced by v${active.version}.`;
+      $("#divergence-copy").textContent =
+        `You are reading a roadmap that is no longer governing. v${active.version} was approved on ${approvedOn} and is what the field runs, ` +
+        `so tasks here cannot be sent — a worker would capture against a plan that has been superseded.`;
+      approveButton.hidden = true;
+      return;
+    }
+
     $("#divergence-eyebrow").textContent = "Two roadmaps";
     $("#divergence-title").textContent = `You are reading v${shown.version}. Field Operations is running v${active.version}.`;
     $("#divergence-copy").textContent =
@@ -664,9 +680,6 @@ function renderRoadmapDivergence() {
       `Approving v${shown.version} replaces v${active.version} and unblocks the tasks you see here.`;
     approveButton.hidden = !canApproveBaseline() || shown.state === "approved";
     approveButton.textContent = `Approve v${shown.version} & replace v${active.version}`;
-    openButton.hidden = false;
-    openButton.textContent = `Open v${active.version}, the live roadmap`;
-    openButton.dataset.baseline = active.id;
     return;
   }
 
@@ -693,6 +706,13 @@ function renderRoadmapDivergence() {
 function sendBlockedReason(task) {
   if (!canApproveBaseline()) return "Your role cannot send field tasks. An owner, admin, or reviewer can send this one.";
   if (!task?.id) return "This capture task does not exist in the current baseline.";
+  /* Only the governing roadmap may be dispatched. A ready task on a replaced
+     baseline still looks sendable, and sending it puts a worker in front of a
+     requirement the project has already moved past. */
+  const active = state.activeBaseline;
+  if (active && state.baseline && state.baseline.id !== active.id) {
+    return `This roadmap is not the one the field is running. v${active.version} is governing — open it to send its tasks.`;
+  }
   if (task.status === "blocked") {
     return state.baseline?.state === "approved"
       ? "This task is blocked in the approved baseline."
