@@ -88,12 +88,27 @@ mkdir -p /opt/mdai/private
 aws s3 cp --recursive "s3://${AWS_S3_BUCKET}/private-sdk/" /opt/mdai/private/ --region "$AWS_REGION"
 ls -R /opt/mdai/private
 
+# The build takes exactly one file as its secret, and the bucket may hold the
+# vendor download in any of its shapes — the .deb beside models/, or the .tar.xz
+# that wraps both, next to CameraSDK archives that are a different product. Pack
+# what matters into one tar so the build has a single, predictable input.
+rm -rf /opt/mdai/sdk /opt/mdai/insta360-sdk.tar
+mkdir -p /opt/mdai/sdk
+SDK_ARCHIVE="$(find /opt/mdai/private -name 'libMediaSDK*.tar*' -print -quit)"
+if [ -n "$SDK_ARCHIVE" ]; then
+  tar -xf "$SDK_ARCHIVE" -C /opt/mdai/sdk
+else
+  cp -a /opt/mdai/private/. /opt/mdai/sdk/
+fi
+tar -cf /opt/mdai/insta360-sdk.tar -C /opt/mdai/sdk .
+ls -R /opt/mdai/sdk | head -50
+
 rm -rf /opt/mdai/repo
 git clone --depth 1 https://github.com/westccmortgage/measured-decision-ai.git /opt/mdai/repo
 cd /opt/mdai/repo/workers/insta360
 
 DOCKER_BUILDKIT=1 docker build \
-  --secret id=insta360_sdk,src=/opt/mdai/private \
+  --secret id=insta360_sdk,src=/opt/mdai/insta360-sdk.tar \
   -t measured-decision/insta360-worker:3.1.1 .
 
 # Proves claiming, progress, trimming and publishing before a real capture is

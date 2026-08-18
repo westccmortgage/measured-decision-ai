@@ -1,8 +1,9 @@
 #!/bin/sh
 # Install the licensed Insta360 MediaSDK from whatever form the vendor portal
 # handed over. The download has appeared as a .deb, as a .tar.xz wrapping that
-# .deb, and as a plain tree of lib/ and include/ — so the build accepts all
-# three rather than making the operator repackage it by hand.
+# .deb, as a plain tree of lib/ and include/, and as a folder holding the
+# archive beside unrelated CameraSDK tarballs — so the build accepts all of
+# them rather than making the operator repackage it by hand.
 #
 #   install-sdk.sh <archive-or-package> [prefix]
 #
@@ -70,14 +71,29 @@ if dpkg-deb --info "$SOURCE" >/dev/null 2>&1; then
   # A bare .deb carries no models; they live beside it in the vendor folder.
   copy_models "$(dirname "$SOURCE")"
 elif [ -d "$SOURCE" ]; then
-  echo "Insta360 SDK: using the already extracted tree"
+  echo "Insta360 SDK: reading the supplied folder"
   inner_deb=$(find "$SOURCE" -name '*.deb' -print -quit)
+  # The portal also hands the download over as an archive sitting in a folder
+  # next to the CameraSDK tarballs, which are a different product entirely — so
+  # the MediaSDK archive is picked by name rather than by being the first tar.
+  archive=$(find "$SOURCE" -name 'libMediaSDK*.tar*' -print -quit)
   if [ -n "$inner_deb" ]; then
     install_deb "$inner_deb"
+    copy_models "$SOURCE"
+  elif [ -n "$archive" ]; then
+    echo "Insta360 SDK: expanding $(basename "$archive") from the folder"
+    tar -xf "$archive" -C "$WORK"
+    nested_deb=$(find "$WORK" -name '*.deb' -print -quit)
+    if [ -n "$nested_deb" ]; then
+      install_deb "$nested_deb"
+    else
+      copy_tree "$WORK"
+    fi
+    copy_models "$WORK"
   else
     copy_tree "$SOURCE"
+    copy_models "$SOURCE"
   fi
-  copy_models "$SOURCE"
 else
   echo "Insta360 SDK: expanding $(basename "$SOURCE")"
   tar -xf "$SOURCE" -C "$WORK"
