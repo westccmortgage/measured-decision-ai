@@ -22,6 +22,7 @@ type VideoFrame = {
   evidence_id: string;
   timestamp_seconds: number;
   data_url: string;
+  equirectangular: boolean;
 };
 
 type AnalysisJob = {
@@ -110,10 +111,23 @@ function normalizeFrames(
       evidence_id: evidenceId,
       timestamp_seconds: timestampSeconds,
       data_url: dataUrl,
+      equirectangular: frame.equirectangular === true,
     });
   }
   return frames;
 }
+
+/* The frame is the whole sphere, so a position inside it is a direction in the
+   room. Saying that in the prompt is what turns a sentence into a place a
+   person can look at, and the "leave it null" rule is what keeps a guessed
+   position from becoming a pin pointing at nothing. */
+const SPHERICAL_ANCHOR_INSTRUCTIONS = [
+  "Some supplied frames are equirectangular 360 projections: one image holds the entire sphere around the camera.",
+  "For an observation you can point at in such a frame, set frame_anchor to the position of that thing inside that frame:",
+  "u is the horizontal fraction from the left edge (0) to the right edge (1); v is the vertical fraction from the top edge (0, straight up) to the bottom edge (1, straight down).",
+  "Use the evidence_id and timestamp of the exact frame you are pointing at.",
+  "Set frame_anchor to null when the observation covers the whole space, when it comes from a flat photo, or when you cannot point at it precisely. A wrong position is worse than none.",
+].join(" ");
 
 function outputText(payload: Record<string, unknown>) {
   for (const output of (payload.output as Array<Record<string, unknown>>) ||
@@ -132,7 +146,27 @@ function outputText(payload: Record<string, unknown>) {
   fail("The model returned no structured interpretation.", 502);
 }
 
-function analysisSchema(evidenceIds: string[]) {
+/* A 360 frame is a whole sphere flattened into one picture, so the model can
+   say where in that picture a thing sits. That pair of fractions is all the
+   viewer needs to put a marker on the thing itself — the reader stops reading
+   about a wall-mounted enclosure and looks at it. When no spherical frame was
+   supplied there is nothing to anchor to, and the field is left out entirely
+   rather than inviting a guess. */
+function frameAnchorSchema(evidenceIdSchema: Record<string, unknown>) {
+  return {
+    type: ["object", "null"],
+    properties: {
+      evidence_id: evidenceIdSchema,
+      timestamp_seconds: { type: "number" },
+      u: { type: "number" },
+      v: { type: "number" },
+    },
+    required: ["evidence_id", "timestamp_seconds", "u", "v"],
+    additionalProperties: false,
+  };
+}
+
+function analysisSchema(evidenceIds: string[], anchorable: boolean) {
   const evidenceIdSchema = {
     type: "string",
     enum: evidenceIds,
@@ -174,8 +208,17 @@ function analysisSchema(evidenceIds: string[]) {
               minimum: 0,
               maximum: 1,
             },
+            ...(anchorable
+              ? { frame_anchor: frameAnchorSchema(evidenceIdSchema) }
+              : {}),
           },
-          required: ["text", "category", "evidence_ids", "confidence"],
+          required: [
+            "text",
+            "category",
+            "evidence_ids",
+            "confidence",
+            ...(anchorable ? ["frame_anchor"] : []),
+          ],
           additionalProperties: false,
         },
       },
@@ -351,6 +394,10 @@ Deno.serve(async (request) => {
     }
     const evidenceById = new Map(evidence.map((item) => [item.id, item]));
     const videoFrames = normalizeFrames(body.video_frames, evidenceById);
+    const sphericalFrames = videoFrames.filter((frame) => frame.equirectangular);
+    const sphericalEvidenceIds = new Set(
+      sphericalFrames.map((frame) => frame.evidence_id),
+    );
 
     await admin
       .from("analysis_jobs")
@@ -382,6 +429,7 @@ Deno.serve(async (request) => {
         `Processing profile: ${job.profile} v${job.profile_version}`,
         `Evidence manifest: ${JSON.stringify(evidenceManifest)}`,
         "Analyze only the visual material that follows. Every visible observation must cite one or more exact evidence IDs from the manifest.",
+        ...(sphericalFrames.length ? [SPHERICAL_ANCHOR_INSTRUCTIONS] : []),
       ].join("\n"),
     });
 
@@ -414,7 +462,7 @@ Deno.serve(async (request) => {
       const source = evidenceById.get(frame.evidence_id);
       content.push({
         type: "input_text",
-        text: `Video frame from evidence ${frame.evidence_id} · ${source?.original_filename || "video"} · ${frame.timestamp_seconds.toFixed(1)} seconds`,
+        text: `${frame.equirectangular ? "Equirectangular 360 frame" : "Video frame"} from evidence ${frame.evidence_id} · ${source?.original_filename || "video"} · ${frame.timestamp_seconds.toFixed(1)} seconds`,
       });
       content.push({
         type: "input_image",
@@ -442,7 +490,7 @@ Deno.serve(async (request) => {
             type: "json_schema",
             name: "property_evidence_interpretation",
             strict: true,
-            schema: analysisSchema(job.evidence_ids),
+            schema: analysisSchema(job.evidence_ids, sphericalFrames.length > 0),
           },
         },
         max_output_tokens: 3500,
@@ -479,6 +527,41 @@ Deno.serve(async (request) => {
     >;
     const observations =
       (analysis.visible_observations as Array<Record<string, unknown>>) || [];
+    /* An anchor is only meaningful on the sphere it was read from. Anything
+       pointing at a flat photo, or off the edge of the frame, is dropped rather
+       than stored: the marker layer must never place a pin the evidence does
+       not support. */
+    for (const observation of observations) {
+      const anchor = observation.frame_anchor as
+        | Record<string, unknown>
+        | null
+        | undefined;
+      if (!anchor) {
+        observation.frame_anchor = null;
+        continue;
+      }
+      const u = Number(anchor.u);
+      const v = Number(anchor.v);
+      const anchorEvidenceId = String(anchor.evidence_id || "");
+      if (
+        !sphericalEvidenceIds.has(anchorEvidenceId) ||
+        !Number.isFinite(u) ||
+        !Number.isFinite(v) ||
+        u < 0 ||
+        u > 1 ||
+        v < 0 ||
+        v > 1
+      ) {
+        observation.frame_anchor = null;
+        continue;
+      }
+      observation.frame_anchor = {
+        evidence_id: anchorEvidenceId,
+        timestamp_seconds: Number(anchor.timestamp_seconds) || 0,
+        u,
+        v,
+      };
+    }
     const confidence = observations.length
       ? observations.reduce(
           (sum, item) => sum + Number(item.confidence || 0),
@@ -533,6 +616,10 @@ Deno.serve(async (request) => {
           evidence_count: evidence.length,
           image_count: imageCount,
           video_frame_count: videoFrames.length,
+          spherical_frame_count: sphericalFrames.length,
+          anchored_observation_count: observations.filter(
+            (observation) => observation.frame_anchor,
+          ).length,
           suggestion_id: suggestion.id,
           agent_key: "evidence_inspector",
           collaborating_agents: ["verification_guard"],

@@ -571,6 +571,26 @@ progress::-moz-progress-bar { background: linear-gradient(90deg, #32bacd, #79e1b
 .sheet-findings-group { margin-bottom: 16px; }
 .sheet-findings-group h4 { margin: 0 0 8px; font-size: 13px; color: #b9cad6; }
 .sheet-findings-group ul { margin: 0; padding-left: 18px; color: #8ba0b2; font-size: 13px; line-height: 1.6; }
+/* A marked point is a way into the sphere: the row is a button, and it opens
+   the capture already looking at the thing the row names. */
+.sheet-marker-list { list-style: none; padding-left: 0; }
+.sheet-marker-list li { margin-bottom: 6px; }
+.sheet-marker-list button {
+  display: flex; width: 100%; align-items: center; gap: 10px; min-height: 46px;
+  padding: 8px 12px; border: 1px solid #223649; border-radius: 10px;
+  background: rgba(10, 20, 33, .6); color: #dce7ef; font: inherit; font-size: 13px;
+  text-align: left; cursor: pointer;
+}
+.sheet-marker-list button:hover { border-color: #52d2df; }
+.sheet-marker-list button span { flex: 1; }
+.marker-state {
+  flex: 0 0 auto; padding: 3px 9px; border-radius: 999px; border: 1px solid;
+  font-size: 11px; font-style: normal; font-weight: 600;
+}
+.marker-state.review { color: #e8b070; border-color: rgba(232, 176, 112, .5); }
+.marker-state.ok { color: #6fd8a8; border-color: rgba(111, 216, 168, .5); }
+.marker-state.wait { color: #9db4ff; border-color: rgba(157, 180, 255, .5); }
+.marker-state.off { color: #93a5b6; border-color: rgba(147, 165, 182, .45); }
 .sheet-note-label { display: block; margin-bottom: 14px; color: var(--muted); font-size: 12px; }
 .sheet-note-label textarea {
   display: block;

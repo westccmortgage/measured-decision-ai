@@ -111,6 +111,17 @@
           <div class="group"><h4>Visible in the evidence</h4>${list(space.visible, "Nothing was recorded as visible.")}</div>
           <div class="group"><h4>Not established</h4>${list(space.unknown, "No open questions were recorded.")}</div>`}
         ${captures.length ? `<div class="group"><h4>Capture requested</h4>${list(captures, "")}</div>` : ""}
+        ${space.markers?.length
+          ? `<div class="group"><h4>Marked in the 360 record</h4>${list(
+              space.markers.map((marker) =>
+                [marker.label, marker.at ? `at ${marker.at}` : "", `— ${marker.state}`].filter(Boolean).join(" "),
+              ),
+              "",
+            )}</div>`
+          : ""}
+        ${space.document_requests?.length
+          ? `<div class="group"><h4>Waiting on a document</h4>${list(space.document_requests, "")}</div>`
+          : ""}
         ${space.note ? `<div class="group"><h4>Verified by a person</h4><p>${escapeText(space.note)}</p></div>` : ""}
         <p class="muted">${escapeText(space.files_line)}${space.trim_note ? ` · ${escapeText(space.trim_note)}` : ""}</p>
         ${space.spatial_link ? `<p><a href="${escapeText(space.spatial_link)}">Open the 360 record of this space &rarr;</a></p>` : ""}
@@ -179,6 +190,11 @@
     ${list(model.open_questions, "The record leaves no question open.")}</div>
   <div class="group"><h4>Captures requested</h4>
     ${list(model.capture_requests, "No further capture has been requested.")}</div>
+  <div class="group"><h4>Documents requested</h4>
+    ${list(
+      model.document_requests || [],
+      "Every marked installation is either covered by a document or has not been checked against one yet.",
+    )}</div>
 
   <footer class="doc">
     Every statement above is traceable to a file in this project. Links to individual files expire for security; the
