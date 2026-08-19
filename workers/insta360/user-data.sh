@@ -52,8 +52,17 @@ fi
 command -v aws || echo "MDAI: aws CLI could not be installed"
 
 # The T4 driver. --gpgpu picks the headless server build, which is what a
-# machine with no display wants.
+# machine with no display wants — but it deliberately stops short of the user
+# tools, so the machine ends up with a GPU it cannot see: nvidia-smi is missing,
+# the container toolkit has nothing to inject, and every CUDA job fails with no
+# explanation. Install the matching utils for whatever branch was chosen.
 ubuntu-drivers install --gpgpu || $APT install -y nvidia-driver-535-server
+NVIDIA_BRANCH="$(dpkg-query -W -f='${Package}\n' 'nvidia-compute-utils-*-server' 2>/dev/null |
+  grep -oE '[0-9]+' | head -1)"
+if [ -n "$NVIDIA_BRANCH" ]; then
+  $APT install -y "nvidia-utils-${NVIDIA_BRANCH}-server" || true
+fi
+command -v nvidia-smi || $APT install -y nvidia-utils-570-server || $APT install -y nvidia-utils-535-server
 
 # Docker from Docker's own repository, not Ubuntu's: the build needs BuildKit
 # and the buildx plugin for --secret, and only this package ships them.
@@ -103,8 +112,17 @@ finish() {
 }
 trap finish EXIT
 
-nvidia-smi
-docker run --rm --gpus all nvidia/cuda:11.7.1-base-ubuntu22.04 nvidia-smi
+# Everything after this needs the GPU. Discovering that twenty minutes later,
+# after a full image build and with eight captures already marked failed, is the
+# most expensive way to learn it — so the run stops here instead.
+if ! nvidia-smi; then
+  echo "MDAI STOP: no working NVIDIA driver on this machine (nvidia-smi does not run). Nothing was claimed from the queue." > /dev/console
+  exit 94
+fi
+if ! docker run --rm --gpus all nvidia/cuda:11.7.1-base-ubuntu22.04 nvidia-smi; then
+  echo "MDAI STOP: the driver works but Docker cannot reach the GPU — the container toolkit is not wired in. Nothing was claimed from the queue." > /dev/console
+  exit 95
+fi
 
 # Check the two things the whole run rests on, and say plainly which one is
 # missing. Grinding through a 20-minute build to fail on an empty secret wastes

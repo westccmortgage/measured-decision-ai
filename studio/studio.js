@@ -1925,14 +1925,27 @@ function focusTimestamp(item) {
 }
 
 function focusDayKey(time) {
-  return time ? new Date(time).toISOString().slice(0, 10) : "";
+  /* The day boundary is the person's midnight, not Greenwich's. Grouped by UTC,
+     an evening upload in California was reported as "added today" the next
+     morning — the record claiming something happened on a day it did not. */
+  if (!time) return "";
+  const date = new Date(time);
+  return [
+    date.getFullYear(),
+    String(date.getMonth() + 1).padStart(2, "0"),
+    String(date.getDate()).padStart(2, "0"),
+  ].join("-");
 }
 
 function focusRelativeDay(time) {
   if (!time) return "date unavailable";
+  // Calendar days in the person's timezone, not 24-hour buckets: an upload
+  // last evening is "yesterday" even when fewer than twelve hours have passed.
+  const today = focusDayKey(Date.now());
+  const day = focusDayKey(time);
+  if (day === today) return "today";
+  if (day === focusDayKey(Date.now() - 86400000)) return "yesterday";
   const days = Math.round((Date.now() - time) / 86400000);
-  if (days <= 0) return "today";
-  if (days === 1) return "yesterday";
   if (days < 7) return `${days} days ago`;
   return new Date(time).toLocaleDateString("en-US", { month: "short", day: "numeric" });
 }
@@ -2208,6 +2221,25 @@ function showFocusStage(name) {
   $("#focus-upload-stage").hidden = focusStage !== "upload";
   $("#focus-processing-stage").hidden = focusStage !== "process";
   $("#focus-results-stage").hidden = focusStage !== "results";
+  /* The processing screen only means something while a run is in flight. Opened
+     with nothing running it kept its hardcoded "Processing… 0% Starting…" —
+     a dead screen indistinguishable from a hang. Say what is actually true:
+     nothing is running, and here is the way forward. */
+  if (focusStage === "process" && !focusProcessingRows.length) {
+    if (stitchSummary().active.length) {
+      $("#focus-processing-title").textContent = "Waiting for the 360 machine";
+      $("#focus-processing-copy").textContent =
+        "Captures are queued for stitching. Nothing runs in this browser — the machine picks the queue up when it starts, and Results updates on its own.";
+      renderFocusProcessing(0, stitchLine());
+    } else {
+      $("#focus-processing-title").textContent = "Nothing is processing right now";
+      $("#focus-processing-copy").textContent =
+        "This screen fills in when an AI review or a 360 stitch is running.";
+      renderFocusProcessing(0, "Idle");
+    }
+    $("#focus-view-results").disabled = false;
+    $("#focus-view-results").textContent = "Open the record";
+  }
   const stats = focusEvidenceStats();
   /* Several actions jump to Upload — add the export, upload more, send a task
      from an empty space. Without a way back that jump is a trapdoor, so every
