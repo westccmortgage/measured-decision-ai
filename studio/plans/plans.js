@@ -462,6 +462,11 @@ async function openProperty(propertyId) {
   document.querySelectorAll('a[href="../operations/"],a[href^="../operations/?property="]').forEach((link) => {
     link.href = `../operations/?property=${encodeURIComponent(propertyId)}`;
   });
+  /* "Return to evidence" without the project is a return to the project list:
+     the person came from a project and has to pick it again. */
+  document.querySelectorAll('a[href="../"],a[href^="../?property="]').forEach((link) => {
+    link.href = `../?property=${encodeURIComponent(propertyId)}`;
+  });
   elements.sync.textContent = "Loading project…";
   setMessage("");
   const [documentsResult, baselinesResult, activeJobResult] = await Promise.all([

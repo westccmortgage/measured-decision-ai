@@ -20,6 +20,32 @@ This is the production intake contract for a person who does not have a Studio a
 - Wrongly selected files may be removed only before submission.
 - After submission the guest link is read-only; managers can revoke an active link.
 
+## Camera handling window
+
+A 360 walkthrough is filmed with nobody holding the camera: the operator starts
+the recording, walks out of the space, and walks back in to stop it. Those
+seconds are the operator, not the object.
+
+One policy decides the usable window and every consumer reads it
+(`studio/trim360.js`, mirrored in `workers/insta360/worker.py`):
+
+- ten seconds off the head and the tail by default;
+- five seconds when ten would not leave enough footage;
+- no trim at all when fewer than fifteen seconds would remain — a short capture
+  keeps every second of itself.
+
+The window is recorded on the evidence as `source_metadata.trim` at upload and
+is never cut out of an uploaded original. The AI reads keyframes only from
+inside the window, and the viewer opens, scrubs and loops inside it; one button
+plays the untouched original. A capture uploaded before the policy existed
+carries no window, so the policy is applied to the stream at playback.
+
+The GPU master is the exception, because it is a file this system creates and
+other players open: the worker cuts it with a stream copy (no re-encode) and
+records `trim.mode = "cut_at_processing"`, which tells the viewer the file is
+already clean and must not be trimmed twice. If the cut cannot be made, the
+whole master is published with the window recorded instead.
+
 ## Storage split
 
 - S3 stores MP4 originals and later derivatives.

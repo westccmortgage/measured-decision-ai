@@ -1,6 +1,6 @@
 # Measured Decision Insta360 GPU worker
 
-Private runtime for paired X3 INSV sources. The licensed Insta360 package is intentionally excluded from GitHub and must be supplied as a Docker BuildKit secret.
+Private runtime for paired X3 INSV sources. The licensed Insta360 package is intentionally excluded from GitHub and must be supplied at build time as `insta360-sdk.tar` in the build context.
 
 ## What the vendor documents
 
@@ -29,13 +29,15 @@ caught at build time instead of at the link step.
 ## Build
 
 ```bash
-DOCKER_BUILDKIT=1 docker build \
-  --secret id=insta360_sdk,src=/private/libMediaSDK-dev-3.1.1.0-amd64.tar.xz \
-  -t measured-decision/insta360-worker:3.1.1 .
+# The build reads the SDK from its own context under this exact name.
+cp /private/libMediaSDK-dev-3.1.1.0-amd64.tar.xz ./insta360-sdk.tar
+DOCKER_BUILDKIT=1 docker build -t measured-decision/insta360-worker:3.1.1 .
 ```
 
-The secret may be any form the Insta360 portal hands over, because
-`install-sdk.sh` detects which one it is:
+A BuildKit secret is capped at 500KiB, and this package is 230MB, so the SDK
+arrives as a bind mount from the build context: no size limit, and nothing of
+it is left in an image layer. The file may be any form the Insta360 portal
+hands over, because `install-sdk.sh` detects which one it is:
 
 - a `.deb` package,
 - a `.tar.xz` (or `.tar.gz`) wrapping that `.deb`,
@@ -56,13 +58,12 @@ inside the package. A build that installs only the `.deb` leaves them behind and
 the AI passes fail at runtime rather than at build time, so `install-sdk.sh`
 copies them to `/usr/local/share/insta360/models`.
 
-Point the secret at the whole vendor folder and both the package and the models
+Point the build at the whole vendor folder and both the package and the models
 are picked up in one step:
 
 ```bash
-DOCKER_BUILDKIT=1 docker build \
-  --secret id=insta360_sdk,src=/private/libMediaSDK-dev-3.1.1.0-amd64.tar.xz \
-  -t measured-decision/insta360-worker:3.1.1 .
+cp /private/libMediaSDK-dev-3.1.1.0-amd64.tar.xz ./insta360-sdk.tar
+DOCKER_BUILDKIT=1 docker build -t measured-decision/insta360-worker:3.1.1 .
 ```
 
 The vendor example settles how the SDK finds them: `ins::SetModelFileRootDir()`
@@ -125,3 +126,20 @@ that both originals are downloaded, the master is uploaded, exactly one evidence
 row is written with the right projection and provenance, progress climbs, and the
 capture group ends at `vr_ready`. It proves the parts this project owns; it cannot
 prove the stitch itself, which needs the licensed library and a GPU.
+
+## Camera handling window
+
+After stitching, the worker cuts the operator's entry and exit out of the master
+with `ffmpeg -ss … -t … -c copy` — a stream copy, so nothing is re-encoded and
+no quality is lost. The window follows the same policy as the Studio
+(`studio/trim360.js`): ten seconds off each end, five when ten would not leave
+enough, nothing under fifteen seconds of remaining footage. `FFMPEG_COMMAND`,
+`FFPROBE_COMMAND`, `TRIM_PREFERRED_SECONDS`, `TRIM_MINIMUM_SECONDS` and
+`TRIM_KEEP_AT_LEAST_SECONDS` override it.
+
+The protected INSV originals are never touched. If ffprobe or ffmpeg fails the
+whole master is published and the window is recorded on the evidence instead, so
+the Studio still opens the capture inside it.
+
+`python3 workers/insta360/test_worker.py` exercises the cut with stubs for the
+stitcher, ffmpeg and ffprobe — no SDK, GPU, S3 or Supabase.

@@ -33,6 +33,16 @@ MASTER_BITRATE = int(os.getenv("MASTER_BITRATE", "80000000"))
 SDK_LABEL = os.getenv("SDK_LABEL", "Insta360 MediaSDK")
 # The SDK loads its AI weights from here; the vendor example defaults to ./models/.
 MODELS_DIR = os.getenv("MODELS_DIR", "/app/models")
+FFMPEG_COMMAND = os.getenv("FFMPEG_COMMAND", "ffmpeg")
+FFPROBE_COMMAND = os.getenv("FFPROBE_COMMAND", "ffprobe")
+# The same window the Studio applies (studio/trim360.js): the operator starts the
+# camera, walks out, walks back in to stop it. Ten seconds is the default, five
+# the floor, and a capture with less than fifteen seconds left is not touched.
+TRIM_PREFERRED_SECONDS = int(os.getenv("TRIM_PREFERRED_SECONDS", "10"))
+TRIM_MINIMUM_SECONDS = int(os.getenv("TRIM_MINIMUM_SECONDS", "5"))
+TRIM_KEEP_AT_LEAST_SECONDS = int(os.getenv("TRIM_KEEP_AT_LEAST_SECONDS", "15"))
+TRIM_POLICY = "camera-handling-v1"
+TRIM_REASON = "The operator leaves and re-enters the space while the camera is running"
 
 headers = {"apikey": SERVICE_KEY, "Authorization": f"Bearer {SERVICE_KEY}", "Content-Type": "application/json"}
 s3 = boto3.client(
@@ -105,8 +115,82 @@ def master_filename(capture_key):
     return f"{stem}-vr-master.mp4"
 
 
-def master_metadata(capture_key, source_count):
+def plan_trim(duration_seconds):
+    """The usable window of a capture, or nothing when the clip is too short."""
+    duration = float(duration_seconds or 0)
+    if duration <= 0:
+        return None
+    for pad in (TRIM_PREFERRED_SECONDS, TRIM_MINIMUM_SECONDS):
+        if duration - pad * 2 >= TRIM_KEEP_AT_LEAST_SECONDS:
+            return {
+                "policy": TRIM_POLICY,
+                "head_seconds": pad,
+                "tail_seconds": pad,
+                "start_seconds": pad,
+                "end_seconds": round(duration - pad, 2),
+                "kept_seconds": round(duration - pad * 2, 2),
+                "duration_seconds": round(duration, 2),
+                "reason": TRIM_REASON,
+            }
+    return None
+
+
+def probe_duration(path):
+    result = subprocess.run(
+        [FFPROBE_COMMAND, "-v", "error", "-show_entries", "format=duration", "-of", "default=nw=1:nk=1", str(path)],
+        capture_output=True, text=True, timeout=120,
+    )
+    if result.returncode != 0:
+        raise RuntimeError(result.stderr.strip()[:200] or "ffprobe failed")
+    return float(result.stdout.strip())
+
+
+def trim_master(path):
+    """Cut the camera handling out of the master itself.
+
+    The protected originals are never touched, but the master is the file that
+    ends up in a headset, so it has to be clean on its own — a player that knows
+    nothing about this product still must not open on an empty doorway. The cut
+    is a stream copy: no re-encode, no quality lost. If ffmpeg cannot do it the
+    master is published whole with the window recorded, and the Studio applies
+    the window on playback instead.
+    """
+    try:
+        window = plan_trim(probe_duration(path))
+    except Exception as error:
+        print(f"trim skipped, duration unavailable: {error}", flush=True)
+        return path, {"applied": False, "policy": TRIM_POLICY, "mode": "not_measured", "reason": str(error)[:200]}
+    if not window:
+        return path, {"applied": False, "policy": TRIM_POLICY, "mode": "clip_too_short",
+                      "reason": "The clip is too short to trim without losing the space itself"}
+
+    trimmed = Path(path).with_name("vr-master-hevc-trimmed.mp4")
+    command = [
+        FFMPEG_COMMAND, "-y", "-ss", str(window["start_seconds"]), "-i", str(path),
+        "-t", str(window["kept_seconds"]), "-c", "copy", "-movflags", "+faststart", str(trimmed),
+    ]
+    result = subprocess.run(command, capture_output=True, text=True, timeout=3600)
+    if result.returncode != 0 or not trimmed.exists() or trimmed.stat().st_size == 0:
+        print(f"trim failed, publishing the whole master: {result.stderr.strip()[:200]}", flush=True)
+        # Recorded rather than cut: the Studio still opens the capture inside the
+        # window, so nobody reviews the operator walking out.
+        return path, {**window, "applied": True, "mode": "recorded"}
+    return trimmed, {
+        **window,
+        # The published file already starts and ends inside the window, so no
+        # player should skip anything further.
+        "applied": False,
+        "mode": "cut_at_processing",
+        "start_seconds": 0,
+        "end_seconds": window["kept_seconds"],
+        "source_duration_seconds": window["duration_seconds"],
+        "duration_seconds": window["kept_seconds"],
+    }
+
+
+def master_metadata(capture_key, source_count, trim=None):
     return {
+        "trim": trim or {"applied": False, "policy": TRIM_POLICY, "mode": "not_measured"},
         "projection": "equirectangular",
         "width": MASTER_WIDTH,
         "height": MASTER_HEIGHT,
@@ -119,7 +203,7 @@ def master_metadata(capture_key, source_count):
     }
 
 
-def master_evidence_payload(job, group, sources, object_key, byte_size, created_by):
+def master_evidence_payload(job, group, sources, object_key, byte_size, created_by, trim=None):
     """The master is a derivative: it points back at the protected original it
     was stitched from, so the chain from record to camera file stays intact."""
     return {
@@ -134,7 +218,7 @@ def master_evidence_payload(job, group, sources, object_key, byte_size, created_
         "mime_type": "video/mp4",
         "byte_size": byte_size,
         "captured_at": sources[0].get("captured_at"),
-        "source_metadata": master_metadata(group.get("capture_key"), len(sources)),
+        "source_metadata": master_metadata(group.get("capture_key"), len(sources), trim),
         "derivative_of": sources[0]["id"],
         "created_by": created_by,
     }
@@ -203,15 +287,18 @@ def process(job):
         if process_handle.wait() != 0 or not output.exists():
             raise RuntimeError("Insta360 MediaSDK stitching failed")
 
+        patch_job(job["id"], stage="Trimming the camera handling", progress=93)
+        master, trim = trim_master(output)
+
         object_key = f"processed/360/{job['property_id']}/{job['capture_group_id']}/vr-master-hevc.mp4"
         patch_job(job["id"], stage="Securing VR master", progress=94)
-        s3.upload_file(str(output), OUTPUT_BUCKET, object_key, ExtraArgs={"ContentType": "video/mp4"})
+        s3.upload_file(str(master), OUTPUT_BUCKET, object_key, ExtraArgs={"ContentType": "video/mp4"})
 
         # Without this row the master exists in the bucket and nowhere in the
         # product: the Studio lists evidence, not bucket keys.
         patch_job(job["id"], stage="Publishing the capture to the record", progress=97)
         payload = master_evidence_payload(
-            job, group, sources, object_key, output.stat().st_size, registering_user(job, sources)
+            job, group, sources, object_key, master.stat().st_size, registering_user(job, sources), trim
         )
         registered = register_master(payload)
         master_id = registered[0]["id"] if registered else None
@@ -225,6 +312,7 @@ def process(job):
                 "width": MASTER_WIDTH,
                 "height": MASTER_HEIGHT,
                 "codec": "hevc",
+                "trim": trim,
             },
             "source_count": len(sources),
             "sdk": SDK_LABEL,

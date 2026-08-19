@@ -29,6 +29,12 @@ os.environ.update({
     "AWS_S3_BUCKET": "measured-decision-production", "AWS_REGION": "us-east-2",
     "STITCH_COMMAND": str(pathlib.Path(__file__).with_name("stub_stitch.py")),
     "SDK_LABEL": "stub-stitcher",
+    # ffmpeg and ffprobe are stubbed the same way as the stitcher, so the cut
+    # the worker asks for is checked without needing a real encoder.
+    "FFMPEG_COMMAND": str(pathlib.Path(__file__).with_name("stub_ffmpeg.py")),
+    "FFPROBE_COMMAND": str(pathlib.Path(__file__).with_name("stub_ffprobe.py")),
+    "STUB_DURATION_SECONDS": "180",
+    "STUB_FFMPEG_LOG": "/tmp/mdai-stub-ffmpeg.json",
 })
 sys.path.insert(0, str(pathlib.Path(__file__).parent))
 import worker
@@ -69,6 +75,9 @@ print("  byte_size =", payload["byte_size"])
 print("  source_metadata.projection =", payload["source_metadata"]["projection"])
 print("  source_metadata.vr.playback_ready =", payload["source_metadata"]["vr"]["playback_ready"])
 print("  storage_path =", payload["storage_path"])
+trim = payload["source_metadata"]["trim"]
+print("TRIM        :", json.dumps(trim))
+print("FFMPEG CALL :", pathlib.Path("/tmp/mdai-stub-ffmpeg.json").read_text())
 print("ON CONFLICT :", posts[0]["path"], "|", posts[0]["prefer"])
 progress = [c["body"]["progress"] for c in calls if c["method"] == "PATCH" and "capture_360_jobs" in c["path"] and "progress" in (c["body"] or {})]
 print("PROGRESS    :", progress)
@@ -76,7 +85,23 @@ states = [(c["path"].split("?")[0], c["body"].get("state")) for c in calls if c[
 print("STATES      :", states)
 manifest = [c for c in calls if c["method"] == "PATCH" and c["body"] and c["body"].get("state") == "completed"][0]["body"]["output_manifest"]
 print("MANIFEST    :", json.dumps(manifest["vr_master"]))
+cut = json.loads(pathlib.Path("/tmp/mdai-stub-ffmpeg.json").read_text())
+assert cut["start_seconds"] == 10 and cut["duration_seconds"] == 160, f"wrong cut: {cut}"
+assert cut["stream_copy"], "the master must be cut by stream copy, never re-encoded"
+assert trim["mode"] == "cut_at_processing" and trim["applied"] is False, \
+    "a master that is already cut must not be trimmed again on playback"
+assert trim["source_duration_seconds"] == 180 and trim["duration_seconds"] == 160
+assert uploads[0]["size"] == 2048, "the trimmed file must be the one published"
+assert payload["byte_size"] == 2048
 assert payload["source_metadata"]["projection"] == "equirectangular"
 assert payload["derivative_of"] == "src-00", "the master must descend from the first lens original"
 assert ("capture_360_groups", "vr_ready") in states
 print("\nOK: master reaches the record, not just the bucket")
+
+# A short capture keeps every second of itself.
+short = worker.plan_trim(24)
+assert short is None, short
+print("SHORT CLIP  : untouched (24s)")
+assert worker.plan_trim(30)["head_seconds"] == 5, "a 30s capture falls back to the 5s floor"
+assert worker.plan_trim(180)["head_seconds"] == 10
+print("POLICY      : 10s default, 5s floor, no trim under 25s")

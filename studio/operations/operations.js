@@ -68,6 +68,8 @@ async function load() {
   history.replaceState({},"",`${location.pathname}?property=${encodeURIComponent(state.propertyId)}`);
   document.querySelectorAll('a[href="../plans/"],a[href^="../plans/?property="]').forEach(link=>{link.href=propertyUrl()});
   document.querySelectorAll('a[href="./"],a[href^="./?property="]').forEach(link=>{link.href=`./?property=${encodeURIComponent(state.propertyId)}`});
+  // Same reason as the plans page: going back must land in the project, not in the list.
+  document.querySelectorAll('a[href="../"],a[href^="../?property="]').forEach(link=>{link.href=`../?property=${encodeURIComponent(state.propertyId)}`});
   const baselineId=property?.active_baseline_id;
   const [assignmentResult,checkResult,taskResult,requirementResult,evidenceResult,documentResult]=await withTimeout(Promise.all([
     client.from("field_assignments").select("*").eq("organization_id",state.organizationId).eq("property_id",state.propertyId).order("created_at",{ascending:false}),
