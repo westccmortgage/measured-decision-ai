@@ -2746,3 +2746,21 @@ dialog textarea { min-height:78px; resize:vertical; }
 .focus-more > summary:hover { color: #dce7ef; }
 .focus-more > *:not(summary) { padding: 0 18px; }
 .focus-more > *:last-child { padding-bottom: 18px; }
+
+/* Delete lives beside the file it removes, and looks like what it is. */
+.sheet-evidence-row { display: flex; align-items: stretch; gap: 8px; }
+.sheet-evidence-row .sheet-evidence-item { flex: 1; min-width: 0; }
+.sheet-evidence-remove {
+  flex: 0 0 auto; min-width: 64px; min-height: 44px; align-self: center;
+  padding: 0 12px; border: 1px solid #4a2b33; border-radius: 10px;
+  background: rgba(74, 25, 33, .35); color: #e8a0a8; font: inherit; font-size: 12px;
+  font-weight: 600; cursor: pointer;
+}
+.sheet-evidence-remove:hover { border-color: #e8a0a8; }
+
+.sheet-edit {
+  flex: 0 0 auto; min-height: 40px; padding: 0 14px; margin-right: 8px;
+  border: 1px solid #2b425c; border-radius: 10px; background: rgba(10, 20, 33, .6);
+  color: #b9cad6; font: inherit; font-size: 13px; cursor: pointer;
+}
+.sheet-edit:hover { border-color: #52d2df; color: #edf4f7; }

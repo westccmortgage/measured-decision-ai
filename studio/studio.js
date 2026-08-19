@@ -2800,6 +2800,7 @@ function renderFocusSheet() {
   const confirmed = room.status === "confirmed";
 
   $("#sheet-title").textContent = room.name;
+  $("#sheet-edit-space").hidden = !canManageSpaces();
   $("#sheet-subtitle").textContent = [room.building, room.level].filter(Boolean).join(" · ");
   const status = $("#sheet-status");
   status.textContent = confirmed
@@ -2819,12 +2820,24 @@ function renderFocusSheet() {
           const preview = isImage(item) && item.src
             ? `<img src="${escapeText(item.src)}" alt="" loading="lazy">`
             : `<span class="sheet-evidence-icon">${escapeText(label === "360" ? "360" : label === "Video" ? "▶" : label === "Document" ? "PDF" : label === "Camera original" ? "INSV" : "IMG")}</span>`;
-          return `<button class="sheet-evidence-item" type="button" data-evidence="${index}">${preview}<span><strong>${escapeText(item.subject || item.name || "Evidence")}</strong><small>${escapeText([label, item.date || "date unavailable", focusEvidenceTrimNote(item)].filter(Boolean).join(" · "))}</small></span></button>`;
+          /* Deleting a wrong file must not require a hidden admin view: the
+             person looking at the file is the person who knows it does not
+             belong. The dialog still stands between the press and the loss. */
+          const remove = canDeleteEvidence() && item.id
+            ? `<button class="sheet-evidence-remove" type="button" data-remove-evidence="${escapeText(item.id)}" aria-label="Delete ${escapeText(item.name || "this file")}">Delete</button>`
+            : "";
+          return `<div class="sheet-evidence-row"><button class="sheet-evidence-item" type="button" data-evidence="${index}">${preview}<span><strong>${escapeText(item.subject || item.name || "Evidence")}</strong><small>${escapeText([label, item.date || "date unavailable", focusEvidenceTrimNote(item)].filter(Boolean).join(" · "))}</small></span></button>${remove}</div>`;
         })
         .join("")
     : `<p class="sheet-empty">No evidence is attached to this space yet.</p>`;
   evidenceList.querySelectorAll("[data-evidence]").forEach((button) => {
     button.addEventListener("click", () => openEvidenceViewer(room.evidence[Number(button.dataset.evidence)], room));
+  });
+  evidenceList.querySelectorAll("[data-remove-evidence]").forEach((button) => {
+    button.addEventListener("click", (event) => {
+      event.stopPropagation();
+      openEvidenceDelete(button.dataset.removeEvidence);
+    });
   });
 
   const findings = $("#sheet-findings");
@@ -3434,6 +3447,10 @@ document.querySelectorAll("[data-focus-step]").forEach((item) => {
   });
 });
 $("#sheet-back").addEventListener("click", () => closeFocusSheet(true));
+$("#sheet-edit-space").addEventListener("click", () => {
+  const room = focusSheetRoom();
+  if (room) openSpaceEditor(room.id);
+});
 $("#sheet-confirm").addEventListener("click", async () => {
   const room = focusSheetRoom();
   if (!room) return;
@@ -3675,6 +3692,11 @@ $("#confirm-evidence-delete").addEventListener("click", async () => {
     const result = await removeEvidenceRecord(location);
     saveRooms(cloud.schemaReady ? "Evidence deleted from cloud record" : "Evidence deleted locally");
     render();
+    // The deletion can be made from the space sheet: every surface that lists
+    // the file has to stop listing it, not just the admin inventory.
+    if (focusSheetRoomId) renderFocusSheet();
+    renderFocusToday();
+    renderFocusResults();
     elements.deleteEvidenceDialog.close();
     deletingEvidenceId = null;
     notify(
