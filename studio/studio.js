@@ -2005,6 +2005,10 @@ function scheduleStitchPoll() {
   }, 10000);
 }
 
+function roomLastActivity(room) {
+  return (room?.evidence || []).reduce((latest, item) => Math.max(latest, focusTimestamp(item)), 0);
+}
+
 function focusEvidenceStats() {
   const items = focusAllEvidence();
   const spaces = rooms.filter((room) => room.evidence?.length);
@@ -2024,9 +2028,16 @@ function focusEvidenceStats() {
     room.evidence.some((item) => isImage(item) || isVideo(item)),
   );
   const analyzedRooms = spaces.filter((room) => room.analysis);
-  const awaitingReview = spaces.filter((room) => room.analysis && room.status !== "confirmed");
+  /* The screen has to point at what just happened, not at the oldest thing that
+     was never finished. Sorting by when a space last received evidence is what
+     stops a room from six weeks ago sitting on top of the files uploaded five
+     minutes ago. */
+  const byRecentEvidence = (a, b) => roomLastActivity(b) - roomLastActivity(a);
+  const awaitingReview = spaces
+    .filter((room) => room.analysis && room.status !== "confirmed")
+    .sort(byRecentEvidence);
   const confirmedRooms = spaces.filter((room) => room.status === "confirmed");
-  const unanalyzedRooms = analyzableRooms.filter((room) => !room.analysis);
+  const unanalyzedRooms = analyzableRooms.filter((room) => !room.analysis).sort(byRecentEvidence);
   const followUps = spaces.flatMap((room) =>
     (room.analysis?.follow_up_captures || []).map((entry) => ({
       room,
@@ -3059,8 +3070,9 @@ function renderFocusResults() {
   });
 
   const list = $("#focus-result-list");
-  list.innerHTML = stats.spaces.length
-    ? stats.spaces
+  const orderedSpaces = stats.spaces.slice().sort((a, b) => roomLastActivity(b) - roomLastActivity(a));
+  list.innerHTML = orderedSpaces.length
+    ? orderedSpaces
         .map((room) => {
           const rawCount = room.evidence.reduce((total, item) => total + focusSourceCount(item), 0);
           const spatialCount = room.evidence.filter(focusIsSpatial).length;
