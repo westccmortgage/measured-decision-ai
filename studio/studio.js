@@ -63,6 +63,11 @@ const STORAGE_KEY = "mdai-spatial-studio-v2";
 const JOBS_KEY = "mdai-studio-jobs-v1";
 let rooms = loadRooms();
 let jobs = loadJobs();
+/* Stitching happens on a machine nobody can see. Without this the Studio says
+   "no playable export yet" for twenty minutes and gives no sign of life, which
+   is indistinguishable from something being broken. */
+let stitchJobs = [];
+let stitchPollTimer = null;
 let activeRoomId = rooms[0]?.id;
 let pendingFiles = [];
 let editingEvidenceId = null;
@@ -1271,6 +1276,9 @@ async function hydrateCloudRecord() {
   }));
   activeRoomId = rooms[0]?.id || null;
 
+  await hydrateStitchJobs();
+  scheduleStitchPoll();
+
   const { data: jobRows, error: jobsError } = await cloud.client
     .from("analysis_jobs")
     .select("id, space_id, state, profile, created_at, evidence_ids, error_code")
@@ -1929,6 +1937,74 @@ function focusRelativeDay(time) {
   return new Date(time).toLocaleDateString("en-US", { month: "short", day: "numeric" });
 }
 
+/* ------------------------------------------------------- 360 stitching queue */
+
+const STITCH_ACTIVE_STATES = new Set(["waiting_for_sdk", "queued", "processing"]);
+
+async function hydrateStitchJobs() {
+  if (!cloud.schemaReady || !cloud.propertyId) return;
+  const { data, error } = await cloud.client
+    .from("capture_360_jobs")
+    .select("id, state, stage, progress, error_code, updated_at, capture_360_groups(capture_key, state)")
+    .eq("property_id", cloud.propertyId)
+    .order("created_at", { ascending: true });
+  if (error) return;
+  stitchJobs = (data || []).map((job) => ({
+    id: job.id,
+    state: job.state,
+    stage: job.stage || "",
+    progress: Number(job.progress) || 0,
+    error: job.error_code || "",
+    captureKey: job.capture_360_groups?.capture_key || "",
+  }));
+}
+
+function stitchSummary() {
+  const active = stitchJobs.filter((job) => STITCH_ACTIVE_STATES.has(job.state));
+  const running = active.filter((job) => job.state === "processing");
+  const failed = stitchJobs.filter((job) => job.state === "failed");
+  return { active, running, failed, done: stitchJobs.filter((job) => job.state === "completed") };
+}
+
+/* What a person actually needs to know: is anything happening, and is the
+   machine that does it awake. A queued job with no worker running is not
+   progress, and saying so is the difference between waiting and being stuck. */
+function stitchLine() {
+  const { active, running, failed } = stitchSummary();
+  if (running.length) {
+    const job = running[0];
+    const extra = running.length > 1 ? ` (+${running.length - 1} more)` : "";
+    return `Stitching now — ${job.stage || "working"} · ${job.progress}%${extra}`;
+  }
+  if (active.length) {
+    return `${active.length} capture${active.length === 1 ? "" : "s"} queued for stitching · the 360 machine is not running yet`;
+  }
+  if (failed.length) {
+    return `${failed.length} capture${failed.length === 1 ? "" : "s"} failed to stitch${failed[0].error ? ` — ${failed[0].error}` : ""}`;
+  }
+  return "";
+}
+
+/* Poll only while something is in flight, and stop as soon as it lands. A
+   finished stitch means a new file exists, so the project is reloaded rather
+   than left showing a record that is already out of date. */
+function scheduleStitchPoll() {
+  window.clearTimeout(stitchPollTimer);
+  if (!stitchSummary().active.length) return;
+  stitchPollTimer = window.setTimeout(async () => {
+    const before = stitchSummary().active.length;
+    await hydrateStitchJobs();
+    const after = stitchSummary().active.length;
+    if (after < before) {
+      await hydrateCloudRecord().catch(() => {});
+      render();
+      notify("A 360 capture finished stitching and is now playable", 6000);
+    }
+    renderFocusResults();
+    scheduleStitchPoll();
+  }, 10000);
+}
+
 function focusEvidenceStats() {
   const items = focusAllEvidence();
   const spaces = rooms.filter((room) => room.evidence?.length);
@@ -1971,6 +2047,8 @@ function focusEvidenceStats() {
     rawFiles: items.reduce((total, item) => total + focusSourceCount(item), 0),
     paired360,
     waiting360,
+    stitch: stitchSummary(),
+    stitchLine: stitchLine(),
     spatial,
     documents,
     vrPlayback: spatial.length,
@@ -2162,6 +2240,37 @@ function focusNextAction(stats) {
       run: () => showFocusStage("upload"),
     };
   }
+  /* A queued capture with no machine running is the one state where the next
+     action is not in this app at all, and saying anything else sends a person
+     hunting through the Studio for a button that cannot exist. */
+  if (stats.stitch.active.length && !stats.stitch.running.length) {
+    return {
+      title: "Start the 360 machine",
+      copy: `${stats.stitch.active.length} capture${stats.stitch.active.length === 1 ? " is" : "s are"} waiting to be stitched. The machine is not running; it stitches everything queued, then stops itself.`,
+      label: "See what is queued",
+      owner: "Whoever runs the AWS account",
+      run: () => showFocusStage("process"),
+    };
+  }
+  if (stats.stitch.failed.length && !stats.stitch.active.length) {
+    const failed = stats.stitch.failed[0];
+    return {
+      title: "A 360 capture failed to stitch",
+      copy: `${stats.stitch.failed.length} capture${stats.stitch.failed.length === 1 ? "" : "s"} could not be stitched${failed.error ? ` (${failed.error})` : ""}. The camera originals are untouched, so the run can be repeated once the cause is fixed.`,
+      label: "See what failed",
+      owner: "Whoever runs the AWS account",
+      run: () => showFocusStage("process"),
+    };
+  }
+  if (stats.stitch.running.length) {
+    return {
+      title: "Stitching in progress",
+      copy: `${stats.stitchLine}. The playable master appears here on its own when it is done.`,
+      label: "See the queue",
+      owner: "No one — the machine is working",
+      run: () => showFocusStage("process"),
+    };
+  }
   if (stats.unanalyzedRooms.length) {
     const names = stats.unanalyzedRooms.slice(0, 2).map((room) => room.name).join(", ");
     return {
@@ -2292,12 +2401,20 @@ function focusChainItems(stats) {
     {
       key: "spatial",
       label: "Spatial 360 record",
-      state: stats.spatial.length ? "done" : stats.paired360 || stats.waiting360 ? "active" : "waiting",
-      detail: stats.spatial.length
-        ? `${stats.spatial.length} space capture${stats.spatial.length === 1 ? "" : "s"} playable in the viewer and in a headset`
-        : stats.paired360 || stats.waiting360
-          ? `${stats.paired360 + stats.waiting360} camera original${stats.paired360 + stats.waiting360 === 1 ? "" : "s"} preserved, no playable export yet`
-          : "No 360 capture in this project yet",
+      state: stats.stitch.active.length || stats.stitch.failed.length
+        ? "active"
+        : stats.spatial.length
+          ? "done"
+          : stats.paired360 || stats.waiting360
+            ? "active"
+            : "waiting",
+      detail: stats.stitchLine
+        ? stats.stitchLine
+        : stats.spatial.length
+          ? `${stats.spatial.length} space capture${stats.spatial.length === 1 ? "" : "s"} playable in the viewer and in a headset`
+          : stats.paired360 || stats.waiting360
+            ? `${stats.paired360 + stats.waiting360} camera original${stats.paired360 + stats.waiting360 === 1 ? "" : "s"} preserved, no playable export yet`
+            : "No 360 capture in this project yet",
       actionLabel: stats.spatial.length ? "Open 360 view" : "Add the export",
       run: () => (stats.spatial.length ? openFirstSpatial() : showFocusStage("upload")),
     },
@@ -2544,14 +2661,17 @@ function openEvidenceViewer(item, room, focusMarkerId = null) {
 
   if (focusIsCameraOriginal(item)) {
     const paired = (item.sourceIds?.length || 0) >= 2;
+    const stitchState = stitchLine();
     window.MDAIPano360.open({
       src: "",
       title: item.name || "360 camera original",
       subtitle: paired
-        ? "Both camera originals are preserved. A browser cannot play the protected INSV format — export a full 360 MP4 in Insta360 Studio and upload it to make this space walkable."
-        : "One camera original is missing. Upload the matching INSV file, then export a full 360 MP4 to make this space walkable.",
+        ? `Both camera originals are preserved. A browser cannot play the protected INSV format, so the 360 machine stitches a playable master from this pair. ${
+            stitchState || "It is queued; the master appears here when the machine has run."
+          }`
+        : "One camera original is missing. Upload the matching INSV file — the pair is what the 360 machine stitches from.",
       actions: [
-        { label: "Upload the 360 export", primary: true, onSelect: () => { window.MDAIPano360.close(); showFocusStage("upload"); } },
+        { label: paired ? "Back to the file list" : "Upload the matching original", primary: true, onSelect: () => { window.MDAIPano360.close(); showFocusStage("upload"); } },
         room ? { label: `Back to ${roomName}`, onSelect: () => { window.MDAIPano360.close(); openFocusSheet(room.id, focusStage); } } : null,
       ].filter(Boolean),
     });
@@ -4072,3 +4192,4 @@ window.addEventListener("beforeunload", () =>
 );
 
 initializeAuth();
+
