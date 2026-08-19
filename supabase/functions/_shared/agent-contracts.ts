@@ -68,7 +68,7 @@ export const AGENT_REGISTRY: Record<AgentKey, AgentContract> = {
     name: "Evidence Inspector Agent",
     owns: "Uploaded photo, video, and 360 quality plus directly visible observations.",
     accepts: ["Evidence manifest", "Signed visual sources", "Linked property, room, and capture task"],
-    produces: ["Capture-quality rating", "Evidence-cited visible observations", "Unknowns", "Follow-up captures"],
+    produces: ["Capture-quality rating", "Evidence-cited visible observations", "Frame-anchored positions for observations that can be pointed at", "Unknowns", "Follow-up captures"],
     never: ["Infer concealed conditions", "Diagnose causes", "Certify quality, safety, completion, or compliance"],
     normalRoute: "copilot",
     executionStatus: "active",

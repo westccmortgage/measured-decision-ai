@@ -243,6 +243,10 @@ async function extractVideoFrames(item, frameLimit = 4) {
         evidence_id: item.id,
         timestamp_seconds: Number(timestamp.toFixed(2)),
         data_url: canvas.toDataURL("image/jpeg", 0.72),
+        /* A spherical frame is the whole room in one picture, so the model can
+           say where in it a thing sits — and that position becomes a marker a
+           person can look at. A flat frame carries no such direction. */
+        equirectangular: focusIsSpatial(item),
       });
     }
     return frames;
@@ -281,10 +285,69 @@ function applyAnalysisResult(room, analysis, suggestionId) {
         )
         .filter(Boolean)
     : [];
+  /* An observation the model could point at becomes a point in the sphere, not
+     another line of prose. A second run must not wipe a verdict a person
+     already gave, nor the markers a person placed by hand. */
+  if (window.MDAIMarkers360) {
+    const derived = window.MDAIMarkers360.fromAnalysis(analysis, {
+      evidenceIds: room.evidence.map((item) => item.id),
+    });
+    room.markers = window.MDAIMarkers360.merge(room.markers || [], derived);
+  }
   room.status = "needs";
   room.evidence.forEach((item) => {
     item.status = "Private cloud original · AI suggestion available";
   });
+}
+
+/* ------------------------------------------------------------ Spatial markers */
+
+function roomMarkers(room, item) {
+  const markers = Array.isArray(room?.markers) ? room.markers : [];
+  if (!item) return markers;
+  return markers.filter((marker) => !marker.evidence_id || marker.evidence_id === item.id);
+}
+
+/* A marker with no document is not a footnote — it is the moment the system
+   has to speak: "this was installed, and nothing on file covers it." The
+   request becomes an open item on the space, so it can be chased. */
+function requestMarkerDocument(room, marker) {
+  if (!room) return;
+  room.requests = Array.isArray(room.requests) ? room.requests : [];
+  if (room.requests.some((entry) => entry.marker_id === marker.id && entry.state === "open")) return;
+  room.requests.push({
+    id: `rq-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 6)}`,
+    marker_id: marker.id,
+    kind: "document",
+    text: `Send the invoice or work order covering "${marker.label}" in ${room.name}`,
+    reason: marker.detail || marker.label,
+    state: "open",
+    created_at: new Date().toISOString(),
+  });
+  saveRooms("Document request recorded");
+  renderFocusResults();
+  notify(`Recorded: the record now asks for the document covering "${marker.label}".`, 6000);
+}
+
+function reviewMarker(room, marker, state) {
+  if (!room) return;
+  marker.reviewed_at = new Date().toISOString();
+  saveRooms(
+    state === "confirmed"
+      ? "Marker confirmed by a person"
+      : state === "rejected"
+        ? "Marker marked incorrect"
+        : "Marker sent back for more evidence",
+  );
+  renderFocusResults();
+}
+
+function placeMarker(room, marker) {
+  if (!room) return;
+  room.markers = Array.isArray(room.markers) ? room.markers : [];
+  room.markers.push(marker);
+  saveRooms("Marker placed");
+  renderFocusResults();
 }
 
 function evidenceThumbnail(item, className = "room-thumb") {
@@ -2469,7 +2532,7 @@ async function copyFocusLink(item) {
   }
 }
 
-function openEvidenceViewer(item, room) {
+function openEvidenceViewer(item, room, focusMarkerId = null) {
   if (!item) return;
   if (!window.MDAIPano360) {
     if (item.src) window.open(item.src, "_blank", "noopener");
@@ -2511,6 +2574,11 @@ function openEvidenceViewer(item, room) {
     actions.push({ label: "Open the original file", onSelect: () => window.open(item.src, "_blank", "noopener") });
   }
 
+  const markers = spatial ? roomMarkers(room, item) : [];
+  markers.forEach((marker) => {
+    marker.source_name = item.subject || item.name || "this capture";
+  });
+
   window.MDAIPano360.open({
     src: item.src,
     mediaType: item.mimeType || "",
@@ -2521,6 +2589,16 @@ function openEvidenceViewer(item, room) {
       .filter(Boolean)
       .join(" · "),
     actions,
+    // Reviewing in the sphere is the point: the person looking at the thing is
+    // the one who can say whether the AI read it right, and they should not
+    // have to leave the space to say so.
+    markers,
+    evidenceId: item.id,
+    canReviewMarkers: Boolean(room) && canManageSpaces(),
+    onMarkerReview: room ? (marker, state) => reviewMarker(room, marker, state) : null,
+    onMarkerPlace: room && canManageSpaces() ? (marker) => placeMarker(room, marker) : null,
+    onMarkerRequest: room ? (marker) => requestMarkerDocument(room, marker) : null,
+    focusMarkerId,
   });
 }
 
@@ -2610,6 +2688,41 @@ function renderFocusSheet() {
         ? "No AI interpretation has been produced for this space yet."
         : "The AI can only interpret photos or video. This space holds documents or camera originals only."
     }</p>`;
+  }
+
+  /* The sphere is where a marker lives, but the space record has to say the
+     markers exist — and which of them the record is still missing a document
+     for. A row here is a way into the sphere, not a substitute for it. */
+  const markers = roomMarkers(room);
+  const openRequests = (room.requests || []).filter((entry) => entry.state === "open");
+  if (markers.length || openRequests.length) {
+    const extra = document.createElement("div");
+    extra.className = "sheet-findings-group sheet-markers";
+    const target = spatialItems[0];
+    extra.innerHTML = `
+      ${markers.length
+        ? `<h4>Marked in the sphere</h4><ul class="sheet-marker-list">${markers
+            .map(
+              (marker) =>
+                `<li><button type="button" data-sheet-marker="${escapeText(marker.id)}"><span>${escapeText(marker.label)}</span><em class="marker-state ${escapeText(window.MDAIMarkers360?.stateTone(marker.state) || "review")}">${escapeText(window.MDAIMarkers360?.stateLabel(marker.state) || "Seen by AI")}</em></button></li>`,
+            )
+            .join("")}</ul>`
+        : ""}
+      ${openRequests.length
+        ? `<h4>Waiting on a document</h4><ul>${openRequests
+            .map((entry) => `<li>${escapeText(entry.text)}</li>`)
+            .join("")}</ul>`
+        : ""}`;
+    findings.appendChild(extra);
+    extra.querySelectorAll("[data-sheet-marker]").forEach((button) => {
+      button.addEventListener("click", () => {
+        if (!target) {
+          notify("This space has no playable 360 export yet, so the marker cannot be shown in place.", 6000);
+          return;
+        }
+        openEvidenceViewer(target, room, button.dataset.sheetMarker);
+      });
+    });
   }
 
   $("#sheet-note").value = room.note || "";
@@ -2729,6 +2842,14 @@ function buildReportModel() {
         unknown: room.unknown || [],
         note: (room.note || "").trim(),
         capture_requests: room.analysis?.follow_up_captures || [],
+        markers: roomMarkers(room).map((marker) => ({
+          label: marker.label,
+          state: window.MDAIMarkers360?.stateLabel(marker.state) || "Seen by AI · not verified",
+          at: window.MDAIMarkers360?.timecode(marker.timestamp_seconds) || "",
+        })),
+        document_requests: (room.requests || [])
+          .filter((entry) => entry.state === "open")
+          .map((entry) => entry.text),
         files_line: `${files} original file${files === 1 ? "" : "s"} preserved`,
         trim_note: roomSpatial ? focusEvidenceTrimNote(roomSpatial) : "",
         spatial_link: roomSpatial ? focusEvidenceUrl(roomSpatial) : "",
@@ -2742,6 +2863,13 @@ function buildReportModel() {
     open_questions: stats.openQuestions.map((entry) => `${entry.room.name}: ${entry.text}`),
     capture_requests: stats.followUps.map((entry) =>
       `${entry.room.name}: ${entry.request}${entry.reason ? ` — ${entry.reason}` : ""}`,
+    ),
+    /* A gap between what the record shows and what the paperwork covers is a
+       request, not a remark: it names the document and the space it belongs to. */
+    document_requests: stats.spaces.flatMap((room) =>
+      (room.requests || [])
+        .filter((entry) => entry.state === "open")
+        .map((entry) => `${room.name}: ${entry.text}`),
     ),
   };
 }

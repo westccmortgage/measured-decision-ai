@@ -46,6 +46,36 @@ records `trim.mode = "cut_at_processing"`, which tells the viewer the file is
 already clean and must not be trimmed twice. If the cut cannot be made, the
 whole master is published with the window recorded instead.
 
+## Spatial markers
+
+A 360 capture is a place, not a video, so an observation about it is stored as a
+point in that place. The keyframes the AI reads are whole equirectangular
+frames — one image holding the entire sphere — so the model can say where in the
+frame a thing sits, and that position is a direction in the room.
+
+The anchor travels as a pair of fractions of the frame, which is exactly how the
+viewer's shader samples it: `u` from the left edge (0) to the right edge (1),
+`v` from the top edge (0, straight up) to the bottom edge (1, straight down).
+`studio/markers360.js` owns the conversion in both directions and the projection
+back onto the screen, so a point written by the model, placed by a person, or
+produced later by a worker all land in the same place.
+
+Rules the pipeline holds to:
+
+- An observation the model cannot point at precisely carries no anchor. It stays
+  a sentence in the findings; a guessed pin is worse than no pin.
+- An anchor is dropped server-side unless it names a frame that was actually
+  spherical and falls inside it. The marker layer never places a pin the
+  evidence does not support.
+- A marker carries its own state — seen by AI, confirmed by a person, marked
+  incorrect, needs more evidence — and a person can settle it inside the sphere,
+  where they are already looking at the thing.
+- Re-running the analysis never erases a verdict a person gave, nor a marker a
+  person placed by hand.
+- A marker with no document behind it is a request, not a remark: it becomes an
+  open item on the space asking for the invoice or work order that covers it,
+  and the client report carries the same request.
+
 ## Storage split
 
 - S3 stores MP4 originals and later derivatives.
