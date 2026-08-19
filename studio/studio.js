@@ -2688,6 +2688,76 @@ function focusReadyCopy(stats) {
   return `${stats.rawFiles} file${stats.rawFiles === 1 ? "" : "s"} ready${captureCopy}.`;
 }
 
+/* The report is what the client actually receives: the Studio is where the
+   record is made, the report is where it is handed over. It is assembled from
+   the same record the screen shows, so the two can never disagree. */
+function buildReportModel() {
+  const stats = focusEvidenceStats();
+  const next = focusNextAction(stats);
+  const spatial = stats.spatial[0];
+  const now = new Date();
+  return {
+    project: {
+      name: propertyRecord.name || "Project",
+      prepared_at: now.toLocaleDateString("en-US", { month: "long", day: "numeric", year: "numeric" }),
+      prepared_by: cloud.session?.user?.email || "",
+      last_evidence: stats.lastUpdate
+        ? new Date(stats.lastUpdate).toLocaleDateString("en-US", { month: "long", day: "numeric", year: "numeric" })
+        : "no evidence yet",
+      studio_url: `${window.location.origin}${window.location.pathname}?property=${cloud.propertyId}`,
+    },
+    headline: focusHeadline(stats),
+    summary: {
+      originals: stats.rawFiles,
+      spaces: stats.spaces.length,
+      interpreted: stats.analyzableRooms.length
+        ? `${stats.analyzedRooms.length}/${stats.analyzableRooms.length}`
+        : "—",
+      confirmed: stats.spaces.length ? `${stats.confirmedRooms.length}/${stats.spaces.length}` : "—",
+    },
+    vr: { count: stats.spatial.length, link: spatial ? focusEvidenceUrl(spatial) : "" },
+    spaces: stats.spaces.map((room) => {
+      const files = room.evidence.reduce((total, item) => total + focusSourceCount(item), 0);
+      const roomSpatial = room.evidence.find(focusIsSpatial);
+      return {
+        name: room.name,
+        location: [room.building, room.level].filter(Boolean).join(" · "),
+        status: room.status === "confirmed" ? "confirmed" : room.analysis ? "review" : "not_interpreted",
+        summary: room.analysis?.summary ||
+          "Evidence is preserved for this space. No interpretation has been produced yet.",
+        visible: room.visible || [],
+        unknown: room.unknown || [],
+        note: (room.note || "").trim(),
+        capture_requests: room.analysis?.follow_up_captures || [],
+        files_line: `${files} original file${files === 1 ? "" : "s"} preserved`,
+        trim_note: roomSpatial ? focusEvidenceTrimNote(roomSpatial) : "",
+        spatial_link: roomSpatial ? focusEvidenceUrl(roomSpatial) : "",
+        /* Photographs carry the report; a signed link expires, which the
+           footer says plainly rather than leaving a reader with dead images. */
+        thumbnails: room.evidence.filter((item) => isImage(item) && item.src).slice(0, 6).map((item) => item.src),
+      };
+    }),
+    changed: focusChangeItems(stats),
+    next: { title: next.title, copy: next.copy, owner: next.owner },
+    open_questions: stats.openQuestions.map((entry) => `${entry.room.name}: ${entry.text}`),
+    capture_requests: stats.followUps.map((entry) =>
+      `${entry.room.name}: ${entry.request}${entry.reason ? ` — ${entry.reason}` : ""}`,
+    ),
+  };
+}
+
+function openProjectReport() {
+  const stats = focusEvidenceStats();
+  if (!stats.rawFiles) {
+    notify("The report needs evidence first");
+    showFocusStage("upload");
+    return;
+  }
+  if (!window.MDAIReport?.open(buildReportModel())) {
+    notify("Allow pop-ups for this site to open the report");
+  }
+}
+
 function renderFocusResults() {
   const stats = focusEvidenceStats();
   const metrics = [
@@ -3054,6 +3124,7 @@ $("#focus-view-results").addEventListener("click", () => {
   showFocusStage("results");
 });
 $("#focus-add-more").addEventListener("click", () => showFocusStage("upload"));
+$("#focus-open-report").addEventListener("click", openProjectReport);
 $("#focus-upload-more").addEventListener("click", () => $("#focus-evidence-files").click());
 document.querySelectorAll("[data-focus-step]").forEach((item) => {
   const open = () => {
