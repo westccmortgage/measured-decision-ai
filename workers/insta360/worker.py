@@ -70,20 +70,28 @@ def set_group_state(group_id, state):
     api("PATCH", f"capture_360_groups?id=eq.{group_id}", data=json.dumps({"state": state}))
 
 
-def claim_job():
+def claim_job(attempted=()):
     """Claim exactly one job. The state filter is part of the write, so two
-    workers racing for the same row cannot both win it."""
+    workers racing for the same row cannot both win it.
+
+    A failed job is claimable again: this machine only runs because a person
+    started it, and starting it is the request to try again. Without this, one
+    bad run — a missing driver, an expired key — left every capture permanently
+    failed with no way back. Anything already attempted in *this* run is skipped,
+    so a genuinely broken capture cannot spin the loop."""
     select = (
         "id,organization_id,property_id,capture_group_id,"
         "capture_360_groups!inner(source_evidence_ids,capture_key,space_id,processing_profile)"
     )
-    rows = api("GET", f"capture_360_jobs?state=in.(waiting_for_sdk,queued)&select={select}&order=created_at.asc&limit=1")
+    claimable = "state=in.(waiting_for_sdk,queued,failed)"
+    rows = api("GET", f"capture_360_jobs?{claimable}&select={select}&order=created_at.asc&limit=25")
+    rows = [row for row in rows if row["id"] not in attempted]
     if not rows:
         return None
     job = rows[0]
     claimed = api(
         "PATCH",
-        f"capture_360_jobs?id=eq.{job['id']}&state=in.(waiting_for_sdk,queued)",
+        f"capture_360_jobs?id=eq.{job['id']}&{claimable}",
         extra_headers={"Prefer": "return=representation"},
         data=json.dumps({
             "state": "processing",
@@ -277,15 +285,27 @@ def process(job):
         patch_job(job["id"], stage="Optical-flow stitching and FlowState", progress=10)
 
         process_handle = subprocess.Popen(command, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, bufsize=1)
+        # The SDK explains its own failures, and throwing that away is why a
+        # failed capture used to read "stitching failed" and nothing else. Keep
+        # the tail so the reason travels back to the screen with the job.
+        tail = []
         for line in process_handle.stdout or []:
+            print(line, end="", flush=True)
+            tail.append(line.rstrip())
+            del tail[:-12]
             # Tolerant of spacing: a formatting change must not silently freeze
             # the progress bar the operator is watching.
             match = re.search(r'"progress"\s*:\s*(\d+)', line)
             if match:
                 sdk_progress = int(match.group(1))
                 patch_job(job["id"], stage="Creating 5.7K HEVC VR master", progress=min(92, 10 + int(sdk_progress * 0.82)))
-        if process_handle.wait() != 0 or not output.exists():
-            raise RuntimeError("Insta360 MediaSDK stitching failed")
+        code = process_handle.wait()
+        if code != 0 or not output.exists():
+            reason = next(
+                (t for t in reversed(tail) if t and not t.startswith("{")),
+                f"exit code {code}",
+            )
+            raise RuntimeError(f"Insta360 MediaSDK stitching failed: {reason[:180]}")
 
         patch_job(job["id"], stage="Trimming the camera handling", progress=93)
         master, trim = trim_master(output)
@@ -323,10 +343,13 @@ def process(job):
 
 def main():
     idle_polls = 0
+    attempted = set()
     while True:
         job = None
         try:
-            job = claim_job()
+            job = claim_job(attempted)
+            if job:
+                attempted.add(job["id"])
             if job:
                 idle_polls = 0
                 process(job)
