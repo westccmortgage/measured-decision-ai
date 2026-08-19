@@ -145,10 +145,11 @@ fi
 rm -rf /opt/mdai/repo
 git clone --depth 1 https://github.com/westccmortgage/measured-decision-ai.git /opt/mdai/repo
 cd /opt/mdai/repo/workers/insta360
+# The build reads the SDK from its own context, so the packed archive goes next
+# to the Dockerfile. It stays on this machine and dies with it.
+cp /opt/mdai/insta360-sdk.tar ./insta360-sdk.tar
 
-DOCKER_BUILDKIT=1 docker build \
-  --secret id=insta360_sdk,src=/opt/mdai/insta360-sdk.tar \
-  -t measured-decision/insta360-worker:3.1.1 .
+DOCKER_BUILDKIT=1 docker build -t measured-decision/insta360-worker:3.1.1 .
 
 # Proves claiming, progress, trimming and publishing before a real capture is
 # touched. If this fails the build is wrong and the queue must not be run.

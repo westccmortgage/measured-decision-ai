@@ -194,9 +194,10 @@ The build needs the package and the AI weights together in one directory (the
 ```bash
 git clone https://github.com/westccmortgage/measured-decision-ai.git
 cd measured-decision-ai/workers/insta360
-DOCKER_BUILDKIT=1 docker build \
-  --secret id=insta360_sdk,src=/home/ubuntu/private \
-  -t measured-decision/insta360-worker:3.1.1 .
+# The SDK is read from the build context, not passed as a secret: BuildKit
+# caps a secret at 500KiB and this package is 230MB.
+cp /home/ubuntu/private/libMediaSDK-dev-*.tar.xz ./insta360-sdk.tar
+DOCKER_BUILDKIT=1 docker build -t measured-decision/insta360-worker:3.1.1 .
 ```
 
 The build stops with a named error if the package is wrong — a CameraSDK
