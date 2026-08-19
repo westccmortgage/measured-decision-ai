@@ -150,6 +150,8 @@
             <p class="today-updated" id="today-updated"></p>
           </header>
 
+          <section class="focus-vr-card" id="focus-vr-card"></section>
+
           <article class="today-next" id="today-next">
             <p class="eyebrow">Next action</p>
             <h3 id="today-next-title">Add the first evidence</h3>
@@ -163,20 +165,26 @@
             <div class="today-list" id="today-changed"></div>
           </section>
 
-          <section class="today-block" id="today-attention-block" hidden>
-            <h3>Needs attention</h3>
-            <div class="today-list" id="today-attention"></div>
-          </section>
+          <!-- Counters, room cards and the stage chain are the machinery, not the
+               answer. They stay one tap away for anyone who wants to audit the
+               record, and out of the way of the person who just needs to know
+               what changed and what to do. -->
+          <details class="focus-more" id="focus-more">
+            <summary>Everything else in this project</summary>
+            <section class="today-block" id="today-attention-block" hidden>
+              <h3>Needs attention</h3>
+              <div class="today-list" id="today-attention"></div>
+            </section>
 
-          <div class="focus-result-metrics" id="focus-result-metrics"></div>
-          <section class="focus-vr-card" id="focus-vr-card"></section>
-          <h3 class="focus-result-heading">Open a space to see its evidence</h3>
-          <div class="focus-result-list" id="focus-result-list"></div>
+            <div class="focus-result-metrics" id="focus-result-metrics"></div>
+            <h3 class="focus-result-heading">Open a space to see its evidence</h3>
+            <div class="focus-result-list" id="focus-result-list"></div>
 
-          <section class="today-block">
-            <h3>Where the project stands</h3>
-            <ol class="today-chain" id="today-chain"></ol>
-          </section>
+            <section class="today-block">
+              <h3>Where the project stands</h3>
+              <ol class="today-chain" id="today-chain"></ol>
+            </section>
+          </details>
 
           <div class="focus-result-actions">
             <button class="focus-primary-action" id="focus-open-report" type="button">Prepare the client report</button>
@@ -1116,7 +1124,7 @@
     <script src="trim360.js?v=20260818-trim-1"></script>
     <script src="markers360.js?v=20260819-markers-1"></script>
     <script src="report.js?v=20260819-markers-1"></script>
-    <script src="studio.js?v=20260819-recent-1"></script>
+    <script src="studio.js?v=20260819-quiet-1"></script>
     <script src="pano360.js?v=20260819-markers-1"></script>
     <script src="capture-task-bridge.js?v=20260808-plan-intelligence"></script>
   </body>
