@@ -159,7 +159,10 @@
     gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
     gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
     gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
-    gl.pixelStorei(gl.UNPACK_FLIP_Y_WEBGL, true);
+    /* An equirectangular frame stores the zenith in its first row, and the
+       shader samples it that way: v = 0 is straight up. Flipping the upload
+       turned the sphere over — looking up showed the floor. */
+    gl.pixelStorei(gl.UNPACK_FLIP_Y_WEBGL, false);
 
     const uniforms = {
       yaw: gl.getUniformLocation(program, "yaw"),
