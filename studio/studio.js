@@ -2587,7 +2587,9 @@ function renderFocusToday() {
     button.addEventListener("click", () => attention[Number(button.dataset.attention)]?.run());
   });
 
-  const changes = focusChangeItems(stats);
+  /* Three lines is what a person reads standing up. The full history is in the
+     report, which is where a reader who wants all of it is going anyway. */
+  const changes = focusChangeItems(stats).slice(0, 3);
   $("#today-changed-block").hidden = !changes.length;
   $("#today-changed").innerHTML = changes
     .map((entry) => `<article class="today-item"><div><strong>${escapeText(entry.title)}</strong><p>${escapeText(entry.copy)}</p></div></article>`)

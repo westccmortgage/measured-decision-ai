@@ -2712,3 +2712,37 @@ dialog textarea { min-height:78px; resize:vertical; }
 .focus-roadmap li.reachable:focus-visible { background: rgba(82, 210, 223, 0.1); color: var(--text); outline: none; }
 .focus-roadmap li.reachable:hover > span,
 .focus-roadmap li.reachable:focus-visible > span { border-color: var(--cyan); color: var(--cyan); }
+
+
+/* --------------------------------------------------- Results, quieted down */
+/* One screen answers three things: what changed, what to do, and open the
+   record. Everything that describes the machinery instead of the object lives
+   behind this one control. */
+.focus-more {
+  margin: 24px 0 8px;
+  border: 1px solid #1c2c3c;
+  border-radius: 14px;
+  background: rgba(10, 20, 33, .4);
+}
+.focus-more > summary {
+  min-height: 52px;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 0 18px;
+  color: #8ba0b2;
+  font-size: 14px;
+  font-weight: 600;
+  cursor: pointer;
+  list-style: none;
+}
+.focus-more > summary::-webkit-details-marker { display: none; }
+.focus-more > summary::before {
+  content: "▸";
+  color: #52d2df;
+  transition: transform 140ms ease;
+}
+.focus-more[open] > summary::before { transform: rotate(90deg); }
+.focus-more > summary:hover { color: #dce7ef; }
+.focus-more > *:not(summary) { padding: 0 18px; }
+.focus-more > *:last-child { padding-bottom: 18px; }
