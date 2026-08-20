@@ -20,6 +20,12 @@ set -x
 exec > >(tee -a /var/log/mdai-setup.log) 2>&1
 export DEBIAN_FRONTEND=noninteractive
 
+# Printed first so a log always says which version of this file produced it.
+# Half of the confusion in this project came from a machine quietly running an
+# older script than the one being discussed.
+MDAI_USER_DATA_VERSION="2026-08-20.1 · cuda-drivers first, GPU gate before the queue"
+echo "MDAI user-data ${MDAI_USER_DATA_VERSION}" | tee /dev/console
+
 # A GPU that never stops is the expensive failure here, so the shutdown is
 # scheduled before anything else can go wrong. Both stages set it again.
 shutdown -h +180
@@ -51,18 +57,75 @@ if ! command -v aws >/dev/null; then
 fi
 command -v aws || echo "MDAI: aws CLI could not be installed"
 
-# The T4 driver. --gpgpu picks the headless server build, which is what a
-# machine with no display wants — but it deliberately stops short of the user
-# tools, so the machine ends up with a GPU it cannot see: nvidia-smi is missing,
-# the container toolkit has nothing to inject, and every CUDA job fails with no
-# explanation. Install the matching utils for whatever branch was chosen.
-ubuntu-drivers install --gpgpu || $APT install -y nvidia-driver-535-server
-NVIDIA_BRANCH="$(dpkg-query -W -f='${Package}\n' 'nvidia-compute-utils-*-server' 2>/dev/null |
-  grep -oE '[0-9]+' | head -1)"
-if [ -n "$NVIDIA_BRANCH" ]; then
-  $APT install -y "nvidia-utils-${NVIDIA_BRANCH}-server" || true
+# ---------------------------------------------------------------- the T4 driver
+#
+# This is the step that has failed every time, so it is written to be checked
+# rather than hoped over. `ubuntu-drivers install --gpgpu` installs a driver but
+# deliberately stops short of the user tools: the machine ends up holding a GPU
+# it cannot see, nvidia-smi is missing, the container toolkit has nothing to
+# inject, and every CUDA job dies without explaining itself. That is exactly
+# what happened on 19 August and it cost a whole queue.
+#
+# NVIDIA's own CUDA repository is tried first because it is what NVIDIA
+# documents for cloud instances: cuda-drivers pulls the proprietary driver, its
+# DKMS module and nvidia-smi together, so there is no half-installed state to
+# discover later. The distribution route stays as the fallback.
+install_nvidia_driver() {
+  local codename="ubuntu2404"
+  . /etc/os-release 2>/dev/null
+  case "${VERSION_ID:-24.04}" in
+    22.04) codename="ubuntu2204" ;;
+    24.04) codename="ubuntu2404" ;;
+  esac
+
+  curl -fsSL "https://developer.download.nvidia.com/compute/cuda/repos/${codename}/x86_64/cuda-keyring_1.1-1_all.deb" \
+    -o /tmp/cuda-keyring.deb && dpkg -i /tmp/cuda-keyring.deb && $APT update || true
+
+  # The branch is pinned rather than left to apt. The unversioned metapackage
+  # resolves to whatever is newest, and the newest branch is where support for
+  # older cards gets dropped — a T4 is Turing, and finding out on the machine
+  # that its driver no longer covers it is not a discovery worth making here.
+  # 570 and 580 are current datacenter branches that carry Turing; 550 is the
+  # long-standing fallback. Every one of them ships the DKMS module and
+  # nvidia-smi in the same install, which is the whole point.
+  for branch in 570 580 550; do
+    if $APT install -y "cuda-drivers-${branch}"; then
+      echo "MDAI: installed NVIDIA driver branch ${branch} from NVIDIA's repository"
+      return 0
+    fi
+  done
+
+  echo "MDAI: NVIDIA's own repository did not work, falling back to the distribution driver"
+  ubuntu-drivers install --gpgpu || $APT install -y nvidia-driver-535-server
+  # The distribution route needs the utils asked for by name; this is the exact
+  # omission that produced a blind machine last time.
+  local branch
+  branch="$(dpkg-query -W -f='${Package}\n' 'nvidia-compute-utils-*-server' 2>/dev/null | grep -oE '[0-9]+' | head -1)"
+  [ -n "$branch" ] && $APT install -y "nvidia-utils-${branch}-server"
+  command -v nvidia-smi >/dev/null || $APT install -y nvidia-utils-570-server ||
+    $APT install -y nvidia-utils-535-server
+}
+
+$APT install -y linux-headers-"$(uname -r)" || true
+install_nvidia_driver
+modprobe nvidia 2>/dev/null || true
+
+# Say plainly, in the log and on the console, whether this machine can see its
+# own GPU. A run that discovers this later has already spent twenty minutes and
+# a queue of captures to learn it.
+if nvidia-smi; then
+  echo "MDAI: driver installed and the GPU answers"
+else
+  {
+    echo "MDAI WARNING: nvidia-smi does not run after installing the driver."
+    echo "  installed nvidia packages:"
+    dpkg-query -W -f='    ${Package} ${Version}\n' 'nvidia*' 'cuda-drivers*' 2>/dev/null
+    echo "  running kernel: $(uname -r)"
+    echo "  loaded modules: $(lsmod | grep -c nvidia) nvidia entries"
+    echo "  The machine will retry after the reboot; if it still fails the run stops"
+    echo "  before claiming any capture."
+  } | tee /dev/console
 fi
-command -v nvidia-smi || $APT install -y nvidia-utils-570-server || $APT install -y nvidia-utils-535-server
 
 # Docker from Docker's own repository, not Ubuntu's: the build needs BuildKit
 # and the buildx plugin for --secret, and only this package ships them.
@@ -77,6 +140,7 @@ curl -fsSL https://nvidia.github.io/libnvidia-container/stable/deb/nvidia-contai
 $APT update
 $APT install -y nvidia-container-toolkit
 nvidia-ctk runtime configure --runtime=docker
+systemctl restart docker || true
 
 cat > /opt/mdai/run.sh <<'RUN'
 #!/bin/bash
@@ -115,14 +179,42 @@ trap finish EXIT
 # Everything after this needs the GPU. Discovering that twenty minutes later,
 # after a full image build and with eight captures already marked failed, is the
 # most expensive way to learn it — so the run stops here instead.
+#
+# One recovery is worth attempting first: a module that exists but was never
+# loaded, or a DKMS build that did not run for the kernel this machine actually
+# booted into. Both are cheap to fix and both have the same symptom.
+if ! nvidia-smi >/dev/null 2>&1; then
+  echo "MDAI: the GPU did not answer on first try, attempting to load the driver" > /dev/console
+  modprobe nvidia 2>/dev/null || true
+  command -v dkms >/dev/null && dkms autoinstall 2>/dev/null || true
+  modprobe nvidia 2>/dev/null || true
+fi
+
 if ! nvidia-smi; then
-  echo "MDAI STOP: no working NVIDIA driver on this machine (nvidia-smi does not run). Nothing was claimed from the queue." > /dev/console
+  {
+    echo "MDAI STOP: this machine cannot see its GPU, so nothing was claimed from the queue."
+    echo "  nvidia-smi: $(command -v nvidia-smi || echo 'not installed')"
+    echo "  kernel: $(uname -r)"
+    echo "  nvidia kernel modules loaded: $(lsmod | grep -c nvidia)"
+    echo "  installed:"
+    dpkg-query -W -f='    ${Package} ${Version}\n' 'nvidia*' 'cuda-drivers*' 2>/dev/null | head -30
+    echo "  Every capture is untouched. Terminate this instance and launch a new one"
+    echo "  with the current user-data from the repository."
+  } | tee /dev/console
   exit 94
 fi
+
 if ! docker run --rm --gpus all nvidia/cuda:11.7.1-base-ubuntu22.04 nvidia-smi; then
-  echo "MDAI STOP: the driver works but Docker cannot reach the GPU — the container toolkit is not wired in. Nothing was claimed from the queue." > /dev/console
+  {
+    echo "MDAI STOP: the driver works but Docker cannot reach the GPU."
+    echo "  The container toolkit is installed but not wired into the daemon."
+    echo "  docker runtimes: $(docker info --format '{{json .Runtimes}}' 2>/dev/null)"
+    echo "  Nothing was claimed from the queue; every capture is untouched."
+  } | tee /dev/console
   exit 95
 fi
+
+echo "MDAI: GPU visible on the host and inside a container — starting the queue" > /dev/console
 
 # Check the two things the whole run rests on, and say plainly which one is
 # missing. Grinding through a 20-minute build to fail on an empty secret wastes
