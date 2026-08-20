@@ -20,10 +20,20 @@ set -x
 exec > >(tee -a /var/log/mdai-setup.log) 2>&1
 export DEBIAN_FRONTEND=noninteractive
 
+# Ubuntu 22.04 and later ship needrestart, which interrupts apt to ask which
+# services should be restarted. In an interactive shell that is a prompt; in
+# cloud-init there is nobody to answer it and the whole boot script waits
+# forever. Installing a driver churns enough shared libraries to trigger it, and
+# a machine stuck here never reboots, never runs the worker, and never uploads a
+# log — which is exactly the silence this produced.
+export NEEDRESTART_MODE=a
+export NEEDRESTART_SUSPEND=1
+export UCF_FORCE_CONFOLD=1
+
 # Printed first so a log always says which version of this file produced it.
 # Half of the confusion in this project came from a machine quietly running an
 # older script than the one being discussed.
-MDAI_USER_DATA_VERSION="2026-08-20.1 · cuda-drivers first, GPU gate before the queue"
+MDAI_USER_DATA_VERSION="2026-08-20.2 · needrestart disarmed, staged console markers, setup log uploaded before reboot"
 echo "MDAI user-data ${MDAI_USER_DATA_VERSION}" | tee /dev/console
 
 # A GPU that never stops is the expensive failure here, so the shutdown is
@@ -42,7 +52,15 @@ chmod 600 /opt/mdai/worker.env
 
 # Cloud-init races with unattended-upgrades for the dpkg lock on a fresh boot,
 # so every apt call waits instead of failing.
-APT="apt-get -o DPkg::Lock::Timeout=600 -y"
+APT="apt-get -o DPkg::Lock::Timeout=600 -o Dpkg::Options::=--force-confdef -o Dpkg::Options::=--force-confold -y"
+
+# Every stage says where it got to, on the serial console, which the EC2 page
+# reads back with one button and no credentials. A machine that dies mid-setup
+# used to leave nothing at all: the log only reaches the bucket after the
+# reboot, so a setup that never finished was indistinguishable from a setup that
+# never started.
+step() { echo "MDAI STEP: $*" | tee /dev/console; }
+step "base packages"
 $APT update
 $APT install -y git curl gnupg unzip ubuntu-drivers-common
 $APT install -y awscli || true
@@ -106,8 +124,12 @@ install_nvidia_driver() {
     $APT install -y nvidia-utils-535-server
 }
 
+step "NVIDIA driver — this is the long one, several minutes"
 $APT install -y linux-headers-"$(uname -r)" || true
-install_nvidia_driver
+# Bounded: a driver install that hangs must not hold the machine forever with
+# nothing to show for it.
+timeout 2400 bash -c "$(declare -f install_nvidia_driver); APT=\"$APT\"; install_nvidia_driver" ||
+  echo "MDAI: driver install did not finish inside its time budget" | tee /dev/console
 modprobe nvidia 2>/dev/null || true
 
 # Say plainly, in the log and on the console, whether this machine can see its
@@ -129,7 +151,8 @@ fi
 
 # Docker from Docker's own repository, not Ubuntu's: the build needs BuildKit
 # and the buildx plugin for --secret, and only this package ships them.
-curl -fsSL https://get.docker.com | sh
+step "docker"
+curl -fsSL --connect-timeout 20 --max-time 600 https://get.docker.com | sh
 
 install -m 0755 -d /usr/share/keyrings
 curl -fsSL https://nvidia.github.io/libnvidia-container/gpgkey |
@@ -138,6 +161,7 @@ curl -fsSL https://nvidia.github.io/libnvidia-container/stable/deb/nvidia-contai
   sed 's#deb https://#deb [signed-by=/usr/share/keyrings/nvidia-container-toolkit-keyring.gpg] https://#g' \
   > /etc/apt/sources.list.d/nvidia-container-toolkit.list
 $APT update
+step "container toolkit"
 $APT install -y nvidia-container-toolkit
 nvidia-ctk runtime configure --runtime=docker
 systemctl restart docker || true
@@ -287,5 +311,15 @@ TimeoutStartSec=0
 WantedBy=multi-user.target
 UNIT
 systemctl enable mdai-worker.service
+
+# The setup log goes up now, not only after the worker has run. Waiting until
+# then means a setup that never finished leaves no trace anywhere, which is the
+# hardest failure of all to explain.
+step "setup finished, uploading the setup log and rebooting"
+TOKEN="$(curl -sS --max-time 10 -X PUT http://169.254.169.254/latest/api/token -H 'X-aws-ec2-metadata-token-ttl-seconds: 300' || true)"
+INSTANCE_ID="$(curl -sS --max-time 10 -H "X-aws-ec2-metadata-token: $TOKEN" http://169.254.169.254/latest/meta-data/instance-id || echo unknown)"
+aws s3 cp /var/log/mdai-setup.log \
+  "s3://${AWS_S3_BUCKET}/worker-logs/$(date -u +%Y%m%dT%H%M%SZ)-${INSTANCE_ID}-setup-before-reboot.log" \
+  --region "${AWS_REGION}" || echo "MDAI: could not upload the setup log" | tee /dev/console
 
 shutdown -r now
