@@ -308,84 +308,176 @@ function applyAnalysisResult(room, analysis, suggestionId) {
 
 /* --------------------------------------------------- Work, money and documents */
 
+const COSTS_KEY = "mdai-project-costs-v1";
+let projectCosts = [];
+let tradeOverrides = {};
 let costEditor = null;
 
-function roomLedger(room) {
-  return window.MDAIMoney360 ? window.MDAIMoney360.reconcile(room) : null;
+function costsStorageKey() {
+  return `${COSTS_KEY}:${cloud.propertyId || "local"}`;
 }
 
-function openCostEditor(room, item) {
-  if (!room || !item || !canManageSpaces()) return;
-  costEditor = { roomId: room.id, workKey: item.work_key, label: item.label };
-  $("#cost-dialog-work").textContent = item.label;
-  $("#cost-amount").value = item.amount == null ? "" : String(item.amount);
-  $("#cost-invoice").value = item.invoice_ref || "";
-  const select = $("#cost-document");
-  const files = window.MDAIMoney360.documents(room);
-  select.innerHTML =
-    `<option value="">No document linked yet</option>` +
-    files
-      .map((file) => `<option value="${escapeText(file.id)}"${file.id === item.document_evidence_id ? " selected" : ""}>${escapeText(file.name)}</option>`)
-      .join("");
-  if (!files.length) {
-    select.innerHTML = `<option value="">No document has been uploaded to this space</option>`;
+function loadProjectCosts() {
+  try {
+    const saved = JSON.parse(localStorage.getItem(costsStorageKey())) || {};
+    projectCosts = Array.isArray(saved.costs) ? saved.costs : [];
+    tradeOverrides = saved.overrides && typeof saved.overrides === "object" ? saved.overrides : {};
+  } catch {
+    projectCosts = [];
+    tradeOverrides = {};
   }
+}
+
+function saveProjectCosts(message = "Cost recorded") {
+  localStorage.setItem(costsStorageKey(), JSON.stringify({ costs: projectCosts, overrides: tradeOverrides }));
+  elements.autosave.textContent = message;
+  setTimeout(() => (elements.autosave.textContent = cloud.schemaReady ? `Cloud connected · ${cloud.role}` : "Saved locally"), 1300);
+}
+
+function projectCoverage() {
+  return window.MDAIMoney360 ? window.MDAIMoney360.coverage(rooms, projectCosts, tradeOverrides) : null;
+}
+
+/* The whole point of grouping money by trade: the question is short enough to
+   answer standing in the room that prompted it. Never more than a handful, and
+   only for work the record actually saw. */
+function openMoneyQuestions(preselect = "") {
+  const coverage = projectCoverage();
+  if (!coverage) return;
+  const asking = coverage.questions;
+  const list = $("#money-question-list");
+  if (!asking.length) {
+    list.innerHTML = `<p class="dialog-copy">Every kind of work the record has seen already carries a cost. Nothing to ask.</p>`;
+  } else {
+    list.innerHTML = asking
+      .map(
+        (trade) => `<label class="money-question">
+          <span class="money-question-head"><b>How much is ${escapeText(trade.label.toLowerCase())}?</b>
+          <small>${trade.evidence_count} thing${trade.evidence_count === 1 ? "" : "s"} seen in ${escapeText(trade.spaces.slice(0, 3).join(", "))}${trade.spaces.length > 3 ? " and others" : ""}</small></span>
+          <input type="number" min="0" step="1" inputmode="decimal" data-trade="${escapeText(trade.key)}"
+            placeholder="Leave empty if not known" ${trade.key === preselect ? "autofocus" : ""}>
+        </label>`,
+      )
+      .join("");
+  }
+  $("#money-dialog").showModal();
+}
+
+function saveMoneyQuestions() {
+  let saved = 0;
+  $("#money-question-list").querySelectorAll("[data-trade]").forEach((input) => {
+    const value = input.value.trim();
+    if (value === "") return;
+    const amount = Number(value);
+    if (!Number.isFinite(amount)) return;
+    projectCosts.push({
+      id: `ct-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 6)}`,
+      trade: input.dataset.trade,
+      amount,
+      currency: "USD",
+      invoice_ref: "",
+      document_evidence_id: "",
+      recorded_at: new Date().toISOString(),
+      recorded_by: cloud.session?.user?.email || "",
+    });
+    saved += 1;
+  });
+  $("#money-dialog").close();
+  if (!saved) return;
+  saveProjectCosts(`${saved} cost${saved === 1 ? "" : "s"} recorded`);
+  renderFocusToday();
+  renderFocusResults();
+  notify(`${saved} cost${saved === 1 ? "" : "s"} recorded against the work on record.`, 5000);
+}
+
+/* One trade, in full: several invoices can sit under it, because that is how
+   they arrive. */
+function openTradeEditor(tradeKey) {
+  const coverage = projectCoverage();
+  const trade = coverage?.trades.find((entry) => entry.key === tradeKey);
+  if (!trade || !canManageSpaces()) return;
+  costEditor = { trade: tradeKey };
+  $("#cost-dialog-work").textContent = trade.label;
+  $("#cost-amount").value = "";
+  $("#cost-invoice").value = "";
+  const select = $("#cost-document");
+  const files = window.MDAIMoney360.documents(rooms);
+  select.innerHTML =
+    `<option value="">No document linked</option>` +
+    files.map((file) => `<option value="${escapeText(file.id)}">${escapeText(file.name)} · ${escapeText(file.room_name)}</option>`).join("");
+  const recorded = $("#cost-recorded");
+  recorded.innerHTML = trade.entries.length
+    ? `<h4>Already recorded</h4><ul>${trade.entries
+        .map(
+          (entry) => `<li>${escapeText(window.MDAIMoney360.money(window.MDAIMoney360.amountOf(entry) || 0))}${
+            entry.invoice_ref ? ` · ${escapeText(entry.invoice_ref)}` : ""
+          } <button type="button" class="mini-button" data-drop-cost="${escapeText(entry.id)}">Remove</button></li>`,
+        )
+        .join("")}</ul>`
+    : "";
+  recorded.querySelectorAll("[data-drop-cost]").forEach((button) =>
+    button.addEventListener("click", () => {
+      projectCosts = projectCosts.filter((entry) => entry.id !== button.dataset.dropCost);
+      saveProjectCosts("Cost removed");
+      $("#cost-dialog").close();
+      renderFocusResults();
+    }),
+  );
   $("#cost-dialog").showModal();
 }
 
 function saveCostEntry() {
   if (!costEditor) return;
-  const room = rooms.find((candidate) => candidate.id === costEditor.roomId);
-  if (!room) return;
-  room.costs = Array.isArray(room.costs) ? room.costs : [];
   const amountValue = $("#cost-amount").value.trim();
-  const entry = {
-    work_key: costEditor.workKey,
-    label: costEditor.label,
+  const invoice = $("#cost-invoice").value.trim();
+  const document_evidence_id = $("#cost-document").value || "";
+  if (amountValue === "" && !invoice && !document_evidence_id) {
+    $("#cost-dialog").close();
+    return;
+  }
+  projectCosts.push({
+    id: `ct-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 6)}`,
+    trade: costEditor.trade,
     amount: amountValue === "" ? null : Number(amountValue),
     currency: "USD",
-    invoice_ref: $("#cost-invoice").value.trim(),
-    document_evidence_id: $("#cost-document").value || "",
+    invoice_ref: invoice,
+    document_evidence_id,
     recorded_at: new Date().toISOString(),
     recorded_by: cloud.session?.user?.email || "",
-  };
-  const index = room.costs.findIndex((candidate) => candidate.work_key === entry.work_key);
-  if (index >= 0) room.costs[index] = { ...room.costs[index], ...entry };
-  else room.costs.push(entry);
+  });
   costEditor = null;
   $("#cost-dialog").close();
-  saveRooms("Cost and document recorded");
+  saveProjectCosts("Cost and document recorded");
   renderFocusSheet();
   renderFocusToday();
   renderFocusResults();
 }
 
-/* The gap is the product. Work the record shows with no paper behind it becomes
-   a request addressed to whoever owes the document — not a note, an ask. */
-function requestWorkDocument(room, item) {
+/* Money recorded for work nobody can see is the one thing here that is not a
+   bookkeeping gap. It is asked about differently, and it is asked first. */
+function requestTradeDocument(trade) {
+  const room = rooms[0];
   if (!room) return;
   room.requests = Array.isArray(room.requests) ? room.requests : [];
-  if (room.requests.some((entry) => entry.work_key === item.work_key && entry.state === "open")) {
-    notify("This document has already been asked for.");
+  const text = trade.state === "no_evidence"
+    ? `Show where ${trade.label.toLowerCase()} was done: ${window.MDAIMoney360.money(trade.amount)} is recorded and nothing in the capture record shows it`
+    : `Send the invoice covering ${trade.label.toLowerCase()}`;
+  if (room.requests.some((entry) => entry.trade === trade.key && entry.state === "open")) {
+    notify("This has already been asked for.");
     return;
   }
   room.requests.push({
     id: `rq-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 6)}`,
-    work_key: item.work_key,
-    kind: "document",
-    text: `Send the invoice or work order covering "${item.label}" in ${room.name}`,
-    reason: item.since ? `Appeared since ${item.since}` : "Marked in the spatial record",
+    trade: trade.key,
+    kind: trade.state === "no_evidence" ? "evidence" : "document",
+    text,
+    reason: trade.spaces.length ? `Seen in ${trade.spaces.join(", ")}` : "Not seen anywhere on the property",
     state: "open",
     created_at: new Date().toISOString(),
   });
-  room.costs = Array.isArray(room.costs) ? room.costs : [];
-  const index = room.costs.findIndex((entry) => entry.work_key === item.work_key);
-  if (index >= 0) room.costs[index].requested = true;
-  else room.costs.push({ work_key: item.work_key, label: item.label, amount: null, requested: true, recorded_at: new Date().toISOString() });
-  saveRooms("Document requested");
-  renderFocusSheet();
+  saveRooms("Request recorded");
   renderFocusResults();
-  notify(`Recorded: the project now asks for the document covering "${item.label}".`, 6000);
+  notify(text, 7000);
 }
 
 /* --------------------------------------------------- Capture-to-capture change */
@@ -479,18 +571,20 @@ function roomMarkers(room, item) {
 /* A marker with no document is not a footnote — it is the moment the system
    has to speak: "this was installed, and nothing on file covers it." The
    request becomes an open item on the space, so it can be chased. */
+/* Asking from inside the sphere asks for the invoice that would actually
+   exist: the one covering this trade, not one covering this single outlet. */
 function requestMarkerDocument(room, marker) {
-  if (!room) return;
-  // One ledger, one request list: asking from the sphere and asking from the
-  // space record must produce the same row, or the two screens disagree about
-  // what the project is owed.
-  requestWorkDocument(room, {
-    work_key: window.MDAIMoney360
-      ? window.MDAIMoney360.key(marker.detail || marker.label)
-      : String(marker.label || "").toLowerCase(),
-    label: marker.detail || marker.label,
-    since: marker.change ? "" : "",
-  });
+  if (!room || !window.MDAITrades360) return;
+  const guess = window.MDAITrades360.classify(marker.detail || marker.label);
+  const coverage = projectCoverage();
+  const trade = coverage?.trades.find((entry) => entry.key === guess.trade) || {
+    key: guess.trade,
+    label: guess.label,
+    state: "no_money",
+    spaces: [room.name],
+    amount: 0,
+  };
+  requestTradeDocument(trade);
 }
 
 function reviewMarker(room, marker, state) {
@@ -1435,6 +1529,7 @@ async function hydrateCloudRecord() {
   }));
   activeRoomId = rooms[0]?.id || null;
 
+  loadProjectCosts();
   await hydrateStitchJobs();
   scheduleStitchPoll();
 
@@ -2892,14 +2987,19 @@ function openEvidenceViewer(item, room, focusMarkerId = null) {
        comparison exists: the marker carries what the difference actually said
        about the thing it points at. */
     marker.change = markerChangeLine(room, marker);
-    const entry = window.MDAIMoney360
-      ? roomLedger(room)?.items.find((line) => line.work_key === window.MDAIMoney360.key(marker.detail || marker.label))
-      : null;
-    marker.cost = entry && entry.amount != null
-      ? `${window.MDAIMoney360.money(entry.amount, entry.currency)}${entry.invoice_ref ? ` · ${entry.invoice_ref}` : ""}`
-      : "";
-    marker.document = entry?.document_name || "";
-    marker.requested = Boolean(entry?.requested);
+    /* Cost is quoted at the level it exists at. "$12,400 for rough electrical
+       across the project" is true; a price for this one outlet is not. */
+    const guess = window.MDAITrades360?.classify(marker.detail || marker.label);
+    const trade = guess && projectCoverage()?.trades.find((entry) => entry.key === guess.trade);
+    marker.cost = trade?.has_amount
+      ? `${trade.amount_label} recorded for ${trade.label.toLowerCase()} across this project`
+      : trade
+        ? `No cost recorded for ${trade.label.toLowerCase()} yet`
+        : "";
+    marker.document = trade?.invoices.length ? `Invoice ${trade.invoices.join(", ")}` : "";
+    marker.requested = Boolean(
+      (room.requests || []).some((entry) => entry.trade === guess?.trade && entry.state === "open"),
+    );
   });
 
   window.MDAIPano360.open({
@@ -3055,57 +3155,6 @@ function renderFocusSheet() {
     findings.appendChild(block);
   }
 
-  /* Work against money against paper, in one place. Every row is a person's
-     entry or an explicit absence — and an absence carries the ask. */
-  const ledger = roomLedger(room);
-  if (ledger?.items.length) {
-    const block = document.createElement("div");
-    block.className = "sheet-findings-group sheet-ledger";
-    block.innerHTML = `
-      <h4>Work, money and documents</h4>
-      <p class="sheet-change-headline">${escapeText(ledger.headline)}</p>
-      <table class="ledger-table">
-        <tbody>${ledger.items
-          .map(
-            (item) => `<tr>
-              <td class="ledger-work">${escapeText(item.label)}${
-                item.since ? `<small>appeared since ${escapeText(item.since)}</small>` : ""
-              }</td>
-              <td class="ledger-amount">${item.amount == null ? "<em>no cost recorded</em>" : escapeText(window.MDAIMoney360.money(item.amount, item.currency))}</td>
-              <td class="ledger-doc">${
-                item.document_name
-                  ? escapeText(item.document_name)
-                  : item.requested
-                    ? "<em>requested</em>"
-                    : "<b>no document</b>"
-              }</td>
-              <td class="ledger-actions">
-                ${canManageSpaces() ? `<button type="button" class="mini-button" data-cost="${escapeText(item.work_key)}">Record</button>` : ""}
-                ${!item.document_evidence_id && !item.requested ? `<button type="button" class="mini-button ask" data-ask="${escapeText(item.work_key)}">Ask</button>` : ""}
-              </td>
-            </tr>`,
-          )
-          .join("")}</tbody>
-      </table>
-      ${ledger.unlinked_documents.length
-        ? `<p class="sheet-change-empty">${ledger.unlinked_documents.length} document${ledger.unlinked_documents.length === 1 ? "" : "s"} in this space ${ledger.unlinked_documents.length === 1 ? "is" : "are"} not linked to any work: ${escapeText(ledger.unlinked_documents.map((file) => file.name).join(", "))}.</p>`
-        : ""}
-      <p class="sheet-change-empty">Money is only ever entered by a person. Nothing here is inferred from the evidence.</p>`;
-    findings.appendChild(block);
-    block.querySelectorAll("[data-cost]").forEach((button) => {
-      button.addEventListener("click", () => {
-        const item = ledger.items.find((entry) => entry.work_key === button.dataset.cost);
-        if (item) openCostEditor(room, item);
-      });
-    });
-    block.querySelectorAll("[data-ask]").forEach((button) => {
-      button.addEventListener("click", () => {
-        const item = ledger.items.find((entry) => entry.work_key === button.dataset.ask);
-        if (item) requestWorkDocument(room, item);
-      });
-    });
-  }
-
   /* The sphere is where a marker lives, but the space record has to say the
      markers exist — and which of them the record is still missing a document
      for. A row here is a way into the sphere, not a substitute for it. */
@@ -3204,6 +3253,16 @@ async function runRoomComparison(room) {
   }
   focusProcessingComplete = true;
   finishFocusProcessing();
+  offerMoneyQuestions();
+}
+
+/* The moment the record learns what kind of work it just saw is the moment to
+   ask what it cost — while the person is still holding the phone in the room
+   that prompted the question. */
+function offerMoneyQuestions() {
+  const coverage = projectCoverage();
+  if (!coverage?.questions.length) return;
+  window.setTimeout(() => openMoneyQuestions(coverage.questions[0].key), 700);
 }
 
 async function runFocusRoomAnalysis(room) {
@@ -3238,6 +3297,7 @@ async function runFocusRoomAnalysis(room) {
   }
   focusProcessingComplete = true;
   finishFocusProcessing();
+  offerMoneyQuestions();
 }
 
 /* --------------------------------------------------------------- Results view */
@@ -3292,7 +3352,6 @@ function buildReportModel() {
         note: (room.note || "").trim(),
         capture_requests: room.analysis?.follow_up_captures || [],
         change: room.change || null,
-        ledger: roomLedger(room),
         markers: roomMarkers(room).map((marker) => ({
           label: marker.label,
           state: window.MDAIMarkers360?.stateLabel(marker.state) || "Seen by AI · not verified",
@@ -3322,7 +3381,7 @@ function buildReportModel() {
         .filter((entry) => entry.state === "open")
         .map((entry) => entry.text),
     ),
-    money: window.MDAIMoney360 ? window.MDAIMoney360.projectTotals(stats.spaces) : null,
+    money: projectCoverage(),
   };
 }
 
@@ -3396,6 +3455,53 @@ function renderFocusResults() {
       else showFocusStage("upload");
     });
   });
+
+  /* Short by construction: one row per kind of work, not per thing seen. The
+     row that leads is money recorded against work nobody can find. */
+  const coverage = projectCoverage();
+  const moneyCard = $("#focus-money-card");
+  if (coverage && coverage.trades.length) {
+    const row = (trade) => {
+      const tone = trade.state === "no_evidence" ? "alarm" : trade.state === "no_money" ? "ask" : "ok";
+      const right = trade.state === "no_evidence"
+        ? `<b>not visible on the property</b>`
+        : trade.state === "no_money"
+          ? `<em>no cost recorded</em>`
+          : escapeText(trade.amount_label);
+      return `<button class="money-row tone-${tone}" type="button" data-trade-row="${escapeText(trade.key)}">
+        <span class="money-row-work">${escapeText(trade.label)}<small>${
+          trade.evidence_count
+            ? `${trade.evidence_count} seen in ${escapeText(trade.spaces.slice(0, 2).join(", "))}${trade.spaces.length > 2 ? " +" + (trade.spaces.length - 2) : ""}${trade.new_count ? ` · ${trade.new_count} new` : ""}`
+            : "nothing seen in the capture record"
+        }</small></span>
+        <span class="money-row-amount">${right}</span>
+      </button>`;
+    };
+    moneyCard.hidden = false;
+    moneyCard.innerHTML = `
+      <header><h3>Work and money</h3>${
+        coverage.recorded_label ? `<span class="focus-vr-badge">${escapeText(coverage.recorded_label)} recorded</span>` : ""
+      }</header>
+      <p class="money-headline${coverage.alarms.length ? " alarm" : ""}">${escapeText(coverage.headline)}</p>
+      <div class="money-rows">${coverage.trades.filter((trade) => trade.billable || trade.has_amount).map(row).join("")}</div>
+      <div class="focus-vr-actions">
+        ${coverage.questions.length
+          ? `<button class="focus-primary-action" type="button" data-money="ask">Record what these cost</button>`
+          : ""}
+        ${coverage.alarms.length
+          ? `<button class="focus-secondary-action" type="button" data-money="alarm">Ask where ${escapeText(coverage.alarms[0].label.toLowerCase())} was done</button>`
+          : ""}
+      </div>
+      <p class="focus-vr-note">Money is only ever entered by a person. The AI never reads an amount and never decides which invoice belongs to which work.</p>`;
+    moneyCard.querySelectorAll("[data-trade-row]").forEach((button) =>
+      button.addEventListener("click", () => openTradeEditor(button.dataset.tradeRow)),
+    );
+    moneyCard.querySelector('[data-money="ask"]')?.addEventListener("click", () => openMoneyQuestions());
+    moneyCard.querySelector('[data-money="alarm"]')?.addEventListener("click", () => requestTradeDocument(coverage.alarms[0]));
+  } else {
+    moneyCard.hidden = true;
+    moneyCard.innerHTML = "";
+  }
 
   const list = $("#focus-result-list");
   /* Every space, not only the ones holding files. A space created by mistake and
@@ -3740,6 +3846,7 @@ document.querySelectorAll("[data-focus-step]").forEach((item) => {
 });
 $("#sheet-back").addEventListener("click", () => closeFocusSheet(true));
 $("#save-cost").addEventListener("click", saveCostEntry);
+$("#save-money-questions").addEventListener("click", saveMoneyQuestions);
 $("#cost-dialog").addEventListener("close", () => { costEditor = null; });
 $("#sheet-edit-space").addEventListener("click", () => {
   const room = focusSheetRoom();

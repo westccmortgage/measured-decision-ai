@@ -2782,6 +2782,40 @@ dialog textarea { min-height:78px; resize:vertical; }
 .sheet-change-list li em { color: #7f96aa; font-style: normal; font-size: 12px; }
 .sheet-change-empty { margin: 6px 0 0; color: #8ba0b2; font-size: 12px; line-height: 1.5; }
 
+/* Work and money, one row per kind of work. */
+.focus-money-card { margin: 18px 0; padding: 18px; border: 1px solid #1c2c3c; border-radius: 14px; background: rgba(10, 20, 33, .5); }
+.focus-money-card header { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: 8px; }
+.focus-money-card h3 { margin: 0; font-size: 17px; }
+.money-headline { margin: 0 0 14px; color: #b9cad6; font-size: 14px; line-height: 1.5; }
+.money-headline.alarm { color: #e8b070; font-weight: 600; }
+.money-rows { display: flex; flex-direction: column; gap: 6px; margin-bottom: 14px; }
+.money-row {
+  display: flex; align-items: center; justify-content: space-between; gap: 12px;
+  width: 100%; min-height: 52px; padding: 8px 12px; border: 1px solid #22364a;
+  border-left: 3px solid #22364a; border-radius: 10px; background: rgba(10, 20, 33, .6);
+  color: #dce7ef; font: inherit; font-size: 13px; text-align: left; cursor: pointer;
+}
+.money-row:hover { border-color: #52d2df; }
+.money-row.tone-ok { border-left-color: #6fd8a8; }
+.money-row.tone-ask { border-left-color: #7f96aa; }
+.money-row.tone-alarm { border-left-color: #e8b070; background: rgba(232, 176, 112, .07); }
+.money-row-work { flex: 1; min-width: 0; }
+.money-row-work small { display: block; margin-top: 2px; color: #7f96aa; font-size: 11px; }
+.money-row-amount { white-space: nowrap; font-variant-numeric: tabular-nums; font-weight: 600; }
+.money-row-amount em { color: #7f96aa; font-style: normal; font-weight: 400; font-size: 12px; }
+.money-row-amount b { color: #e8b070; font-size: 12px; }
+.money-dialog .dialog-form { max-width: 460px; }
+/* A question a person reads, not a form label they decode. The dialog's own
+   uppercase label style is deliberately overridden here. */
+.money-question { display: block; margin-bottom: 16px; text-transform: none; letter-spacing: 0; font-size: 15px; color: #edf4f7; }
+.money-question-head b { display: block; font-size: 16px; font-weight: 600; line-height: 1.3; color: #edf4f7; text-transform: none; letter-spacing: 0; }
+.money-question-head small { display: block; margin: 3px 0 8px; color: #7f96aa; font-size: 12px; font-weight: 400; text-transform: none; letter-spacing: 0; }
+.money-question input { width: 100%; min-height: 48px; padding: 0 12px; border: 1px solid #35506a; border-radius: 10px; background: rgba(4, 9, 15, .6); color: #edf4f7; font: inherit; font-size: 16px; }
+.cost-recorded { margin: 4px 0 10px; }
+.cost-recorded h4 { margin: 0 0 6px; font-size: 12px; color: #8ba0b2; }
+.cost-recorded ul { margin: 0; padding-left: 16px; color: #dce7ef; font-size: 13px; }
+.cost-recorded li { margin-bottom: 4px; }
+
 /* Work against money against paper. */
 .sheet-ledger { border-left: 2px solid #6fd8a8; padding-left: 14px; }
 .ledger-table { width: 100%; border-collapse: collapse; margin: 10px 0 6px; }
@@ -2793,3 +2827,6 @@ dialog textarea { min-height:78px; resize:vertical; }
 .ledger-actions { white-space: nowrap; text-align: right; }
 .ledger-actions .mini-button { margin-left: 4px; min-height: 32px; }
 .ledger-actions .mini-button.ask { border-color: #e8b070; color: #e8b070; }
+
+.money-dialog menu { display: flex; gap: 10px; justify-content: flex-end; margin: 6px 0 0; padding: 0; }
+.money-dialog menu button { min-height: 46px; padding: 0 20px; border-radius: 10px; font-size: 14px; }

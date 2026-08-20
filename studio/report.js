@@ -125,21 +125,6 @@
               ${space.change.reliability_note ? `<p class="muted">${escapeText(space.change.reliability_note)}</p>` : ""}
              </div>`
           : ""}
-        ${space.ledger?.items.length
-          ? `<div class="group"><h4>Work, money and documents</h4>
-              <p>${escapeText(space.ledger.headline)}</p>
-              <table class="ledger"><tbody>${space.ledger.items
-                .map(
-                  (item) => `<tr><td>${escapeText(item.label)}</td><td class="num">${
-                    item.amount == null ? "<span class='muted'>no cost recorded</span>" : escapeText(String(item.amount).replace(/\B(?=(\d{3})+(?!\d))/g, ",")).replace(/^/, "$")
-                  }</td><td>${
-                    item.document_name ? escapeText(item.document_name) : item.requested ? "<span class='muted'>requested</span>" : "<b>no document</b>"
-                  }</td></tr>`,
-                )
-                .join("")}</tbody></table>
-              <p class="muted">Money is entered by a person. Nothing in this table is inferred from the evidence.</p>
-             </div>`
-          : ""}
         ${space.markers?.length
           ? `<div class="group"><h4>Marked in the 360 record</h4>${list(
               space.markers.map((marker) =>
@@ -208,6 +193,31 @@
     ? model.changed.map((entry) => `<article class="entry"><h3>${escapeText(entry.title)}</h3><p>${escapeText(entry.copy)}</p></article>`).join("")
     : `<p class="muted">Nothing has changed since the previous round.</p>`}
 
+  ${model.money?.trades?.length
+    ? `<h2>Work and money</h2>
+       <p>${escapeText(model.money.headline)}</p>
+       <table class="ledger"><tbody>${model.money.trades
+         .filter((trade) => trade.billable || trade.has_amount)
+         .map(
+           (trade) => `<tr>
+             <td>${escapeText(trade.label)}<br><span class="muted">${
+               trade.evidence_count
+                 ? `${trade.evidence_count} seen in ${escapeText(trade.spaces.join(", "))}`
+                 : "nothing in the capture record shows this work"
+             }</span></td>
+             <td class="num">${
+               trade.state === "no_evidence"
+                 ? `${escapeText(trade.amount_label)}<br><b>not visible</b>`
+                 : trade.has_amount
+                   ? escapeText(trade.amount_label)
+                   : "<span class='muted'>no cost recorded</span>"
+             }</td>
+           </tr>`,
+         )
+         .join("")}</tbody></table>
+       <p class="muted">Money is entered by a person. The AI never reads an amount and never decides which invoice belongs to which work. An empty cost is a question the project is still asking, not a zero.</p>`
+    : ""}
+
   <h2>What needs a decision</h2>
   <div class="decision">
     <p class="eyebrow">Next action</p>
@@ -219,19 +229,6 @@
     ${list(model.open_questions, "The record leaves no question open.")}</div>
   <div class="group"><h4>Captures requested</h4>
     ${list(model.capture_requests, "No further capture has been requested.")}</div>
-  ${model.money && model.money.items
-    ? `<div class="note"><strong>Work against paper.</strong> ${escapeText(model.money.items)} item${model.money.items === 1 ? "" : "s"} of work are on record across this project${
-        model.money.recorded_label ? `, ${escapeText(model.money.recorded_label)} of cost recorded against them` : ""
-      }. ${
-        model.money.missing_document
-          ? `${escapeText(String(model.money.missing_document))} carry no document and are listed below as requests.`
-          : "Every one of them is covered by a document."
-      }${
-        model.money.unlinked_documents
-          ? ` ${escapeText(String(model.money.unlinked_documents))} document${model.money.unlinked_documents === 1 ? " is" : "s are"} on file without being linked to any work.`
-          : ""
-      }</div>`
-    : ""}
   <div class="group"><h4>Documents requested</h4>
     ${list(
       model.document_requests || [],

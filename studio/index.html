@@ -151,6 +151,7 @@
           </header>
 
           <section class="focus-vr-card" id="focus-vr-card"></section>
+          <section class="focus-money-card" id="focus-money-card" hidden></section>
 
           <article class="today-next" id="today-next">
             <p class="eyebrow">Next action</p>
@@ -1023,6 +1024,20 @@
 
     <!-- A figure is here because a person put it here. The AI never reads an
          amount and never guesses which invoice belongs to which wall. -->
+    <!-- Never a table to fill in. A handful of questions about work the record
+         actually saw, answerable standing in the room that prompted them. -->
+    <dialog id="money-dialog" class="money-dialog">
+      <form method="dialog" class="dialog-form">
+        <h2>What did this cost?</h2>
+        <p class="dialog-copy">Only the work this capture actually shows. Leave anything you do not know yet empty — an empty field is a question the project keeps asking, not a zero.</p>
+        <div id="money-question-list"></div>
+        <menu>
+          <button value="cancel" type="submit">Not now</button>
+          <button id="save-money-questions" value="save" type="button" class="primary-button">Save</button>
+        </menu>
+      </form>
+    </dialog>
+
     <dialog id="cost-dialog">
       <form method="dialog" class="dialog-form">
         <h2>Cost and document</h2>
@@ -1036,7 +1051,8 @@
         <label>Document that covers it
           <select id="cost-document"></select>
         </label>
-        <p class="dialog-copy">Only a person records money here. Nothing on this screen is inferred.</p>
+        <div id="cost-recorded" class="cost-recorded"></div>
+        <p class="dialog-copy">One trade can carry several invoices, because that is how they arrive. Only a person records money here; nothing on this screen is inferred.</p>
         <menu>
           <button value="cancel" type="submit">Cancel</button>
           <button id="save-cost" value="save" type="button" class="primary-button">Save</button>
@@ -1149,9 +1165,10 @@
     <script src="trim360.js?v=20260818-trim-1"></script>
     <script src="markers360.js?v=20260820-visible-marker-1"></script>
     <script src="compare360.js?v=20260820-compare-1"></script>
-    <script src="money360.js?v=20260820-money-1"></script>
-    <script src="report.js?v=20260820-money-1"></script>
-    <script src="studio.js?v=20260820-money-1"></script>
+    <script src="trades360.js?v=20260820-trades-1"></script>
+    <script src="money360.js?v=20260820-trades-1"></script>
+    <script src="report.js?v=20260820-trades-1"></script>
+    <script src="studio.js?v=20260820-trades-1"></script>
     <script src="pano360.js?v=20260820-visible-marker-1"></script>
     <script src="capture-task-bridge.js?v=20260808-plan-intelligence"></script>
   </body>
