@@ -3761,13 +3761,20 @@ async function processFocusEvidence() {
     showFocusStage("upload");
     return;
   }
-  const candidates = stats.analyzableRooms.filter((room) => !room.analysis);
+  /* The space a person just uploaded into is the space they are waiting on.
+     Reading the oldest unfinished room first is why an upload into a new room
+     was answered with the name of a room from weeks ago. */
+  const candidates = stats.analyzableRooms
+    .filter((room) => !room.analysis)
+    .sort((a, b) => roomLastActivity(b) - roomLastActivity(a));
   $("#focus-process").disabled = true;
   closeFocusSheet(false);
   showFocusStage("process");
   $("#focus-view-results").disabled = true;
   $("#focus-processing-title").textContent = "Processing evidence\u2026";
-  $("#focus-processing-copy").textContent = "Organizing files and building the project record.";
+  $("#focus-processing-copy").textContent = candidates.length > 1
+    ? `${candidates.length} spaces still have no interpretation. The one you just added to is read first; the rest follow in the same run.`
+    : "Organizing files and building the project record.";
   focusProcessingRows = candidates.map((room) => ({
     roomId: room.id,
     name: room.name,
@@ -4034,19 +4041,28 @@ function openEvidenceDelete(evidenceId) {
 async function removeEvidenceRecord(location) {
   const evidence = location.evidence;
   let storageCleanupFailed = false;
+  /* A dual-lens capture is two files behind one tile. Deleting only the first
+     of them left the second on record, the tile rebuilt itself from what
+     remained, and the screen looked like the button had done nothing. */
+  const targetIds = (evidence.sourceIds || []).length ? [...evidence.sourceIds] : [evidence.id];
   if (cloud.schemaReady && cloud.propertyId) {
     if (evidence.storageProvider === "aws-s3") {
       if (!window.MDAIObjectStorage) throw new Error("The secure S3 service is unavailable. Reload and retry.");
-      await window.MDAIObjectStorage.deleteEvidence(cloud.client, evidence.id);
+      for (const id of targetIds) {
+        await window.MDAIObjectStorage.deleteEvidence(cloud.client, id);
+      }
     } else {
       const { data: deletedRows, error: databaseError } = await cloud.client
         .from("evidence_items")
         .delete()
-        .eq("id", evidence.id)
+        .in("id", targetIds)
         .eq("property_id", cloud.propertyId)
         .select("id");
       if (databaseError) throw databaseError;
       if (!deletedRows?.length) throw new Error("Deletion is not authorized or the evidence no longer exists");
+      if (deletedRows.length < targetIds.length) {
+        console.warn("Part of the capture was already gone", { asked: targetIds.length, removed: deletedRows.length });
+      }
     }
 
     if (evidence.storagePath && evidence.storageProvider !== "aws-s3") {
@@ -4058,8 +4074,10 @@ async function removeEvidenceRecord(location) {
         storageCleanupFailed = true;
       }
     }
-  } else if (evidence.fileRef) {
-    await deleteStoredEvidenceFile(evidence.fileRef);
+  } else {
+    for (const ref of (evidence.fileRefs || [evidence.fileRef]).filter(Boolean)) {
+      await deleteStoredEvidenceFile(ref);
+    }
   }
 
   if (evidence.src?.startsWith("blob:")) {
