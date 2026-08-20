@@ -111,6 +111,16 @@
           <div class="group"><h4>Visible in the evidence</h4>${list(space.visible, "Nothing was recorded as visible.")}</div>
           <div class="group"><h4>Not established</h4>${list(space.unknown, "No open questions were recorded.")}</div>`}
         ${captures.length ? `<div class="group"><h4>Capture requested</h4>${list(captures, "")}</div>` : ""}
+        ${space.change
+          ? `<div class="group"><h4>Compared with ${escapeText(space.change.earlier_label)}</h4>
+              <p>${escapeText(space.change.headline)} — AI suggestion, not verified.</p>
+              ${list(space.change.appeared.map((entry) => entry.text), "Nothing new is visible in the later capture.")}
+              ${space.change.gone.length
+                ? `<h4>No longer in view</h4>${list(space.change.gone.map((entry) => entry.text), "")}<p class="muted">A thing can leave the frame without leaving the room. These are questions, not removals.</p>`
+                : ""}
+              ${space.change.reliability_note ? `<p class="muted">${escapeText(space.change.reliability_note)}</p>` : ""}
+             </div>`
+          : ""}
         ${space.markers?.length
           ? `<div class="group"><h4>Marked in the 360 record</h4>${list(
               space.markers.map((marker) =>

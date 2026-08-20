@@ -2770,3 +2770,14 @@ dialog textarea { min-height:78px; resize:vertical; }
   margin: 8px 0 0; padding-top: 8px; border-top: 1px solid rgba(255, 255, 255, .07);
   color: #8ba0b2; font-size: 12px; line-height: 1.5;
 }
+
+/* What appeared since last time — the answer a single capture cannot give. */
+.sheet-change { border-left: 2px solid #52d2df; padding-left: 14px; }
+.sheet-change-headline { margin: 0 0 8px; color: #edf4f7; font-size: 15px; font-weight: 600; line-height: 1.35; }
+.sheet-change-list { list-style: none; padding-left: 0; margin: 10px 0 6px; }
+.sheet-change-list li { margin-bottom: 6px; color: #dce7ef; font-size: 13px; line-height: 1.5; }
+.sheet-change-list li b { display: inline-block; min-width: 18px; font-weight: 700; }
+.sheet-change-list.appeared li b { color: #6fd8a8; }
+.sheet-change-list.gone li b { color: #e8b070; }
+.sheet-change-list li em { color: #7f96aa; font-style: normal; font-size: 12px; }
+.sheet-change-empty { margin: 6px 0 0; color: #8ba0b2; font-size: 12px; line-height: 1.5; }
