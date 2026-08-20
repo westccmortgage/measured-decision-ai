@@ -261,10 +261,11 @@ async function extractVideoFrames(item, frameLimit = 4) {
   }
 }
 
-async function prepareVideoFrames(room) {
+async function prepareVideoFrames(source) {
+  const items = Array.isArray(source) ? source : source?.evidence || [];
   const frames = [];
   const warnings = [];
-  for (const item of room.evidence.filter(isVideo)) {
+  for (const item of items.filter(isVideo)) {
     if (frames.length >= 8) break;
     try {
       frames.push(...(await extractVideoFrames(item, Math.min(4, 8 - frames.length))));
@@ -305,7 +306,87 @@ function applyAnalysisResult(room, analysis, suggestionId) {
   });
 }
 
+/* --------------------------------------------------- Capture-to-capture change */
+
+/* A space filmed twice is the only place the record can answer what actually
+   happened between two dates. Captures are grouped by the day they were taken,
+   because that is the unit a person and an invoice both work in. */
+function roomCaptureDays(room) {
+  const groups = new Map();
+  (room?.evidence || [])
+    .filter((item) => isImage(item) || isVideo(item))
+    .forEach((item) => {
+      const time = focusTimestamp(item);
+      const key = focusDayKey(time) || "undated";
+      if (!groups.has(key)) groups.set(key, { key, time, items: [] });
+      groups.get(key).items.push(item);
+      groups.get(key).time = Math.min(groups.get(key).time || time, time || Infinity);
+    });
+  return [...groups.values()]
+    .sort((a, b) => (a.time || 0) - (b.time || 0))
+    .map((group) => ({
+      ...group,
+      label: group.key === "undated"
+        ? "an undated capture"
+        : new Date(group.time).toLocaleDateString("en-US", { month: "long", day: "numeric" }),
+    }));
+}
+
+function roomCanCompare(room) {
+  return roomCaptureDays(room).length >= 2;
+}
+
+/* Both captures are read separately and then differenced. The result is stored
+   on the space as a suggestion, never as a fact: it says what appeared, what is
+   no longer in view, and how much the two captures can be trusted to carry it. */
+async function compareRoomCaptures(room, onStatus = () => {}) {
+  const days = roomCaptureDays(room);
+  if (days.length < 2) throw new Error("This space has captures from only one day, so there is nothing to compare.");
+  if (!cloud.schemaReady || !cloud.propertyId) throw new Error("A secure Supabase connection is required to compare captures.");
+  if (!window.MDAICompare360) throw new Error("The comparison engine is unavailable. Reload the page.");
+  const earlier = days[days.length - 2];
+  const later = days[days.length - 1];
+
+  onStatus(`Reading the capture from ${earlier.label}`);
+  const first = await analyzeFocusRoom(room, onStatus, { evidenceItems: earlier.items, apply: false });
+  if (!first?.analysis) throw new Error(`The capture from ${earlier.label} could not be interpreted.`);
+
+  onStatus(`Reading the capture from ${later.label}`);
+  const second = await analyzeFocusRoom(room, onStatus, { evidenceItems: later.items, apply: true });
+  if (!second?.analysis) throw new Error(`The capture from ${later.label} could not be interpreted.`);
+
+  onStatus("Comparing the two captures");
+  room.change = window.MDAICompare360.compare(first.analysis, second.analysis, {
+    earlier_label: earlier.label,
+    later_label: later.label,
+    earlier_ids: first.evidenceIds || [],
+    later_ids: second.evidenceIds || [],
+  });
+  room.change.space_id = room.id;
+  saveRooms("Comparison saved");
+  return room.change;
+}
+
 /* ------------------------------------------------------------ Spatial markers */
+
+/* Matched the same way the comparison itself matches, so a marker and the
+   change list can never disagree about whether a thing is new. */
+function markerChangeLine(room, marker) {
+  const change = room?.change;
+  if (!change || !window.MDAICompare360) return "";
+  const words = window.MDAICompare360.tokens(marker.detail || marker.label);
+  const hit = (list, phrase) => {
+    const best = list
+      .map((entry) => ({ entry, score: window.MDAICompare360.overlap(words, window.MDAICompare360.tokens(entry.text)) }))
+      .sort((a, b) => b.score - a.score)[0];
+    return best && best.score >= window.MDAICompare360.SAME_THRESHOLD ? phrase : "";
+  };
+  return (
+    hit(change.appeared, `Appeared since ${change.earlier_label} — AI suggestion, not verified`) ||
+    hit(change.unchanged, `Present in the capture from ${change.earlier_label} as well`) ||
+    ""
+  );
+}
 
 function roomMarkers(room, item) {
   const markers = Array.isArray(room?.markers) ? room.markers : [];
@@ -2508,6 +2589,24 @@ function focusAttentionItems(stats) {
 function focusChangeItems(stats) {
   if (!stats.rawFiles) return [];
   const entries = [];
+  /* A capture compared against the one before it is the only entry here that
+     answers "what happened", rather than "what arrived". It goes first. */
+  stats.spaces
+    .filter((room) => room.change)
+    .sort((a, b) => Date.parse(b.change.compared_at || 0) - Date.parse(a.change.compared_at || 0))
+    .slice(0, 2)
+    .forEach((room) => {
+      const change = room.change;
+      const detail = change.appeared.length
+        ? change.appeared.slice(0, 2).map((entry) => entry.text).join("; ")
+        : change.gone.length
+          ? `${change.gone.length} thing${change.gone.length === 1 ? " is" : "s are"} no longer in view`
+          : "Both captures show the same things.";
+      entries.push({
+        title: `${room.name}: ${change.headline}`,
+        copy: `${detail} · compared with ${change.earlier_label} · AI suggestion, not verified`,
+      });
+    });
   const batchFiles = stats.latestBatch.reduce((total, item) => total + focusSourceCount(item), 0);
   const batchSpaces = new Set();
   stats.latestBatch.forEach((item) => {
@@ -2711,6 +2810,10 @@ function openEvidenceViewer(item, room, focusMarkerId = null) {
   const markers = spatial ? roomMarkers(room, item) : [];
   markers.forEach((marker) => {
     marker.source_name = item.subject || item.name || "this capture";
+    /* "Since the previous capture" stops being a promise the moment a
+       comparison exists: the marker carries what the difference actually said
+       about the thing it points at. */
+    marker.change = markerChangeLine(room, marker);
   });
 
   window.MDAIPano360.open({
@@ -2837,6 +2940,35 @@ function renderFocusSheet() {
     }</p>`;
   }
 
+  /* The one thing a single capture can never say. It goes above the findings,
+     because "what appeared since last time" is the question the money depends
+     on, and the description of the room is context for it. */
+  const change = room.change;
+  if (change) {
+    const line = (entry, mark) =>
+      `<li><b>${escapeText(mark)}</b> ${escapeText(entry.text)}${
+        entry.nearest_previous ? ` <em>· closest earlier note: ${escapeText(entry.nearest_previous)}</em>` : ""
+      }</li>`;
+    const block = document.createElement("div");
+    block.className = "sheet-findings-group sheet-change";
+    block.innerHTML = `
+      <h4>Compared with ${escapeText(change.earlier_label)}</h4>
+      <p class="sheet-change-headline">${escapeText(change.headline)}</p>
+      <span class="marker-state review">AI suggestion · not verified</span>
+      ${change.appeared.length
+        ? `<ul class="sheet-change-list appeared">${change.appeared.map((entry) => line(entry, "＋")).join("")}</ul>`
+        : `<p class="sheet-change-empty">Nothing new is visible in the later capture.</p>`}
+      ${change.gone.length
+        ? `<h4>No longer in view</h4><ul class="sheet-change-list gone">${change.gone.map((entry) => line(entry, "?")).join("")}</ul>
+           <p class="sheet-change-empty">A thing can leave the frame without leaving the room. These are questions, not removals.</p>`
+        : ""}
+      ${change.unchanged.length
+        ? `<p class="sheet-change-empty">${change.unchanged.length} thing${change.unchanged.length === 1 ? " was" : "s were"} present in both captures.</p>`
+        : ""}
+      ${change.reliability_note ? `<p class="sheet-change-empty">${escapeText(change.reliability_note)}</p>` : ""}`;
+    findings.appendChild(block);
+  }
+
   /* The sphere is where a marker lives, but the space record has to say the
      markers exist — and which of them the record is still missing a document
      for. A row here is a way into the sphere, not a substitute for it. */
@@ -2884,11 +3016,14 @@ function renderFocusSheet() {
     spatialItems.length
       ? { label: "Open 360 view", primary: true, run: () => openEvidenceViewer(spatialItems[0], room) }
       : { label: "Open 360 view", disabled: true, reason: "This space has no playable equirectangular export yet. Upload one from Insta360 Studio.", run: () => showFocusStage("upload") },
+    roomCanCompare(room)
+      ? { label: room.change ? "Compare again" : "Compare with the previous capture", run: () => runRoomComparison(room) }
+      : null,
     room.analysis
       ? { label: "Re-run AI", run: () => runFocusRoomAnalysis(room) }
       : { label: "Request AI", run: () => runFocusRoomAnalysis(room) },
     { label: "Request another capture", run: () => openFieldOperations() },
-  ];
+  ].filter(Boolean);
   foot.innerHTML = actions
     .map(
       (action, index) =>
@@ -2902,6 +3037,36 @@ function renderFocusSheet() {
       action.run();
     });
   });
+}
+
+async function runRoomComparison(room) {
+  if (!cloud.schemaReady || !cloud.propertyId) {
+    notify("A secure Supabase connection is required to compare captures");
+    return;
+  }
+  focusProcessingComplete = false;
+  closeFocusSheet(false);
+  showFocusStage("process");
+  $("#focus-processing-title").textContent = "Comparing captures…";
+  $("#focus-processing-copy").textContent = `Reading each capture of ${room.name} on its own, then differencing them.`;
+  focusProcessingRows = [{ roomId: room.id, name: room.name, state: "running", detail: "Starting" }];
+  renderFocusProcessing(8, "Preparing both captures…");
+  try {
+    let step = 0;
+    const change = await compareRoomCaptures(room, (message) => {
+      step += 1;
+      focusProcessingRows[0].detail = message;
+      renderFocusProcessing(Math.min(88, 8 + step * 18), message);
+    });
+    focusProcessingRows[0].state = "done";
+    focusProcessingRows[0].detail = change.headline;
+  } catch (error) {
+    console.error(error);
+    focusProcessingRows[0].state = "failed";
+    focusProcessingRows[0].detail = error.message || "The comparison failed";
+  }
+  focusProcessingComplete = true;
+  finishFocusProcessing();
 }
 
 async function runFocusRoomAnalysis(room) {
@@ -2989,6 +3154,7 @@ function buildReportModel() {
         unknown: room.unknown || [],
         note: (room.note || "").trim(),
         capture_requests: room.analysis?.follow_up_captures || [],
+        change: room.change || null,
         markers: roomMarkers(room).map((marker) => ({
           label: marker.label,
           state: window.MDAIMarkers360?.stateLabel(marker.state) || "Seen by AI · not verified",
@@ -3241,8 +3407,12 @@ async function uploadFocusEvidence(fileList) {
 
 /* ----------------------------------------------------------------- Processing */
 
-async function analyzeFocusRoom(room, onStatus) {
-  const evidenceIds = room.evidence
+/* Comparing two captures means reading each of them on its own. The analysis
+   already accepts any subset of a space's files, so the same server call does
+   both jobs: the whole space, or one day of it. */
+async function analyzeFocusRoom(room, onStatus, options = {}) {
+  const scope = Array.isArray(options.evidenceItems) ? options.evidenceItems : room.evidence;
+  const evidenceIds = scope
     .filter((item) => item.storagePath && (isImage(item) || isVideo(item)))
     .map((item) => item.id);
   if (!evidenceIds.length) return { skipped: true };
@@ -3274,7 +3444,7 @@ async function analyzeFocusRoom(room, onStatus) {
   saveJobs();
   try {
     onStatus(`Preparing ${room.name}`);
-    const { frames, warnings } = await prepareVideoFrames(room);
+    const { frames, warnings } = await prepareVideoFrames(scope);
     localJob.status = "Analyzing evidence";
     saveJobs();
     onStatus(`AI is reviewing ${room.name}`);
@@ -3284,9 +3454,9 @@ async function analyzeFocusRoom(room, onStatus) {
     if (error) throw await functionInvocationError(error);
     if (!data?.analysis) throw new Error(data?.error || "AI returned no result");
     localJob.status = "Completed";
-    applyAnalysisResult(room, data.analysis, data.suggestion_id);
+    if (options.apply !== false) applyAnalysisResult(room, data.analysis, data.suggestion_id);
     saveJobs();
-    return { warnings, analyzed: true };
+    return { warnings, analyzed: true, analysis: data.analysis, suggestionId: data.suggestion_id, evidenceIds };
   } catch (error) {
     localJob.status = "Failed";
     localJob.errorCode = error.message || "analysis_failed";
