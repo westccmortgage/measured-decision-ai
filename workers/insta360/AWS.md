@@ -7,26 +7,36 @@ every one of them failed is at the bottom.
 
 | | |
 |---|---|
-| **AMI** | `Deep Learning Base OSS Nvidia Driver GPU AMI (Ubuntu 24.04)` |
+| **AMI** | `Deep Learning Base OSS Nvidia Driver GPU AMI (Ubuntu 22.04)` |
 | **AMI owner** | `898082745236` (AWS) — free, you pay only for EC2 |
+| **AMI id in us-east-2** | `ami-00047abb80935cca4` (build 20260714 — a newer build is fine) |
 | **Instance type** | `g4dn.xlarge` |
 | **Region** | `us-east-2` (Ohio) — the bucket and the quota are there |
 | **IAM role** | `measured-decision-worker` |
 | **Storage** | 120 GB gp3 |
 | **User data** | `workers/insta360/user-data.sh` from `main`, with the service role key filled in |
 
-That image already carries NVIDIA driver 570.172.08, Docker and the NVIDIA
-container toolkit. AWS lists g4dn as a supported family for it. Nothing about
+That image already carries the NVIDIA driver, Docker and the NVIDIA container
+toolkit. AWS lists g4dn among its supported instance families. Nothing about
 the driver is installed, configured or rebooted by us, which is the entire point.
 
 ## Finding the AMI in the console
 
-Launch instances → **Application and OS Images** → **Browse more AMIs** →
-search `Deep Learning Base OSS Nvidia Driver GPU AMI (Ubuntu 24.04)`.
+Launch instances → **Application and OS Images** → **Browse more AMIs** → search
+`898082745236`, the AWS account that publishes these images.
 
-Take the result under **Quickstart AMIs** or **My AMIs / AWS owned**, owner
-`898082745236`. Do not take a Marketplace listing: those are third-party
-repackagings billed per hour on top of EC2.
+The results land under the **Community AMIs** tab. That tab warns that anyone can
+publish, which is true and is why the publisher is what matters, not the tab.
+Take the entry that carries all three: name beginning `Deep Learning Base OSS
+Nvidia Driver GPU AMI`, `Owner 898082745236` / `OwnerAlias amazon`, and the
+**Verified provider** badge. G4dn must appear in its supported-instance list.
+
+Do not take an **AWS Marketplace** listing. Those are third-party repackagings
+billed per hour on top of EC2 — that is the trap this project fell into early on.
+
+Ubuntu 22.04 is preferred over 24.04 here: the Insta360 MediaSDK is built for
+22.04 with CUDA 11.7, and so is the container the worker runs in. Either host
+works, but this one matches the vendor.
 
 ## What the machine does
 
