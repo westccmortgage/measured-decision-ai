@@ -2830,3 +2830,18 @@ dialog textarea { min-height:78px; resize:vertical; }
 
 .money-dialog menu { display: flex; gap: 10px; justify-content: flex-end; margin: 6px 0 0; padding: 0; }
 .money-dialog menu button { min-height: 46px; padding: 0 20px; border-radius: 10px; font-size: 14px; }
+
+/* Building → room, the only way a file learns where it belongs. */
+.room-picker { margin-bottom: 18px; padding: 16px; border: 1px solid #1c2c3c; border-radius: 14px; background: rgba(10, 20, 33, .5); }
+.room-picker .eyebrow { margin: 0 0 10px; }
+.room-picker-fields { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+.room-picker label { display: block; margin: 0; color: var(--muted); font-size: 10px; text-transform: uppercase; letter-spacing: .08em; }
+.room-picker select {
+  width: 100%; min-height: 48px; margin-top: 6px; padding: 0 10px;
+  border: 1px solid #35506a; border-radius: 10px; background: rgba(4, 9, 15, .6);
+  color: #edf4f7; font: inherit; font-size: 15px; text-transform: none; letter-spacing: 0;
+}
+.room-picker-note { margin: 10px 0 0; color: #8ba0b2; font-size: 12px; line-height: 1.5; }
+.room-picker-note.warn { color: #e8b070; }
+.room-picker > .focus-primary-action { margin-top: 14px; width: 100%; }
+@media (max-width: 520px) { .room-picker-fields { grid-template-columns: 1fr; } }

@@ -2089,6 +2089,8 @@ let focusStage = "upload";
 let focusUploadBusy = false;
 let focusProcessingComplete = false;
 let focusProcessingRows = [];
+let uploadRoomId = "";
+let analyzeRoomId = "";
 let focusSheetRoomId = null;
 let focusSheetReturnStage = "today";
 
@@ -2439,34 +2441,140 @@ function focusFileAllowed(file) {
   );
 }
 
+/* ------------------------------------------------------------- Room selection */
+
+/* Buildings and rooms both come from the approved plan set — Main House, ADU,
+   room by room. The picker never invents a destination, and there is no inbox
+   to fall into: a file whose room nobody chose is a file nobody can answer for. */
+function projectBuildings() {
+  const names = [...new Set(rooms.map((room) => room.building || "Property"))];
+  return names.sort((a, b) => a.localeCompare(b));
+}
+
+function roomsInBuilding(building) {
+  return rooms
+    .filter((room) => (room.building || "Property") === building)
+    .sort((a, b) => `${a.level || ""}${a.name}`.localeCompare(`${b.level || ""}${b.name}`));
+}
+
+function fillRoomPicker(prefix, selectedRoomId, onChange) {
+  const buildingSelect = $(`#${prefix}-building`);
+  const roomSelect = $(`#${prefix}-room`);
+  if (!buildingSelect || !roomSelect) return;
+  const buildings = projectBuildings();
+  const current = rooms.find((room) => room.id === selectedRoomId);
+  const building = current?.building || buildingSelect.value || buildings[0] || "";
+  buildingSelect.innerHTML = buildings.length
+    ? buildings.map((name) => `<option value="${escapeText(name)}"${name === building ? " selected" : ""}>${escapeText(name)}</option>`).join("")
+    : `<option value="">No plan has been read yet</option>`;
+  const list = roomsInBuilding(buildingSelect.value || building);
+  roomSelect.innerHTML = list.length
+    ? list
+        .map(
+          (room) => `<option value="${escapeText(room.id)}"${room.id === selectedRoomId ? " selected" : ""}>${escapeText(
+            room.level ? `${room.name} · ${room.level}` : room.name,
+          )}</option>`,
+        )
+        .join("")
+    : `<option value="">No room in this building yet</option>`;
+  if (!buildingSelect.dataset.wired) {
+    buildingSelect.dataset.wired = "1";
+    buildingSelect.addEventListener("change", () => {
+      fillRoomPicker(prefix, roomsInBuilding(buildingSelect.value)[0]?.id || "", onChange);
+      onChange?.();
+    });
+    roomSelect.addEventListener("change", () => onChange?.());
+  }
+}
+
+function pickedRoom(prefix) {
+  return rooms.find((room) => room.id === $(`#${prefix}-room`)?.value) || null;
+}
+
+function renderUploadPicker() {
+  fillRoomPicker("upload", uploadRoomId || rooms[0]?.id || "", () => {
+    uploadRoomId = $("#upload-room").value || "";
+    renderUploadPickerNote();
+  });
+  uploadRoomId = $("#upload-room")?.value || uploadRoomId;
+  renderUploadPickerNote();
+}
+
+function renderAnalyzePicker() {
+  fillRoomPicker("analyze", analyzeRoomId || uploadRoomId || rooms[0]?.id || "", () => {
+    analyzeRoomId = $("#analyze-room").value || "";
+    renderAnalyzePickerNote();
+  });
+  analyzeRoomId = $("#analyze-room")?.value || analyzeRoomId;
+  renderAnalyzePickerNote();
+}
+
+function renderAnalyzePickerNote() {
+  const room = pickedRoom("analyze");
+  const note = $("#analyze-room-note");
+  const run = $("#analyze-room-run");
+  if (!note || !run) return;
+  const visual = room ? (room.evidence || []).filter((item) => isImage(item) || isVideo(item)) : [];
+  if (!room) {
+    note.className = "room-picker-note warn";
+    note.textContent = "Choose a room to read.";
+    run.disabled = true;
+    return;
+  }
+  if (!visual.length) {
+    note.className = "room-picker-note warn";
+    note.textContent = `${room.name} holds nothing the AI can read. Add a 360 capture or photos to it first.`;
+    run.disabled = true;
+    return;
+  }
+  note.className = "room-picker-note";
+  note.textContent = `${visual.length} file${visual.length === 1 ? "" : "s"} in ${room.name}${
+    room.analysis ? " · already read once, reading again replaces the interpretation" : ""
+  }.`;
+  run.disabled = false;
+  run.textContent = room.analysis ? `Read ${room.name} again` : `Read ${room.name}`;
+}
+
+function renderUploadPickerNote() {
+  const room = pickedRoom("upload");
+  const note = $("#upload-room-note");
+  const card = document.querySelector(".focus-upload-card");
+  if (!note) return;
+  if (!rooms.length) {
+    note.className = "room-picker-note warn";
+    note.textContent = "This project has no rooms yet. Upload the plan set first — the rooms come from it.";
+  } else if (!room) {
+    note.className = "room-picker-note warn";
+    note.textContent = "Choose the room before adding files.";
+  } else {
+    const files = (room.evidence || []).length;
+    note.className = "room-picker-note";
+    note.textContent = files
+      ? `Everything you add now goes into ${room.name}, which already holds ${files} file${files === 1 ? "" : "s"}.`
+      : `Everything you add now goes into ${room.name}, which is empty so far.`;
+  }
+  if (card) card.classList.toggle("disabled", !room);
+}
+
 async function ensureFocusDestination(file) {
   /* An export belongs with the capture it came from, not in a general inbox:
      same room, so the sphere sits beside the protected originals. */
+  const chosen = rooms.find((room) => room.id === uploadRoomId);
+  if (chosen) return chosen;
+  /* An export still joins the capture it was stitched from, so re-uploading a
+     master lands beside its originals rather than needing to be re-filed. */
   const captureKey = exportCaptureKey(file?.name);
   if (captureKey) {
-    const pairedRoom = rooms.find((room) =>
+    const paired = rooms.find((room) =>
       (room.evidence || []).some(
         (item) =>
           item.sourceMetadata?.insta360_capture_key === captureKey ||
           insta360CaptureKey(item) === captureKey,
       ),
     );
-    if (pairedRoom) return pairedRoom;
+    if (paired) return paired;
   }
-  const normalizedName = String(file?.name || "").toLowerCase().replace(/[^a-z0-9]+/g, " ");
-  const namedRoom = rooms.find((room) => {
-    if (!room.name || /evidence inbox|unsorted evidence/i.test(room.name)) return false;
-    const tokens = room.name.toLowerCase().split(/[^a-z0-9]+/).filter((token) => token.length > 2);
-    return tokens.length > 0 && tokens.every((token) => normalizedName.includes(token));
-  });
-  if (namedRoom) return namedRoom;
-  const existingInbox = rooms.find((room) => /evidence inbox|unsorted evidence/i.test(room.name));
-  if (existingInbox) return existingInbox;
-  return createRoomRecord({
-    name: "Evidence inbox",
-    building: "Automatic intake",
-    level: "AI organized",
-  });
+  throw new Error("Choose the building and room before uploading — a file with no room cannot be answered for.");
 }
 
 function showFocusStage(name) {
@@ -2475,6 +2583,8 @@ function showFocusStage(name) {
   $("#focus-upload-stage").hidden = focusStage !== "upload";
   $("#focus-processing-stage").hidden = focusStage !== "process";
   $("#focus-results-stage").hidden = focusStage !== "results";
+  if (focusStage === "upload") renderUploadPicker();
+  if (focusStage === "process") renderAnalyzePicker();
   /* The processing screen only means something while a run is in flight. Opened
      with nothing running it kept its hardcoded "Processing… 0% Starting…" —
      a dead screen indistinguishable from a hang. Say what is actually true:
@@ -2542,9 +2652,9 @@ function focusNextAction(stats) {
     return {
       title: `Run the AI review on ${stats.unanalyzedRooms.length} space${stats.unanalyzedRooms.length === 1 ? "" : "s"}`,
       copy: `${names}${stats.unanalyzedRooms.length > 2 ? " and others" : ""} ${stats.unanalyzedRooms.length === 1 ? "holds" : "hold"} visual evidence that has not been interpreted yet.`,
-      label: "Start AI review",
+      label: "Choose a room to read",
       owner: "Automatic · you stay in control of the result",
-      run: () => processFocusEvidence(),
+      run: () => showFocusStage("process"),
     };
   }
   if (stats.awaitingReview.length) {
@@ -3202,12 +3312,22 @@ function renderFocusSheet() {
     spatialItems.length
       ? { label: "Open 360 view", primary: true, run: () => openEvidenceViewer(spatialItems[0], room) }
       : { label: "Open 360 view", disabled: true, reason: "This space has no playable equirectangular export yet. Upload one from Insta360 Studio.", run: () => showFocusStage("upload") },
+    {
+      label: "Add photos to this room",
+      run: () => {
+        uploadRoomId = room.id;
+        closeFocusSheet(false);
+        showFocusStage("upload");
+        $("#focus-evidence-files").click();
+      },
+    },
+    room.analysis
+      ? { label: "Read this room again", run: () => runFocusRoomAnalysis(room) }
+      : { label: "Read this room", run: () => runFocusRoomAnalysis(room) },
     roomCanCompare(room)
       ? { label: room.change ? "Compare again" : "Compare with the previous capture", run: () => runRoomComparison(room) }
       : null,
-    room.analysis
-      ? { label: "Re-run AI", run: () => runFocusRoomAnalysis(room) }
-      : { label: "Request AI", run: () => runFocusRoomAnalysis(room) },
+    room.analysis ? { label: "Report for this room", run: () => openRoomReport(room) } : null,
     { label: "Request another capture", run: () => openFieldOperations() },
   ].filter(Boolean);
   foot.innerHTML = actions
@@ -3383,6 +3503,26 @@ function buildReportModel() {
     ),
     money: projectCoverage(),
   };
+}
+
+/* The same document, narrowed to one room. A room report is what a person
+   actually sends about a room; the project report is what a client receives. */
+function openRoomReport(room) {
+  const model = buildReportModel();
+  const only = model.spaces.filter((space) => space.name === room.name);
+  if (!only.length) {
+    notify("This room has nothing to report yet");
+    return;
+  }
+  const scoped = {
+    ...model,
+    headline: `${room.name} · ${[room.building, room.level].filter(Boolean).join(" · ")}`,
+    spaces: only,
+    summary: { ...model.summary, spaces: 1 },
+    changed: model.changed.filter((entry) => String(entry.title || "").startsWith(room.name)),
+    open_questions: model.open_questions.filter((text) => String(text).startsWith(`${room.name}:`)),
+  };
+  if (!window.MDAIReport?.open(scoped)) notify("Allow pop-ups for this site to open the report");
 }
 
 function openProjectReport() {
@@ -3830,7 +3970,17 @@ const focusUploadCard = document.querySelector(".focus-upload-card");
   focusUploadCard.classList.remove("dragging");
 }));
 focusUploadCard.addEventListener("drop", (event) => uploadFocusEvidence(event.dataTransfer.files));
-$("#focus-process").addEventListener("click", processFocusEvidence);
+$("#focus-process").addEventListener("click", () => {
+  // The room that just received files is the room to read. The picker on the
+  // processing stage is there to choose a different one deliberately.
+  const room = pickedRoom("upload") || rooms.find((candidate) => candidate.evidence?.length);
+  if (!room) {
+    notify("Choose a room and add files to it first");
+    return;
+  }
+  analyzeRoomId = room.id;
+  runFocusRoomAnalysis(room);
+});
 $("#focus-view-results").addEventListener("click", () => {
   renderFocusResults();
   showFocusStage("results");
@@ -3852,6 +4002,10 @@ document.querySelectorAll("[data-focus-step]").forEach((item) => {
   });
 });
 $("#sheet-back").addEventListener("click", () => closeFocusSheet(true));
+$("#analyze-room-run").addEventListener("click", () => {
+  const room = pickedRoom("analyze");
+  if (room) runFocusRoomAnalysis(room);
+});
 $("#save-cost").addEventListener("click", saveCostEntry);
 $("#save-money-questions").addEventListener("click", saveMoneyQuestions);
 $("#cost-dialog").addEventListener("close", () => { costEditor = null; });
