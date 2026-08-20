@@ -3117,20 +3117,27 @@ function renderFocusResults() {
   });
 
   const list = $("#focus-result-list");
-  const orderedSpaces = stats.spaces.slice().sort((a, b) => roomLastActivity(b) - roomLastActivity(a));
+  /* Every space, not only the ones holding files. A space created by mistake and
+     left empty used to vanish from this list, which made it unreachable — and an
+     unreachable space cannot be opened, renamed, or deleted. */
+  const orderedSpaces = rooms.slice().sort((a, b) => roomLastActivity(b) - roomLastActivity(a));
   list.innerHTML = orderedSpaces.length
     ? orderedSpaces
         .map((room) => {
           const rawCount = room.evidence.reduce((total, item) => total + focusSourceCount(item), 0);
           const spatialCount = room.evidence.filter(focusIsSpatial).length;
-          const status = room.status === "confirmed"
-            ? "Human verified"
-            : room.analysis
-              ? "Needs verification"
-              : "Not interpreted";
-          const tone = room.status === "confirmed" ? "ok" : room.analysis ? "review" : "wait";
+          const status = !rawCount
+            ? "Empty"
+            : room.status === "confirmed"
+              ? "Human verified"
+              : room.analysis
+                ? "Needs verification"
+                : "Not interpreted";
+          const tone = !rawCount ? "wait" : room.status === "confirmed" ? "ok" : room.analysis ? "review" : "wait";
           const summary = room.analysis?.summary || room.visible?.[0] ||
-            "Evidence is preserved. No interpretation has been produced for this space yet.";
+            (rawCount
+              ? "Evidence is preserved. No interpretation has been produced for this space yet."
+              : "No evidence has been added to this space yet. Open it to add files, rename it, or remove it.");
           const tags = [
             `${rawCount} file${rawCount === 1 ? "" : "s"}`,
             spatialCount ? `${spatialCount} × 360` : "",
