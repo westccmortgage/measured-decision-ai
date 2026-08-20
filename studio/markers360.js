@@ -173,9 +173,12 @@
       origin: "person",
       state: "placed",
       evidence_id: fields.evidence_id || null,
-      timestamp_seconds: Number.isFinite(Number(fields.timestamp_seconds))
-        ? Number(fields.timestamp_seconds)
-        : null,
+      // Number(null) is 0 and 0 is finite, so a marker on a photo used to claim
+      // it was seen at second zero. No known second means no second.
+      timestamp_seconds:
+        fields.timestamp_seconds != null && Number.isFinite(Number(fields.timestamp_seconds))
+          ? Number(fields.timestamp_seconds)
+          : null,
       created_at: new Date().toISOString(),
       requests: [],
     };
