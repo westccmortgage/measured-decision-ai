@@ -107,10 +107,21 @@
         </ol>
 
         <section class="focus-stage" id="focus-upload-stage">
+          <!-- A file has no idea which room it is of. The person carrying the
+               camera does, and this is the only moment they are still standing
+               in it. Nothing uploads until this says where it goes. -->
+          <div class="room-picker" id="upload-room-picker">
+            <p class="eyebrow">Where was this taken?</p>
+            <div class="room-picker-fields">
+              <label>Building<select id="upload-building"></select></label>
+              <label>Room<select id="upload-room"></select></label>
+            </div>
+            <p class="room-picker-note" id="upload-room-note"></p>
+          </div>
           <label class="focus-upload-card" for="focus-evidence-files">
             <span class="focus-upload-plus">＋</span>
             <strong>Upload evidence</strong>
-            <small>Plans, photos, documents, video and 360 captures</small>
+            <small>360 captures, photos and video for the room chosen above</small>
           </label>
           <input id="focus-evidence-files" type="file" accept="image/*,video/*,.pdf,application/pdf,.insv,.insp,.lrv" multiple hidden>
           <div class="focus-upload-progress" id="focus-upload-progress" hidden>
@@ -128,6 +139,18 @@
         </section>
 
         <section class="focus-stage focus-processing-stage" id="focus-processing-stage" hidden>
+          <!-- One room at a time, chosen deliberately. Reading the whole project
+               because a person pressed a general button is how an upload into a
+               new room came back with the name of an old one. -->
+          <div class="room-picker" id="analyze-room-picker">
+            <p class="eyebrow">Which room should the AI read?</p>
+            <div class="room-picker-fields">
+              <label>Building<select id="analyze-building"></select></label>
+              <label>Room<select id="analyze-room"></select></label>
+            </div>
+            <p class="room-picker-note" id="analyze-room-note"></p>
+            <button class="focus-primary-action" id="analyze-room-run" type="button">Read this room</button>
+          </div>
           <div class="focus-stage-copy">
             <h2 id="focus-processing-title">Processing evidence…</h2>
             <p id="focus-processing-copy">Organizing files and building the project record.</p>
@@ -1168,7 +1191,7 @@
     <script src="trades360.js?v=20260820-trades-1"></script>
     <script src="money360.js?v=20260820-trades-1"></script>
     <script src="report.js?v=20260820-trades-1"></script>
-    <script src="studio.js?v=20260820-delete-fix-1"></script>
+    <script src="studio.js?v=20260820-rooms-1"></script>
     <script src="pano360.js?v=20260820-visible-marker-1"></script>
     <script src="capture-task-bridge.js?v=20260808-plan-intelligence"></script>
   </body>
