@@ -2283,42 +2283,11 @@ function focusNextAction(stats) {
       run: () => showFocusStage("upload"),
     };
   }
-  /* A queued capture with no machine running is the one state where the next
-     action is not in this app at all, and saying anything else sends a person
-     hunting through the Studio for a button that cannot exist. */
-  if (stats.stitch.active.length && !stats.stitch.running.length) {
-    return {
-      title: "Start the 360 machine",
-      copy: `${stats.stitch.active.length} capture${stats.stitch.active.length === 1 ? " is" : "s are"} waiting to be stitched. The machine is not running; it stitches everything queued, then stops itself.`,
-      label: "See what is queued",
-      owner: "Whoever runs the AWS account",
-      run: () => showFocusStage("process"),
-    };
-  }
-  if (stats.stitch.failed.length && !stats.stitch.active.length) {
-    const failed = stats.stitch.failed[0];
-    return {
-      title: "A 360 capture failed to stitch",
-      copy: `${stats.stitch.failed.length} capture${stats.stitch.failed.length === 1 ? "" : "s"} could not be stitched${failed.error ? ` (${failed.error})` : ""}. The camera originals are untouched, so the run can be repeated once the cause is fixed.`,
-      label: "See what failed",
-      owner: "Whoever runs the AWS account",
-      run: () => showFocusStage("process"),
-    };
-  }
-  if (stats.stitch.running.length) {
-    return {
-      title: "Stitching in progress",
-      copy: `${stats.stitchLine}. The playable master appears here on its own when it is done.`,
-      label: "See the queue",
-      owner: "No one — the machine is working",
-      run: () => showFocusStage("process"),
-    };
-  }
   if (stats.unanalyzedRooms.length) {
     const names = stats.unanalyzedRooms.slice(0, 2).map((room) => room.name).join(", ");
     return {
       title: `Run the AI review on ${stats.unanalyzedRooms.length} space${stats.unanalyzedRooms.length === 1 ? "" : "s"}`,
-      copy: `${names}${stats.unanalyzedRooms.length > 2 ? " and others" : ""} hold visual evidence that has not been interpreted yet.`,
+      copy: `${names}${stats.unanalyzedRooms.length > 2 ? " and others" : ""} ${stats.unanalyzedRooms.length === 1 ? "holds" : "hold"} visual evidence that has not been interpreted yet.`,
       label: "Start AI review",
       owner: "Automatic · you stay in control of the result",
       run: () => processFocusEvidence(),
@@ -3096,16 +3065,23 @@ function renderFocusResults() {
     .join("");
 
   const vrCard = $("#focus-vr-card");
+  /* Our processing queue is not a finding about the building. It is reported
+     here, beside the captures it concerns, and never as the project's next
+     decision — a person reading the top of this screen is asking what to do
+     about the property, not about our GPU. */
+  const stitchNote = stats.stitchLine
+    ? `<p class="focus-vr-note">${escapeText(stats.stitchLine)}. The camera originals are untouched.</p>`
+    : "";
   if (stats.spatial.length) {
-    vrCard.innerHTML = `<header><h3>Spatial evidence</h3><span class="focus-vr-badge">VR-ready</span></header><p>${stats.spatial.length} capture${stats.spatial.length === 1 ? " is" : "s are"} playable as a full sphere. Open one here, or send the link to a headset for review in place.</p><div class="focus-vr-actions"><button class="focus-primary-action" type="button" data-vr-action="open">Open 360 view <span>&rarr;</span></button><button class="focus-secondary-action" type="button" data-vr-action="copy">Copy link for Vision Pro</button></div>`;
+    vrCard.innerHTML = `<header><h3>Spatial evidence</h3><span class="focus-vr-badge">VR-ready</span></header><p>${stats.spatial.length} capture${stats.spatial.length === 1 ? " is" : "s are"} playable as a full sphere. Open one here, or send the link to a headset for review in place.</p>${stitchNote}<div class="focus-vr-actions"><button class="focus-primary-action" type="button" data-vr-action="open">Open 360 view <span>&rarr;</span></button><button class="focus-secondary-action" type="button" data-vr-action="copy">Copy link for Vision Pro</button></div>`;
   } else if (stats.paired360 || stats.waiting360) {
     const pairText = `${stats.paired360} paired 360 capture${stats.paired360 === 1 ? "" : "s"}`;
     const waitingText = stats.waiting360
       ? ` ${stats.waiting360} capture${stats.waiting360 === 1 ? " is" : "s are"} waiting for a matching lens file.`
       : "";
-    vrCard.innerHTML = `<header><h3>Spatial evidence</h3><span class="focus-vr-badge">Originals secured</span></header><p>${pairText} preserved and linked to the project.${waitingText} A browser cannot play the protected camera format — export a full 360 MP4 in Insta360 Studio and upload it to make the space walkable.</p><div class="focus-vr-actions"><button class="focus-secondary-action" type="button" data-vr-action="upload">Upload the 360 export</button></div>`;
+    vrCard.innerHTML = `<header><h3>Spatial evidence</h3><span class="focus-vr-badge">Originals secured</span></header><p>${pairText} preserved and linked to the project.${waitingText} A browser cannot play the protected camera format — export a full 360 MP4 in Insta360 Studio and upload it to make the space walkable.</p>${stitchNote}<div class="focus-vr-actions"><button class="focus-secondary-action" type="button" data-vr-action="upload">Upload the 360 export</button></div>`;
   } else {
-    vrCard.innerHTML = `<header><h3>Spatial evidence</h3><span class="focus-vr-badge">Not captured</span></header><p>This project has no 360 capture yet. A photo record still works, but only a full sphere lets a reviewer stand inside the space.</p><div class="focus-vr-actions"><button class="focus-secondary-action" type="button" data-vr-action="upload">Add a 360 capture</button></div>`;
+    vrCard.innerHTML = `<header><h3>Spatial evidence</h3><span class="focus-vr-badge">Not captured</span></header><p>This project has no 360 capture yet. A photo record still works, but only a full sphere lets a reviewer stand inside the space.</p>${stitchNote}<div class="focus-vr-actions"><button class="focus-secondary-action" type="button" data-vr-action="upload">Add a 360 capture</button></div>`;
   }
   vrCard.querySelectorAll("[data-vr-action]").forEach((button) => {
     const action = button.dataset.vrAction;
