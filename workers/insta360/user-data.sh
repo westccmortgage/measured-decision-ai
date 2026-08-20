@@ -1,10 +1,13 @@
 #!/bin/bash
 # Measured Decision · 360 worker, unattended.
 #
-# LAUNCH THIS ON:  Deep Learning Base OSS Nvidia Driver GPU AMI (Ubuntu 24.04)
-#                  owner 898082745236 · free · driver 570.172.08 preinstalled
-#                  Docker and nvidia-container-toolkit preinstalled
-#                  g4dn is a supported instance family for this image
+# LAUNCH THIS ON:  Deep Learning Base OSS Nvidia Driver GPU AMI (Ubuntu 22.04)
+#                  owner 898082745236 (AWS) · free · g4dn is a supported family
+#                  NVIDIA driver, Docker and nvidia-container-toolkit preinstalled
+#
+#                  22.04 rather than 24.04 because the Insta360 MediaSDK is built
+#                  for 22.04 with CUDA 11.7, and so is the image this worker
+#                  runs in. Either host works — this one matches the vendor.
 #
 # Eight machines failed before this file was rewritten, and every one of them
 # that left a log failed the same way: the distribution driver installer chose
@@ -33,7 +36,7 @@ export DEBIAN_FRONTEND=noninteractive
 # are what hung the previous version.
 export NEEDRESTART_MODE=a NEEDRESTART_SUSPEND=1 UCF_FORCE_CONFOLD=1
 
-MDAI_VERSION="2026-08-21.1 · runs on the AWS GPU image, no driver install, no reboot"
+MDAI_VERSION="2026-08-21.2 · AWS GPU image (Ubuntu 22.04), no driver install, no reboot"
 step() { echo "MDAI STEP: $*" | tee /dev/console; }
 stop() { echo "MDAI STOP: $*" | tee /dev/console; exit "${2:-90}"; }
 step "starting · ${MDAI_VERSION}"
@@ -91,7 +94,7 @@ command -v aws >/dev/null || stop "no AWS CLI, so neither the SDK nor the log ca
 # claimed. A queue emptied into failures by an invisible GPU is worse than a
 # queue not started, and that is exactly what happened on 19 August.
 step "GPU check"
-nvidia-smi || stop "this machine cannot see its GPU. Launch on the Deep Learning Base OSS Nvidia Driver GPU AMI (Ubuntu 24.04). No capture was touched." 94
+nvidia-smi || stop "this machine cannot see its GPU. Launch on the Deep Learning Base OSS Nvidia Driver GPU AMI, owner 898082745236. No capture was touched." 94
 docker run --rm --gpus all nvidia/cuda:11.7.1-base-ubuntu22.04 nvidia-smi ||
   stop "the driver works but Docker cannot reach the GPU. No capture was touched." 95
 
