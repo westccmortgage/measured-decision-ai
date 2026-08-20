@@ -1,245 +1,82 @@
-# Running the 360 worker on AWS g4dn.xlarge
+# Running the 360 worker on AWS
 
-The instance type is chosen by a constraint, not by price. MediaSDK 3.1.1 is
-built for CUDA 11.7, which does not support `sm_89` — so Ada cards (RTX 4090,
-L4) are out no matter how cheap they rent. `g4dn` carries an NVIDIA T4
-(`sm_75`), squarely inside what CUDA 11.7 targets, and it sits in the same
-region as the evidence bucket, so downloading originals costs nothing.
+One page, no options. Eight machines failed before this was written; the reason
+every one of them failed is at the bottom.
+
+## The machine
 
 | | |
-| --- | --- |
-| Instance | `g4dn.xlarge` — 4 vCPU, 16 GB RAM, 1× T4 16 GB |
-| Region | `us-east-2` — the same region as `measured-decision-production-…` |
-| AMI | **Ubuntu Server 22.04 LTS**, from the console's Quick Start tab |
-| Root volume | 120 GB gp3 |
+|---|---|
+| **AMI** | `Deep Learning Base OSS Nvidia Driver GPU AMI (Ubuntu 24.04)` |
+| **AMI owner** | `898082745236` (AWS) — free, you pay only for EC2 |
+| **Instance type** | `g4dn.xlarge` |
+| **Region** | `us-east-2` (Ohio) — the bucket and the quota are there |
+| **IAM role** | `measured-decision-worker` |
+| **Storage** | 120 GB gp3 |
+| **User data** | `workers/insta360/user-data.sh` from `main`, with the service role key filled in |
 
-A GPU instance needs the NVIDIA driver, Docker and the NVIDIA Container Toolkit
-before it can run anything; without them the first `docker run --gpus all` fails
-with `could not select device driver "" with capabilities: [[gpu]]`.
+That image already carries NVIDIA driver 570.172.08, Docker and the NVIDIA
+container toolkit. AWS lists g4dn as a supported family for it. Nothing about
+the driver is installed, configured or rebooted by us, which is the entire point.
 
-AWS's own Deep Learning AMI carries all three, but the console's AMI search does
-not surface it — searching for it returns third-party repackagings billed by the
-hour on top of EC2, and picking a lookalike out of 500 community images is not a
-step to hand anyone. So the instance runs **stock Ubuntu 22.04** from the Quick
-Start tab, which is unmistakable and free, and `user-data.sh` installs the three
-pieces itself on first boot, then reboots so the driver's kernel module is
-loaded before the job starts.
+## Finding the AMI in the console
 
-## Before launching: the GPU quota
+Launch instances → **Application and OS Images** → **Browse more AMIs** →
+search `Deep Learning Base OSS Nvidia Driver GPU AMI (Ubuntu 24.04)`.
 
-Most accounts start with a limit of **0** vCPUs for G instances, and the launch
-fails with *"You have requested more vCPU capacity than your current vCPU limit
-of 0"*. `g4dn.xlarge` needs 4.
+Take the result under **Quickstart AMIs** or **My AMIs / AWS owned**, owner
+`898082745236`. Do not take a Marketplace listing: those are third-party
+repackagings billed per hour on top of EC2.
 
-**Service Quotas** → **AWS services** → **Amazon EC2** → search **Running
-On-Demand G and VT instances** → **Request increase at account level** → 8 →
-submit. Approval takes anywhere from minutes to a day, so do it first.
+## What the machine does
 
-This account's quota was approved on 18 August 2026: *[US East (Ohio)]: EC2
-Instances / All G and VT instances, New Limit = 8*, effective within thirty
-minutes of the approval mail. Eight vCPUs is two `g4dn.xlarge` at once, or one
-`g4dn.2xlarge`. The quota is per region — a launch in any region other than
-`us-east-2` still fails at a limit of 0.
+Boots once, no reboot. Checks the GPU on the host and inside a container, checks
+its AWS identity and its access to `private-sdk/`, pulls the licensed Insta360
+SDK, builds the worker image, runs the worker's own self-test, works the queue,
+uploads its log, stops itself.
 
-## Launch
+It stops itself in every case: when the queue empties, when a check fails, and
+in the worst case on a three-hour deadline set in the first seconds.
 
-From the EC2 dashboard in **us-east-2**, **Launch instance**:
+## Reading what happened
 
-| Field | Value |
-| --- | --- |
-| Name | `mdai-360-worker` |
-| AMI | **Ubuntu Server 22.04 LTS** — first tab, *Quick Start*, no search needed |
-| Instance type | `g4dn.xlarge` |
-| Key pair | any existing one, or *Proceed without a key pair* — Session Manager does not use it |
-| Network → Auto-assign public IP | **Enable** |
-| Configure storage | **120** GiB, gp3 |
-| Advanced details → IAM instance profile | `measured-decision-worker` |
-| Advanced details → Shutdown behavior | **Stop** |
-| Advanced details → User data | the whole of `user-data.sh`, with the Supabase service role key filled in |
+Two routes, either is enough:
 
-Auto-assign public IP matters: without it, and without VPC endpoints for SSM,
-the instance cannot reach Session Manager and Connect stays greyed out.
+- **S3** → `measured-decision-production-808454010303` → `worker-logs/`
+- **EC2** → the instance → Actions → Monitor and troubleshoot → **Get system log**,
+  and read the lines starting `MDAI`.
 
-Shutdown behavior matters because the batch run ends with `shutdown -h now`. Set
-to *Terminate*, that command destroys the machine and everything installed on it.
+Every stage announces itself: `MDAI STEP: …`. A refusal announces itself too,
+with the reason and an exit code:
 
-## Connect
+| code | meaning |
+|---|---|
+| 90 | no AWS CLI, so nothing can move |
+| 91 | no working AWS identity — check the instance role |
+| 92 | the role cannot read `private-sdk/` |
+| 93 | no `libMediaSDK` in `private-sdk/` |
+| 94 | the machine cannot see its GPU — wrong AMI |
+| 95 | the driver works but Docker cannot reach the GPU |
+| 96 | no Docker — not the AWS GPU image |
+| 98 | the worker image did not build |
+| 99 | the worker failed its own self-test |
 
-Use **Session Manager**, not SSH: no key pair to lose, no port 22 open to the
-internet, and a terminal in the browser. It has one prerequisite that catches
-everyone — the instance needs an IAM role. Create the role first, then launch.
+In every one of those cases **no capture is touched**. A queue emptied into
+failures is worse than a queue not started.
 
-### 1. Create the role (once)
+## Why the earlier machines failed
 
-1. Open the **IAM** console → **Roles** → **Create role**.
-2. Trusted entity type: **AWS service**. Use case: **EC2**. **Next**.
-3. Search for and tick **`AmazonSSMManagedInstanceCore`**. **Next**.
-4. Role name: `measured-decision-worker`. **Create role**.
-5. Open the new role → **Add permissions** → **Create inline policy** → **JSON**
-   → paste, replacing the bucket name if yours differs:
+Every instance that left a log failed the same way. `ubuntu-drivers install
+--gpgpu` selected `nvidia-headless-no-dkms-*-server-open`, a package family that
+ships no `nvidia-smi`. The machine held a working T4 it could not see, the
+container toolkit had nothing to inject, and CUDA work died without explaining
+itself — on 19 August that emptied a queue of eight captures into failures.
 
-```json
-{
-  "Version": "2012-10-17",
-  "Statement": [
-    {
-      "Effect": "Allow",
-      "Action": ["s3:GetObject", "s3:PutObject"],
-      "Resource": "arn:aws:s3:::measured-decision-production-808454010303/*"
-    },
-    {
-      "Effect": "Allow",
-      "Action": ["s3:ListBucket"],
-      "Resource": "arn:aws:s3:::measured-decision-production-808454010303"
-    }
-  ]
-}
-```
+Installing the driver from NVIDIA's own repository fixed that and introduced a
+worse failure: `needrestart` stops apt to ask which services to restart, nobody
+answers in cloud-init, and the boot script waited forever — leaving no log at
+all, because logs only left after a reboot that never came.
 
-6. Name it `evidence-bucket-access` → **Create policy**.
-
-That single role does two jobs: it lets Session Manager in, and it gives the
-worker its S3 credentials. Leave `AWS_ACCESS_KEY_ID` and
-`AWS_SECRET_ACCESS_KEY` unset — boto3 picks the role up on its own, so no keys
-are ever stored on the machine.
-
-### 2. Attach it to the instance
-
-While launching, in **Advanced details** → **IAM instance profile**, choose
-`measured-decision-worker`.
-
-On an instance that is already running: select it → **Actions** → **Security**
-→ **Modify IAM role** → choose the role → **Update IAM role**. It takes a
-minute or two before Session Manager notices.
-
-### 3. Connect
-
-EC2 console → tick the instance → **Connect** button at the top → **Session
-Manager** tab → **Connect**. A terminal opens in the browser tab.
-
-You land as `ssm-user`. Switch to the normal account before working:
-
-```bash
-sudo su - ubuntu
-```
-
-### If the Connect button is greyed out
-
-- The role is missing or was attached less than two minutes ago.
-- The instance is in a private subnet with no NAT and no VPC endpoints for SSM.
-  A default VPC public subnet has neither problem.
-- The SSM agent is not running. Official Ubuntu and Deep Learning AMIs ship it;
-  check with `snap services amazon-ssm-agent`.
-
-Nothing needs to be opened in the security group — Session Manager works over
-the instance's outbound HTTPS, which the default group already allows.
-
-### SSH instead, if preferred
-
-```bash
-ssh -i /path/key.pem ubuntu@<public-dns>
-```
-
-This needs a key pair at launch and port 22 open to your address, which is the
-part Session Manager exists to avoid.
-
-## Verify the GPU before anything else
-
-```bash
-nvidia-smi
-docker run --rm --gpus all nvidia/cuda:11.7.1-base-ubuntu22.04 nvidia-smi
-```
-
-The second command is the one that matters: it proves Docker can reach the GPU.
-
-## Getting the SDK onto the instance
-
-Session Manager gives a terminal, not a file transfer: there is no `scp` without
-a key pair and an open port 22. The licensed package must not go into git
-either. Route it through the private bucket the instance can already read.
-
-**From the Mac, in the browser:** S3 console → the
-`measured-decision-production-…` bucket → **Create folder** `private-sdk` →
-open it → **Upload** → add the `libMediaSDK-dev-*-amd64.deb` **and** the whole
-`models` folder (Upload accepts a dragged folder) → **Upload**.
-
-**On the instance:**
-
-```bash
-mkdir -p /home/ubuntu/private
-aws s3 cp --recursive s3://measured-decision-production-808454010303/private-sdk/ /home/ubuntu/private/
-ls -R /home/ubuntu/private
-```
-
-The instance role already allows `s3:GetObject` on this bucket, so nothing else
-needs configuring. Delete the `private-sdk/` prefix from the bucket once the
-image is built — a licensed package has no reason to sit next to evidence.
-
-If a key pair was set at launch, `scp` still works and is fine:
-
-```bash
-scp -i /path/key.pem \
-  ~/Downloads/Linux_CameraSDK-2.1.1_MediaSDK-3.1.1/libMediaSDK-dev-*-amd64/libMediaSDK-dev-*-amd64.deb \
-  ubuntu@<public-dns>:/home/ubuntu/private/
-scp -i /path/key.pem -r \
-  ~/Downloads/Linux_CameraSDK-2.1.1_MediaSDK-3.1.1/libMediaSDK-dev-*-amd64/models \
-  ubuntu@<public-dns>:/home/ubuntu/private/
-```
-
-## Build
-
-The build needs the package and the AI weights together in one directory (the
-`models/` folder is not inside the `.deb`):
-
-```bash
-git clone https://github.com/westccmortgage/measured-decision-ai.git
-cd measured-decision-ai/workers/insta360
-# The SDK is read from the build context, not passed as a secret: BuildKit
-# caps a secret at 500KiB and this package is 230MB.
-cp /home/ubuntu/private/libMediaSDK-dev-*.tar.xz ./insta360-sdk.tar
-DOCKER_BUILDKIT=1 docker build -t measured-decision/insta360-worker:3.1.1 .
-```
-
-The build stops with a named error if the package is wrong — a CameraSDK
-archive, or one with no `libMediaSDK` on the loader path.
-
-Before pointing the image at real captures, run the worker's own test from the
-clone. It stubs the stitcher, ffmpeg and ffprobe, so it proves claiming,
-progress, trimming and publishing without touching a capture or the database:
-
-```bash
-python3 ~/measured-decision-ai/workers/insta360/test_worker.py
-```
-
-## Run one batch, then stop
-
-`MAX_IDLE_POLLS` makes the worker exit once the queue is empty instead of
-polling forever on a metered GPU:
-
-```bash
-docker run --rm --gpus all \
-  -e SUPABASE_URL=... \
-  -e SUPABASE_SERVICE_ROLE_KEY=... \
-  -e AWS_REGION=us-east-2 \
-  -e AWS_S3_BUCKET=measured-decision-production-808454010303 \
-  -e MAX_IDLE_POLLS=20 \
-  measured-decision/insta360-worker:3.1.1
-```
-
-With `POLL_SECONDS=15`, twenty empty polls is five minutes of quiet before it
-gives up. To have the instance stop itself when the batch is done:
-
-```bash
-docker run --rm --gpus all --env-file /home/ubuntu/private/worker.env \
-  measured-decision/insta360-worker:3.1.1 && sudo shutdown -h now
-```
-
-Set the instance's *shutdown behavior* to **stop**, not terminate, or that
-command destroys the machine you just built.
-
-## What it costs
-
-A stopped instance costs only its EBS volume — around $10 a month for 120 GB.
-Running is roughly $0.53 an hour, and a 30-second 5.7K capture stitches in a few
-minutes, so the seven Hutton Pl captures are well under a dollar. The expensive
-mistake is leaving it running: about $380 a month for an idle GPU.
+Both problems are the same mistake: installing a GPU driver at boot on a machine
+nobody can watch. AWS publishes an image with the driver already in it, so this
+setup no longer installs one.
