@@ -675,6 +675,7 @@
       stop();
       renderMarkerPins();
       updateMarkerButton();
+      renderMarkerAction();
       openMarkerCard(marker);
     });
   }
@@ -731,7 +732,7 @@
     const count = markerState.list.length;
     const usable = Boolean(markerState.sphere) && (count > 0 || markerState.canPlace);
     markerButton.hidden = !usable;
-    markerButton.textContent = count ? `◎ ${count}` : "◎ Mark";
+    markerButton.textContent = count ? `◎ ${count} marked` : "◎ Markers";
     markerButton.setAttribute(
       "aria-label",
       count ? `${count} marked points in this space` : "Place a marker",
@@ -792,6 +793,7 @@
     stage.appendChild(markerState.layer);
     renderMarkerPins();
     updateMarkerButton();
+    renderMarkerAction();
     if (sphere?.canvas) bindMarkerTaps(sphere.canvas);
   }
 
@@ -819,6 +821,27 @@
         footer.appendChild(button);
       });
     footer.hidden = !footer.children.length;
+  }
+
+  /* The one action this screen exists for cannot live in a glyph in the corner.
+     A person who has not been told what "◎" means will never press it, and the
+     feature may as well not exist. */
+  function renderMarkerAction() {
+    footer.querySelector("[data-pano-add-marker]")?.remove();
+    if (!markerState.canPlace) {
+      footer.hidden = !footer.children.length;
+      return;
+    }
+    const button = document.createElement("button");
+    button.type = "button";
+    button.dataset.panoAddMarker = "1";
+    button.className = "primary";
+    button.textContent = markerState.list.length
+      ? `＋ Add a marker (${markerState.list.length} here)`
+      : "＋ Add a marker";
+    button.addEventListener("click", startMarkerPlacement);
+    footer.insertBefore(button, footer.firstChild);
+    footer.hidden = false;
   }
 
   function teardown() {
@@ -899,7 +922,7 @@
 
     hintNode = document.createElement("p");
     hintNode.className = "pano-hint";
-    hintNode.textContent = "Drag to look around · pinch or scroll to zoom";
+    hintNode.textContent = "Drag to look around · press ＋ Add a marker to mark what you see";
     stage.appendChild(hintNode);
 
     const start = () => {
