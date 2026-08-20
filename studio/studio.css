@@ -2781,3 +2781,15 @@ dialog textarea { min-height:78px; resize:vertical; }
 .sheet-change-list.gone li b { color: #e8b070; }
 .sheet-change-list li em { color: #7f96aa; font-style: normal; font-size: 12px; }
 .sheet-change-empty { margin: 6px 0 0; color: #8ba0b2; font-size: 12px; line-height: 1.5; }
+
+/* Work against money against paper. */
+.sheet-ledger { border-left: 2px solid #6fd8a8; padding-left: 14px; }
+.ledger-table { width: 100%; border-collapse: collapse; margin: 10px 0 6px; }
+.ledger-table td { border-bottom: 1px solid #1c2c3c; padding: 8px 6px 8px 0; vertical-align: top; font-size: 13px; color: #dce7ef; }
+.ledger-work small { display: block; margin-top: 2px; color: #7f96aa; font-size: 11px; }
+.ledger-amount { white-space: nowrap; text-align: right; font-variant-numeric: tabular-nums; }
+.ledger-table em { color: #7f96aa; font-style: normal; font-size: 12px; }
+.ledger-doc b { color: #e8b070; font-weight: 600; }
+.ledger-actions { white-space: nowrap; text-align: right; }
+.ledger-actions .mini-button { margin-left: 4px; min-height: 32px; }
+.ledger-actions .mini-button.ask { border-color: #e8b070; color: #e8b070; }

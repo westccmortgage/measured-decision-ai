@@ -1021,6 +1021,29 @@
       </form>
     </dialog>
 
+    <!-- A figure is here because a person put it here. The AI never reads an
+         amount and never guesses which invoice belongs to which wall. -->
+    <dialog id="cost-dialog">
+      <form method="dialog" class="dialog-form">
+        <h2>Cost and document</h2>
+        <p class="dialog-copy" id="cost-dialog-work">Work</p>
+        <label>What it cost
+          <input id="cost-amount" type="number" min="0" step="1" inputmode="decimal" placeholder="Leave empty if not known yet">
+        </label>
+        <label>Invoice or work-order number
+          <input id="cost-invoice" type="text" placeholder="INV-4471">
+        </label>
+        <label>Document that covers it
+          <select id="cost-document"></select>
+        </label>
+        <p class="dialog-copy">Only a person records money here. Nothing on this screen is inferred.</p>
+        <menu>
+          <button value="cancel" type="submit">Cancel</button>
+          <button id="save-cost" value="save" type="button" class="primary-button">Save</button>
+        </menu>
+      </form>
+    </dialog>
+
     <dialog id="delete-evidence-dialog" class="danger-dialog">
       <form method="dialog" id="delete-evidence-form">
         <div class="dialog-heading">
@@ -1126,8 +1149,9 @@
     <script src="trim360.js?v=20260818-trim-1"></script>
     <script src="markers360.js?v=20260820-visible-marker-1"></script>
     <script src="compare360.js?v=20260820-compare-1"></script>
-    <script src="report.js?v=20260820-compare-1"></script>
-    <script src="studio.js?v=20260820-compare-1"></script>
+    <script src="money360.js?v=20260820-money-1"></script>
+    <script src="report.js?v=20260820-money-1"></script>
+    <script src="studio.js?v=20260820-money-1"></script>
     <script src="pano360.js?v=20260820-visible-marker-1"></script>
     <script src="capture-task-bridge.js?v=20260808-plan-intelligence"></script>
   </body>
