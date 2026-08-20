@@ -57,6 +57,10 @@
       font-size:14px;color:#28414f}
     .metrics{display:grid;grid-template-columns:repeat(4,1fr);gap:12px;margin:18px 0 8px}
     .metrics article{border:1px solid #d9e2ea;border-radius:10px;padding:14px}
+    table.ledger{width:100%;border-collapse:collapse;margin:8px 0 10px;font-size:13px}
+    table.ledger td{border-bottom:1px solid #e6edf2;padding:7px 8px;vertical-align:top}
+    table.ledger td.num{text-align:right;white-space:nowrap;font-variant-numeric:tabular-nums}
+    table.ledger td b{color:#8a5a10}
     .metrics strong{display:block;font-size:26px;line-height:1.1}
     .metrics small{display:block;margin-top:4px;color:#4a6076;font-size:12px}
     .space{border:1px solid #d9e2ea;border-radius:12px;padding:20px 22px;margin:14px 0;break-inside:avoid}
@@ -119,6 +123,21 @@
                 ? `<h4>No longer in view</h4>${list(space.change.gone.map((entry) => entry.text), "")}<p class="muted">A thing can leave the frame without leaving the room. These are questions, not removals.</p>`
                 : ""}
               ${space.change.reliability_note ? `<p class="muted">${escapeText(space.change.reliability_note)}</p>` : ""}
+             </div>`
+          : ""}
+        ${space.ledger?.items.length
+          ? `<div class="group"><h4>Work, money and documents</h4>
+              <p>${escapeText(space.ledger.headline)}</p>
+              <table class="ledger"><tbody>${space.ledger.items
+                .map(
+                  (item) => `<tr><td>${escapeText(item.label)}</td><td class="num">${
+                    item.amount == null ? "<span class='muted'>no cost recorded</span>" : escapeText(String(item.amount).replace(/\B(?=(\d{3})+(?!\d))/g, ",")).replace(/^/, "$")
+                  }</td><td>${
+                    item.document_name ? escapeText(item.document_name) : item.requested ? "<span class='muted'>requested</span>" : "<b>no document</b>"
+                  }</td></tr>`,
+                )
+                .join("")}</tbody></table>
+              <p class="muted">Money is entered by a person. Nothing in this table is inferred from the evidence.</p>
              </div>`
           : ""}
         ${space.markers?.length
@@ -200,6 +219,19 @@
     ${list(model.open_questions, "The record leaves no question open.")}</div>
   <div class="group"><h4>Captures requested</h4>
     ${list(model.capture_requests, "No further capture has been requested.")}</div>
+  ${model.money && model.money.items
+    ? `<div class="note"><strong>Work against paper.</strong> ${escapeText(model.money.items)} item${model.money.items === 1 ? "" : "s"} of work are on record across this project${
+        model.money.recorded_label ? `, ${escapeText(model.money.recorded_label)} of cost recorded against them` : ""
+      }. ${
+        model.money.missing_document
+          ? `${escapeText(String(model.money.missing_document))} carry no document and are listed below as requests.`
+          : "Every one of them is covered by a document."
+      }${
+        model.money.unlinked_documents
+          ? ` ${escapeText(String(model.money.unlinked_documents))} document${model.money.unlinked_documents === 1 ? " is" : "s are"} on file without being linked to any work.`
+          : ""
+      }</div>`
+    : ""}
   <div class="group"><h4>Documents requested</h4>
     ${list(
       model.document_requests || [],

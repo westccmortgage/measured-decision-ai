@@ -306,6 +306,88 @@ function applyAnalysisResult(room, analysis, suggestionId) {
   });
 }
 
+/* --------------------------------------------------- Work, money and documents */
+
+let costEditor = null;
+
+function roomLedger(room) {
+  return window.MDAIMoney360 ? window.MDAIMoney360.reconcile(room) : null;
+}
+
+function openCostEditor(room, item) {
+  if (!room || !item || !canManageSpaces()) return;
+  costEditor = { roomId: room.id, workKey: item.work_key, label: item.label };
+  $("#cost-dialog-work").textContent = item.label;
+  $("#cost-amount").value = item.amount == null ? "" : String(item.amount);
+  $("#cost-invoice").value = item.invoice_ref || "";
+  const select = $("#cost-document");
+  const files = window.MDAIMoney360.documents(room);
+  select.innerHTML =
+    `<option value="">No document linked yet</option>` +
+    files
+      .map((file) => `<option value="${escapeText(file.id)}"${file.id === item.document_evidence_id ? " selected" : ""}>${escapeText(file.name)}</option>`)
+      .join("");
+  if (!files.length) {
+    select.innerHTML = `<option value="">No document has been uploaded to this space</option>`;
+  }
+  $("#cost-dialog").showModal();
+}
+
+function saveCostEntry() {
+  if (!costEditor) return;
+  const room = rooms.find((candidate) => candidate.id === costEditor.roomId);
+  if (!room) return;
+  room.costs = Array.isArray(room.costs) ? room.costs : [];
+  const amountValue = $("#cost-amount").value.trim();
+  const entry = {
+    work_key: costEditor.workKey,
+    label: costEditor.label,
+    amount: amountValue === "" ? null : Number(amountValue),
+    currency: "USD",
+    invoice_ref: $("#cost-invoice").value.trim(),
+    document_evidence_id: $("#cost-document").value || "",
+    recorded_at: new Date().toISOString(),
+    recorded_by: cloud.session?.user?.email || "",
+  };
+  const index = room.costs.findIndex((candidate) => candidate.work_key === entry.work_key);
+  if (index >= 0) room.costs[index] = { ...room.costs[index], ...entry };
+  else room.costs.push(entry);
+  costEditor = null;
+  $("#cost-dialog").close();
+  saveRooms("Cost and document recorded");
+  renderFocusSheet();
+  renderFocusToday();
+  renderFocusResults();
+}
+
+/* The gap is the product. Work the record shows with no paper behind it becomes
+   a request addressed to whoever owes the document — not a note, an ask. */
+function requestWorkDocument(room, item) {
+  if (!room) return;
+  room.requests = Array.isArray(room.requests) ? room.requests : [];
+  if (room.requests.some((entry) => entry.work_key === item.work_key && entry.state === "open")) {
+    notify("This document has already been asked for.");
+    return;
+  }
+  room.requests.push({
+    id: `rq-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 6)}`,
+    work_key: item.work_key,
+    kind: "document",
+    text: `Send the invoice or work order covering "${item.label}" in ${room.name}`,
+    reason: item.since ? `Appeared since ${item.since}` : "Marked in the spatial record",
+    state: "open",
+    created_at: new Date().toISOString(),
+  });
+  room.costs = Array.isArray(room.costs) ? room.costs : [];
+  const index = room.costs.findIndex((entry) => entry.work_key === item.work_key);
+  if (index >= 0) room.costs[index].requested = true;
+  else room.costs.push({ work_key: item.work_key, label: item.label, amount: null, requested: true, recorded_at: new Date().toISOString() });
+  saveRooms("Document requested");
+  renderFocusSheet();
+  renderFocusResults();
+  notify(`Recorded: the project now asks for the document covering "${item.label}".`, 6000);
+}
+
 /* --------------------------------------------------- Capture-to-capture change */
 
 /* A space filmed twice is the only place the record can answer what actually
@@ -399,20 +481,16 @@ function roomMarkers(room, item) {
    request becomes an open item on the space, so it can be chased. */
 function requestMarkerDocument(room, marker) {
   if (!room) return;
-  room.requests = Array.isArray(room.requests) ? room.requests : [];
-  if (room.requests.some((entry) => entry.marker_id === marker.id && entry.state === "open")) return;
-  room.requests.push({
-    id: `rq-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 6)}`,
-    marker_id: marker.id,
-    kind: "document",
-    text: `Send the invoice or work order covering "${marker.label}" in ${room.name}`,
-    reason: marker.detail || marker.label,
-    state: "open",
-    created_at: new Date().toISOString(),
+  // One ledger, one request list: asking from the sphere and asking from the
+  // space record must produce the same row, or the two screens disagree about
+  // what the project is owed.
+  requestWorkDocument(room, {
+    work_key: window.MDAIMoney360
+      ? window.MDAIMoney360.key(marker.detail || marker.label)
+      : String(marker.label || "").toLowerCase(),
+    label: marker.detail || marker.label,
+    since: marker.change ? "" : "",
   });
-  saveRooms("Document request recorded");
-  renderFocusResults();
-  notify(`Recorded: the record now asks for the document covering "${marker.label}".`, 6000);
 }
 
 function reviewMarker(room, marker, state) {
@@ -2814,6 +2892,14 @@ function openEvidenceViewer(item, room, focusMarkerId = null) {
        comparison exists: the marker carries what the difference actually said
        about the thing it points at. */
     marker.change = markerChangeLine(room, marker);
+    const entry = window.MDAIMoney360
+      ? roomLedger(room)?.items.find((line) => line.work_key === window.MDAIMoney360.key(marker.detail || marker.label))
+      : null;
+    marker.cost = entry && entry.amount != null
+      ? `${window.MDAIMoney360.money(entry.amount, entry.currency)}${entry.invoice_ref ? ` · ${entry.invoice_ref}` : ""}`
+      : "";
+    marker.document = entry?.document_name || "";
+    marker.requested = Boolean(entry?.requested);
   });
 
   window.MDAIPano360.open({
@@ -2967,6 +3053,57 @@ function renderFocusSheet() {
         : ""}
       ${change.reliability_note ? `<p class="sheet-change-empty">${escapeText(change.reliability_note)}</p>` : ""}`;
     findings.appendChild(block);
+  }
+
+  /* Work against money against paper, in one place. Every row is a person's
+     entry or an explicit absence — and an absence carries the ask. */
+  const ledger = roomLedger(room);
+  if (ledger?.items.length) {
+    const block = document.createElement("div");
+    block.className = "sheet-findings-group sheet-ledger";
+    block.innerHTML = `
+      <h4>Work, money and documents</h4>
+      <p class="sheet-change-headline">${escapeText(ledger.headline)}</p>
+      <table class="ledger-table">
+        <tbody>${ledger.items
+          .map(
+            (item) => `<tr>
+              <td class="ledger-work">${escapeText(item.label)}${
+                item.since ? `<small>appeared since ${escapeText(item.since)}</small>` : ""
+              }</td>
+              <td class="ledger-amount">${item.amount == null ? "<em>no cost recorded</em>" : escapeText(window.MDAIMoney360.money(item.amount, item.currency))}</td>
+              <td class="ledger-doc">${
+                item.document_name
+                  ? escapeText(item.document_name)
+                  : item.requested
+                    ? "<em>requested</em>"
+                    : "<b>no document</b>"
+              }</td>
+              <td class="ledger-actions">
+                ${canManageSpaces() ? `<button type="button" class="mini-button" data-cost="${escapeText(item.work_key)}">Record</button>` : ""}
+                ${!item.document_evidence_id && !item.requested ? `<button type="button" class="mini-button ask" data-ask="${escapeText(item.work_key)}">Ask</button>` : ""}
+              </td>
+            </tr>`,
+          )
+          .join("")}</tbody>
+      </table>
+      ${ledger.unlinked_documents.length
+        ? `<p class="sheet-change-empty">${ledger.unlinked_documents.length} document${ledger.unlinked_documents.length === 1 ? "" : "s"} in this space ${ledger.unlinked_documents.length === 1 ? "is" : "are"} not linked to any work: ${escapeText(ledger.unlinked_documents.map((file) => file.name).join(", "))}.</p>`
+        : ""}
+      <p class="sheet-change-empty">Money is only ever entered by a person. Nothing here is inferred from the evidence.</p>`;
+    findings.appendChild(block);
+    block.querySelectorAll("[data-cost]").forEach((button) => {
+      button.addEventListener("click", () => {
+        const item = ledger.items.find((entry) => entry.work_key === button.dataset.cost);
+        if (item) openCostEditor(room, item);
+      });
+    });
+    block.querySelectorAll("[data-ask]").forEach((button) => {
+      button.addEventListener("click", () => {
+        const item = ledger.items.find((entry) => entry.work_key === button.dataset.ask);
+        if (item) requestWorkDocument(room, item);
+      });
+    });
   }
 
   /* The sphere is where a marker lives, but the space record has to say the
@@ -3155,6 +3292,7 @@ function buildReportModel() {
         note: (room.note || "").trim(),
         capture_requests: room.analysis?.follow_up_captures || [],
         change: room.change || null,
+        ledger: roomLedger(room),
         markers: roomMarkers(room).map((marker) => ({
           label: marker.label,
           state: window.MDAIMarkers360?.stateLabel(marker.state) || "Seen by AI · not verified",
@@ -3182,8 +3320,9 @@ function buildReportModel() {
     document_requests: stats.spaces.flatMap((room) =>
       (room.requests || [])
         .filter((entry) => entry.state === "open")
-        .map((entry) => `${room.name}: ${entry.text}`),
+        .map((entry) => entry.text),
     ),
+    money: window.MDAIMoney360 ? window.MDAIMoney360.projectTotals(stats.spaces) : null,
   };
 }
 
@@ -3600,6 +3739,8 @@ document.querySelectorAll("[data-focus-step]").forEach((item) => {
   });
 });
 $("#sheet-back").addEventListener("click", () => closeFocusSheet(true));
+$("#save-cost").addEventListener("click", saveCostEntry);
+$("#cost-dialog").addEventListener("close", () => { costEditor = null; });
 $("#sheet-edit-space").addEventListener("click", () => {
   const room = focusSheetRoom();
   if (room) openSpaceEditor(room.id);
