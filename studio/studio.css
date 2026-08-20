@@ -2764,3 +2764,9 @@ dialog textarea { min-height:78px; resize:vertical; }
   color: #b9cad6; font: inherit; font-size: 13px; cursor: pointer;
 }
 .sheet-edit:hover { border-color: #52d2df; color: #edf4f7; }
+
+/* The processing queue reports itself quietly, beside the captures it concerns. */
+.focus-vr-note {
+  margin: 8px 0 0; padding-top: 8px; border-top: 1px solid rgba(255, 255, 255, .07);
+  color: #8ba0b2; font-size: 12px; line-height: 1.5;
+}
