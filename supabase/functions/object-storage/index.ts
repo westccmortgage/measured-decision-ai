@@ -6,6 +6,7 @@ import {
   CreateMultipartUploadCommand,
   DeleteObjectCommand,
   GetObjectCommand,
+  ListObjectVersionsCommand,
   getSignedUrl,
   ListPartsCommand,
   signedObjectReadUrl,
@@ -695,8 +696,49 @@ Deno.serve(async (request) => {
       if (derivativeCount && body?.confirm_orphans !== true) {
         throw Object.assign(new Error(`${derivativeCount} file${derivativeCount === 1 ? " was" : "s were"} derived from this one and would lose their parent. Confirm again to proceed.`), { status: 409 });
       }
+      let versionsDestroyed = 0;
       if (record.storage_provider === "aws-s3") {
-        await s3.send(new DeleteObjectCommand({ Bucket: record.storage_bucket || bucket, Key: record.storage_path, VersionId: record.object_version_id || undefined }));
+        /* Versioning is enabled on this bucket, so one key can hold several
+           versions — a capture that was stitched twice writes the same key twice.
+           Deleting only the version recorded at upload would leave an earlier one
+           behind while the record said the file was destroyed. A purge that lies
+           is worse than no purge, so every version of the key goes, and the count
+           of what went is written into the audit entry. */
+        const targetBucket = record.storage_bucket || bucket;
+        let keyMarker: string | undefined;
+        let versionMarker: string | undefined;
+        do {
+          const listed = await s3.send(new ListObjectVersionsCommand({
+            Bucket: targetBucket,
+            Prefix: record.storage_path,
+            KeyMarker: keyMarker,
+            VersionIdMarker: versionMarker,
+          }));
+          /* Prefix is not equality: a key ending in "-1" would match "-10" too.
+             Only exact matches are ours to destroy. Delete markers count as
+             versions and are removed with everything else. */
+          const mine = [...(listed.Versions || []), ...(listed.DeleteMarkers || [])]
+            .filter((entry) => entry.Key === record.storage_path && entry.VersionId);
+          for (const entry of mine) {
+            await s3.send(new DeleteObjectCommand({
+              Bucket: targetBucket, Key: record.storage_path, VersionId: entry.VersionId,
+            }));
+            versionsDestroyed += 1;
+          }
+          keyMarker = listed.IsTruncated ? listed.NextKeyMarker : undefined;
+          versionMarker = listed.IsTruncated ? listed.NextVersionIdMarker : undefined;
+        } while (keyMarker || versionMarker);
+
+        /* A bucket with versioning switched off returns no versions at all, and
+           the object still has to go. Falling back rather than assuming means
+           this keeps working if that setting ever changes. */
+        if (!versionsDestroyed) {
+          await s3.send(new DeleteObjectCommand({
+            Bucket: targetBucket, Key: record.storage_path,
+            VersionId: record.object_version_id || undefined,
+          }));
+          versionsDestroyed = 1;
+        }
       }
       const purgedAt = new Date().toISOString();
       /* The row survives the bytes on purpose. A record saying "this file existed,
@@ -718,6 +760,7 @@ Deno.serve(async (request) => {
           original_filename: record.original_filename,
           storage_bucket: record.storage_bucket,
           object_key: record.storage_path,
+          versions_destroyed: versionsDestroyed,
           orphaned_derivatives: derivativeCount || 0,
         },
         p_request_ip: origin.ip,

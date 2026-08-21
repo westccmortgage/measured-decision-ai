@@ -4,6 +4,7 @@ import {
   CreateMultipartUploadCommand,
   DeleteObjectCommand,
   GetObjectCommand,
+  ListObjectVersionsCommand,
   ListPartsCommand,
   S3Client,
   UploadPartCommand,
@@ -42,6 +43,7 @@ export async function signedObjectReadUrl(
 export {
   AbortMultipartUploadCommand,
   GetObjectCommand,
+  ListObjectVersionsCommand,
   CompleteMultipartUploadCommand,
   CreateMultipartUploadCommand,
   DeleteObjectCommand,
