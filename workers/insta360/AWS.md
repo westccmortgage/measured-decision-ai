@@ -3,7 +3,7 @@
 One page, no options. Eight machines failed before this was written; the reason
 every one of them failed is at the bottom.
 
-## The machine
+## The machine mdai-360-worker
 
 | | |
 |---|---|
