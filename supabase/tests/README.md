@@ -4,7 +4,7 @@
 true: tenant isolation, evidence immutability, who may delete, that the audit
 trail cannot be rewritten, and that an AI process cannot author a decision.
 
-Forty-six assertions. Every one of them describes something a future change
+Fifty-one assertions. Every one of them describes something a future change
 could remove by accident.
 
 ## Running them

@@ -297,6 +297,30 @@ select pg_temp.check('record_audit_event is not reachable from the browser',
   and not has_function_privilege('anon',
     'public.record_audit_event(uuid,text,text,text,uuid,uuid,text,text,jsonb,text,text,text)', 'execute'));
 
+-- Revoking EXECUTE on a trigger function removes its REST endpoint. It must not
+-- also remove the trigger, or every write in the product stops working.
+select pg_temp.check('trigger functions are not reachable as REST endpoints',
+  not has_function_privilege('authenticated', 'public.guard_evidence_deletion()', 'execute')
+  and not has_function_privilege('anon', 'public.audit_decision_change()', 'execute')
+  and not has_function_privilege('authenticated', 'public.audit_events_are_append_only()', 'execute'));
+
+set local role authenticated;
+set local test.uid = '22222222-2222-2222-2222-222222222222';
+select pg_temp.affects('and the triggers still fire without it',
+  $$update public.evidence_items set media_type = 'Still guarded'
+    where id = 'dddddddd-0000-0000-0000-000000000003'$$, 1);
+select pg_temp.refused('including the one that refuses a delete',
+  $$update public.evidence_items set deleted_at = now() where id = 'dddddddd-0000-0000-0000-000000000003'$$);
+reset role;
+
+select pg_temp.check('the policy helpers stay callable, or every read would fail',
+  has_function_privilege('authenticated', 'public.is_org_member(uuid)', 'execute')
+  and has_function_privilege('authenticated', 'public.has_org_role(uuid, public.studio_role[])', 'execute'));
+
+select pg_temp.check('but nothing signed out can ask about project access',
+  not has_function_privilege('anon', 'public.can_access_property(uuid)', 'execute')
+  and has_function_privilege('authenticated', 'public.can_access_property(uuid)', 'execute'));
+
 select pg_temp.check('every table in public enforces row-level security',
   (select count(*) from pg_tables t
     where t.schemaname = 'public'
