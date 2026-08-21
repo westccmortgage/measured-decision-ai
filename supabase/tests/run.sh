@@ -66,8 +66,19 @@ for file in "$ROOT"/supabase/migrations/*.sql; do
 done
 
 echo "--- invariants ---"
-output="$(psql -f "$ROOT/supabase/tests/security_invariants.sql" 2>&1)"
+# `set -e` would abort here on a failing psql, before anything is printed — the
+# script would end mid-sentence and look like it had simply finished.
+output="$(psql -f "$ROOT/supabase/tests/security_invariants.sql" 2>&1 || true)"
 echo "$output" | grep -E "PASS|FAIL" | sed 's/^psql[^ ]* //;s/^NOTICE:  //;s/^/  /'
 if echo "$output" | grep -q "FAIL"; then echo; echo "FAILED"; exit 1; fi
+# A test file that dies on a syntax error produces no FAIL line at all. Without
+# this the run would end quietly and read exactly like a clean pass.
+if echo "$output" | grep -qi "ERROR"; then
+  echo; echo "The test file did not run to the end:"
+  echo "$output" | grep -i "ERROR" | head -5 | sed 's/^/  /'
+  exit 1
+fi
+count="$(echo "$output" | grep -c PASS)"
+if [ "$count" -lt 1 ]; then echo; echo "No assertions ran."; exit 1; fi
 echo
-echo "$(echo "$output" | grep -c PASS) invariants hold."
+echo "$count invariants hold."
