@@ -52,18 +52,34 @@ job can find them.
 
 Both platforms provide this; the project adds nothing of its own and should not.
 
-**Postgres (Supabase).** Project `hbqlhplgqwuesrovbiye`, us-east-2, PostgreSQL 17.
+**Postgres (Supabase).** Project `hbqlhplgqwuesrovbiye`, us-east-2, PostgreSQL 17,
+Pro plan.
 
-The point-in-time-recovery machinery is running. Checked in the live database on
-21 August 2026: `wal_level = logical`, `archive_mode = on`, and
-`archive_command = /usr/bin/admin-mgr wal-push` with `archive_timeout = 120` —
-a write-ahead log segment is shipped to backup storage at least every two
-minutes. That is the mechanism a restore-to-a-moment depends on, and it is on.
+**The window is seven days.** Confirmed in the dashboard on 20 August 2026:
+Database → Backups lists seven daily physical backups, one per day, taken around
+midnight in the project's region. Each can be restored in place.
 
-What SQL cannot tell us is the **retention window** — 7, 14 or 28 days depending
-on the plan and add-on. That is a dashboard setting: Supabase → the project →
-Database → Backups. **Write the number here when it is read**, because "we can
-restore" and "we can restore as far back as the mistake" are different promises.
+So the honest promise is *"we can go back to any of the last seven midnights"*,
+not *"we can go back to any moment"*. A mistake made on Tuesday and noticed the
+following week is past the edge. Anything done since the chosen midnight is lost
+along with the mistake — a restore is not surgical.
+
+**Point-in-time recovery — restoring to a specific second rather than a
+midnight — is a separate paid add-on and has not been confirmed as enabled.**
+The database does ship a write-ahead log segment at least every two minutes
+(`archive_mode = on`, `archive_command = /usr/bin/admin-mgr wal-push`,
+`archive_timeout = 120`), but that is how Supabase takes the daily physical
+backups too; it does not distinguish the two, and it should not be read as proof
+the add-on is active. The answer lives behind the **Point in time** tab on that
+same page. Until somebody reads it, assume seven midnights.
+
+**Database backups do not contain a single evidence file.** The dashboard says so
+in plain words, and it matters more here than for most products: our backups hold
+the record — which room, who uploaded, what the AI found, what a person decided —
+while the files themselves live in S3. Restoring the database to last Tuesday
+brings back rows that point at objects, and those objects are only there because
+S3 versioning kept them. Two systems, two protections, and neither covers for the
+other.
 
 **Objects (S3).** `measured-decision-production-808454010303`, us-east-2,
 created 8 August 2026. Private, no public read.
