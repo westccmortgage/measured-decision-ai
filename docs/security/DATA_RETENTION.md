@@ -52,11 +52,18 @@ job can find them.
 
 Both platforms provide this; the project adds nothing of its own and should not.
 
-**Postgres (Supabase).** Managed backups on the project's plan, with
-point-in-time recovery where the plan includes it. **This must be confirmed in
-the Supabase dashboard and the answer written here** — the plan tier decides
-both the retention window and whether PITR exists at all. Until it is confirmed,
-treat the recovery window as unknown rather than assuming it is generous.
+**Postgres (Supabase).** Project `hbqlhplgqwuesrovbiye`, us-east-2, PostgreSQL 17.
+
+The point-in-time-recovery machinery is running. Checked in the live database on
+21 August 2026: `wal_level = logical`, `archive_mode = on`, and
+`archive_command = /usr/bin/admin-mgr wal-push` with `archive_timeout = 120` —
+a write-ahead log segment is shipped to backup storage at least every two
+minutes. That is the mechanism a restore-to-a-moment depends on, and it is on.
+
+What SQL cannot tell us is the **retention window** — 7, 14 or 28 days depending
+on the plan and add-on. That is a dashboard setting: Supabase → the project →
+Database → Backups. **Write the number here when it is read**, because "we can
+restore" and "we can restore as far back as the mistake" are different promises.
 
 **Objects (S3).** The bucket is private and objects are written with version ids
 recorded in `object_version_id`, which is what a versioned bucket returns.
