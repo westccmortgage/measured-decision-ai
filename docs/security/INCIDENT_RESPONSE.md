@@ -54,10 +54,21 @@ will fail its next Supabase call and stop, which is the intended behaviour.
 
 ## If evidence was destroyed
 
-Purge is irreversible for the bytes but the row survives with `purged_at` and
-`purged_by`, and the audit entry names the actor and the object key. If bucket
-versioning is enabled, an earlier version may still exist — confirm the bucket's
-versioning state (see DATA_RETENTION.md) before concluding anything is gone.
+The row survives with `purged_at` and `purged_by`, and the audit entry names the
+actor, the object key and how many versions went.
+
+**A purge is final.** Bucket versioning would normally leave an earlier version
+behind, but `purge_evidence` deliberately removes every version of the key —
+otherwise the record would claim a destruction that had not happened. Nothing in
+S3 remains to recover.
+
+**An ordinary deletion is not.** If the file was deleted rather than purged, the
+bytes are untouched and `restore_evidence` brings it back. Check `deleted_at`
+against `purged_at` before telling anyone anything is gone.
+
+**A wrong write is recoverable.** Versioning is enabled, so an overwrite left the
+previous version in place. That is an AWS console or CLI job, not an application
+one: list the versions of the key and restore the one from before the incident.
 
 ## Afterwards
 
