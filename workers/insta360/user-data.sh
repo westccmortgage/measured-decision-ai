@@ -25,6 +25,10 @@
 # happens here, which also removes the failure where logs never appeared because
 # the second boot never came.
 #
+# The machine now also says what it is doing, into the same record the Studio
+# reads. Every earlier machine was silent until someone fetched a log by hand,
+# so "nothing is happening" and "it stopped an hour ago" looked identical.
+#
 # Replace PASTE_SERVICE_ROLE_KEY_HERE below. Nothing else needs changing.
 
 SUPABASE_SERVICE_ROLE_KEY="PASTE_SERVICE_ROLE_KEY_HERE"
@@ -36,9 +40,56 @@ export DEBIAN_FRONTEND=noninteractive
 # are what hung the previous version.
 export NEEDRESTART_MODE=a NEEDRESTART_SUSPEND=1 UCF_FORCE_CONFOLD=1
 
-MDAI_VERSION="2026-08-21.2 · AWS GPU image (Ubuntu 22.04), no driver install, no reboot"
-step() { echo "MDAI STEP: $*" | tee /dev/console; }
-stop() { echo "MDAI STOP: $*" | tee /dev/console; exit "${2:-90}"; }
+MDAI_VERSION="2026-08-21.3 · AWS GPU image (Ubuntu 22.04), no driver install, no reboot"
+SUPABASE_URL="https://hbqlhplgqwuesrovbiye.supabase.co"
+AWS_REGION="us-east-2"
+AWS_S3_BUCKET="measured-decision-production-808454010303"
+
+TOKEN="$(curl -sS --max-time 10 -X PUT http://169.254.169.254/latest/api/token \
+  -H 'X-aws-ec2-metadata-token-ttl-seconds: 300' || true)"
+INSTANCE_ID="$(curl -sS --max-time 10 -H "X-aws-ec2-metadata-token: $TOKEN" \
+  http://169.254.169.254/latest/meta-data/instance-id || echo unknown)"
+STAMP="$(date -u +%Y%m%dT%H%M%SZ)"
+LOG_KEY="worker-logs/${STAMP}-${INSTANCE_ID}-worker.log"
+LOG_URL="s3://${AWS_S3_BUCKET}/${LOG_KEY}"
+
+# The service role key is never traced and never logged. It used to be: the
+# previous version sourced an env file under `set -x`, which printed the key
+# into a log that is uploaded to S3 and dumped to the serial console, where
+# anyone who can read either could take it. xtrace is off inside this function
+# for that reason, and the log is filtered once more on the way out.
+RUN_ID=""
+MDAI_STATE="starting"
+report() {
+  { set +x; } 2>/dev/null
+  local state="$1" text="$2" code="$3" msg="$4" now body out
+  now="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+  text="$(printf '%s' "$text" | tr -d '"\\' | tr '\n' ' ')"
+  msg="$(printf '%s' "$msg" | tr -d '"\\' | tr '\n' ' ')"
+  body="\"state\":\"${state}\",\"step\":\"${text}\",\"last_seen_at\":\"${now}\""
+  [ -n "$code" ] && body="${body},\"exit_code\":${code}"
+  [ -n "$msg" ] && body="${body},\"message\":\"${msg}\""
+  case "$state" in
+    finished|stopped) body="${body},\"finished_at\":\"${now}\",\"log_url\":\"${LOG_URL}\"" ;;
+  esac
+  if [ -z "$RUN_ID" ]; then
+    out="$(curl -sS --max-time 15 -X POST "${SUPABASE_URL}/rest/v1/worker_machine_runs" \
+      -H "apikey: ${SUPABASE_SERVICE_ROLE_KEY}" \
+      -H "Authorization: Bearer ${SUPABASE_SERVICE_ROLE_KEY}" \
+      -H 'Content-Type: application/json' -H 'Prefer: return=representation' \
+      -d "{\"instance_id\":\"${INSTANCE_ID}\",\"region\":\"${AWS_REGION}\",\"worker_version\":\"${MDAI_VERSION}\",${body}}" 2>/dev/null || true)"
+    RUN_ID="$(printf '%s' "$out" | sed -n 's/.*"id":"\([0-9a-f-]\{36\}\)".*/\1/p' | head -n1)"
+  else
+    curl -sS --max-time 15 -X PATCH "${SUPABASE_URL}/rest/v1/worker_machine_runs?id=eq.${RUN_ID}" \
+      -H "apikey: ${SUPABASE_SERVICE_ROLE_KEY}" \
+      -H "Authorization: Bearer ${SUPABASE_SERVICE_ROLE_KEY}" \
+      -H 'Content-Type: application/json' -d "{${body}}" >/dev/null 2>&1 || true
+  fi
+  set -x
+}
+
+step() { echo "MDAI STEP: $*" | tee /dev/console; report "$MDAI_STATE" "$*" "" ""; }
+stop() { echo "MDAI STOP: $1" | tee /dev/console; report stopped "Stopped before the queue" "${2:-90}" "$1"; exit "${2:-90}"; }
 step "starting · ${MDAI_VERSION}"
 
 # A GPU that never stops is the expensive failure here, so the deadline is set
@@ -47,33 +98,32 @@ shutdown -h +180
 
 mkdir -p /opt/mdai
 cat > /opt/mdai/worker.env <<ENV
-SUPABASE_URL=https://hbqlhplgqwuesrovbiye.supabase.co
+SUPABASE_URL=${SUPABASE_URL}
 SUPABASE_SERVICE_ROLE_KEY=${SUPABASE_SERVICE_ROLE_KEY}
-AWS_REGION=us-east-2
-AWS_S3_BUCKET=measured-decision-production-808454010303
+AWS_REGION=${AWS_REGION}
+AWS_S3_BUCKET=${AWS_S3_BUCKET}
 MAX_IDLE_POLLS=20
 ENV
 chmod 600 /opt/mdai/worker.env
-set -a; . /opt/mdai/worker.env; set +a
-
-TOKEN="$(curl -sS --max-time 10 -X PUT http://169.254.169.254/latest/api/token \
-  -H 'X-aws-ec2-metadata-token-ttl-seconds: 300' || true)"
-INSTANCE_ID="$(curl -sS --max-time 10 -H "X-aws-ec2-metadata-token: $TOKEN" \
-  http://169.254.169.254/latest/meta-data/instance-id || echo unknown)"
-STAMP="$(date -u +%Y%m%dT%H%M%SZ)"
+export AWS_REGION AWS_S3_BUCKET
 
 # The log is the only thing anyone can look at afterwards, so it leaves by two
 # routes: the bucket, and the serial console the EC2 page reads back with one
-# button and no credentials.
+# button and no credentials. It is filtered on the way out — a copy of the log
+# is made rather than edited in place, because the running shell still holds the
+# original open and an in-place edit would silently truncate what gets uploaded.
 finish() {
   local code=$?
   echo "=== finished with status ${code} ==="
-  aws s3 cp /var/log/mdai-worker.log \
-    "s3://${AWS_S3_BUCKET}/worker-logs/${STAMP}-${INSTANCE_ID}-worker.log" \
-    --region "${AWS_REGION}" || true
+  { set +x; } 2>/dev/null
+  sed "s|${SUPABASE_SERVICE_ROLE_KEY}|REDACTED|g" /var/log/mdai-worker.log > /tmp/mdai-upload.log 2>/dev/null || true
+  set -x
+  if [ "${code}" = "0" ]; then report finished "Queue worked to the end" 0 ""
+  else report stopped "Stopped with status ${code}" "${code}" ""; fi
+  aws s3 cp /tmp/mdai-upload.log "${LOG_URL}" --region "${AWS_REGION}" || true
   {
     echo "===== MDAI log (tail) · exit ${code} ====="
-    tail -n 200 /var/log/mdai-worker.log 2>/dev/null
+    tail -n 200 /tmp/mdai-upload.log 2>/dev/null
     echo "===== MDAI end ====="
   } > /dev/console 2>&1 || true
   shutdown -h now
@@ -104,6 +154,7 @@ aws s3 ls "s3://${AWS_S3_BUCKET}/private-sdk/" --region "$AWS_REGION" ||
   stop "the role cannot read s3://${AWS_S3_BUCKET}/private-sdk/" 92
 
 # ------------------------------------------------------------------- the SDK
+MDAI_STATE="preparing"
 step "fetching the licensed Insta360 SDK"
 rm -rf /opt/mdai/private /opt/mdai/sdk /opt/mdai/insta360-sdk.tar
 mkdir -p /opt/mdai/private /opt/mdai/sdk
@@ -134,8 +185,10 @@ DOCKER_BUILDKIT=1 docker build -t measured-decision/insta360-worker:3.1.1 . ||
 step "self-test before touching the queue"
 python3 test_worker.py || stop "the worker failed its own test; the queue was not touched" 99
 
+# Past this line the machine is allowed to touch captures, and it keeps saying so
+# itself: the worker updates the same row with the capture it is stitching.
+MDAI_STATE="working"
 step "running the queue"
+[ -n "$RUN_ID" ] && echo "MDAI_RUN_ID=${RUN_ID}" >> /opt/mdai/worker.env
 docker run --rm --gpus all --env-file /opt/mdai/worker.env \
   measured-decision/insta360-worker:3.1.1
-
-step "queue finished, shutting down"

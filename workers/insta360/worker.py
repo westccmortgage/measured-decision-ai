@@ -41,6 +41,10 @@ FFPROBE_COMMAND = os.getenv("FFPROBE_COMMAND", "ffprobe")
 TRIM_PREFERRED_SECONDS = int(os.getenv("TRIM_PREFERRED_SECONDS", "10"))
 TRIM_MINIMUM_SECONDS = int(os.getenv("TRIM_MINIMUM_SECONDS", "5"))
 TRIM_KEEP_AT_LEAST_SECONDS = int(os.getenv("TRIM_KEEP_AT_LEAST_SECONDS", "15"))
+# The boot script opens a row for this machine before the container starts and
+# passes its id in. Empty means nobody is listening — the worker still works the
+# queue, it just has nowhere to say so.
+RUN_ID = os.getenv("MDAI_RUN_ID", "").strip()
 TRIM_POLICY = "camera-handling-v1"
 TRIM_REASON = "The operator leaves and re-enters the space while the camera is running"
 
@@ -64,6 +68,22 @@ def api(method, path, extra_headers=None, **kwargs):
 def patch_job(job_id, **values):
     values["updated_at"] = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
     api("PATCH", f"capture_360_jobs?id=eq.{job_id}", data=json.dumps(values))
+
+
+def report_run(**values):
+    """Tell the record what this machine is doing right now.
+
+    A person watching the Studio should not have to fetch a log from a bucket to
+    learn whether the machine is awake. Reporting is best-effort by design: a
+    status update that fails must never stop the stitch it describes.
+    """
+    if not RUN_ID:
+        return
+    values["last_seen_at"] = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+    try:
+        api("PATCH", f"worker_machine_runs?id=eq.{RUN_ID}", data=json.dumps(values))
+    except Exception as error:
+        print(f"could not report machine state: {error}", flush=True)
 
 
 def set_group_state(group_id, state):
@@ -344,6 +364,8 @@ def process(job):
 def main():
     idle_polls = 0
     attempted = set()
+    claimed_count = completed_count = failed_count = 0
+    report_run(state="working", step="Watching the queue")
     while True:
         job = None
         try:
@@ -352,17 +374,34 @@ def main():
                 attempted.add(job["id"])
             if job:
                 idle_polls = 0
+                claimed_count += 1
+                capture = job.get("capture_360_groups") or {}
+                report_run(
+                    state="working",
+                    step=f"Stitching {capture.get('capture_key') or 'a capture'}",
+                    jobs_claimed=claimed_count,
+                )
                 process(job)
+                completed_count += 1
+                report_run(state="working", step="Watching the queue", jobs_completed=completed_count)
             else:
                 idle_polls += 1
                 if MAX_IDLE_POLLS and idle_polls >= MAX_IDLE_POLLS:
                     print(f"queue empty for {idle_polls} polls, exiting", flush=True)
+                    report_run(state="working", step="Queue empty, nothing left to stitch")
                     return 0
                 time.sleep(POLL_SECONDS)
         except Exception as error:
             print(f"worker error: {error}", flush=True)
             if job:
+                failed_count += 1
                 patch_job(job["id"], state="failed", stage="Processing failed", error_code=str(error)[:300])
+                report_run(
+                    state="working",
+                    step="Watching the queue",
+                    jobs_failed=failed_count,
+                    message=str(error)[:300],
+                )
                 # Leave the group back on 'ready' so a retry can claim it rather
                 # than stranding the capture in 'stitching' forever.
                 try:
