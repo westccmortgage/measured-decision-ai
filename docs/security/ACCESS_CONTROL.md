@@ -42,6 +42,11 @@ any update that changes `storage_path` or `storage_bucket`. A record always
 names the bytes it was created for; different bytes mean a new record with a
 parent.
 
+**Implemented — no client can delete a project or orphan a room.** There is no
+delete policy on `properties`, so removing a project means `soft_delete_project`,
+which is owner/admin and keeps everything. A space that still holds evidence
+cannot be deleted by anyone; the refusal names the count.
+
 **Implemented — service-role functions re-check.** `object-storage`,
 `capture-session`, `field-workflow` and `project-intake` run with the service
 key and therefore *outside* RLS. Each resolves the caller's membership before

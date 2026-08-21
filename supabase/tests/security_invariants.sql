@@ -236,6 +236,59 @@ set local test.uid = '44444444-4444-4444-4444-444444444444';
 select pg_temp.check('an expired grant is not a grant',
   public.can_access_property('bbbbbbbb-0000-0000-0000-000000000001') = false);
 
+-- ================================================ projects and spaces
+set local role authenticated;
+set local test.uid = '22222222-2222-2222-2222-222222222222';
+select pg_temp.affects('a contributor cannot delete a whole project',
+  $$delete from public.properties where id = 'bbbbbbbb-0000-0000-0000-000000000001'$$, 0);
+select pg_temp.refused('nor remove it any other way',
+  $$select public.soft_delete_project('bbbbbbbb-0000-0000-0000-000000000001')$$);
+
+set local test.uid = '11111111-1111-1111-1111-111111111111';
+select pg_temp.affects('nor can an owner delete a project outright',
+  $$delete from public.properties where id = 'bbbbbbbb-0000-0000-0000-000000000001'$$, 0);
+
+reset role;
+-- Give the space something to hold, so the guard has something to defend.
+insert into public.evidence_items(id, organization_id, property_id, space_id, storage_path,
+  original_filename, media_type, mime_type, byte_size, created_by)
+values ('dddddddd-0000-0000-0000-000000000003','aaaaaaaa-0000-0000-0000-000000000001',
+  'bbbbbbbb-0000-0000-0000-000000000001','cccccccc-0000-0000-0000-000000000001',
+  'organizations/a/properties/b/evidence/three.jpg','three.jpg','Property evidence','image/jpeg',512,
+  '11111111-1111-1111-1111-111111111111');
+
+set local role authenticated;
+set local test.uid = '11111111-1111-1111-1111-111111111111';
+select pg_temp.refused('a space holding evidence cannot be deleted, whatever the browser thinks',
+  $$delete from public.spaces where id = 'cccccccc-0000-0000-0000-000000000001'$$);
+
+select pg_temp.check('an owner can remove a project, and it says what was inside',
+  public.soft_delete_project('bbbbbbbb-0000-0000-0000-000000000001', 'duplicate') = true);
+select pg_temp.check('the removed project leaves every list',
+  (select count(*) from public.properties
+    where id = 'bbbbbbbb-0000-0000-0000-000000000001') = 0);
+select pg_temp.check('and the entry names what it contained at that moment',
+  (select detail->>'evidence_count' from public.audit_events where action = 'project.removed') = '1'
+  and (select detail->>'everything_retained' from public.audit_events where action = 'project.removed') = 'true');
+select public.restore_project('bbbbbbbb-0000-0000-0000-000000000001');
+select pg_temp.check('and it comes back whole',
+  (select count(*) from public.properties where id = 'bbbbbbbb-0000-0000-0000-000000000001') = 1
+  and (select count(*) from public.evidence_items where space_id = 'cccccccc-0000-0000-0000-000000000001') = 1);
+
+-- ================================================ the client's narrow door
+select pg_temp.check('a client may record the events it is allowed to record',
+  public.record_client_event('bbbbbbbb-0000-0000-0000-000000000001','report.generated','{"scope":"project"}'::jsonb) = true);
+select pg_temp.refused('and cannot invent one',
+  $$select public.record_client_event('bbbbbbbb-0000-0000-0000-000000000001','evidence.purged','{}'::jsonb)$$);
+set local test.uid = '44444444-4444-4444-4444-444444444444';
+select pg_temp.refused('nor write into a project it has no part in',
+  $$select public.record_client_event('bbbbbbbb-0000-0000-0000-000000000001','report.generated','{}'::jsonb)$$);
+set local test.uid = '11111111-1111-1111-1111-111111111111';
+reset role;
+select pg_temp.check('a recorded client event is attributed to the person who caused it',
+  (select actor_id from public.audit_events where action = 'report.generated')
+  = '11111111-1111-1111-1111-111111111111');
+
 -- ================================================ privileged helpers
 reset role;
 select pg_temp.check('record_audit_event is not reachable from the browser',

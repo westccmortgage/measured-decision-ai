@@ -1376,6 +1376,23 @@ function formatEvidenceDate(value) {
   });
 }
 
+/* Client-side events the server would otherwise never learn about.
+
+   Never let recording an event break the thing it describes: a report that
+   opened is a report that opened, whether or not the note about it landed. */
+async function recordClientEvent(action, detail = {}) {
+  if (!cloud.schemaReady || !cloud.propertyId) return;
+  try {
+    await cloud.client.rpc("record_client_event", {
+      p_property_id: cloud.propertyId,
+      p_action: action,
+      p_detail: detail,
+    });
+  } catch (error) {
+    console.warn("Could not record a client event", error);
+  }
+}
+
 async function signedEvidenceUrl(storagePath, record = null) {
   if (!storagePath) return "";
   if (record?.storage_provider === "aws-s3") {
@@ -3148,6 +3165,15 @@ async function copyFocusLink(item) {
 
 function openEvidenceViewer(item, room, focusMarkerId = null) {
   if (!item) return;
+  /* Opening a file to look at it is recorded; a thumbnail appearing in a list is
+     not. One is a person choosing to see something and is what "who saw what"
+     means; the other is the page loading, and auditing it would bury the first
+     under thousands of entries that answer nothing. */
+  recordClientEvent("evidence.opened", {
+    evidence_id: item.id,
+    filename: item.name || null,
+    space_id: room?.id || null,
+  });
   if (!window.MDAIPano360) {
     if (item.src) window.open(item.src, "_blank", "noopener");
     return;
@@ -3623,7 +3649,11 @@ function openRoomReport(room) {
     changed: model.changed.filter((entry) => String(entry.title || "").startsWith(room.name)),
     open_questions: model.open_questions.filter((text) => String(text).startsWith(`${room.name}:`)),
   };
-  if (!window.MDAIReport?.open(scoped)) notify("Allow pop-ups for this site to open the report");
+  if (!window.MDAIReport?.open(scoped)) {
+    notify("Allow pop-ups for this site to open the report");
+    return;
+  }
+  recordClientEvent("report.generated", { scope: "space", space_id: room.id, space_name: room.name });
 }
 
 function openProjectReport() {
@@ -3635,7 +3665,15 @@ function openProjectReport() {
   }
   if (!window.MDAIReport?.open(buildReportModel())) {
     notify("Allow pop-ups for this site to open the report");
+    return;
   }
+  /* A report is the document that leaves the building, so who produced one and
+     when is exactly the sort of thing a customer will one day ask us. */
+  recordClientEvent("report.generated", {
+    scope: "project",
+    space_count: stats.spaces.length,
+    evidence_count: stats.rawFiles,
+  });
 }
 
 function renderFocusResults() {

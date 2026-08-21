@@ -39,11 +39,25 @@ writes it back (`record_digest` in `workers/insta360/worker.py`). Every 360
 original that has been through stitching, and every master it produced, carries
 a whole-file SHA-256.
 
-**The gap.** Photos and documents uploaded from the browser currently stop at the
-S3 ETag. Closing it means either hashing in the browser for files under a size
-threshold, or enabling S3's own SHA-256 checksums on multipart parts. Both are
-straightforward; neither is done, and until one is, the table above says
-*Partial* rather than *Implemented*.
+**Photos and documents** are hashed in the browser before they are sent, for
+anything up to 64 MiB — which is nearly all of them. Web Crypto has no
+incremental digest, so that limit is what a mid-range phone will allocate without
+the tab being killed mid-upload, and hashing never blocks an upload: if it fails
+the record simply says no whole-file digest was taken.
+
+A digest computed by an uploader is a claim about what they sent, not proof of
+what arrived, which is why `content_hash_recorded_by` distinguishes
+`client-upload` from `server-verified`. The `verify_evidence_digest` operation
+reads the stored object back and recomputes, turning the claim into a fact — and
+if the two disagree it says so, writes `evidence.integrity_mismatch` into the
+audit trail, and leaves the record saying what it said rather than quietly
+overwriting the disagreement. It is on request rather than on every upload
+because reading the file back would add its download time to every completion,
+for a check almost nobody needs at that moment.
+
+**The remaining gap** is files between 64 MiB and whatever the stitching machine
+happens to touch: a large video that is not a 360 capture keeps its S3 ETag. The
+honest label is already on it.
 
 ## The original is never overwritten
 
@@ -135,9 +149,16 @@ what *kind* of actor it was (`user`, `guest_link`, `service`, `worker`,
 the reported IP and user agent. Those last two arrive as proxy headers and are
 recorded as reported, never as verified.
 
-**Planned.** Evidence *viewed* is not recorded. Report generation and export are
-not recorded. Both matter for a customer who must show who saw what; neither is
-built.
+Opening a file to look at it is recorded (`evidence.opened`), and so is
+generating a report (`report.generated`). A thumbnail appearing in a list is not:
+one is a person choosing to see something, which is what "who saw what" means,
+and the other is the page loading, which would bury the first under thousands of
+entries that answer nothing.
+
+Both come from a browser, so they arrive through `record_client_event` — a narrow
+door with a fixed list of four actions, membership checked, and the actor forced
+to the caller. A client cannot invent an action, attribute one to someone else,
+or write into a project it has no part in.
 
 **Planned.** No one can read the trail from the product yet — only an owner or
 admin via the database. The trail is being made complete before it is made
