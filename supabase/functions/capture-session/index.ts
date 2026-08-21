@@ -1,3 +1,4 @@
+import { safeError } from "../_shared/safe-error.ts";
 import { createClient } from "npm:@supabase/supabase-js@2";
 
 const allowedOrigins = new Set([
@@ -209,7 +210,7 @@ Deno.serve(async (request) => {
       }
       const [propertyResult, evidenceResult, itemResult] = await Promise.all([
         admin.from("properties").select("id, name, address").eq("id", session.property_id).single(),
-        admin.from("evidence_items").select("id, original_filename, mime_type, byte_size, created_at").eq("capture_session_id", session.id).order("created_at"),
+        admin.from("evidence_items").select("id, original_filename, mime_type, byte_size, created_at").eq("capture_session_id", session.id).is("deleted_at", null).order("created_at"),
         admin.from("capture_session_items").select("*").eq("session_id", session.id).order("item_order").order("created_at"),
       ]);
       if (propertyResult.error) throw propertyResult.error;
@@ -291,8 +292,7 @@ Deno.serve(async (request) => {
 
     return json(request, { error: "Unsupported action" }, 400);
   } catch (error) {
-    console.error(error);
-    const status = Number((error as { status?: number })?.status) || 500;
-    return json(request, { error: error instanceof Error ? error.message : "Capture service failed" }, status >= 400 && status <= 599 ? status : 500);
+    const safe = safeError(error, "The capture service could not complete that request.");
+    return json(request, safe.body, safe.status);
   }
 });

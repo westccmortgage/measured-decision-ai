@@ -37,6 +37,27 @@ Each film includes an optional English CC track that is off by default.
 
 Mortgage data → deterministic calculations → AI-assisted explanation → human review.
 
+## Security and evidence integrity
+
+How the platform keeps the chain from camera to decision, who can reach what,
+and what deletion actually means: [`docs/security/`](docs/security/). Each page
+marks what is implemented, what is partial, and what is planned, so nothing
+there can be mistaken for a control that exists.
+
+Measured Decision has not completed a SOC 2, ISO 27001, HIPAA or FedRAMP audit,
+and nothing in this repository or on the site claims otherwise.
+
+The properties that must not silently stop being true are executable:
+
+```
+bash supabase/tests/run.sh
+```
+
+That builds a throwaway PostgreSQL, applies every migration the way CI does, and
+asserts tenant isolation, evidence immutability, deletion authority, an
+append-only audit trail, and the rule that no AI process can author a human
+decision.
+
 ## Plan Intelligence pilot
 
 The authenticated Studio now starts construction evidence collection from the

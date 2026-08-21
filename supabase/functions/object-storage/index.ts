@@ -1,3 +1,4 @@
+import { safeError } from "../_shared/safe-error.ts";
 import { createClient } from "npm:@supabase/supabase-js@2";
 import {
   AbortMultipartUploadCommand,
@@ -110,14 +111,40 @@ function numberValue(value: unknown) {
   return Number.isFinite(parsed) ? parsed : 0;
 }
 
-function errorMessage(error: unknown) {
-  return error instanceof Error ? error.message : String(error || "Object storage error");
-}
-
 function isUuid(value: unknown) {
   return /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(String(value || ""));
 }
 function normalizeProjectCode(value:unknown){return String(value||"").toUpperCase().replace(/[^A-Z2-9]/g,"")}
+
+const SOURCE_TYPES = new Set([
+  "phone", "360_camera", "drone", "document", "external_system", "manual_upload", "derived",
+]);
+
+/* What produced the file. Guessing here would be worse than leaving it unset, so
+   an unrecognised claim from a client is dropped rather than coerced. */
+function resolveSourceType(
+  declared: unknown,
+  entityType: string,
+  context: { captureSession: boolean; projectAccess: boolean; fieldAssignment: boolean },
+) {
+  const claimed = String(declared || "").trim();
+  if (SOURCE_TYPES.has(claimed)) return claimed;
+  if (entityType === "project_document") return "document";
+  if (context.captureSession) return "360_camera";
+  if (context.fieldAssignment) return "phone";
+  if (context.projectAccess) return "manual_upload";
+  return "manual_upload";
+}
+
+/* Where a request came from, for the audit trail. Behind Supabase's edge these
+   are proxy headers: recorded as reported, never presented as verified. */
+function requestOrigin(request: Request) {
+  const forwarded = request.headers.get("x-forwarded-for") || "";
+  return {
+    ip: forwarded.split(",")[0].trim() || null,
+    userAgent: (request.headers.get("user-agent") || "").slice(0, 500) || null,
+  };
+}
 
 function bytesToHex(bytes: Uint8Array) {
   return Array.from(bytes).map((byte) => byte.toString(16).padStart(2, "0")).join("");
@@ -417,6 +444,18 @@ Deno.serve(async (request) => {
         storage_bucket: row.storage_bucket,
         object_version_id: completed.VersionId || null,
         object_etag: completed.ETag || null,
+        /* An ETag is what the store can prove about the bytes it holds. It is not
+           a whole-file SHA-256 and is labelled so nobody reads it as one; the
+           real digest is written later by whatever process reads the whole file.
+           A multipart ETag is a digest of the part digests, so it is recorded as
+           the composite it is. */
+        sha256: (completed.ETag || "").replace(/\"/g, "") || null,
+        content_hash_algorithm: completed.ETag ? "s3-etag-md5" : null,
+        content_hash_scope: completed.ETag
+          ? ((completed.ETag || "").includes("-") ? "parts-composite" : "whole-file")
+          : null,
+        content_hash_recorded_at: completed.ETag ? new Date().toISOString() : null,
+        content_hash_recorded_by: completed.ETag ? "s3-complete-multipart" : null,
         original_filename: row.original_filename,
         mime_type: row.mime_type,
         byte_size: row.byte_size,
@@ -439,6 +478,13 @@ Deno.serve(async (request) => {
           ...baseRecord,
           space_id: row.space_id,
           media_type: text(metadata.media_type, "Property evidence"),
+          source_type: resolveSourceType(metadata.source_type, row.entity_type, {
+            captureSession: Boolean(captureSession),
+            projectAccess: Boolean(projectAccess),
+            fieldAssignment: Boolean(fieldAssignment),
+          }),
+          capture_device: (metadata.capture_device as Record<string, unknown>) || {},
+          capture_location: (metadata.capture_location as Record<string, unknown>) || {},
           captured_at: text(metadata.captured_at, new Date().toISOString()),
           source_metadata: metadata.source_metadata || {},
           capture_task_id: metadata.capture_task_id || null,
@@ -523,10 +569,14 @@ Deno.serve(async (request) => {
       const table = entityType === "project_document" ? "project_documents" : entityType === "evidence" ? "evidence_items" : "";
       if (!table || !isUuid(recordId)) throw Object.assign(new Error("A valid record is required"), { status: 400 });
       const { data: record } = await admin.from(table)
-        .select("id,organization_id,property_id,storage_provider,storage_bucket,storage_path,field_assignment_id,capture_session_id,project_intake_access_id")
+        .select("id,organization_id,property_id,storage_provider,storage_bucket,storage_path,field_assignment_id,capture_session_id,project_intake_access_id" + (entityType === "evidence" ? ",deleted_at,purged_at" : ""))
         .eq("id", recordId)
         .maybeSingle();
       if (!record) throw Object.assign(new Error("Stored object not found"), { status: 404 });
+      /* A file that has been deleted from the record does not open again through
+         a link somebody still has. */
+      if ((record as Record<string, unknown>).purged_at) throw Object.assign(new Error("This file was destroyed. The record of it remains, the file does not."), { status: 410 });
+      if ((record as Record<string, unknown>).deleted_at) throw Object.assign(new Error("This file has been deleted from the record"), { status: 410 });
       if (fieldAssignment) {
         if ((record as Record<string, unknown>).field_assignment_id !== fieldAssignment.id) throw Object.assign(new Error("This file is outside the field assignment"), { status: 403 });
       } else if (captureSession) {
@@ -540,23 +590,159 @@ Deno.serve(async (request) => {
       return json(request, { signed_url: await signedObjectReadUrl(record.storage_path, URL_TTL_SECONDS), expires_in: URL_TTL_SECONDS });
     }
 
+    /* Deleting evidence removes it from the record, not from existence.
+       This used to destroy the S3 object and the row together, which meant one
+       misplaced tap ended a file that other findings were derived from, and left
+       nothing behind saying it had ever been there. Now the file leaves every
+       list, the bytes stay, and the act is written into the audit trail. Actually
+       destroying the bytes is the separate `purge_evidence` operation below. */
     if (operation === "delete_evidence") {
       if (fieldAssignment || captureSession) throw Object.assign(new Error("Guest links cannot delete submitted evidence"), { status: 403 });
       const recordId = text(body?.record_id);
       if (!isUuid(recordId)) throw Object.assign(new Error("A valid evidence record is required"), { status: 400 });
       const { data: record } = await admin.from("evidence_items")
-        .select("id, organization_id, property_id, storage_provider, storage_bucket, storage_path, object_version_id")
+        .select("id, organization_id, property_id, space_id, original_filename, storage_provider, storage_bucket, storage_path, deleted_at")
         .eq("id", recordId)
         .maybeSingle();
       if (!record) throw Object.assign(new Error("Evidence not found"), { status: 404 });
       const role = await membership(record.organization_id);
       if (!role || !["owner", "admin"].includes(role)) throw Object.assign(new Error("Only an owner or administrator can delete evidence"), { status: 403 });
+      if (record.deleted_at) return json(request, { deleted: true, already_deleted: true, recoverable: true });
+      const deletedAt = new Date().toISOString();
+      const { error: softDeleteError } = await admin.from("evidence_items").update({
+        deleted_at: deletedAt,
+        deleted_by: userId || null,
+        deletion_reason: text(body?.reason) || null,
+      }).eq("id", record.id);
+      if (softDeleteError) throw softDeleteError;
+      const origin = requestOrigin(request);
+      await admin.rpc("record_audit_event", {
+        p_organization_id: record.organization_id,
+        p_property_id: record.property_id,
+        p_action: "evidence.deleted",
+        p_entity_type: "evidence_items",
+        p_entity_id: record.id,
+        p_actor_id: userId || null,
+        p_actor_kind: "user",
+        p_detail: {
+          original_filename: record.original_filename,
+          space_id: record.space_id,
+          storage_bucket: record.storage_bucket,
+          object_key: record.storage_path,
+          reason: text(body?.reason) || null,
+          object_retained: true,
+        },
+        p_request_ip: origin.ip,
+        p_user_agent: origin.userAgent,
+      }).then(({ error }) => { if (error) console.error("Evidence deletion audit event failed", error); });
+      return json(request, { deleted: true, recoverable: true, deleted_at: deletedAt });
+    }
+
+    /* Destroying the bytes. Deliberately separate, deliberately owner-only,
+       deliberately refuses to act on anything that has not already been deleted
+       and confirmed — so no single request can turn a mis-tap into a loss. */
+    if (operation === "purge_evidence") {
+      if (fieldAssignment || captureSession || projectAccess) throw Object.assign(new Error("Guest links cannot purge evidence"), { status: 403 });
+      const recordId = text(body?.record_id);
+      if (!isUuid(recordId)) throw Object.assign(new Error("A valid evidence record is required"), { status: 400 });
+      if (body?.confirm_purge !== true) throw Object.assign(new Error("Purging destroys the stored file. Confirm the purge explicitly."), { status: 400 });
+      const { data: record } = await admin.from("evidence_items")
+        .select("id, organization_id, property_id, original_filename, storage_provider, storage_bucket, storage_path, object_version_id, deleted_at, purged_at")
+        .eq("id", recordId)
+        .maybeSingle();
+      if (!record) throw Object.assign(new Error("Evidence not found"), { status: 404 });
+      const role = await membership(record.organization_id);
+      if (role !== "owner") throw Object.assign(new Error("Only an organization owner can destroy stored evidence"), { status: 403 });
+      if (!record.deleted_at) throw Object.assign(new Error("Delete this evidence first. Purging is a second, separate decision."), { status: 409 });
+      if (record.purged_at) return json(request, { purged: true, already_purged: true });
+      const { count: derivativeCount } = await admin.from("evidence_items")
+        .select("id", { count: "exact", head: true })
+        .eq("derivative_of", record.id);
+      if (derivativeCount && body?.confirm_orphans !== true) {
+        throw Object.assign(new Error(`${derivativeCount} file${derivativeCount === 1 ? " was" : "s were"} derived from this one and would lose their parent. Confirm again to proceed.`), { status: 409 });
+      }
       if (record.storage_provider === "aws-s3") {
         await s3.send(new DeleteObjectCommand({ Bucket: record.storage_bucket || bucket, Key: record.storage_path, VersionId: record.object_version_id || undefined }));
       }
-      const { error: deleteError } = await admin.from("evidence_items").delete().eq("id", record.id);
-      if (deleteError) throw deleteError;
-      return json(request, { deleted: true });
+      const purgedAt = new Date().toISOString();
+      /* The row survives the bytes on purpose. A record saying "this file existed,
+         and on this date this person destroyed it" is worth more than a gap. */
+      const { error: purgeError } = await admin.from("evidence_items")
+        .update({ purged_at: purgedAt, purged_by: userId || null })
+        .eq("id", record.id);
+      if (purgeError) throw purgeError;
+      const origin = requestOrigin(request);
+      await admin.rpc("record_audit_event", {
+        p_organization_id: record.organization_id,
+        p_property_id: record.property_id,
+        p_action: "evidence.purged",
+        p_entity_type: "evidence_items",
+        p_entity_id: record.id,
+        p_actor_id: userId || null,
+        p_actor_kind: "user",
+        p_detail: {
+          original_filename: record.original_filename,
+          storage_bucket: record.storage_bucket,
+          object_key: record.storage_path,
+          orphaned_derivatives: derivativeCount || 0,
+        },
+        p_request_ip: origin.ip,
+        p_user_agent: origin.userAgent,
+      }).then(({ error }) => { if (error) console.error("Evidence purge audit event failed", error); });
+      return json(request, { purged: true });
+    }
+
+    /* Undo. The reason soft deletion is worth having at all. */
+    if (operation === "restore_evidence") {
+      if (fieldAssignment || captureSession || projectAccess) throw Object.assign(new Error("Guest links cannot restore evidence"), { status: 403 });
+      const recordId = text(body?.record_id);
+      if (!isUuid(recordId)) throw Object.assign(new Error("A valid evidence record is required"), { status: 400 });
+      const { data: record } = await admin.from("evidence_items")
+        .select("id, organization_id, property_id, original_filename, deleted_at, purged_at")
+        .eq("id", recordId)
+        .maybeSingle();
+      if (!record) throw Object.assign(new Error("Evidence not found"), { status: 404 });
+      const role = await membership(record.organization_id);
+      if (!role || !["owner", "admin"].includes(role)) throw Object.assign(new Error("Only an owner or administrator can restore evidence"), { status: 403 });
+      if (record.purged_at) throw Object.assign(new Error("This file was destroyed and cannot be brought back. The record of it remains."), { status: 410 });
+      if (!record.deleted_at) return json(request, { restored: true, already_present: true });
+      const { error: restoreError } = await admin.from("evidence_items")
+        .update({ deleted_at: null, deleted_by: null, deletion_reason: null })
+        .eq("id", record.id);
+      if (restoreError) throw restoreError;
+      const origin = requestOrigin(request);
+      await admin.rpc("record_audit_event", {
+        p_organization_id: record.organization_id,
+        p_property_id: record.property_id,
+        p_action: "evidence.restored",
+        p_entity_type: "evidence_items",
+        p_entity_id: record.id,
+        p_actor_id: userId || null,
+        p_actor_kind: "user",
+        p_detail: { original_filename: record.original_filename, deleted_at: record.deleted_at },
+        p_request_ip: origin.ip,
+        p_user_agent: origin.userAgent,
+      }).then(({ error }) => { if (error) console.error("Evidence restore audit event failed", error); });
+      return json(request, { restored: true });
+    }
+
+    /* What an owner needs to see before deciding whether to destroy anything. */
+    if (operation === "list_deleted_evidence") {
+      if (fieldAssignment || captureSession || projectAccess) throw Object.assign(new Error("Guest links cannot read deleted evidence"), { status: 403 });
+      const propertyId = text(body?.property_id);
+      if (!isUuid(propertyId)) throw Object.assign(new Error("A valid project is required"), { status: 400 });
+      const { data: property } = await admin.from("properties").select("id, organization_id").eq("id", propertyId).maybeSingle();
+      if (!property) throw Object.assign(new Error("Project not found"), { status: 404 });
+      const role = await membership(property.organization_id);
+      if (!role || !["owner", "admin"].includes(role)) throw Object.assign(new Error("Only an owner or administrator can see deleted evidence"), { status: 403 });
+      const { data: rows, error: listError } = await admin.from("evidence_items")
+        .select("id, original_filename, media_type, byte_size, space_id, deleted_at, deleted_by, deletion_reason, purged_at")
+        .eq("property_id", propertyId)
+        .not("deleted_at", "is", null)
+        .order("deleted_at", { ascending: false })
+        .limit(200);
+      if (listError) throw listError;
+      return json(request, { deleted: rows || [] });
     }
 
     if (operation === "remove_capture_evidence") {
@@ -567,17 +753,36 @@ Deno.serve(async (request) => {
       const recordId = text(body?.record_id);
       if (!isUuid(recordId)) throw Object.assign(new Error("A valid capture is required"), { status: 400 });
       const { data: record } = await admin.from("evidence_items")
-        .select("id, storage_provider, storage_bucket, storage_path, object_version_id")
+        .select("id, storage_provider, storage_bucket, storage_path, object_version_id, deleted_at")
         .eq("id", recordId)
         .eq("capture_session_id", captureSession.id)
         .maybeSingle();
       if (!record) throw Object.assign(new Error("Capture not found in this session"), { status: 404 });
-      if (record.storage_provider === "aws-s3") {
-        await s3.send(new DeleteObjectCommand({ Bucket: record.storage_bucket || bucket, Key: record.storage_path, VersionId: record.object_version_id || undefined }));
-      }
-      const { error: deleteError } = await admin.from("evidence_items").delete().eq("id", record.id);
-      if (deleteError) throw deleteError;
-      await admin.from("object_uploads").delete().eq("id", record.id).eq("capture_session_id", captureSession.id);
+      /* An operator removing a mis-shot before submitting is correcting their own
+         work, not deleting evidence of record — but it is still a capture that
+         once existed, so it is hidden and written down rather than erased. */
+      const removedAt = new Date().toISOString();
+      const { error: removeError } = await admin.from("evidence_items").update({
+        deleted_at: removedAt,
+        deletion_reason: "Removed by the operator before the capture session was submitted",
+      }).eq("id", record.id);
+      if (removeError) throw removeError;
+      await admin.from("object_uploads").update({ status: "aborted", updated_at: removedAt })
+        .eq("id", record.id).eq("capture_session_id", captureSession.id);
+      const captureOrigin = requestOrigin(request);
+      await admin.rpc("record_audit_event", {
+        p_organization_id: captureSession.organization_id,
+        p_property_id: captureSession.property_id,
+        p_action: "evidence.removed_before_submission",
+        p_entity_type: "evidence_items",
+        p_entity_id: record.id,
+        p_actor_id: null,
+        p_actor_kind: "guest_link",
+        p_actor_label: `capture_session:${captureSession.id}`,
+        p_detail: { object_key: record.storage_path, object_retained: true },
+        p_request_ip: captureOrigin.ip,
+        p_user_agent: captureOrigin.userAgent,
+      }).then(({ error }) => { if (error) console.error("Capture removal audit event failed", error); });
       return json(request, { deleted: true });
     }
 
@@ -674,8 +879,7 @@ Deno.serve(async (request) => {
 
     return json(request, { error: "Unsupported operation" }, 400);
   } catch (error) {
-    console.error(error);
-    const status = Number((error as { status?: number })?.status) || 500;
-    return json(request, { error: errorMessage(error) }, status >= 400 && status <= 599 ? status : 500);
+    const safe = safeError(error, "The file service could not complete that request.");
+    return json(request, safe.body, safe.status);
   }
 });

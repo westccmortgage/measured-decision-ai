@@ -76,6 +76,7 @@ Deno.serve(async (request) => {
       admin.from("evidence_items")
         .select("id, storage_path, storage_provider, storage_bucket, original_filename, media_type, mime_type, byte_size, captured_at, source_metadata")
         .eq("field_assignment_id", check.assignment_id)
+        .is("deleted_at", null)
         .in("id", check.evidence_ids),
       admin.from("project_documents")
         .select("id, storage_path, storage_provider, storage_bucket, original_filename, mime_type, byte_size, issued_at, source_metadata")

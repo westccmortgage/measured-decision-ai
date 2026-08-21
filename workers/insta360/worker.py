@@ -5,6 +5,7 @@ equirectangular master, and registers that master as evidence so the Studio can
 actually play it. Stitching a file nobody can open is not work finished.
 """
 
+import hashlib
 import json
 import os
 import re
@@ -131,9 +132,49 @@ def evidence_records(ids):
     return api(
         "GET",
         f"evidence_items?id=in.({joined})"
-        "&select=id,original_filename,storage_bucket,storage_path,captured_at,created_by"
+        # A capture deleted from the record is not stitched back into it.
+        "&deleted_at=is.null"
+        "&select=id,original_filename,storage_bucket,storage_path,captured_at,created_by,"
+        "sha256,content_hash_algorithm,content_hash_scope"
         "&order=original_filename.asc",
     )
+
+
+def file_digest(path):
+    """SHA-256 of the whole file, read in blocks so a 40 GB capture does not have
+    to fit in memory."""
+    digest = hashlib.sha256()
+    with open(path, "rb") as handle:
+        for block in iter(lambda: handle.read(8 * 1024 * 1024), b""):
+            digest.update(block)
+    return digest.hexdigest()
+
+
+def record_digest(evidence_id, digest, recorded_by):
+    """Write the digest of a file this machine has read end to end.
+
+    The browser cannot do this for a 40 GB camera original — it would have to
+    read the whole file twice on a phone — so until now those rows carried an S3
+    ETag, which is a digest of the parts and not of the file. This machine has
+    the whole file on disk anyway, so it is the honest place to compute the real
+    one. Never let it stop a stitch: a missing digest is a gap in the record, a
+    failed stitch is a lost capture."""
+    try:
+        api(
+            "PATCH",
+            f"evidence_items?id=eq.{evidence_id}",
+            data=json.dumps({
+                "sha256": digest,
+                "content_hash_algorithm": "sha-256",
+                "content_hash_scope": "whole-file",
+                "content_hash_recorded_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+                "content_hash_recorded_by": recorded_by,
+            }),
+        )
+        return True
+    except Exception as error:
+        print(f"could not record digest for {evidence_id}: {error}", flush=True)
+        return False
 
 
 def master_filename(capture_key):
@@ -231,7 +272,7 @@ def master_metadata(capture_key, source_count, trim=None):
     }
 
 
-def master_evidence_payload(job, group, sources, object_key, byte_size, created_by, trim=None):
+def master_evidence_payload(job, group, sources, object_key, byte_size, created_by, trim=None, digest=None):
     """The master is a derivative: it points back at the protected original it
     was stitched from, so the chain from record to camera file stays intact."""
     return {
@@ -246,7 +287,22 @@ def master_evidence_payload(job, group, sources, object_key, byte_size, created_
         "mime_type": "video/mp4",
         "byte_size": byte_size,
         "captured_at": sources[0].get("captured_at"),
-        "source_metadata": master_metadata(group.get("capture_key"), len(sources), trim),
+        "source_metadata": {
+            **master_metadata(group.get("capture_key"), len(sources), trim),
+            # derivative_of names one parent because the column holds one. A
+            # stitch has two, and the record should say which two, by digest.
+            "derived_from": [
+                {"evidence_id": item["id"], "filename": item.get("original_filename"),
+                 "sha256": item.get("sha256"), "hash_algorithm": item.get("content_hash_algorithm")}
+                for item in sources
+            ],
+        },
+        "source_type": "derived",
+        "sha256": digest,
+        "content_hash_algorithm": "sha-256" if digest else None,
+        "content_hash_scope": "whole-file" if digest else None,
+        "content_hash_recorded_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()) if digest else None,
+        "content_hash_recorded_by": "insta360-worker" if digest else None,
         "derivative_of": sources[0]["id"],
         "created_by": created_by,
     }
@@ -279,8 +335,18 @@ def register_master(payload):
 
 def process(job):
     group = job["capture_360_groups"]
-    sources = evidence_records(group["source_evidence_ids"])
+    expected = list(group["source_evidence_ids"] or [])
+    sources = evidence_records(expected)
     if len(sources) < 2:
+        # "Incomplete" used to cover two different situations. A lens file that
+        # was never uploaded and a lens file somebody deleted need different
+        # answers from a person, so they get different sentences.
+        missing = len(expected) - len(sources)
+        if len(expected) >= 2 and missing:
+            raise RuntimeError(
+                f"{missing} of this capture's {len(expected)} camera originals "
+                "were deleted from the record. Restore them to stitch this capture."
+            )
         raise RuntimeError("The dual-lens capture is incomplete")
 
     with tempfile.TemporaryDirectory(prefix="mdai-360-") as temp:
@@ -290,6 +356,14 @@ def process(job):
             target = root / source["original_filename"]
             s3.download_file(source["storage_bucket"], source["storage_path"], str(target))
             local_inputs.append(target)
+            # The originals are in hand exactly once, here. Record what they are.
+            if source.get("content_hash_algorithm") != "sha-256":
+                # Read once. A 40 GB capture does not get hashed twice to save a
+                # line of code.
+                digest = file_digest(target)
+                if record_digest(source["id"], digest, "insta360-worker"):
+                    source["sha256"] = digest
+                    source["content_hash_algorithm"] = "sha-256"
 
         output = root / "vr-master-hevc.mp4"
         command = [STITCH_COMMAND]
@@ -338,7 +412,8 @@ def process(job):
         # product: the Studio lists evidence, not bucket keys.
         patch_job(job["id"], stage="Publishing the capture to the record", progress=97)
         payload = master_evidence_payload(
-            job, group, sources, object_key, master.stat().st_size, registering_user(job, sources), trim
+            job, group, sources, object_key, master.stat().st_size, registering_user(job, sources), trim,
+            digest=file_digest(master),
         )
         registered = register_master(payload)
         master_id = registered[0]["id"] if registered else None
