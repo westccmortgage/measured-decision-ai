@@ -24,6 +24,28 @@ hidden button is a courtesy, not a control.
 (`020_project_scoped_access.sql`) and are granted nothing yet. They are there so
 that adding them later is a policy change rather than a migration of every table.
 
+## Why the dashboard says "public" beside every policy
+
+Supabase's Policies screen prints `APPLIED TO: public` next to each policy. It
+looks like the wrong word in the wrong place and it is neither.
+
+A policy written without a `TO` clause applies `TO PUBLIC`, meaning *to every
+database role* — not "the public may read this". A permissive policy only ever
+**grants** the rows its `USING` expression admits, and every `USING` here
+resolves through `auth.uid()`. For somebody signed out that is null, so the
+expression admits nothing at all.
+
+This is asserted rather than argued: the invariant tests query as the `anon`
+role, with Supabase's real table grants in place, and require zero rows from
+evidence, projects, rooms, findings, decisions, the audit trail, organizations
+and the member list. A signed-in stranger holding a valid token for an account
+in no organization gets the same nothing.
+
+Adding `TO authenticated` to each policy would make the dashboard read the way a
+person expects and would stop the policies being evaluated for signed-out
+callers at all. It is worth doing as tidying. It is not a fix, because there is
+nothing to fix.
+
 ## Where it is enforced
 
 **Implemented — row-level security.** Every table in `public` has RLS enabled.

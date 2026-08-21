@@ -16,6 +16,10 @@ begin;
 grant usage on schema public to authenticated, anon;
 grant usage on schema auth to authenticated, anon;
 grant select, insert, update, delete on all tables in schema public to authenticated;
+-- Supabase grants anon SELECT on public tables and lets row-level security do
+-- the deciding. Granting it here too means the signed-out checks below test what
+-- production actually does, rather than a harness that is stricter than reality.
+grant select on all tables in schema public to anon;
 grant usage, select on all sequences in schema public to authenticated;
 
 -- ------------------------------------------------------------------ fixtures
@@ -288,6 +292,44 @@ reset role;
 select pg_temp.check('a recorded client event is attributed to the person who caused it',
   (select actor_id from public.audit_events where action = 'report.generated')
   = '11111111-1111-1111-1111-111111111111');
+
+-- ================================================ the signed-out caller
+-- Every policy in this project is written without a TO clause, so Postgres
+-- applies it TO PUBLIC and the Supabase dashboard prints "public" beside each
+-- one. That reads alarming and is not: a permissive policy grants only the rows
+-- its USING expression admits, and every USING here resolves through auth.uid().
+-- For somebody signed out that is null, so the expression admits nothing.
+--
+-- Asserted rather than argued, because "it should be fine" is not a control.
+set local role anon;
+set local test.uid = '';
+select pg_temp.check('a signed-out caller sees no evidence',
+  (select count(*) from public.evidence_items) = 0);
+select pg_temp.check('no projects',
+  (select count(*) from public.properties) = 0);
+select pg_temp.check('no rooms',
+  (select count(*) from public.spaces) = 0);
+select pg_temp.check('no AI findings',
+  (select count(*) from public.ai_suggestions) = 0);
+select pg_temp.check('no decisions',
+  (select count(*) from public.suggestion_reviews) = 0);
+select pg_temp.check('no audit trail',
+  (select count(*) from public.audit_events) = 0);
+select pg_temp.check('no organizations, and no member list to enumerate',
+  (select count(*) from public.organizations) = 0
+  and (select count(*) from public.organization_members) = 0);
+select pg_temp.check('and no analysis jobs',
+  (select count(*) from public.analysis_jobs) = 0);
+
+-- A forged uid is a guess at somebody else's identity, not an identity. In
+-- production auth.uid() comes from a signature-verified token and cannot be set
+-- at all; here it can, which makes the check worth writing.
+set local role authenticated;
+set local test.uid = '99999999-9999-9999-9999-999999999999';
+select pg_temp.check('a signed-in stranger sees nothing either',
+  (select count(*) from public.evidence_items) = 0
+  and (select count(*) from public.properties) = 0);
+reset role;
 
 -- ================================================ privileged helpers
 reset role;
