@@ -65,13 +65,39 @@ on the plan and add-on. That is a dashboard setting: Supabase → the project �
 Database → Backups. **Write the number here when it is read**, because "we can
 restore" and "we can restore as far back as the mistake" are different promises.
 
-**Objects (S3).** The bucket is private and objects are written with version ids
-recorded in `object_version_id`, which is what a versioned bucket returns.
-**Whether versioning is actually enabled on
-`measured-decision-production-808454010303` must be confirmed in the AWS console
-and written here.** If it is on, a purge that supplies a version id removes one
-version and earlier ones remain; if it is off, a purge is final. The code is
-correct either way; the recovery story is not the same, so the answer matters.
+**Objects (S3).** `measured-decision-production-808454010303`, us-east-2,
+created 8 August 2026. Private, no public read.
+
+**Bucket Versioning: Enabled.** Confirmed in the AWS console on 20 August 2026.
+Every write creates a new version and the previous one stays; a delete places a
+marker rather than removing bytes. That is the storage-layer half of "the
+original is never altered" — the database half is enforced by
+`guard_evidence_deletion`, which refuses to repoint a record at different bytes.
+
+Practically: an accidental overwrite is recoverable, and a delete is recoverable,
+independently of anything this application does.
+
+**MFA delete: Disabled.** This would require a hardware or virtual MFA code to
+remove a version or change the versioning setting, and can only be configured
+with root credentials via the CLI. It is a reasonable thing to want later and a
+poor thing to switch on before there is a documented process for it — a lost MFA
+device with MFA delete enabled is its own incident.
+
+**Two consequences worth knowing.**
+
+*Purge means every version.* Because one key can hold several versions — a
+capture stitched twice writes the same key twice — destroying only the version
+recorded at upload would leave an earlier one behind while the record said the
+file was destroyed. `purge_evidence` enumerates every version of the key,
+including delete markers, removes them all, and writes the count into the audit
+entry. A purge that lies is worse than no purge.
+
+*Versions cost money.* Nothing expires them today. With 360 originals in the tens
+of gigabytes, a re-upload or a re-stitch quietly doubles the storage it touches.
+**Recommended:** S3 → the bucket → Management → Lifecycle rule → *permanently
+delete noncurrent versions after 90 days*. That keeps the protection where it is
+useful — the window in which somebody notices a mistake — without paying for it
+forever.
 
 **What happens if someone deletes a project.** Nothing, because no client can.
 There is no delete policy on `properties` at all, so a project cannot be removed

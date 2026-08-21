@@ -8,7 +8,7 @@ Four pieces, three of them hosted by someone else.
 |---|---|---|
 | **Web** | Static HTML/CSS/JS on Netlify, built from `main` | No customer data. Ships a Supabase *publishable* key, which is designed to be public and grants nothing on its own. |
 | **Supabase** | Postgres + Auth + Edge Functions (Deno) | The system of record: projects, spaces, evidence rows, AI jobs, findings, decisions, the audit trail. |
-| **AWS S3** | `measured-decision-production-808454010303`, us-east-2 | Every evidence file. Private bucket, no public read. |
+| **AWS S3** | `measured-decision-production-808454010303`, us-east-2 | Every evidence file. Private bucket, no public read, versioning enabled. |
 | **EC2 g4dn** | Started by hand, stops itself | Nothing durable. Downloads a capture, stitches it, uploads the result, shuts down. |
 
 ## Trust boundaries
