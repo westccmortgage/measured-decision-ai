@@ -4307,27 +4307,24 @@ async function removeEvidenceRecord(location) {
         await window.MDAIObjectStorage.deleteEvidence(cloud.client, id);
       }
     } else {
-      const { data: deletedRows, error: databaseError } = await cloud.client
-        .from("evidence_items")
-        .delete()
-        .in("id", targetIds)
-        .eq("property_id", cloud.propertyId)
-        .select("id");
-      if (databaseError) throw databaseError;
-      if (!deletedRows?.length) throw new Error("Deletion is not authorized or the evidence no longer exists");
-      if (deletedRows.length < targetIds.length) {
-        console.warn("Part of the capture was already gone", { asked: targetIds.length, removed: deletedRows.length });
-      }
-    }
+      /* Marked deleted, not destroyed — the same rule the S3 path follows. The
+         stored object stays where it is; an owner can bring the file back, and
+         anything derived from it still has a parent to point at.
 
-    if (evidence.storagePath && evidence.storageProvider !== "aws-s3") {
-      const { error: storageError } = await cloud.client.storage
-        .from(config.storageBucket)
-        .remove([evidence.storagePath]);
-      if (storageError) {
-        console.error("Evidence record deleted but storage cleanup failed", storageError);
-        storageCleanupFailed = true;
+         Through an RPC rather than a plain update, because the read policy hides
+         deleted rows: an update that sets deleted_at makes the row invisible to
+         its own author, and Postgres refuses that outright. The RPC checks the
+         caller is an owner or admin and writes the audit entry. */
+      let removed = 0;
+      for (const id of targetIds) {
+        const { error: databaseError } = await cloud.client.rpc("soft_delete_evidence", {
+          p_evidence_id: id,
+          p_reason: null,
+        });
+        if (databaseError) throw new Error(databaseError.message || "Deletion is not authorized");
+        removed += 1;
       }
+      if (!removed) throw new Error("Deletion is not authorized or the evidence no longer exists");
     }
   } else {
     for (const ref of (evidence.fileRefs || [evidence.fileRef]).filter(Boolean)) {
@@ -4373,17 +4370,22 @@ $("#confirm-evidence-delete").addEventListener("click", async () => {
     renderFocusResults();
     elements.deleteEvidenceDialog.close();
     deletingEvidenceId = null;
+    /* "Deleted permanently" was accurate before this and is not any more, which
+       is the point: a person who deletes the wrong file should be told it can
+       come back, not told it is gone forever. */
     notify(
       result.storageCleanupFailed
-        ? `${filename} removed from the database; storage cleanup requires attention`
-        : `${filename} deleted permanently`,
+        ? `${filename} removed from the record; storage cleanup requires attention`
+        : cloud.schemaReady
+          ? `${filename} removed from the record. The original is kept — an owner can restore it.`
+          : `${filename} deleted from this device`,
     );
   } catch (error) {
     console.error(error);
     notify(`Evidence was not deleted: ${error.message}`);
   } finally {
     button.disabled = false;
-    button.textContent = "Delete permanently";
+    button.textContent = "Remove from the record";
   }
 });
 

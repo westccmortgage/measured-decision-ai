@@ -1087,18 +1087,18 @@
       <form method="dialog" id="delete-evidence-form">
         <div class="dialog-heading">
           <div>
-            <p class="eyebrow">Permanent deletion</p>
+            <p class="eyebrow">Removal from the record</p>
             <h2>Delete evidence?</h2>
           </div>
           <button type="submit" value="cancel" aria-label="Close">×</button>
         </div>
         <div class="delete-evidence-summary">
           <strong id="delete-evidence-name">Evidence file</strong>
-          <p>This removes the database record and the original file from private storage. This action cannot be undone.</p>
+          <p>The file leaves this project and every list in it. The original stays in private storage and an owner can restore it, so anything already derived from it keeps its parent. Destroying the stored file is a separate step.</p>
         </div>
         <div class="dialog-actions">
           <button class="secondary-button" type="submit" value="cancel">Keep evidence</button>
-          <button class="danger-button" type="button" id="confirm-evidence-delete">Delete permanently</button>
+          <button class="danger-button" type="button" id="confirm-evidence-delete">Remove from the record</button>
         </div>
       </form>
     </dialog>

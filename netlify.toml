@@ -8,6 +8,19 @@
     X-Content-Type-Options = "nosniff"
     Referrer-Policy = "strict-origin-when-cross-origin"
     X-Frame-Options = "SAMEORIGIN"
+    # Once a browser has seen this site over HTTPS it must never try plaintext
+    # again, including on the first request of a later visit.
+    Strict-Transport-Security = "max-age=31536000; includeSubDomains"
+    # Evidence capture needs the camera on the field pages and nothing else here
+    # needs any of this. Denying by default costs nothing and closes a whole class
+    # of embedded-content attacks.
+    Permissions-Policy = "geolocation=(self), camera=(self), microphone=(), payment=(), usb=(), interest-cohort=()"
+    # Deliberately partial. These four directives cannot break a working page —
+    # nothing here is framed by another site, loads a plugin, rewrites its own
+    # base URL, or posts a form off-origin — so they ship now. A full
+    # script-src/connect-src policy needs the upload and viewer paths exercised
+    # against it first; see docs/security/SECURITY_ARCHITECTURE.md.
+    Content-Security-Policy = "frame-ancestors 'self'; base-uri 'self'; form-action 'self'; object-src 'none'"
 
 [[headers]]
   for = "/index.html"

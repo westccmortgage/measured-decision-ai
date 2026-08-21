@@ -96,6 +96,25 @@ assert payload["byte_size"] == 2048
 assert payload["source_metadata"]["projection"] == "equirectangular"
 assert payload["derivative_of"] == "src-00", "the master must descend from the first lens original"
 assert ("capture_360_groups", "vr_ready") in states
+# Provenance: the machine reads whole files, so it is the one place a real
+# whole-file digest can be recorded rather than a checksum of upload parts.
+digests = [c for c in calls if c["method"] == "PATCH" and c["path"].startswith("evidence_items?id=eq.")
+           and "sha256" in (c["body"] or {})]
+assert len(digests) == 2, f"both originals must be digested, got {len(digests)}"
+for entry in digests:
+    assert entry["body"]["content_hash_algorithm"] == "sha-256"
+    assert entry["body"]["content_hash_scope"] == "whole-file"
+    assert len(entry["body"]["sha256"]) == 64, entry["body"]["sha256"]
+    assert entry["body"]["content_hash_recorded_by"] == "insta360-worker"
+assert payload["sha256"] and len(payload["sha256"]) == 64, "the master carries its own digest"
+assert payload["content_hash_algorithm"] == "sha-256"
+assert payload["source_type"] == "derived"
+parents = payload["source_metadata"]["derived_from"]
+assert [item["evidence_id"] for item in parents] == ["src-00", "src-10"], parents
+assert all(len(item["sha256"]) == 64 for item in parents), "each parent is named by its digest"
+assert payload["derivative_of"] == "src-00"
+print("PROVENANCE  : 2 originals digested, master digested, parents named by hash")
+
 print("\nOK: master reaches the record, not just the bucket")
 
 # A short capture keeps every second of itself.

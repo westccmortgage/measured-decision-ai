@@ -39,7 +39,7 @@ Deno.serve(async(request)=>{
       const baselineId=property.active_baseline_id||null;
       const [{data:baseline},{data:spaces},{data:evidence},{data:suggestions},{data:tasks}]=await Promise.all([
         baselineId?admin.from("document_baselines").select("id,version,state,project_summary,approved_at").eq("id",baselineId).maybeSingle():Promise.resolve({data:null}),
-        admin.from("spaces").select("id,parent_space_id,name,building,level,review_state").eq("organization_id",property.organization_id).eq("property_id",property.id).order("created_at"),
+        admin.from("spaces").select("id,parent_space_id,name,building,level,review_state").eq("organization_id",property.organization_id).eq("property_id",property.id).is("deleted_at",null).order("created_at"),
         admin.from("evidence_items").select("id,space_id,capture_task_id,baseline_id,storage_path,storage_provider,storage_bucket,original_filename,media_type,mime_type,byte_size,sha256,captured_at,created_at,source_metadata").eq("organization_id",property.organization_id).eq("property_id",property.id).order("created_at"),
         admin.from("ai_suggestions").select("id,space_id,body,evidence_ids,confidence,created_at,agent_key,agent_contract_version").eq("organization_id",property.organization_id).eq("property_id",property.id).eq("suggestion_type","room_interpretation").order("created_at",{ascending:false}),
         baselineId?admin.from("capture_tasks").select("id,status,verified_by,verified_at,reviewer_note").eq("baseline_id",baselineId):Promise.resolve({data:[]}),

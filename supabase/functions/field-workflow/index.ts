@@ -1,3 +1,4 @@
+import { safeError } from "../_shared/safe-error.ts";
 import { createClient } from "npm:@supabase/supabase-js@2";
 
 const allowedOrigins = new Set([
@@ -298,6 +299,7 @@ Deno.serve(async (request) => {
       const { data: evidence } = await admin.from("evidence_items")
         .select("id, original_filename, mime_type, byte_size, captured_at, created_at")
         .eq("field_assignment_id", assignment.id)
+        .is("deleted_at", null)
         .order("created_at");
       const { data: documents } = await admin.from("project_documents")
         .select("id, original_filename, mime_type, byte_size, issued_at, created_at")
@@ -350,6 +352,7 @@ Deno.serve(async (request) => {
       const { data: evidence } = await admin.from("evidence_items")
         .select("id")
         .eq("field_assignment_id", assignment.id)
+        .is("deleted_at", null)
         .eq("capture_task_id", assignment.capture_task_id);
       const { data: documents } = await admin.from("project_documents")
         .select("id")
@@ -410,8 +413,7 @@ Deno.serve(async (request) => {
 
     return json(request, { error: "Unsupported action" }, 400);
   } catch (error) {
-    console.error("field-workflow", error);
-    const status = Number((error as { status?: number })?.status) || 500;
-    return json(request, { error: error instanceof Error ? error.message : "Field workflow failed" }, status);
+    const safe = safeError(error, "The field service could not complete that request.");
+    return json(request, safe.body, safe.status);
   }
 });

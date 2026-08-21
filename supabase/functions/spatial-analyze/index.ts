@@ -267,6 +267,16 @@ function analysisSchema(evidenceIds: string[], anchorable: boolean) {
   };
 }
 
+/* A conclusion can only be re-derived if we know what was asked, not just which
+   model was called. This is the digest of the instruction text and the exact
+   response schema used for one run — change either and the fingerprint changes,
+   so an old finding can never be silently attributed to today's prompt. */
+async function promptFingerprint(instructions: string, schema: unknown) {
+  const material = `${instructions}\u0000${JSON.stringify(schema)}`;
+  const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(material));
+  return Array.from(new Uint8Array(digest)).map((b) => b.toString(16).padStart(2, "0")).join("").slice(0, 32);
+}
+
 Deno.serve(async (request) => {
   if (request.method === "OPTIONS") {
     return new Response("ok", { headers: corsHeaders(request) });
@@ -375,6 +385,9 @@ Deno.serve(async (request) => {
         )
         .eq("organization_id", job.organization_id)
         .eq("property_id", job.property_id)
+        /* Deleted evidence never reaches a model. A conclusion drawn from a file
+           the record no longer shows cannot be explained to anyone later. */
+        .is("deleted_at", null)
         .in("id", job.evidence_ids),
       admin
         .from("spaces")
@@ -474,6 +487,8 @@ Deno.serve(async (request) => {
       fail("No supported image or video-frame input was available.", 422);
     }
 
+    const responseSchema = analysisSchema(job.evidence_ids, sphericalFrames.length > 0);
+    const runFingerprint = await promptFingerprint(EVIDENCE_WORKFLOW_INSTRUCTIONS, responseSchema);
     const openAIResponse = await fetch("https://api.openai.com/v1/responses", {
       method: "POST",
       headers: {
@@ -490,7 +505,7 @@ Deno.serve(async (request) => {
             type: "json_schema",
             name: "property_evidence_interpretation",
             strict: true,
-            schema: analysisSchema(job.evidence_ids, sphericalFrames.length > 0),
+            schema: responseSchema,
           },
         },
         max_output_tokens: 3500,
@@ -521,6 +536,10 @@ Deno.serve(async (request) => {
         errorCode: "openai_incomplete",
       });
     }
+    /* The model we asked for and the model that answered are different facts.
+       Only the second one explains a finding a year from now. */
+    const servedModel = typeof openAIPayload.model === "string" ? openAIPayload.model : null;
+    const usage = (openAIPayload.usage as Record<string, unknown>) || {};
     const analysis = JSON.parse(outputText(openAIPayload)) as Record<
       string,
       unknown
@@ -577,8 +596,22 @@ Deno.serve(async (request) => {
         property_id: job.property_id,
         space_id: job.space_id,
         suggestion_type: "room_interpretation",
+        /* What the model believes the evidence may support. It is not a decision
+           and cannot become one here: a decision is a row in suggestion_reviews,
+           whose reviewed_by is a real account this function does not have. */
+        layer: "interpretation",
         body: analysis,
         evidence_ids: job.evidence_ids,
+        /* Which files actually carry each claim, separated from the files that
+           were merely in the request. */
+        supporting_evidence_ids: Array.from(new Set(
+          observations.flatMap((observation) =>
+            ((observation.evidence_ids as string[]) || []).filter((id) => typeof id === "string")),
+        )),
+        /* Nothing in this workflow detects contradiction between two captures
+           yet, so this stays empty rather than being filled with a guess. */
+        conflicting_evidence_ids: [],
+        missing_evidence: (analysis.not_established as unknown[]) || [],
         confidence,
         agent_key: "evidence_inspector",
         agent_contract_version: AGENT_CONTRACT_VERSION,
@@ -600,6 +633,10 @@ Deno.serve(async (request) => {
           state: "completed",
           finished_at: finishedAt,
           error_code: null,
+          model_version: servedModel,
+          prompt_fingerprint: runFingerprint,
+          input_evidence_count: evidence.length,
+          usage,
         })
         .eq("id", job.id),
       admin.from("audit_events").insert({
@@ -611,6 +648,8 @@ Deno.serve(async (request) => {
         detail: {
           provider: "openai",
           model: OPENAI_MODEL,
+          model_version: servedModel,
+          prompt_fingerprint: runFingerprint,
           profile: job.profile,
           profile_version: job.profile_version,
           evidence_count: evidence.length,
