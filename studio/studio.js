@@ -2110,6 +2110,9 @@ async function createRoomRecord({ name, building, level }) {
 const FOCUS_STAGE_ORDER = { upload: 1, process: 2, results: 3 };
 let focusStage = "upload";
 let focusUploadBusy = false;
+/* How many files the last upload actually carried. Zero means this screen is
+   showing a project somebody came back to, not an upload that just finished. */
+let focusLastUploadCount = 0;
 let focusProcessingComplete = false;
 let focusProcessingRows = [];
 let uploadRoomId = "";
@@ -3355,12 +3358,12 @@ function renderFocusSheet() {
             .join("")}</ul></div>`
         : ""}`;
   } else {
-    const analyzable = room.evidence.some((item) => isImage(item) || isVideo(item));
-    findings.innerHTML = `<p class="sheet-empty">${
-      analyzable
-        ? "No AI interpretation has been produced for this space yet."
-        : "The AI can only interpret photos or video. This space holds documents or camera originals only."
-    }</p>`;
+    /* Said on the card rather than only in a toast, so nobody has to press a
+       button to find out why the button will not work. */
+    const blocked = analysisBlocker(room);
+    findings.innerHTML = `<p class="sheet-empty">${escapeText(
+      blocked || "No AI interpretation has been produced for this space yet.",
+    )}</p>`;
   }
 
   /* The one thing a single capture can never say. It goes above the findings,
@@ -3512,9 +3515,47 @@ function offerMoneyQuestions() {
   window.setTimeout(() => openMoneyQuestions(coverage.questions[0].key), 700);
 }
 
+/* Why the AI cannot read this room yet, in words that name the next move.
+
+   The old sentence — "Add a visual capture first" — was true in the narrow sense
+   and useless in every other. Someone who has just uploaded both lens files of a
+   360 capture has added the only visual capture they have; telling them to add
+   one sends them back to do the thing they already did. A room holding a
+   complete camera pair is not missing evidence, it is waiting for the machine
+   that turns that evidence into something a model can read.
+
+   Returns null when the room is ready. */
+function analysisBlocker(room) {
+  const evidence = room?.evidence || [];
+  if (evidence.some((item) => isImage(item) || isVideo(item))) return null;
+  if (!evidence.length) {
+    return "This room is empty. Add a photo, a video, or a 360 capture.";
+  }
+  const originals = evidence.filter(focusIsCameraOriginal);
+  if (originals.length) {
+    /* A dual-lens capture is normally one tile carrying two source ids, but
+       counting tiles would report "2 captures" for one capture if it ever
+       arrived uncollapsed. Count the captures themselves. */
+    const paired = [...new Set(
+      originals
+        .filter((item) => (item.sourceIds?.length || 0) >= 2)
+        .map((item) => [...item.sourceIds].sort().join("|")),
+    )];
+    if (paired.length) {
+      const machine = machineLine();
+      return `This room holds ${paired.length === 1 ? "a complete 360 capture" : `${paired.length} complete 360 captures`}. A browser cannot read the camera's INSV format, so the 360 machine stitches ${paired.length === 1 ? "it" : "them"} into a playable master first — the AI reads that. ${
+        machine || "The machine has not run yet."
+      }`;
+    }
+    return "One lens file of this 360 capture is missing. Both halves are what the 360 machine stitches from — upload the matching INSV file.";
+  }
+  return "This room holds documents only. The AI reads photos, video and stitched 360 captures; add one of those to interpret the space.";
+}
+
 async function runFocusRoomAnalysis(room) {
-  if (!room.evidence.some((item) => isImage(item) || isVideo(item))) {
-    notify("The AI can only interpret photos or video. Add a visual capture first.", 5200);
+  const blocked = analysisBlocker(room);
+  if (blocked) {
+    notify(blocked, 9000);
     return;
   }
   if (!cloud.schemaReady || !cloud.propertyId) {
@@ -3831,8 +3872,13 @@ function renderFocusStudio() {
   $("#focus-project-summary").textContent = `\u25CF ${focusStatusLine(stats)}`;
   const uploaded = $("#focus-upload-done");
   uploaded.hidden = !stats.rawFiles;
-  $("#focus-upload-done-copy").textContent =
-    `${stats.rawFiles} file${stats.rawFiles === 1 ? "" : "s"} uploaded successfully`;
+  /* What was just uploaded, not what the project happens to contain. This line
+     sits directly under "Upload complete · 100%", so a project-wide total read
+     as a description of the upload that had only just finished: two files went
+     up and the screen said forty-two. */
+  $("#focus-upload-done-copy").textContent = focusLastUploadCount
+    ? `${focusLastUploadCount} file${focusLastUploadCount === 1 ? "" : "s"} uploaded · ${stats.rawFiles} in this project`
+    : `${stats.rawFiles} file${stats.rawFiles === 1 ? "" : "s"} in this project`;
   $("#focus-upload-more").hidden = !stats.rawFiles;
   $("#focus-process").disabled = !stats.rawFiles || focusUploadBusy;
   renderFocusToday();
@@ -3843,6 +3889,7 @@ function renderFocusStudio() {
 
 function openFocusStudio() {
   focusUploadBusy = false;
+  focusLastUploadCount = 0;
   focusProcessingRows = [];
   focusProcessingComplete = window.localStorage.getItem(`mdai-focus-processed:${cloud.propertyId}`) === "1";
   /* Opening a project always lands on the one action that moves it forward. */
@@ -3917,6 +3964,7 @@ async function uploadFocusEvidence(fileList) {
     await hydrateCloudRecord();
     $("#focus-upload-progress-title").textContent = "Upload complete";
     progressDetail.textContent = "Original files preserved and linked to this project.";
+    focusLastUploadCount = files.length;
     notify(`${files.length} evidence file${files.length === 1 ? "" : "s"} uploaded`);
   } catch (error) {
     console.error(error);
