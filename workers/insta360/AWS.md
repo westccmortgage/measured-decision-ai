@@ -50,7 +50,21 @@ in the worst case on a three-hour deadline set in the first seconds.
 
 ## Reading what happened
 
-Two routes, either is enough:
+**The first place to look is the Studio.** The machine opens a row for itself
+before it does anything else and updates it at every step, so the Spatial
+evidence card says which of these is true, in the machine's own words:
+
+- *The 360 machine is running — building the worker image*
+- *The 360 machine stopped 1 hour ago — this machine cannot see its GPU (code 94). No capture was touched.*
+- *The 360 machine last reported 41 minutes ago, at "building the worker image", and has said nothing since*
+- *The 360 machine finished 20 minutes ago — 6 captures stitched*
+
+Nothing writes that row except the machine, so a state shown there was reported
+by the machine and by nothing else. When the record has never heard from it, the
+Studio says exactly that instead of guessing.
+
+The logs are still there when the sentence is not enough. Two routes, either is
+enough:
 
 - **S3** → `measured-decision-production-808454010303` → `worker-logs/`
 - **EC2** → the instance → Actions → Monitor and troubleshoot → **Get system log**,
@@ -71,6 +85,9 @@ with the reason and an exit code:
 | 98 | the worker image did not build |
 | 99 | the worker failed its own self-test |
 
+The same code and reason are written to the machine's row, so the Studio shows
+them without anyone opening a bucket.
+
 In every one of those cases **no capture is touched**. A queue emptied into
 failures is worse than a queue not started.
 
@@ -90,3 +107,18 @@ all, because logs only left after a reboot that never came.
 Both problems are the same mistake: installing a GPU driver at boot on a machine
 nobody can watch. AWS publishes an image with the driver already in it, so this
 setup no longer installs one.
+
+## The service role key
+
+It goes in one place: line 34 of `user-data.sh`, replacing
+`PASTE_SERVICE_ROLE_KEY_HERE`, pasted into the EC2 **User data** field at launch.
+Never into a chat, a commit, or a ticket.
+
+Until 21 August the script sourced its environment file under `set -x`, which
+printed the key into a log that is uploaded to S3 and dumped to the serial
+console. Anyone who could read either could take it. The key is now never traced,
+and the log is filtered once more on its way out of the machine.
+
+**If any machine before 21 August ran to the point of uploading a log, treat that
+key as exposed:** rotate the service role key in the Supabase dashboard, and
+delete the old objects under `worker-logs/`.

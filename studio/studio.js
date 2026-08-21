@@ -68,6 +68,11 @@ let jobs = loadJobs();
    is indistinguishable from something being broken. */
 let stitchJobs = [];
 let stitchPollTimer = null;
+/* What the stitching machine last said about itself. null means it has not been
+   read yet or the record cannot answer; machineRunLoaded separates those two, so
+   the Studio never reports silence it did not actually observe. */
+let machineRun = null;
+let machineRunLoaded = false;
 let activeRoomId = rooms[0]?.id;
 let pendingFiles = [];
 let editingEvidenceId = null;
@@ -1531,6 +1536,7 @@ async function hydrateCloudRecord() {
 
   loadProjectCosts();
   await hydrateStitchJobs();
+  await hydrateMachineRun();
   scheduleStitchPoll();
 
   const { data: jobRows, error: jobsError } = await cloud.client
@@ -2228,6 +2234,92 @@ async function hydrateStitchJobs() {
   }));
 }
 
+/* The machine's own account of itself.
+
+   Until this existed the Studio inferred the machine's state from our job rows:
+   nothing marked 'processing' was read as "the machine is not running". That is
+   a fact about our database, not about a computer in Ohio, and it was wrong
+   often enough that a person waited on a machine that had already stopped. Now
+   the machine writes one row per boot and this reads it. */
+async function hydrateMachineRun() {
+  if (!cloud.schemaReady) return;
+  const { data, error } = await cloud.client
+    .from("worker_machine_runs")
+    .select("state, step, message, exit_code, jobs_claimed, jobs_completed, jobs_failed, started_at, last_seen_at, finished_at, instance_id")
+    .order("started_at", { ascending: false })
+    .limit(1);
+  /* An error is not silence. If the record cannot answer, say nothing about the
+     machine rather than announcing that it never reported. */
+  if (error) return;
+  machineRunLoaded = true;
+  machineRun = data?.[0] || null;
+}
+
+/* Every step this machine takes is shorter than three minutes, so three minutes
+   without a word means it went away rather than that it is busy. */
+const MACHINE_SILENT_MINUTES = 3;
+
+function machineStatus() {
+  if (!machineRunLoaded) return { known: false };
+  if (!machineRun) return { known: true, everRan: false };
+  const seen = Date.parse(machineRun.last_seen_at || machineRun.started_at || "");
+  const minutes = Number.isFinite(seen) ? Math.floor((Date.now() - seen) / 60000) : null;
+  const finished = machineRun.state === "finished" || machineRun.state === "stopped";
+  return {
+    known: true,
+    everRan: true,
+    finished,
+    stopped: machineRun.state === "stopped",
+    /* minutes is checked against null on purpose: an unreadable timestamp is not
+       a machine that reported one second ago. */
+    awake: !finished && minutes != null && minutes < MACHINE_SILENT_MINUTES,
+    minutes,
+    step: machineRun.step || "",
+    message: machineRun.message || "",
+    exitCode: machineRun.exit_code,
+    claimed: Number(machineRun.jobs_claimed) || 0,
+    completed: Number(machineRun.jobs_completed) || 0,
+    failed: Number(machineRun.jobs_failed) || 0,
+  };
+}
+
+function machineAgo(minutes) {
+  if (minutes == null) return "";
+  if (minutes < 1) return "just now";
+  if (minutes < 60) return `${minutes} minute${minutes === 1 ? "" : "s"} ago`;
+  const hours = Math.floor(minutes / 60);
+  if (hours < 24) return `${hours} hour${hours === 1 ? "" : "s"} ago`;
+  const days = Math.floor(hours / 24);
+  return `${days} day${days === 1 ? "" : "s"} ago`;
+}
+
+/* One sentence about the machine, and only what it actually said. */
+function machineLine() {
+  const machine = machineStatus();
+  if (!machine.known) return "";
+  if (!machine.everRan) return "The 360 machine has never reported in";
+  /* Without a readable time there is no "ago" to give, and inventing one would
+     turn an hour-old machine into a live one. */
+  if (machine.minutes == null) {
+    return `The 360 machine reported "${machine.step || "an unnamed step"}" without a readable time`;
+  }
+  if (machine.awake) {
+    const done = machine.completed ? ` · ${machine.completed} stitched so far` : "";
+    return `The 360 machine is running — ${machine.step || "working"}${done}`;
+  }
+  if (machine.stopped) {
+    const untouched = machine.claimed ? "" : " No capture was touched.";
+    const why = machine.message ? ` — ${machine.message}` : "";
+    const code = machine.exitCode != null ? ` (code ${machine.exitCode})` : "";
+    return `The 360 machine stopped ${machineAgo(machine.minutes)}${why}${code}.${untouched}`;
+  }
+  if (machine.finished) {
+    const failed = machine.failed ? `, ${machine.failed} failed` : "";
+    return `The 360 machine finished ${machineAgo(machine.minutes)} — ${machine.completed} capture${machine.completed === 1 ? "" : "s"} stitched${failed}`;
+  }
+  return `The 360 machine last reported ${machineAgo(machine.minutes)}, at "${machine.step || "an unnamed step"}", and has said nothing since`;
+}
+
 function stitchSummary() {
   const active = stitchJobs.filter((job) => STITCH_ACTIVE_STATES.has(job.state));
   const running = active.filter((job) => job.state === "processing");
@@ -2240,18 +2332,24 @@ function stitchSummary() {
    progress, and saying so is the difference between waiting and being stuck. */
 function stitchLine() {
   const { active, running, failed } = stitchSummary();
+  const machine = machineLine();
   if (running.length) {
     const job = running[0];
     const extra = running.length > 1 ? ` (+${running.length - 1} more)` : "";
     return `Stitching now — ${job.stage || "working"} · ${job.progress}%${extra}`;
   }
   if (active.length) {
-    return `${active.length} capture${active.length === 1 ? "" : "s"} queued for stitching · the 360 machine is not running yet`;
+    const waiting = `${active.length} capture${active.length === 1 ? "" : "s"} queued for stitching`;
+    return machine ? `${waiting} · ${machine}` : waiting;
   }
   if (failed.length) {
-    return `${failed.length} capture${failed.length === 1 ? "" : "s"} failed to stitch${failed[0].error ? ` — ${failed[0].error}` : ""}`;
+    const broke = `${failed.length} capture${failed.length === 1 ? "" : "s"} failed to stitch${failed[0].error ? ` — ${failed[0].error}` : ""}`;
+    return machine ? `${broke} · ${machine}` : broke;
   }
-  return "";
+  /* Nothing queued is not nothing to say: a machine that is awake, or that
+     stopped at a gate an hour ago, is exactly what a person is looking for. */
+  const machineNow = machineStatus();
+  return machineNow.awake || machineNow.stopped ? machine : "";
 }
 
 /* Poll only while something is in flight, and stop as soon as it lands. A
@@ -2259,10 +2357,13 @@ function stitchLine() {
    than left showing a record that is already out of date. */
 function scheduleStitchPoll() {
   window.clearTimeout(stitchPollTimer);
-  if (!stitchSummary().active.length) return;
+  /* Keep watching while the machine is awake even with nothing queued: it may be
+     building itself, and a person waiting deserves to see that finish. */
+  if (!stitchSummary().active.length && !machineStatus().awake) return;
   stitchPollTimer = window.setTimeout(async () => {
     const before = stitchSummary().active.length;
     await hydrateStitchJobs();
+    await hydrateMachineRun();
     const after = stitchSummary().active.length;
     if (after < before) {
       await hydrateCloudRecord().catch(() => {});

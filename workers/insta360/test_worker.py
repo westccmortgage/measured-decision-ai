@@ -105,3 +105,29 @@ print("SHORT CLIP  : untouched (24s)")
 assert worker.plan_trim(30)["head_seconds"] == 5, "a 30s capture falls back to the 5s floor"
 assert worker.plan_trim(180)["head_seconds"] == 10
 print("POLICY      : 10s default, 5s floor, no trim under 25s")
+
+# The machine says what it is doing — and saying it can never stop the work.
+before = len(calls)
+worker.RUN_ID = ""
+worker.report_run(state="working", step="ignored")
+assert len(calls) == before, "with no run id there is nobody to report to"
+
+worker.RUN_ID = "11111111-2222-3333-4444-555555555555"
+worker.report_run(state="working", step="Stitching vid_20250222_043654_027", jobs_claimed=1)
+beat = calls[-1]
+assert beat["method"] == "PATCH" and beat["path"].startswith("worker_machine_runs?id=eq."), beat["path"]
+assert beat["body"]["step"] == "Stitching vid_20250222_043654_027"
+assert beat["body"]["last_seen_at"], "a heartbeat with no time cannot be told from a stale one"
+print("HEARTBEAT   :", beat["path"], json.dumps(beat["body"]))
+
+original_api = worker.api
+def refusing_api(*args, **kwargs):
+    raise RuntimeError("status endpoint down")
+worker.api = refusing_api
+worker.report_run(state="working", step="still stitching")   # must not raise
+worker.api = original_api
+print("HEARTBEAT   : a failed status update does not stop the stitch")
+
+# The job states above must never be confused with the machine's own state.
+assert all("worker_machine_runs" not in path for path, _ in states), \
+    "the capture states must come from capture rows only"
