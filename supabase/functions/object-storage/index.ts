@@ -5,6 +5,7 @@ import {
   CompleteMultipartUploadCommand,
   CreateMultipartUploadCommand,
   DeleteObjectCommand,
+  GetObjectCommand,
   getSignedUrl,
   ListPartsCommand,
   signedObjectReadUrl,
@@ -115,6 +116,50 @@ function isUuid(value: unknown) {
   return /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(String(value || ""));
 }
 function normalizeProjectCode(value:unknown){return String(value||"").toUpperCase().replace(/[^A-Z2-9]/g,"")}
+
+/* The largest file this function will read back and hash itself. Bigger than
+   this and the digest stays whatever the uploader reported until the stitching
+   machine, which reads whole files anyway, records a verified one. */
+const SERVER_VERIFY_LIMIT = 64 * 1024 * 1024;
+
+function hexDigest(value: unknown) {
+  const claimed = String(value || "").toLowerCase();
+  return /^[0-9a-f]{64}$/.test(claimed) ? claimed : null;
+}
+
+/* Who computed a digest is part of the claim.
+
+   'client-upload'  — the uploader's browser hashed the file before sending it.
+                      A claim about what they sent, not proof of what arrived,
+                      and checkable at any time by recomputing.
+   'server-verified'— this function read the stored object back and hashed it.
+   's3-complete-multipart' — no digest was taken; this is what the store returned
+                      about the bytes it holds, which for a multipart upload is a
+                      digest of the part digests and not of the file. */
+function integrityFields(clientDigest: string | null, etag: string | null) {
+  const now = new Date().toISOString();
+  if (clientDigest) {
+    return {
+      sha256: clientDigest,
+      content_hash_algorithm: "sha-256",
+      content_hash_scope: "whole-file",
+      content_hash_recorded_at: now,
+      content_hash_recorded_by: "client-upload",
+    };
+  }
+  const clean = (etag || "").replace(/"/g, "");
+  if (!clean) {
+    return { sha256: null, content_hash_algorithm: null, content_hash_scope: null,
+             content_hash_recorded_at: null, content_hash_recorded_by: null };
+  }
+  return {
+    sha256: clean,
+    content_hash_algorithm: "s3-etag-md5",
+    content_hash_scope: clean.includes("-") ? "parts-composite" : "whole-file",
+    content_hash_recorded_at: now,
+    content_hash_recorded_by: "s3-complete-multipart",
+  };
+}
 
 const SOURCE_TYPES = new Set([
   "phone", "360_camera", "drone", "document", "external_system", "manual_upload", "derived",
@@ -444,18 +489,7 @@ Deno.serve(async (request) => {
         storage_bucket: row.storage_bucket,
         object_version_id: completed.VersionId || null,
         object_etag: completed.ETag || null,
-        /* An ETag is what the store can prove about the bytes it holds. It is not
-           a whole-file SHA-256 and is labelled so nobody reads it as one; the
-           real digest is written later by whatever process reads the whole file.
-           A multipart ETag is a digest of the part digests, so it is recorded as
-           the composite it is. */
-        sha256: (completed.ETag || "").replace(/\"/g, "") || null,
-        content_hash_algorithm: completed.ETag ? "s3-etag-md5" : null,
-        content_hash_scope: completed.ETag
-          ? ((completed.ETag || "").includes("-") ? "parts-composite" : "whole-file")
-          : null,
-        content_hash_recorded_at: completed.ETag ? new Date().toISOString() : null,
-        content_hash_recorded_by: completed.ETag ? "s3-complete-multipart" : null,
+        ...integrityFields(hexDigest((row.entity_metadata || {}).content_sha256), completed.ETag || null),
         original_filename: row.original_filename,
         mime_type: row.mime_type,
         byte_size: row.byte_size,
@@ -690,6 +724,67 @@ Deno.serve(async (request) => {
         p_user_agent: origin.userAgent,
       }).then(({ error }) => { if (error) console.error("Evidence purge audit event failed", error); });
       return json(request, { purged: true });
+    }
+
+    /* Recompute a digest from the stored bytes, so a claim by the uploader
+       becomes a fact about what is held. Deliberately on request rather than on
+       every upload: reading the file back would add its download time to every
+       completion, for a check almost nobody needs at that moment. */
+    if (operation === "verify_evidence_digest") {
+      if (fieldAssignment || captureSession || projectAccess) throw Object.assign(new Error("Guest links cannot verify stored files"), { status: 403 });
+      const recordId = text(body?.record_id);
+      if (!isUuid(recordId)) throw Object.assign(new Error("A valid evidence record is required"), { status: 400 });
+      const { data: record } = await admin.from("evidence_items")
+        .select("id, organization_id, property_id, original_filename, byte_size, storage_provider, storage_bucket, storage_path, sha256, content_hash_algorithm, content_hash_recorded_by, deleted_at, purged_at")
+        .eq("id", recordId)
+        .maybeSingle();
+      if (!record) throw Object.assign(new Error("Evidence not found"), { status: 404 });
+      if (!await membership(record.organization_id)) throw Object.assign(new Error("Not authorized for this file"), { status: 403 });
+      if (record.purged_at) throw Object.assign(new Error("This file was destroyed; there is nothing left to verify."), { status: 410 });
+      if (record.storage_provider !== "aws-s3") throw Object.assign(new Error("Only files in the S3 bucket can be verified here"), { status: 409 });
+      if (Number(record.byte_size) > SERVER_VERIFY_LIMIT) {
+        throw Object.assign(new Error(`This file is too large to verify in one request (${Math.round(Number(record.byte_size) / 1048576)} MB). Files this size are digested by the processing machine, which reads them end to end.`), { status: 413 });
+      }
+      const stored = await s3.send(new GetObjectCommand({ Bucket: record.storage_bucket || bucket, Key: record.storage_path }));
+      const bytes = new Uint8Array(await new Response(stored.Body as ReadableStream).arrayBuffer());
+      const computed = Array.from(new Uint8Array(await crypto.subtle.digest("SHA-256", bytes)))
+        .map((b) => b.toString(16).padStart(2, "0")).join("");
+      const claimed = record.content_hash_algorithm === "sha-256" ? record.sha256 : null;
+      /* A mismatch is the whole point of doing this, so it is reported rather
+         than quietly overwritten, and the record keeps saying what it said. */
+      const matches = claimed ? claimed === computed : null;
+      const verifiedAt = new Date().toISOString();
+      if (matches === false) {
+        await admin.rpc("record_audit_event", {
+          p_organization_id: record.organization_id,
+          p_property_id: record.property_id,
+          p_action: "evidence.integrity_mismatch",
+          p_entity_type: "evidence_items",
+          p_entity_id: record.id,
+          p_actor_id: userId || null,
+          p_actor_kind: "user",
+          p_detail: { original_filename: record.original_filename, recorded: claimed, computed, recorded_by: record.content_hash_recorded_by },
+        }).then(({ error }) => { if (error) console.error("Integrity mismatch audit event failed", error); });
+        return json(request, { verified: false, matches: false, recorded: claimed, computed }, 409);
+      }
+      await admin.from("evidence_items").update({
+        sha256: computed,
+        content_hash_algorithm: "sha-256",
+        content_hash_scope: "whole-file",
+        content_hash_recorded_at: verifiedAt,
+        content_hash_recorded_by: "server-verified",
+      }).eq("id", record.id);
+      await admin.rpc("record_audit_event", {
+        p_organization_id: record.organization_id,
+        p_property_id: record.property_id,
+        p_action: "evidence.integrity_verified",
+        p_entity_type: "evidence_items",
+        p_entity_id: record.id,
+        p_actor_id: userId || null,
+        p_actor_kind: "user",
+        p_detail: { original_filename: record.original_filename, sha256: computed, previously_claimed: matches === true },
+      }).then(({ error }) => { if (error) console.error("Integrity verification audit event failed", error); });
+      return json(request, { verified: true, matches, sha256: computed });
     }
 
     /* Undo. The reason soft deletion is worth having at all. */

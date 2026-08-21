@@ -41,6 +41,7 @@ export async function signedObjectReadUrl(
 
 export {
   AbortMultipartUploadCommand,
+  GetObjectCommand,
   CompleteMultipartUploadCommand,
   CreateMultipartUploadCommand,
   DeleteObjectCommand,

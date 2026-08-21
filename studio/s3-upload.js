@@ -93,6 +93,30 @@
     throw lastError || new Error("Upload part failed");
   }
 
+  /* A real digest of the whole file, for files small enough to read twice on a
+     phone. Photos and documents — the great majority of evidence — fall well
+     under this; a 40 GB camera original does not, and gets its digest later
+     from the stitching machine, which has to read all of it anyway.
+
+     Web Crypto has no incremental digest, so this reads the file into one
+     buffer. 64 MiB is chosen to stay comfortably inside what a mid-range phone
+     will allocate without the tab being killed mid-upload. */
+  const WHOLE_FILE_HASH_LIMIT = 64 * 1024 * 1024;
+
+  async function wholeFileDigest(file) {
+    if (!file || file.size > WHOLE_FILE_HASH_LIMIT) return null;
+    if (!window.crypto?.subtle || !file.arrayBuffer) return null;
+    try {
+      const digest = await window.crypto.subtle.digest("SHA-256", await file.arrayBuffer());
+      return Array.from(new Uint8Array(digest)).map((b) => b.toString(16).padStart(2, "0")).join("");
+    } catch (error) {
+      /* Never let integrity metadata cost somebody their upload. Without it the
+         record simply says no whole-file digest was taken, which is true. */
+      console.warn("Could not compute a file digest; the upload continues without one", error);
+      return null;
+    }
+  }
+
   async function upload(options) {
     const {
       client, entityType, organizationId, propertyId, spaceId = null,
@@ -132,7 +156,7 @@
         property_id: propertyId,
         space_id: spaceId,
         file: { name: file.name, type: file.type || "application/octet-stream", size: file.size, last_modified: file.lastModified || null },
-        metadata,
+        metadata: { ...metadata, content_sha256: await wholeFileDigest(file) },
       }));
       saveSession(storageKey, session.session_id);
     }

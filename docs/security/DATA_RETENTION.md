@@ -66,11 +66,23 @@ and written here.** If it is on, a purge that supplies a version id removes one
 version and earlier ones remain; if it is off, a purge is final. The code is
 correct either way; the recovery story is not the same, so the answer matters.
 
-**What happens if someone deletes a project.** `properties` cascades to spaces,
-evidence rows and jobs. There is no soft delete at the project level — only at
-the evidence level. Deleting a project is therefore still a destructive act, and
-it is the largest remaining gap in this page. Recovery today would mean a
-database restore. **Planned:** the same `deleted_at` treatment for `properties`.
+**What happens if someone deletes a project.** Nothing, because no client can.
+There is no delete policy on `properties` at all, so a project cannot be removed
+from a browser by anyone in any role — which matters, because until this was
+fixed a *contributor* could delete a whole project with one PostgREST call,
+cascading to every space, evidence row and job inside it. The Studio never
+offered that button; the policy offered it anyway.
+
+Removing a project now sets `deleted_at`. Everything inside it stays exactly
+where it is, the entry records how much was inside at that moment, and
+`restore_project` brings it back whole.
+
+**And a space that still holds evidence** cannot be deleted either. That rule
+used to live in the Studio's JavaScript, which is the caller's to change; it is
+now a trigger, and it names the count in the refusal. Deleting such a space would
+have set every `space_id` to null — the files would survive but stop belonging
+anywhere, which for a record built on "which room is this?" is its own kind of
+loss.
 
 Note that the audit trail resists this: `audit_events` refuses to be deleted,
 including by cascade, so removing an organization outright will fail with a
