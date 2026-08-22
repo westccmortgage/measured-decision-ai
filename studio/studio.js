@@ -2711,7 +2711,13 @@ function showFocusStage(name) {
      a dead screen indistinguishable from a hang. Say what is actually true:
      nothing is running, and here is the way forward. */
   if (focusStage === "process" && !focusProcessingRows.length) {
-    renderFocusProcessing(0, stitchSummary().active.length ? stitchLine() : "Idle");
+    /* The meter read 0% directly above a line saying 18%. The progress of the
+       thing actually running is the progress this screen is about. */
+    const stitch = stitchSummary();
+    renderFocusProcessing(
+      stitch.running.length ? stitchProgressPercent(stitch) : 0,
+      stitch.active.length ? stitchLine() : "Idle",
+    );
     $("#focus-view-results").disabled = false;
     $("#focus-view-results").textContent = "Open the record";
   }
@@ -4036,6 +4042,16 @@ async function analyzeFocusRoom(room, onStatus, options = {}) {
    A person watching "AI is reviewing Family" was told, in the largest text on
    the screen, that they were waiting for the 360 machine. Two true sentences
    about two different things, one of them answering a question nobody asked. */
+/* How far the machine is through what it is doing. Several captures can be in
+   flight on one machine, so this is the mean of what is running — one number
+   for one meter, and never a number invented for a job with no progress yet. */
+function stitchProgressPercent(summary) {
+  const running = (summary || stitchSummary()).running;
+  if (!running.length) return 0;
+  const total = running.reduce((sum, job) => sum + (Number(job.progress) || 0), 0);
+  return Math.round(total / running.length);
+}
+
 function focusProcessingHeadline() {
   const active = focusProcessingRows.filter((row) => row.state === "queued" || row.state === "running");
   if (active.length) {
@@ -4052,7 +4068,21 @@ function focusProcessingHeadline() {
       ? { title: "Some spaces could not be read", copy: "The evidence is untouched and can be retried." }
       : { title: "Done", copy: "The record has been updated with what the AI could establish." };
   }
-  if (stitchSummary().active.length) {
+  const stitch = stitchSummary();
+  /* Working and waiting are not the same screen. Saying "waiting for the 360
+     machine" while the machine is eighteen per cent through a capture describes
+     the queue instead of the work, and reads as a stall to somebody who is in
+     fact three minutes from a result. */
+  if (stitch.running.length) {
+    const more = stitch.active.length > stitch.running.length
+      ? ` ${stitch.active.length - stitch.running.length} more queued behind it.`
+      : "";
+    return {
+      title: "The 360 machine is stitching",
+      copy: `It has the capture and is working on it.${more} This page keeps itself up to date — you can close it and come back.`,
+    };
+  }
+  if (stitch.active.length) {
     return {
       title: "Waiting for the 360 machine",
       copy: "Captures are queued for stitching. Nothing runs in this browser — the machine picks the queue up when it starts, and Results updates on its own.",
