@@ -265,7 +265,17 @@ progress::-moz-progress-bar { background: linear-gradient(90deg, #32bacd, #79e1b
 .focus-processing-orbit i:nth-child(2) { right: 1px; top: 74px; background: var(--green); }
 .focus-processing-orbit i:nth-child(3) { bottom: 12px; left: 42px; }
 @keyframes focus-spin { to { transform: rotate(360deg); } }
-.focus-processing-status { min-height: 24px; margin: 5px 0 24px; color: #91a7b9; }
+.focus-processing-status { min-height: 24px; margin: 5px 0 6px; color: #91a7b9; }
+/* The 360 machine's own words, under whatever else is running. Two things can
+   be in flight at once — an AI review of one room and the machine stitching
+   another — and each needs its own line rather than one of them silently
+   overwriting the headline of the other. */
+.focus-processing-machine {
+  margin: 0 0 24px;
+  color: #6f8797;
+  font-size: 0.92rem;
+  line-height: 1.5;
+}
 .focus-result-metrics {
   display: grid;
   grid-template-columns: repeat(3, minmax(0, 1fr));

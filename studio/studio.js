@@ -2711,17 +2711,7 @@ function showFocusStage(name) {
      a dead screen indistinguishable from a hang. Say what is actually true:
      nothing is running, and here is the way forward. */
   if (focusStage === "process" && !focusProcessingRows.length) {
-    if (stitchSummary().active.length) {
-      $("#focus-processing-title").textContent = "Waiting for the 360 machine";
-      $("#focus-processing-copy").textContent =
-        "Captures are queued for stitching. Nothing runs in this browser — the machine picks the queue up when it starts, and Results updates on its own.";
-      renderFocusProcessing(0, stitchLine());
-    } else {
-      $("#focus-processing-title").textContent = "Nothing is processing right now";
-      $("#focus-processing-copy").textContent =
-        "This screen fills in when an AI review or a 360 stitch is running.";
-      renderFocusProcessing(0, "Idle");
-    }
+    renderFocusProcessing(0, stitchSummary().active.length ? stitchLine() : "Idle");
     $("#focus-view-results").disabled = false;
     $("#focus-view-results").textContent = "Open the record";
   }
@@ -3566,8 +3556,10 @@ async function runFocusRoomAnalysis(room) {
   room.analysis = null;
   focusProcessingComplete = false;
   closeFocusSheet(false);
-  showFocusStage("process");
+  /* Rows first, then the screen: showFocusStage reads them to decide what the
+     screen is about, and an empty list means "nothing is running". */
   focusProcessingRows = [{ roomId: room.id, name: room.name, state: "queued", detail: "Queued" }];
+  showFocusStage("process");
   renderFocusProcessing(10, "Preparing the evidence…");
   try {
     await analyzeFocusRoom(room, (message) => {
@@ -4037,11 +4029,59 @@ async function analyzeFocusRoom(room, onStatus, options = {}) {
   }
 }
 
+/* What this screen is about, decided in one place.
+
+   It used to be set inside showFocusStage, which runs *before* the rows for a
+   new run exist — so starting an AI review left the previous headline standing.
+   A person watching "AI is reviewing Family" was told, in the largest text on
+   the screen, that they were waiting for the 360 machine. Two true sentences
+   about two different things, one of them answering a question nobody asked. */
+function focusProcessingHeadline() {
+  const active = focusProcessingRows.filter((row) => row.state === "queued" || row.state === "running");
+  if (active.length) {
+    const name = active[0].name || "this space";
+    const more = active.length > 1 ? ` (+${active.length - 1} more)` : "";
+    return {
+      title: `Reading ${name}${more}`,
+      copy: "The AI is looking at the evidence in this space. It reads what is there and never fills in what is not.",
+    };
+  }
+  if (focusProcessingRows.length) {
+    const failed = focusProcessingRows.filter((row) => row.state === "failed");
+    return failed.length
+      ? { title: "Some spaces could not be read", copy: "The evidence is untouched and can be retried." }
+      : { title: "Done", copy: "The record has been updated with what the AI could establish." };
+  }
+  if (stitchSummary().active.length) {
+    return {
+      title: "Waiting for the 360 machine",
+      copy: "Captures are queued for stitching. Nothing runs in this browser — the machine picks the queue up when it starts, and Results updates on its own.",
+    };
+  }
+  return {
+    title: "Nothing is processing right now",
+    copy: "This screen fills in when an AI review or a 360 stitch is running.",
+  };
+}
+
 function renderFocusProcessing(percent, message) {
   const progress = $("#focus-processing-progress");
   progress.value = Math.max(0, Math.min(100, percent));
   $("#focus-processing-percent").textContent = `${Math.round(progress.value)}%`;
   $("#focus-processing-status").textContent = message;
+  /* Re-derived on every render, so it cannot go stale behind a run that started
+     after it was written. */
+  const headline = focusProcessingHeadline();
+  $("#focus-processing-title").textContent = headline.title;
+  $("#focus-processing-copy").textContent = headline.copy;
+  /* The machine keeps its own line whatever else is on screen — while the AI
+     reads one room, the person waiting on a stitch can still see it working. */
+  const machine = $("#focus-processing-machine");
+  if (machine) {
+    const line = focusProcessingRows.length ? stitchLine() : "";
+    machine.textContent = line;
+    machine.hidden = !line;
+  }
   const list = $("#focus-processing-list");
   list.innerHTML = focusProcessingRows
     .map((row, index) => {
