@@ -226,3 +226,30 @@ aside{display:none}
 .capture-session-row{grid-template-columns:1fr auto}
 .capture-session-row>div:last-child{grid-column:1/-1}
 }
+
+/* ---------------------------------------------------------------- phone
+   Mobile-first is a product rule, and this page was 106px too wide on a
+   430px screen: two flex rows that could not wrap, and a sidebar pinned
+   beside content that had nowhere left to go. A reviewer clearing field
+   submissions is exactly the person doing it on a phone. */
+@media (max-width: 760px) {
+  header { height: auto; position: static; grid-template-columns: 1fr; gap: 10px; padding: 14px 16px; }
+  header > div { justify-self: stretch; flex-wrap: wrap; }
+  .secure { display: none; }
+
+  aside { position: static; inset: auto; width: 100%; padding: 12px 16px; border-right: 0; border-bottom: 1px solid var(--line); }
+  nav { grid-auto-flow: column; grid-auto-columns: max-content; overflow-x: auto; gap: 8px; }
+  nav a { min-height: 38px; white-space: nowrap; }
+
+  main { margin-left: 0; padding: 18px 16px 48px; width: 100%; }
+  .hero { flex-direction: column; align-items: stretch; gap: 14px; }
+
+  /* The queue's title sits beside a filter and a Refresh button; on a phone
+     there is no room for both on one line, and a select that refuses to shrink
+     takes the page with it. */
+  .toolbar { flex-wrap: wrap; gap: 12px; }
+  .toolbar > div { min-width: 0; flex: 1 1 100%; display: flex; gap: 8px; }
+  .toolbar select { min-width: 0; flex: 1 1 auto; }
+
+  table, .queue { display: block; overflow-x: auto; }
+}

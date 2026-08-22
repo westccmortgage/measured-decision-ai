@@ -15,7 +15,11 @@
 }
 
 * { box-sizing: border-box; }
-html { min-width: 1100px; background: var(--bg); }
+/* This was min-width: 1100px, which made the page 2.5 times wider than a
+   phone and put the right-hand third of every screen out of reach. A minimum
+   width is a promise that the layout cannot adapt; the rules at the bottom of
+   this file are that promise withdrawn. */
+html { background: var(--bg); }
 body { margin: 0; min-height: 100vh; background: var(--bg); color: var(--text); font: 13px/1.5 Inter, system-ui, sans-serif; }
 button, input, select { font: inherit; }
 button, a { -webkit-tap-highlight-color: transparent; }
@@ -317,3 +321,41 @@ dialog form { padding: 0; }
   line-height: 1.55;
 }
 .assignment-blocker[hidden] { display: none; }
+
+/* ---------------------------------------------------------------- phone
+   Everything above assumes a desk. These rules let the same markup stand up on
+   a phone: the fixed sidebar becomes a scrolling strip of its own, every
+   two-and-three-column grid becomes one column, and the wide tables scroll
+   inside themselves rather than dragging the page sideways with them. */
+@media (max-width: 900px) {
+  .topbar { height: auto; position: static; grid-template-columns: 1fr; gap: 10px; padding: 12px 16px; }
+  .topbar-center { justify-self: start; }
+  .topbar-actions { justify-self: stretch; flex-wrap: wrap; }
+  .secure-pill { display: none; }
+
+  .sidebar { position: static; inset: auto; width: 100%; padding: 12px 16px; border-right: 0; border-bottom: 1px solid var(--line); }
+  .sidebar nav { grid-auto-flow: column; grid-auto-columns: max-content; overflow-x: auto; gap: 8px; }
+  .nav-item { white-space: nowrap; }
+
+  main, .shell, .content { margin-left: 0 !important; padding-left: 16px; padding-right: 16px; width: 100%; }
+
+  .workflow-grid,
+  .property-picker,
+  .metrics,
+  .baseline-summary,
+  .task-grid,
+  .task-dialog-grid,
+  .assignment-form,
+  .upload-fields { grid-template-columns: minmax(0, 1fr); }
+
+  /* Rows built from six fixed columns cannot become one column and stay
+     readable, so they keep their shape and scroll inside their own container. */
+  .document-list,
+  .phase-list,
+  .roadmap { overflow-x: auto; }
+  .document-row,
+  .phase-header { min-width: 560px; }
+
+  .hero-copy, .empty-state p, .assignment-heading p { max-width: 100%; }
+  dialog { width: calc(100vw - 24px); max-width: none; }
+}

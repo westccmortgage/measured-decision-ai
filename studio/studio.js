@@ -1895,9 +1895,6 @@ $("#forgot-password").addEventListener("click", async () => {
 $("#account-security").addEventListener("click", () =>
   openAccountSecurity("set"),
 );
-$("#property-account-security")?.addEventListener("click", () =>
-  openAccountSecurity("set"),
-);
 $("#close-account-security").addEventListener("click", () => {
   if (accountSecurityMode !== "recovery") {
     elements.accountSecurityDialog.close();
@@ -2643,8 +2640,13 @@ function renderAnalyzePickerNote() {
     return;
   }
   if (!visual.length) {
+    /* The same sentence the button would give, said before it is pressed.
+       This note kept its own generic wording — "holds nothing the AI can read,
+       add a 360 capture or photos" — for a room holding a complete 360 pair
+       waiting on the machine. Two places deciding the same thing, and the one a
+       person actually reads was the stale one. */
     note.className = "room-picker-note warn";
-    note.textContent = `${room.name} holds nothing the AI can read. Add a 360 capture or photos to it first.`;
+    note.textContent = analysisBlocker(room) || `${room.name} holds nothing the AI can read.`;
     run.disabled = true;
     return;
   }
