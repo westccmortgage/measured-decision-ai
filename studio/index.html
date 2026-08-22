@@ -929,8 +929,13 @@
         </div>
         <div class="property-form-grid focus-project-form-grid">
           <label class="wide">Project name<input id="profile-property-name" type="text" required placeholder="e.g. Hutton Place"></label>
+          <!-- Not asked for in the simple flow. The values are still read from
+               here, and studio.js supplies a default for each, so `required` on
+               a field nobody can see is a submit button that does nothing: the
+               browser refuses the form and cannot show the message, because the
+               control it wants to point at is not on the screen. -->
           <div hidden>
-          <label>Property type<select id="profile-property-type" required>
+          <label>Property type<select id="profile-property-type">
             <option value="single_family">Single-family residence</option>
             <option value="multifamily">Multifamily</option>
             <option value="commercial">Commercial building</option>
@@ -946,8 +951,8 @@
             <option value="occupied">Occupied / operating</option>
           </select></label>
           <label class="wide">Street address<input id="profile-street" type="text" placeholder="3001 Hutton Place"></label>
-          <label>City<input id="profile-city" type="text" required placeholder="Los Angeles"></label>
-          <label>State<input id="profile-state" type="text" required maxlength="30" placeholder="CA"></label>
+          <label>City<input id="profile-city" type="text" placeholder="Los Angeles"></label>
+          <label>State<input id="profile-state" type="text" maxlength="30" placeholder="CA"></label>
           <label>ZIP / postal code<input id="profile-postal" type="text" maxlength="20"></label>
           <label>Bedrooms<input id="profile-bedrooms" type="number" min="0" max="999" step="1"></label>
           <label>Bathrooms<input id="profile-bathrooms" type="number" min="0" max="999" step="0.5"></label>
