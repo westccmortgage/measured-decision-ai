@@ -2648,8 +2648,18 @@ function renderAnalyzePickerNote() {
     run.disabled = true;
     return;
   }
+  /* "1 file in Master Bedroom 205A" after uploading two of them reads as a lost
+     file. It was never a count of what is in the room — it is a count of what
+     the AI can read, and the two camera originals behind it became one stitched
+     capture. Say both numbers, so the arithmetic a person does in their head
+     comes out right. */
+  const originals = (room.evidence || []).filter(focusIsCameraOriginal)
+    .reduce((total, item) => total + focusSourceCount(item), 0);
+  const preserved = originals
+    ? ` · ${originals} camera original${originals === 1 ? "" : "s"} preserved behind ${originals === 1 ? "it" : "them"}`
+    : "";
   note.className = "room-picker-note";
-  note.textContent = `${visual.length} file${visual.length === 1 ? "" : "s"} in ${room.name}${
+  note.textContent = `${visual.length} capture${visual.length === 1 ? "" : "s"} the AI can read in ${room.name}${preserved}${
     room.analysis ? " · already read once, reading again replaces the interpretation" : ""
   }.`;
   run.disabled = false;
@@ -3132,16 +3142,38 @@ function openFieldOperations() {
   window.location.href = `operations/?property=${encodeURIComponent(cloud.propertyId)}`;
 }
 
+/* The capture "Open 360 view" opens, and the room it belongs to.
+
+   It used to be spatial[0] — whichever capture happened to sit first in
+   creation order across the whole project. With fourteen of them that is an
+   arbitrary room, and the button said nothing about which. Somebody who had
+   just uploaded a bedroom pressed it and stood in a bathroom captured nine days
+   earlier. The newest capture is the one somebody just made, so that is the one
+   this opens, and the button says which room before it is pressed. */
+/* Naming the room on the button is the difference between a promise and a
+   surprise: with fourteen captures in a project, "Open 360 view" does not say
+   where you are about to be standing. */
+function newestSpatialLabel() {
+  const newest = newestSpatial();
+  const room = newest?.room?.name;
+  return room ? `Open 360 view — ${room}` : "Open 360 view";
+}
+
+function newestSpatial() {
+  const spatial = focusEvidenceStats().spatial;
+  if (!spatial.length) return null;
+  const item = [...spatial].sort((a, b) => focusTimestamp(b) - focusTimestamp(a))[0];
+  return { item, room: rooms.find((candidate) => candidate.evidence.includes(item)) || null };
+}
+
 function openFirstSpatial() {
-  const stats = focusEvidenceStats();
-  const item = stats.spatial[0];
-  if (!item) {
+  const newest = newestSpatial();
+  if (!newest) {
     notify("This project has no playable 360 export yet. Upload an equirectangular MP4 to open the space.", 6000);
     showFocusStage("upload");
     return;
   }
-  const room = rooms.find((candidate) => candidate.evidence.includes(item));
-  openEvidenceViewer(item, room);
+  openEvidenceViewer(newest.item, newest.room);
 }
 
 /* ------------------------------------------------------------- Evidence viewer */
@@ -3755,7 +3787,7 @@ function renderFocusResults() {
     ? `<p class="focus-vr-note">${escapeText(stats.stitchLine)}. The camera originals are untouched.</p>`
     : "";
   if (stats.spatial.length) {
-    vrCard.innerHTML = `<header><h3>Spatial evidence</h3><span class="focus-vr-badge">VR-ready</span></header><p>${stats.spatial.length} capture${stats.spatial.length === 1 ? " is" : "s are"} playable as a full sphere. Open one here, or send the link to a headset for review in place.</p>${stitchNote}<div class="focus-vr-actions"><button class="focus-primary-action" type="button" data-vr-action="open">Open 360 view <span>&rarr;</span></button><button class="focus-secondary-action" type="button" data-vr-action="copy">Copy link for Vision Pro</button></div>`;
+    vrCard.innerHTML = `<header><h3>Spatial evidence</h3><span class="focus-vr-badge">VR-ready</span></header><p>${stats.spatial.length} capture${stats.spatial.length === 1 ? " is" : "s are"} playable as a full sphere. Open one here, or send the link to a headset for review in place.</p>${stitchNote}<div class="focus-vr-actions"><button class="focus-primary-action" type="button" data-vr-action="open">${escapeText(newestSpatialLabel())} <span>&rarr;</span></button><button class="focus-secondary-action" type="button" data-vr-action="copy">Copy link for Vision Pro</button></div>`;
   } else if (stats.paired360 || stats.waiting360) {
     const pairText = `${stats.paired360} paired 360 capture${stats.paired360 === 1 ? "" : "s"}`;
     const waitingText = stats.waiting360
