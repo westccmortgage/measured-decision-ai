@@ -2901,3 +2901,19 @@ dialog textarea { min-height:78px; resize:vertical; }
   line-height: 1.55;
   color: #6f8797;
 }
+
+/* A sentence that names the next step should be the next step. */
+.room-picker-link {
+  display: inline;
+  margin: 0;
+  padding: 0;
+  border: 0;
+  background: none;
+  color: var(--accent, #5bd8ce);
+  font: inherit;
+  font-weight: 600;
+  text-decoration: underline;
+  text-underline-offset: 3px;
+  cursor: pointer;
+}
+.room-picker-link:hover { color: #fff; }

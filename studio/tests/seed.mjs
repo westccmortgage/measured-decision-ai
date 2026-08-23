@@ -72,3 +72,27 @@ export const rows = {
 };
 
 export const seed = { rows };
+
+/* A project the moment it is created: no plan read, no rooms, no files.
+ *
+ * This is the first screen every new customer sees and it was never tested,
+ * which is exactly how a deadlock survived there — no file may be uploaded
+ * without a room, rooms come from the plan set, and the screen demanding a room
+ * never named where plans go. The walk that covers the seeded project above
+ * passed the whole time.
+ */
+export const emptyRows = {
+  organization_members: rows.organization_members,
+  properties: [{
+    id: PROPERTY, organization_id: ORG, name: "3001 Hutton",
+    address: {}, access_classification: "private",
+    created_at: "2026-08-23T07:00:00Z", deleted_at: null,
+  }],
+  spaces: [],
+  evidence_items: [],
+  capture_360_jobs: [],
+  worker_machine_runs: [],
+  analysis_jobs: [], ai_suggestions: [], suggestion_reviews: [],
+};
+
+export const emptySeed = { rows: emptyRows };

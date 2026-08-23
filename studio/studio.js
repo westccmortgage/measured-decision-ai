@@ -2668,14 +2668,28 @@ function renderAnalyzePickerNote() {
   run.textContent = room.analysis ? `Read ${room.name} again` : `Read ${room.name}`;
 }
 
+/* A PDF in a project with no rooms is almost certainly the drawings. Judged by
+   what it is rather than by what was intended, because the intent is not
+   knowable and the file type is. */
+function focusIsPlanDocument(file) {
+  const name = String(file?.name || "").toLowerCase();
+  return file?.type === "application/pdf" || name.endsWith(".pdf");
+}
+
 function renderUploadPickerNote() {
   const room = pickedRoom("upload");
   const note = $("#upload-room-note");
   const card = document.querySelector(".focus-upload-card");
   if (!note) return;
   if (!rooms.length) {
+    /* A brand-new project used to deadlock here: no file may be uploaded
+       without a room, rooms come from the plan set, and the plan set is
+       uploaded somewhere this screen never named. The sentence gave the right
+       answer and no way to act on it. */
     note.className = "room-picker-note warn";
-    note.textContent = "This project has no rooms yet. Upload the plan set first — the rooms come from it.";
+    note.innerHTML = `This project has no rooms yet, and rooms come from the plan set. Plans are read on their own screen — the drawings are not evidence about a room, they are what the rooms are taken from. <button type="button" class="room-picker-link" id="upload-open-plans">Upload the plan set &rarr;</button>`;
+    const toPlans = $("#upload-open-plans");
+    if (toPlans) toPlans.addEventListener("click", openProjectPlans);
   } else if (!room) {
     note.className = "room-picker-note warn";
     note.textContent = "Choose the room before adding files.";
@@ -2707,7 +2721,20 @@ async function ensureFocusDestination(file) {
     );
     if (paired) return paired;
   }
-  throw new Error("Choose the building and room before uploading — a file with no room cannot be answered for.");
+  /* A plan set dropped on the evidence screen is not a mistake worth scolding.
+     It is the right file at the wrong door, and the person needs the other door
+     rather than a rule. */
+  if (focusIsPlanDocument(file)) {
+    throw Object.assign(
+      new Error("This looks like a plan set. Plans are read on their own screen, and the rooms come from them — open Project plans and add it there."),
+      { openPlans: true },
+    );
+  }
+  throw new Error(
+    rooms.length
+      ? "Choose the building and room before uploading — a file with no room cannot be answered for."
+      : "This project has no rooms yet. Upload the plan set first: the rooms come from it, and evidence belongs to a room.",
+  );
 }
 
 function showFocusStage(name) {
@@ -4003,6 +4030,11 @@ async function uploadFocusEvidence(fileList) {
     $("#focus-upload-progress-title").textContent = "Upload needs attention";
     progressDetail.textContent = error.message || "The upload could not be completed.";
     notify(error.message || "Upload failed", 10000);
+    /* Where the file actually belongs, offered rather than described. */
+    if (error.openPlans || !rooms.length) {
+      progressDetail.innerHTML = `${escapeText(error.message || "The upload could not be completed.")} <button type="button" class="room-picker-link" id="upload-error-plans">Open Project plans &rarr;</button>`;
+      $("#upload-error-plans")?.addEventListener("click", openProjectPlans);
+    }
   } finally {
     focusUploadBusy = false;
     renderFocusStudio();
