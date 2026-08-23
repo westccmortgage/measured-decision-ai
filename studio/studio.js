@@ -2785,8 +2785,12 @@ function showFocusStage(name) {
     );
     const canOpen = Boolean(reachable[step]) && step !== focusStage;
     item.classList.toggle("reachable", canOpen);
-    item.setAttribute("role", canOpen ? "button" : "presentation");
-    item.tabIndex = canOpen ? 0 : -1;
+    /* A step that answers by explaining what is missing is still a control, so
+       it is announced and reachable by keyboard like any other. */
+    const answers = canOpen || (step !== focusStage && Boolean(stepIsNotReadyYet(step)));
+    item.classList.toggle("answers", answers && !canOpen);
+    item.setAttribute("role", answers ? "button" : "presentation");
+    item.tabIndex = answers ? 0 : -1;
   });
   window.scrollTo({ top: 0, behavior: "smooth" });
 }
@@ -3812,8 +3816,13 @@ function renderFocusResults() {
      here, beside the captures it concerns, and never as the project's next
      decision — a person reading the top of this screen is asking what to do
      about the property, not about our GPU. */
+  /* "The camera originals are untouched" was appended to every one of these
+     lines, including "Stitching now — 41%", where it reads as a contradiction:
+     the machine is plainly touching them. The promise being made is that we
+     never alter an original — stitching writes a new file beside it — so it is
+     now worded as the rule it is, and holds while the machine is working. */
   const stitchNote = stats.stitchLine
-    ? `<p class="focus-vr-note">${escapeText(stats.stitchLine)}. The camera originals are untouched.</p>`
+    ? `<p class="focus-vr-note">${escapeText(stats.stitchLine)}. Originals are never altered — a stitch writes a new file beside them.</p>`
     : "";
   if (stats.spatial.length) {
     vrCard.innerHTML = `<header><h3>Spatial evidence</h3><span class="focus-vr-badge">VR-ready</span></header><p>${stats.spatial.length} capture${stats.spatial.length === 1 ? " is" : "s are"} playable as a full sphere. Open one here, or send the link to a headset for review in place.</p>${stitchNote}<div class="focus-vr-actions"><button class="focus-primary-action" type="button" data-vr-action="open">${escapeText(newestSpatialLabel())} <span>&rarr;</span></button><button class="focus-secondary-action" type="button" data-vr-action="copy">Copy link for Vision Pro</button></div>`;
@@ -4311,10 +4320,39 @@ $("#focus-view-results").addEventListener("click", () => {
 $("#focus-add-more").addEventListener("click", () => showFocusStage("upload"));
 $("#focus-open-report").addEventListener("click", openProjectReport);
 $("#focus-upload-more").addEventListener("click", () => $("#focus-evidence-files").click());
+/* A step that cannot be opened yet still answers when pressed.
+   It looks like the steps beside it, and on a phone there is no cursor and no
+   hover to tell them apart, so a silent tap reads as a broken button — "кнопка
+   никуда не ведёт". Pressing it now says what is missing and goes to the stage
+   where that is supplied. */
+function stepIsNotReadyYet(step) {
+  if (step === "process") {
+    return {
+      go: "upload",
+      say: "The AI review has not run yet. Add evidence to a room, then press Process with AI.",
+    };
+  }
+  if (step === "results") {
+    return {
+      go: "upload",
+      say: "There is nothing to show yet, because no evidence has been added to this project.",
+    };
+  }
+  return null;
+}
+
 document.querySelectorAll("[data-focus-step]").forEach((item) => {
   const open = () => {
-    if (!item.classList.contains("reachable")) return;
-    showFocusStage(item.dataset.focusStep);
+    const step = item.dataset.focusStep;
+    if (!item.classList.contains("reachable")) {
+      if (step === focusStage) return;
+      const blocked = stepIsNotReadyYet(step);
+      if (!blocked) return;
+      notify(blocked.say);
+      showFocusStage(blocked.go);
+      return;
+    }
+    showFocusStage(step);
   };
   item.addEventListener("click", open);
   item.addEventListener("keydown", (event) => {

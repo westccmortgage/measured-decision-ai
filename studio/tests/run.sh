@@ -29,6 +29,7 @@ run "the two doors are told apart"    studio/tests/two-doors.mjs
 run "every screen, pressed"           studio/tests/screen-audit.mjs
 run "the whole path, walked"          studio/tests/e2e-studio.mjs
 run "a project with nothing in it"   studio/tests/e2e-empty-project.mjs
+run "the chain, state by state"       studio/tests/e2e-chain.mjs
 
 printf "\n%s\n" "────────────────────────────────────────────"
 if [ "$fail" = "0" ]; then echo "ALL CHECKS PASS"; else echo "SOMETHING FAILED — see above"; fi

@@ -2917,3 +2917,9 @@ dialog textarea { min-height:78px; resize:vertical; }
   cursor: pointer;
 }
 .room-picker-link:hover { color: #fff; }
+
+/* A roadmap step that cannot be opened yet still answers when pressed, so it
+   behaves like something pressable rather than like dead paint. */
+.focus-roadmap li.answers { cursor: pointer; }
+.focus-roadmap li.answers:hover,
+.focus-roadmap li.answers:focus-visible { background: rgba(255, 255, 255, 0.04); outline: none; }
