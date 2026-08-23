@@ -19,6 +19,7 @@ run() {
   fi
 }
 
+run "cached files match the markup"   studio/tests/asset-versions.mjs
 run "what the AI refusal says"        studio/tests/analysis-blocker.mjs
 run "what the processing screen says" studio/tests/processing-headline.mjs
 run "what the room count says"        studio/tests/room-picker-note.mjs
