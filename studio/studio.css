@@ -2873,3 +2873,31 @@ dialog textarea { min-height:78px; resize:vertical; }
 .simple-next p { margin: 0; color: #9fb4c4; font-size: 14px; line-height: 1.55; }
 .simple-next .primary-button { width: 100%; }
 @media (min-width: 620px) { .simple-next .primary-button { width: auto; } }
+
+/* The front door lists two kinds of project. They behave completely differently
+   and used to be indistinguishable, so each group now says what it is and what
+   opening it gives you. */
+.simple-recent-group { margin-bottom: 18px; }
+.simple-recent-group:last-child { margin-bottom: 0; }
+.simple-recent-kind {
+  margin: 0 0 8px;
+  font-size: 11px;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: #6f8797;
+  display: grid;
+  gap: 3px;
+}
+.simple-recent-kind small {
+  font-size: 12px;
+  letter-spacing: 0;
+  text-transform: none;
+  color: #55697a;
+}
+.simple-intake-difference {
+  margin: 14px 0 0;
+  max-width: 52ch;
+  font-size: 13px;
+  line-height: 1.55;
+  color: #6f8797;
+}
