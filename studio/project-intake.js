@@ -5,7 +5,23 @@ const esc=v=>String(v||"").replaceAll("&","&amp;").replaceAll("<","&lt;").replac
 function code(v){const x=String(v||"").toUpperCase().replace(/[^A-Z2-9]/g,"").slice(0,12);return[x.slice(0,4),x.slice(4,8),x.slice(8)].filter(Boolean).join("-")}
 function recent(){try{const x=JSON.parse(localStorage.getItem(KEY)||"[]");return Array.isArray(x)?x.filter(v=>v?.code&&v?.name).slice(0,12):[]}catch{return[]}}
 function save(p,x){localStorage.setItem(KEY,JSON.stringify([{id:p.id,name:p.name,code:code(x),openedAt:Date.now()},...recent().filter(v=>v.id!==p.id)].slice(0,12)));renderRecent()}
-function renderRecent(){const workspace=(window.MDAIRecentProjects?.list()||[]).slice(0,6),codes=recent();const rows=[...workspace.map(p=>`<button type="button" data-simple-property="${esc(p.id)}"><strong>${esc(p.name)}</strong><span>Open →</span></button>`),...codes.map(p=>`<button type="button" data-simple-code="${esc(p.code)}"><strong>${esc(p.name)}</strong><span>${esc(p.code)} →</span></button>`)];$("#simple-recent").hidden=!rows.length;$("#simple-intake-landing").classList.toggle("has-recent",rows.length>0);$("#simple-recent-projects").innerHTML=rows.join("");document.querySelectorAll("[data-simple-code]").forEach(b=>b.onclick=()=>open(b.dataset.simpleCode));document.querySelectorAll("[data-simple-property]").forEach(b=>b.onclick=()=>{window.history.replaceState({},"",`./?property=${encodeURIComponent(b.dataset.simpleProperty)}`);signIn()})}
+/* Two different products used to share one undifferentiated list. A workspace
+   project and a code project looked alike — a name and an arrow — so opening one
+   led to rooms and the AI review while opening the other led to a drop box, and
+   nothing on screen had said which was which. Somebody signed out, saw both
+   projects, opened the wrong one, signed in, and watched it disappear.
+
+   They are separated and labelled now, because they are not the same thing and
+   never were. */
+function renderRecent(){const workspace=(window.MDAIRecentProjects?.list()||[]).slice(0,6),codes=recent();
+ const group=(title,note,items)=>items.length?`<div class="simple-recent-group"><p class="simple-recent-kind">${esc(title)}<small>${esc(note)}</small></p>${items.join("")}</div>`:"";
+ const rows=[
+  group("In your workspace","Rooms, the AI review and the client report",
+   workspace.map(p=>`<button type="button" data-simple-property="${esc(p.id)}"><strong>${esc(p.name)}</strong><span>Sign in to open →</span></button>`)),
+  group("Files only","Opened with a code. Evidence is stored; nothing is analysed",
+   codes.map(p=>`<button type="button" data-simple-code="${esc(p.code)}"><strong>${esc(p.name)}</strong><span>${esc(p.code)} →</span></button>`)),
+ ].filter(Boolean);
+ $("#simple-recent").hidden=!rows.length;$("#simple-intake-landing").classList.toggle("has-recent",rows.length>0);$("#simple-recent-projects").innerHTML=rows.join("");document.querySelectorAll("[data-simple-code]").forEach(b=>b.onclick=()=>open(b.dataset.simpleCode));document.querySelectorAll("[data-simple-property]").forEach(b=>b.onclick=()=>{window.history.replaceState({},"",`./?property=${encodeURIComponent(b.dataset.simpleProperty)}`);signIn()})}
 async function api(action,extra={}){const r=await fetch(`${c.supabaseUrl}/functions/v1/project-intake`,{method:"POST",headers:{apikey:c.supabasePublishableKey,Authorization:`Bearer ${c.supabasePublishableKey}`,"Content-Type":"application/json"},body:JSON.stringify({action,...extra})}),p=await r.json().catch(()=>({}));if(!r.ok)throw new Error(p.error||"Project service is unavailable");return p}
 function enter(p){state.project=p.project;state.scope=p.upload_scope;state.code=code(p.project_code);state.count=Number(p.evidence_count||0);save(state.project,state.code);$("#simple-intake-landing").hidden=true;$("#simple-project").hidden=false;$("#simple-project-name").textContent=state.project.name;$("#simple-project-code").textContent=state.code;$("#simple-project-state").textContent=state.count?`${state.count} evidence file${state.count===1?"":"s"} already stored`:"Ready for evidence";$("#simple-upload-list").innerHTML="";$("#simple-upload-complete").hidden=true;$("#simple-add-more").hidden=true;$("#simple-add-evidence").hidden=false;next()}
 /* Where the files went and where the rest of the product is.
