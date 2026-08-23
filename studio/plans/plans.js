@@ -36,6 +36,8 @@ const state = {
   analysisProgress: 0,
   analysisStage: 0,
   activeAnalysisJob: null,
+  analysisServerReported: false,
+  analysisDetail: "",
   analysisPolling: false,
   analysisOutcome: null,
 };
@@ -154,7 +156,8 @@ function renderAnalysisProgress(percent, stageIndex, options = {}) {
   elements.analysisProgressFill.style.width = `${bounded}%`;
   elements.analysisProgressTrack.setAttribute("aria-valuenow", String(bounded));
   elements.analysisStageTitle.textContent = options.title || stage.title;
-  elements.analysisStageDetail.textContent = options.detail || stage.detail;
+  elements.analysisStageDetail.textContent = options.detail || state.analysisDetail || stage.detail;
+  if (options.detail) state.analysisDetail = options.detail;
   elements.analysisElapsed.textContent = options.elapsedLabel || (state.analysisStartedAt
     ? formatElapsed((Date.now() - state.analysisStartedAt) / 1000)
     : "Saved");
@@ -169,20 +172,46 @@ function renderAnalysisProgress(percent, stageIndex, options = {}) {
       : `AI analysis · ${bounded}% estimated`;
 }
 
+/* The clock is a stand-in, used only until the job itself reports. A meter that
+   keeps climbing on a timer after the server has given a real number is not
+   progress, it is an animation, and this product does not show invented
+   progress. Once a real report arrives the clock stops and the job drives the
+   meter. */
 function updateAnalysisProgress() {
+  /* Once the job itself has reported, the clock keeps the elapsed time honest
+     but is not allowed to move the meter. */
+  if (state.analysisServerReported) {
+    renderAnalysisProgress(state.analysisProgress, state.analysisStage);
+    return;
+  }
   const elapsedSeconds = (Date.now() - state.analysisStartedAt) / 1000;
   const snapshot = progressSnapshot(elapsedSeconds);
   renderAnalysisProgress(Math.max(state.analysisProgress, snapshot.percent), Math.max(state.analysisStage, snapshot.stage));
 }
 
-function startAnalysisProgress() {
+/* `from` is the job as the record already knows it. Reopening a page while a
+   job is running used to restart the meter at zero and climb again on the
+   clock: a job the server had at 60% showed 6%, and the number a person was
+   watching went backwards. Whatever the job last reported is where the meter
+   starts. */
+function startAnalysisProgress(from = null) {
   window.clearInterval(state.analysisProgressTimer);
-  state.analysisStartedAt = Date.now();
-  state.analysisProgress = 0;
-  state.analysisStage = 0;
+  /* A job that has been running for six minutes says so. Reopening the page
+     used to reset the elapsed clock to 0:00 as well as the meter. */
+  const began = Date.parse(from?.started_at || from?.created_at || "");
+  state.analysisStartedAt = Number.isFinite(began) ? began : Date.now();
+  const reported = Number(from?.progress_percent);
+  state.analysisServerReported = Number.isFinite(reported) && reported > 0;
+  state.analysisProgress = state.analysisServerReported ? Math.min(100, reported) : 0;
+  state.analysisStage = from?.progress_stage ? analysisStageIndex(from.progress_stage) : 0;
   state.analysisOutcome = null;
+  state.analysisDetail = "";
   elements.analysisProgress.className = "analysis-progress";
-  updateAnalysisProgress();
+  if (state.analysisServerReported) {
+    renderAnalysisProgress(state.analysisProgress, state.analysisStage, { detail: serverProgressDetail(from?.progress_stage) });
+  } else {
+    updateAnalysisProgress();
+  }
   state.analysisProgressTimer = window.setInterval(updateAnalysisProgress, 500);
 }
 
@@ -229,6 +258,7 @@ function serverProgressDetail(stage = "") {
 }
 
 function applyServerAnalysisProgress(job) {
+  if (Number.isFinite(Number(job?.progress_percent))) state.analysisServerReported = true;
   const stage = job?.progress_stage || "reading_documents";
   const percent = Math.max(state.analysisProgress, Number(job?.progress_percent) || 0);
   renderAnalysisProgress(percent, Math.max(state.analysisStage, analysisStageIndex(stage)), { detail: serverProgressDetail(stage) });
@@ -964,7 +994,7 @@ async function savePendingFiles() {
 async function monitorAnalysisJob(jobId, options = {}) {
   if (!jobId || state.analysisPolling) return;
   state.analysisPolling = true;
-  if (!state.analysisStartedAt || options.resumed) startAnalysisProgress();
+  if (!state.analysisStartedAt || options.resumed) startAnalysisProgress(options.resumed ? state.activeAnalysisJob : null);
   setBusy(true, options.resumed ? "Resuming saved plan analysis…" : "AI is reading the plan set…");
   setMessage(options.resumed
     ? "A saved analysis is still active. Studio is reconnecting to it now."

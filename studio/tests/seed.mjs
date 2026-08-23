@@ -96,3 +96,100 @@ export const emptyRows = {
 };
 
 export const emptySeed = { rows: emptyRows };
+
+/* The chain, state by state.
+ *
+ * A project does not have two states — it has a sequence, and almost every bug
+ * a person has hit lived in a state between two that were tested. These are
+ * built from the same pieces as the worlds above so that a schema change breaks
+ * them together rather than leaving one quietly lying.
+ *
+ * Column names here are the real ones. An earlier draft of this file invented
+ * `detail` and `updated_at` on a machine run, and the screen correctly said
+ * nothing about a machine it had no readable word from — which looked exactly
+ * like a bug in the screen. The seed is part of the evidence; it has to be as
+ * true as the code.
+ */
+const clone = (value) => JSON.parse(JSON.stringify(value));
+
+export const planDocument = (extra = {}) => ({
+  id: "doc-1", organization_id: ORG, property_id: PROPERTY,
+  storage_path: `organizations/${ORG}/properties/${PROPERTY}/documents/plans.pdf`,
+  storage_provider: "aws-s3", storage_bucket: "bucket", object_version_id: null,
+  original_filename: "Blueprints-3001-Hutton.pdf", mime_type: "application/pdf",
+  byte_size: 900000, document_type: "plan_set", revision_label: "Rev A",
+  issued_at: "2026-08-01", status: "uploaded", processing_error: null,
+  created_at: "2026-08-23T07:10:00Z", ...extra,
+});
+
+/* Plans are in the project and nothing has read them yet. */
+export const plansUploadedRows = () => {
+  const r = clone(emptyRows);
+  r.project_documents = [planDocument()];
+  return r;
+};
+
+/* The plan set is being read right now, and the job has already reported 62%.
+   A page opened at this moment must show 62, not restart the meter at zero. */
+export const plansReadingRows = () => {
+  const r = clone(emptyRows);
+  r.project_documents = [planDocument({ status: "processing" })];
+  r.plan_analysis_jobs = [{
+    id: "pj-1", organization_id: ORG, property_id: PROPERTY, state: "processing",
+    baseline_id: null, progress_stage: "reading_documents", progress_percent: 62,
+    error_code: null, error_message: null,
+    started_at: "2026-08-23T07:12:00Z", created_at: "2026-08-23T07:12:00Z",
+  }];
+  return r;
+};
+
+/* The plans were read: rooms exist, and not one of them holds anything. */
+export const roomsNoEvidenceRows = () => {
+  const r = clone(emptyRows);
+  r.project_documents = [planDocument({ status: "analyzed" })];
+  r.document_baselines = [{
+    id: "bl-1", organization_id: ORG, property_id: PROPERTY, version: 1, state: "approved",
+    source_document_ids: ["doc-1"], project_summary: "Single family remodel",
+    analysis: {}, gaps: [], model: "test", created_at: "2026-08-23T07:20:00Z",
+    approved_at: "2026-08-23T07:25:00Z",
+  }];
+  r.spaces = clone(rows.spaces);
+  return r;
+};
+
+/* The 360 machine is awake and working, this minute. */
+export const machineWorkingRows = () => {
+  const r = clone(rows);
+  const now = new Date().toISOString();
+  r.worker_machine_runs = [{
+    id: "run-1", instance_id: "i-0abc", region: "us-east-2", worker_version: "2026-08-21.3",
+    state: "working", step: "Stitching capture 3 of 9", exit_code: null, message: null,
+    log_url: null, jobs_claimed: 9, jobs_completed: 2, jobs_failed: 0,
+    started_at: now, last_seen_at: now, finished_at: null,
+  }];
+  r.capture_360_jobs[0].state = "processing";
+  r.capture_360_jobs[0].progress = 41;
+  r.capture_360_jobs[0].stage = "Stitching frames";
+  return r;
+};
+
+/* An AI review has produced an interpretation nobody has confirmed. */
+export const aiReviewedRows = () => {
+  const r = clone(rows);
+  r.analysis_jobs = [{
+    id: "aj-1", organization_id: ORG, property_id: PROPERTY, space_id: "space-viewable",
+    state: "succeeded", profile: "room_interpretation", evidence_ids: ["ev-master"],
+    error_code: null, created_at: "2026-08-22T10:00:00Z",
+  }];
+  r.ai_suggestions = [{
+    id: "sg-1", organization_id: ORG, property_id: PROPERTY, space_id: "space-viewable",
+    suggestion_type: "room_interpretation", evidence_ids: ["ev-master"],
+    created_at: "2026-08-22T10:05:00Z",
+    body: {
+      summary: "Framing complete, drywall not started.",
+      observations: ["Studs exposed on the north wall"],
+      questions: ["Was the window replaced?"],
+    },
+  }];
+  return r;
+};
