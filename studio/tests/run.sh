@@ -23,6 +23,7 @@ run "what the AI refusal says"        studio/tests/analysis-blocker.mjs
 run "what the processing screen says" studio/tests/processing-headline.mjs
 run "what the room count says"        studio/tests/room-picker-note.mjs
 run "the create-project form"         studio/tests/create-project-form.mjs
+run "the drop box has a way onward"   studio/tests/intake-dead-end.mjs
 run "every screen, pressed"           studio/tests/screen-audit.mjs
 run "the whole path, walked"          studio/tests/e2e-studio.mjs
 

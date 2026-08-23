@@ -2855,3 +2855,21 @@ dialog textarea { min-height:78px; resize:vertical; }
 .room-picker-note.warn { color: #e8b070; }
 .room-picker > .focus-primary-action { margin-top: 14px; width: 100%; }
 @media (max-width: 520px) { .room-picker-fields { grid-template-columns: 1fr; } }
+
+/* The quick drop box used to end here: files stored, a code printed, and no
+   sentence anywhere saying what had happened to them or where the rest of the
+   product was. Somebody uploaded plans and two 360 captures and was left
+   looking at a page with one button on it. */
+.simple-next {
+  margin: 26px 0 0;
+  padding: 18px 20px;
+  border: 1px solid rgba(72, 211, 232, 0.22);
+  border-radius: 12px;
+  background: rgba(72, 211, 232, 0.05);
+  display: grid;
+  gap: 14px;
+  justify-items: start;
+}
+.simple-next p { margin: 0; color: #9fb4c4; font-size: 14px; line-height: 1.55; }
+.simple-next .primary-button { width: 100%; }
+@media (min-width: 620px) { .simple-next .primary-button { width: auto; } }
