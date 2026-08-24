@@ -510,4 +510,112 @@ select pg_temp.check('while the withdrawal itself stays on the record',
     where action = 'capture_task.waiver_lifted'
       and entity_id = 'ffffffff-0000-0000-0000-0000000000aa') = 1);
 
+-- ================================================= finding things in the record
+
+-- Inserted here rather than with the other fixtures: assertions above count
+-- the evidence in the project, and a second row makes them fail. A fixture that
+-- breaks an unrelated invariant is a fixture in the wrong place.
+-- Something to search for: a capture with a name, a room, an AI reading nobody
+-- has confirmed, and a plan document.
+insert into public.evidence_items(id, organization_id, property_id, space_id, storage_path,
+  original_filename, media_type, mime_type, byte_size, created_by, source_type, captured_at)
+values ('dddddddd-0000-0000-0000-0000000000f1','aaaaaaaa-0000-0000-0000-000000000001',
+  'bbbbbbbb-0000-0000-0000-000000000001','cccccccc-0000-0000-0000-000000000001',
+  'organizations/a/properties/b/evidence/garage-framing-vr-master.mp4',
+  'garage-framing-vr-master.mp4','360 capture','video/mp4',4096,
+  '11111111-1111-1111-1111-111111111111','derived','2026-08-20T10:00:00Z');
+
+insert into public.analysis_jobs(id, organization_id, property_id, space_id, state, profile,
+  profile_version, evidence_ids, requested_by)
+values ('aaaa0000-0000-0000-0000-0000000000a1','aaaaaaaa-0000-0000-0000-000000000001',
+  'bbbbbbbb-0000-0000-0000-000000000001','cccccccc-0000-0000-0000-000000000001','completed',
+  'room_interpretation','1', array['dddddddd-0000-0000-0000-0000000000f1']::uuid[],
+  '11111111-1111-1111-1111-111111111111');
+
+insert into public.ai_suggestions(id, organization_id, job_id, property_id, space_id,
+  suggestion_type, body, evidence_ids)
+values ('aaaa0000-0000-0000-0000-0000000000b1','aaaaaaaa-0000-0000-0000-000000000001',
+  'aaaa0000-0000-0000-0000-0000000000a1','bbbbbbbb-0000-0000-0000-000000000001',
+  'cccccccc-0000-0000-0000-000000000001','room_interpretation',
+  jsonb_build_object('summary','Framing is complete and drywall has not started',
+    'observations', jsonb_build_array('Studs exposed on the north wall'),
+    'questions', jsonb_build_array('Was the window replaced')),
+  array['dddddddd-0000-0000-0000-0000000000f1']::uuid[]);
+
+--
+-- One question, one answer, with the thing itself attached. What matters as
+-- much as finding things is what it refuses to do: it finds, it does not
+-- conclude, and an AI reading stays marked unconfirmed wherever it surfaces.
+
+set local role authenticated;
+set local test.uid = '11111111-1111-1111-1111-111111111111';
+
+select pg_temp.check('a filename is findable',
+  exists(select 1 from public.search_project_record('bbbbbbbb-0000-0000-0000-000000000001', 'framing')
+         where kind = 'evidence' and title = 'garage-framing-vr-master.mp4'));
+
+-- Somebody typing "205A" or "gara" means exactly that, so substring matching
+-- has to work alongside the stemmed search.
+select pg_temp.check('and so is a fragment of one',
+  exists(select 1 from public.search_project_record('bbbbbbbb-0000-0000-0000-000000000001', 'gara')
+         where kind = 'evidence'));
+
+select pg_temp.check('the room itself is a result, not only the files in it',
+  exists(select 1 from public.search_project_record('bbbbbbbb-0000-0000-0000-000000000001', 'Garage')
+         where kind = 'room'));
+
+-- The AI's prose needs stemming: "drywall" is in the summary, "framed" is not,
+-- but "framing" must reach a sentence that says "Framing".
+select pg_temp.check('what the AI read is findable by its words',
+  exists(select 1 from public.search_project_record('bbbbbbbb-0000-0000-0000-000000000001', 'drywall')
+         where kind = 'finding'));
+
+select pg_temp.check('including the questions it left open',
+  exists(select 1 from public.search_project_record('bbbbbbbb-0000-0000-0000-000000000001', 'window replaced')
+         where kind = 'finding'));
+
+-- The rule the whole product rests on. A search result is a place an
+-- interpretation can escape as a fact, so it carries its status with it.
+select pg_temp.check('an unconfirmed interpretation says so',
+  (select confirmed from public.search_project_record('bbbbbbbb-0000-0000-0000-000000000001', 'drywall')
+    where kind = 'finding' limit 1) = false);
+
+insert into public.suggestion_reviews(organization_id, suggestion_id, state, reviewed_by)
+values ('aaaaaaaa-0000-0000-0000-000000000001','aaaa0000-0000-0000-0000-0000000000b1',
+  'confirmed','11111111-1111-1111-1111-111111111111');
+
+select pg_temp.check('and a confirmed one says that instead',
+  (select confirmed from public.search_project_record('bbbbbbbb-0000-0000-0000-000000000001', 'drywall')
+    where kind = 'finding' limit 1) = true);
+
+select pg_temp.check('a query that matches nothing returns nothing, not everything',
+  (select count(*) from public.search_project_record('bbbbbbbb-0000-0000-0000-000000000001', 'zzzzznotathing')) = 0);
+
+-- A single letter would match most of the record and answer nothing.
+select pg_temp.check('and too short a query is refused rather than guessed at',
+  (select count(*) from public.search_project_record('bbbbbbbb-0000-0000-0000-000000000001', 'a')) = 0);
+
+-- Deleted evidence is out of the record, so it is out of the search. Removed
+-- the way the product removes it: a plain UPDATE setting deleted_at is refused,
+-- because the read policy hides the new row from its own author.
+select public.soft_delete_evidence('dddddddd-0000-0000-0000-0000000000f1', 'no longer part of the record');
+select pg_temp.check('removed evidence does not come back through search',
+  not exists(select 1 from public.search_project_record('bbbbbbbb-0000-0000-0000-000000000001', 'framing')
+             where kind = 'evidence'));
+reset role;
+
+-- The function is a definer, so it bypasses row-level security and has to do
+-- the checking itself. This is the assertion that says it does.
+set local role authenticated;
+set local test.uid = '44444444-4444-4444-4444-444444444444';
+select pg_temp.refused('another organisation cannot search this project',
+  $$select * from public.search_project_record('bbbbbbbb-0000-0000-0000-000000000001', 'framing')$$);
+reset role;
+
+set local role anon;
+set local test.uid = '';
+select pg_temp.refused('nor can anybody signed out',
+  $$select * from public.search_project_record('bbbbbbbb-0000-0000-0000-000000000001', 'framing')$$);
+reset role;
+
 rollback;

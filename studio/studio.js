@@ -3490,6 +3490,121 @@ function openEvidenceViewer(item, room, focusMarkerId = null) {
 
 /* --------------------------------------------------------------- Space detail */
 
+/* Finding things in the record.
+ *
+ * The record already holds everything. Reaching any of it meant remembering
+ * which screen it lived on and clicking down to it — "the 360 of the master
+ * bedroom from last time" is a five-second question that took two minutes.
+ *
+ * It finds, it does not conclude. Asked about framing it returns the framing
+ * invoice, the room, the capture and the AI's note about framing; it never says
+ * whether the framing is done. An interpretation carries whether a person
+ * confirmed it, and the row says so out loud, because a search result is
+ * exactly the place a suggestion could escape as a fact. */
+let searchToken = 0;
+let searchTimer = null;
+
+const SEARCH_KIND_LABEL = {
+  evidence: "Evidence",
+  room: "Room",
+  document: "Document",
+  finding: "AI reading",
+  capture: "Planned capture",
+};
+
+function closeFocusSearch() {
+  const results = $("#focus-search-results");
+  const input = $("#focus-search-input");
+  if (results) { results.hidden = true; results.innerHTML = ""; }
+  if (input) input.setAttribute("aria-expanded", "false");
+}
+
+function searchResultLine(row) {
+  const kind = SEARCH_KIND_LABEL[row.kind] || "In this project";
+  const where = row.room_name ? ` · ${escapeText(row.room_name)}` : "";
+  const when = row.happened_at ? ` · ${escapeText(formatEvidenceDate(row.happened_at))}` : "";
+  /* The one thing a result must never do is present an AI reading as settled.
+     Said on the row itself, not behind a click. */
+  const standing = row.kind === "finding"
+    ? (row.confirmed
+        ? `<em class="search-confirmed">Confirmed by a person</em>`
+        : `<em class="search-unconfirmed">A suggestion — nobody has confirmed this</em>`)
+    : "";
+  return `<button class="focus-search-hit" type="button" role="option"
+     data-hit-kind="${escapeText(row.kind)}" data-hit-id="${escapeText(row.id)}"
+     data-hit-room="${escapeText(row.room_id || "")}">
+    <span class="search-kind">${escapeText(kind)}${where}${when}</span>
+    <strong>${escapeText(row.title || "Untitled")}</strong>
+    ${row.detail ? `<small>${escapeText(row.detail)}</small>` : ""}
+    ${standing}
+  </button>`;
+}
+
+async function runFocusSearch(term) {
+  const results = $("#focus-search-results");
+  const input = $("#focus-search-input");
+  if (!results) return;
+  const query = String(term || "").trim();
+  if (query.length < 2) { closeFocusSearch(); return; }
+  if (!cloud.schemaReady || !cloud.propertyId) { closeFocusSearch(); return; }
+
+  /* Every keystroke starts a search and answers arrive out of order. Only the
+     newest one is allowed to write to the screen, or a slow early answer lands
+     on top of a fast later one. */
+  const token = ++searchToken;
+  results.hidden = false;
+  input?.setAttribute("aria-expanded", "true");
+  results.innerHTML = `<p class="focus-search-note">Looking…</p>`;
+  try {
+    const { data, error } = await cloud.client.rpc("search_project_record", {
+      p_property_id: cloud.propertyId,
+      p_query: query,
+      p_limit: 30,
+    });
+    if (token !== searchToken) return;
+    if (error) throw error;
+    /* An answer of "no rows" and no answer at all are different facts, and only
+       one of them is a statement about the project. Anything that is not a list
+       is not an answer, and saying "nothing matches" over it would be the
+       record claiming to be empty when it never spoke. */
+    if (!Array.isArray(data)) throw new Error("The record returned no answer");
+    const rows = data;
+    if (!rows.length) {
+      /* Saying what was searched is the difference between "nothing here" and
+         "something is broken". */
+      results.innerHTML = `<p class="focus-search-note">Nothing in this project matches “${escapeText(query)}”.</p>`;
+      return;
+    }
+    results.innerHTML = rows.map(searchResultLine).join("");
+    results.querySelectorAll("[data-hit-id]").forEach((hit) =>
+      hit.addEventListener("click", () => openSearchHit(hit.dataset)),
+    );
+  } catch (error) {
+    if (token !== searchToken) return;
+    console.error(error);
+    results.innerHTML = `<p class="focus-search-note">The record could not be searched just now.</p>`;
+  }
+}
+
+/* Where a result takes you. Everything that belongs to a room opens that room,
+   because the room is where its evidence, its reading and its history are shown
+   together; a document opens the screen documents live on. */
+function openSearchHit(data) {
+  closeFocusSearch();
+  const input = $("#focus-search-input");
+  if (input) input.value = "";
+  if (data.hitKind === "document") { openProjectPlans(); return; }
+  const roomId = data.hitKind === "room" ? data.hitId : data.hitRoom;
+  if (roomId && rooms.some((room) => room.id === roomId)) {
+    openFocusSheet(roomId, focusStage);
+    return;
+  }
+  /* A capture task with no room yet, or evidence filed outside one. Rather than
+     going nowhere, the results screen is where the project as a whole is. */
+  showFocusStage("results");
+  notify("This one is not filed under a room yet.");
+}
+
 function focusSheetRoom() {
   return rooms.find((room) => room.id === focusSheetRoomId) || null;
 }
@@ -4598,6 +4713,22 @@ $("#focus-process").addEventListener("click", () => {
 $("#focus-view-results").addEventListener("click", () => {
   renderFocusResults();
   showFocusStage("results");
+});
+/* Typing is not a query yet. Waiting a moment after the last keystroke turns a
+   word being typed into one question rather than six. */
+$("#focus-search-input").addEventListener("input", (event) => {
+  const term = event.target.value;
+  window.clearTimeout(searchTimer);
+  searchTimer = window.setTimeout(() => runFocusSearch(term), 220);
+});
+$("#focus-search-input").addEventListener("keydown", (event) => {
+  if (event.key === "Escape") { event.target.value = ""; closeFocusSearch(); }
+});
+/* Clicking anywhere else puts it away. Without this the panel covers the screen
+   it was supposed to help somebody read. */
+document.addEventListener("click", (event) => {
+  const box = $("#focus-search");
+  if (box && !box.contains(event.target)) closeFocusSearch();
 });
 $("#focus-start-machine").addEventListener("click", startCaptureMachine);
 $("#focus-blocked-action").addEventListener("click", (event) => {
