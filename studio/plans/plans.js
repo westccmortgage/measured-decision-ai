@@ -83,6 +83,9 @@ function display(value, fallback = "Not stated") {
 }
 
 function label(value = "") {
+  /* "Waived" is our word, not a builder's, and on its own it does not say what
+     happened. The status a person reads has to carry the meaning. */
+  if (value === "waived") return "Accepted as missing";
   return String(value).replaceAll("_", " ").replace(/\b\w/g, (letter) => letter.toUpperCase());
 }
 
@@ -300,6 +303,12 @@ function canAnalyzePlans() {
 
 function canApproveBaseline() {
   return ["owner", "admin", "reviewer"].includes(state.role);
+}
+
+/* Accepting a gap is the same authority as approving the roadmap it came from,
+   plus the project manager who actually knows why the work has no evidence. */
+function canWaiveCapture() {
+  return ["owner", "admin", "reviewer", "project_manager"].includes(state.role);
 }
 
 function canDeletePlans() {
@@ -840,6 +849,7 @@ function taskCard(requirement, phase) {
       <h3>${escapeHtml(requirement.title)}</h3>
       <p class="task-location">${escapeHtml(location)}</p>
       <p class="task-why">${escapeHtml(requirement.rationale)}</p>
+      ${task.status === "waived" ? `<span class="task-waiver-note">Accepted as missing — ${escapeHtml(task.waiver_reason || "no reason recorded")}</span>` : ""}
       ${assignment ? `<span class="task-assignment ${escapeHtml(assignment.status)}">${escapeHtml(assignment.worker_name)} · ${escapeHtml(label(assignment.status))}</span>` : ""}
       <div class="task-bottom"><strong>${escapeHtml(requirement.capture_type)}</strong><span>${refs.length} plan reference${refs.length === 1 ? "" : "s"} · ${escapeHtml(phase.code)}</span></div>
     </button>`;
@@ -881,7 +891,133 @@ function openTask(requirementId) {
   const blocker = $("#assignment-blocker");
   blocker.hidden = !blockedReason;
   blocker.textContent = blockedReason;
+  renderWaiverPanel(task);
   $("#task-dialog").showModal();
+}
+
+/* What the panel says depends on three things: whether this capture has already
+   been accepted as missing, whether anything was actually captured, and whether
+   the person looking at it is allowed to decide. */
+function renderWaiverPanel(task) {
+  const panel = $("#waiver-panel");
+  const current = $("#waiver-current");
+  const form = $("#waiver-form");
+  const lift = $("#lift-waiver");
+  const blocker = $("#waiver-blocker");
+  const stateLabel = $("#task-waiver-state");
+  if (!panel) return;
+  const waived = task?.status === "waived";
+  const settled = ["verified", "submitted"].includes(task?.status);
+
+  panel.hidden = !task?.id;
+  stateLabel.textContent = waived ? "Accepted as missing" : settled ? label(task.status) : "Expected";
+
+  if (waived) {
+    /* The browser cannot read another member's email — that lives in auth —
+       so the name is either "you" or nothing. Inventing one would be worse than
+       saying less; the audit record holds the actual actor either way. */
+    const mine = task.waived_by && task.waived_by === state.session?.user?.id;
+    const kind = task.waiver_kind === "not_applicable"
+      ? "Not part of this project"
+      : "Happened, and no evidence of it exists";
+    current.hidden = false;
+    current.innerHTML = `<strong>${escapeHtml(kind)}</strong>${escapeHtml(task.waiver_reason || "")}<br><em>Accepted by ${mine ? "you" : "a project manager"} on ${escapeHtml(shortDate(task.waived_at))}. No evidence exists for this capture.</em>`;
+  } else {
+    current.hidden = true;
+    current.innerHTML = "";
+  }
+
+  form.hidden = waived || settled || !canWaiveCapture();
+  lift.hidden = !waived || !canWaiveCapture();
+  blocker.hidden = true;
+  blocker.textContent = "";
+  if (settled) {
+    blocker.hidden = false;
+    blocker.textContent = task.status === "verified"
+      ? "This capture is recorded and verified. There is nothing missing to accept."
+      : "A worker has submitted this capture. Review what came in before deciding anything about it.";
+  } else if (!waived && !canWaiveCapture()) {
+    blocker.hidden = false;
+    blocker.textContent = "Your role cannot accept a missing capture. An owner, administrator, reviewer or project manager can.";
+  }
+}
+
+function waiverInput() {
+  const kind = $("#waiver-kind").value;
+  const reason = $("#waiver-reason").value.trim();
+  if (reason.length < 10) {
+    notify("Say why in a sentence — a reader of this record needs the reason, not just the fact.", "error");
+    $("#waiver-reason").focus();
+    return null;
+  }
+  return { kind, reason };
+}
+
+async function waiveSelectedCapture() {
+  const requirement = state.requirements.find((item) => item.id === state.selectedRequirementId);
+  const task = requirement ? taskForRequirement(requirement.id) : null;
+  if (!task?.id) return notify("This capture task does not exist in the current baseline.", "error");
+  const input = waiverInput();
+  if (!input) return;
+  await runWaiverCall(
+    () => client.rpc("waive_capture_task", { p_task_id: task.id, p_kind: input.kind, p_reason: input.reason }),
+    "This capture is accepted as missing. The record still says no evidence exists for it.",
+  );
+}
+
+/* "We were not here for the demolition" is one decision about one phase, not
+   eleven decisions about eleven captures. */
+async function waiveSelectedPhase() {
+  const requirement = state.requirements.find((item) => item.id === state.selectedRequirementId);
+  const phase = requirement ? phaseForRequirement(requirement) : null;
+  if (!phase?.id || !state.baseline?.id) return notify("This phase does not exist in the current baseline.", "error");
+  const input = waiverInput();
+  if (!input) return;
+  const outstanding = state.requirements.filter((item) => {
+    if (item.phase_id !== phase.id) return false;
+    const task = taskForRequirement(item.id);
+    return !["verified", "waived"].includes(task.status);
+  }).length;
+  if (!window.confirm(`Accept ${outstanding} outstanding capture${outstanding === 1 ? "" : "s"} in "${phase.name}" as missing? Captures that already hold evidence are left alone.`)) return;
+  await runWaiverCall(
+    () => client.rpc("waive_capture_phase", {
+      p_baseline_id: state.baseline.id, p_phase_id: phase.id, p_kind: input.kind, p_reason: input.reason,
+    }),
+    `Every outstanding capture in ${phase.name} is accepted as missing.`,
+  );
+}
+
+async function liftSelectedWaiver() {
+  const requirement = state.requirements.find((item) => item.id === state.selectedRequirementId);
+  const task = requirement ? taskForRequirement(requirement.id) : null;
+  if (!task?.id) return;
+  await runWaiverCall(
+    () => client.rpc("lift_capture_waiver", { p_task_id: task.id, p_reason: $("#waiver-reason").value.trim() || null }),
+    "This capture is back on the roadmap. The earlier acceptance stays in the audit record.",
+  );
+}
+
+/* The database owns every rule here, so the screen's job is to say plainly what
+   it refused and to reload rather than guess at the new state. */
+async function runWaiverCall(call, success) {
+  setBusy(true, "Recording the decision…");
+  try {
+    const { error } = await call();
+    if (error) throw error;
+    $("#waiver-reason").value = "";
+    $("#task-dialog").close();
+    notify(success);
+    await openProperty(state.property.id);
+  } catch (error) {
+    console.error(error);
+    const message = error.message || "The decision could not be recorded";
+    const blocker = $("#waiver-blocker");
+    blocker.hidden = false;
+    blocker.textContent = message;
+    notify(message, "error");
+  } finally {
+    setBusy(false, `Cloud connected · ${state.role}`);
+  }
 }
 
 async function createFieldAssignment() {
@@ -1169,6 +1305,9 @@ async function attestAndApproveBaseline() {
   }
 }
 
+$("#waive-task").addEventListener("click", waiveSelectedCapture);
+$("#waive-phase").addEventListener("click", waiveSelectedPhase);
+$("#lift-waiver").addEventListener("click", liftSelectedWaiver);
 elements.propertySelect.addEventListener("change", async () => {
   // A different project has its own roadmap; the pinned baseline no longer applies.
   state.requestedBaselineId = null;

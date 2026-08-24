@@ -9,7 +9,7 @@
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
-    <link rel="stylesheet" href="plans.css?v=9aca4f1fe9">
+    <link rel="stylesheet" href="plans.css?v=992e10022d">
   </head>
   <body>
     <div class="boot-screen" id="boot-screen">
@@ -168,6 +168,7 @@
                 <option value="blocked">Blocked</option>
                 <option value="submitted">Submitted</option>
                 <option value="verified">Verified</option>
+                <option value="waived">Accepted as missing</option>
               </select>
             </div>
           </div>
@@ -191,6 +192,29 @@
           <section><span>Completion check</span><ul id="task-dialog-criteria"></ul></section>
           <section class="wide concealment"><span>Capture before</span><p id="task-dialog-before"></p></section>
           <section class="wide"><span>Plan references</span><p id="task-dialog-refs"></p></section>
+          <!-- A gap somebody will never fill has to be closable, by a person,
+               with a reason. The record keeps saying the evidence does not
+               exist; what changes is that it stops being asked for. -->
+          <section class="wide waiver-panel" id="waiver-panel">
+            <div class="assignment-heading">
+              <div><span>No evidence will be made for this</span><p>Work that finished before this record began, or that is not part of this project, can be accepted as missing. The record still says no evidence exists — it will name you and your reason instead of asking again.</p></div>
+              <strong id="task-waiver-state">Expected</strong>
+            </div>
+            <div class="waiver-current" id="waiver-current" hidden></div>
+            <div class="waiver-form" id="waiver-form">
+              <label>Why<select id="waiver-kind">
+                <option value="accepted_no_evidence">It happened, and no evidence of it exists</option>
+                <option value="not_applicable">This work is not part of this project</option>
+              </select></label>
+              <label>Say what a reader of this record needs to know<textarea id="waiver-reason" maxlength="400" rows="2" placeholder="Demolition finished before we were engaged; the owner has no photographs of it."></textarea></label>
+              <div class="waiver-actions">
+                <button class="button secondary" id="waive-task" type="button">Accept this capture as missing</button>
+                <button class="button secondary" id="waive-phase" type="button">Accept the whole phase</button>
+              </div>
+            </div>
+            <button class="button secondary" id="lift-waiver" type="button" hidden>Put this capture back on the roadmap</button>
+            <p class="assignment-blocker" id="waiver-blocker" role="status" hidden></p>
+          </section>
           <section class="wide assignment-panel">
             <div class="assignment-heading">
               <div><span>Send this field task</span><p>One worker receives one private link with only the steps and upload button needed for this capture.</p></div>
@@ -255,6 +279,6 @@
     <script src="../config.js?v=0772f5f463"></script>
     <script src="../s3-upload.js?v=b1a9bebb93"></script>
     <script src="../recent-projects.js?v=529636c5de"></script>
-    <script src="plans.js?v=9518294825"></script>
+    <script src="plans.js?v=8342312fe9"></script>
   </body>
 </html>
