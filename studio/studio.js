@@ -3902,6 +3902,12 @@ async function runFocusRoomAnalysis(room) {
   room.analysis = null;
   focusProcessingComplete = false;
   closeFocusSheet(false);
+  /* This stage may still be wearing the answer it gave for a room that could not
+     be read. Left alone, "Start the 360 machine" and "Upload a 360 export
+     instead" sat under a live AI run — offering to start a machine whose work
+     was already finished — while the meter stayed hidden and "View results"
+     never came back. */
+  resetProcessingStageControls();
   /* Rows first, then the screen: showFocusStage reads them to decide what the
      screen is about, and an empty list means "nothing is running". */
   focusProcessingRows = [{ roomId: room.id, name: room.name, state: "queued", detail: "Queued" }];
