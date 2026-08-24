@@ -193,3 +193,21 @@ export const aiReviewedRows = () => {
   }];
   return r;
 };
+
+/* The plans were read and the roadmap is waiting for a person.
+ *
+ * This is the state that closed the loop a second time: analysing the plans
+ * does not create the rooms — approving the roadmap does — so a project that
+ * had already been read was still told to go and upload a plan set it had.
+ */
+export const baselineAwaitingApprovalRows = () => {
+  const r = clone(emptyRows);
+  r.project_documents = [planDocument({ status: "analyzed" })];
+  r.document_baselines = [{
+    id: "bl-1", organization_id: ORG, property_id: PROPERTY, version: 1, state: "review",
+    source_document_ids: ["doc-1"], project_summary: "Single family remodel",
+    analysis: {}, gaps: [], model: "test", created_at: "2026-08-23T07:20:00Z", approved_at: null,
+  }];
+  r.spaces = [];
+  return r;
+};

@@ -1510,6 +1510,9 @@ async function hydrateCloudRecord() {
     ]);
   if (spacesError) throw spacesError;
   if (evidenceError) throw evidenceError;
+  /* Only asked for when it can change what the screen says: a project with no
+     rooms is the one case where the plan set decides the next step. */
+  if (!(spaceRows || []).length) await hydratePlanState(property.id);
 
   const evidenceWithUrls = collapseInsta360Sources(await Promise.all(
     (evidenceRows || []).map(async (item) => ({
@@ -2676,6 +2679,65 @@ function focusIsPlanDocument(file) {
   return file?.type === "application/pdf" || name.endsWith(".pdf");
 }
 
+/* Where the plan set actually stands, because "no rooms yet" has three
+   different causes and only one of them is answered by "upload the plans".
+   Rooms are created when a person approves the roadmap the plans produced —
+   analysing them is not enough — so a project that has been read but not
+   approved was told to upload plans it already had, which is the same dead end
+   one screen further along. */
+let planState = { known: false, documents: 0, analysed: false, baseline: null };
+
+async function hydratePlanState(propertyId) {
+  planState = { known: false, documents: 0, analysed: false, baseline: null };
+  if (!cloud.schemaReady) return;
+  const [documents, baselines] = await Promise.all([
+    cloud.client.from("project_documents").select("id, status").eq("property_id", propertyId),
+    cloud.client.from("document_baselines").select("id, state, version").eq("property_id", propertyId)
+      .order("version", { ascending: false }).limit(1),
+  ]);
+  /* A record that cannot answer is not a record that says no. Saying nothing
+     about the plans is better than telling somebody to upload a set they have
+     already uploaded. */
+  if (documents.error || baselines.error) return;
+  planState = {
+    known: true,
+    documents: (documents.data || []).length,
+    analysed: (documents.data || []).some((row) => row.status === "analyzed"),
+    baseline: (baselines.data || [])[0] || null,
+  };
+}
+
+/* One sentence naming where the plan set stands, and the control that moves it
+   on. Every branch ends in something pressable. */
+function planSetNextStep() {
+  if (!planState.known) {
+    return { say: "This project has no rooms yet. Rooms come from the plan set, which is read on its own screen.", go: "Open project plans" };
+  }
+  const baseline = planState.baseline;
+  if (baseline && ["draft", "review"].includes(baseline.state)) {
+    return {
+      say: "The plans have been read. The rooms they name become this project's rooms once you approve the roadmap — that approval is what creates them.",
+      go: "Review and approve the roadmap",
+    };
+  }
+  if (baseline && baseline.state === "approved") {
+    return {
+      say: "The roadmap is approved but this project still has no rooms, which means the plan reading found none. Open the plans to see what it read.",
+      go: "Open project plans",
+    };
+  }
+  if (planState.documents) {
+    return {
+      say: `The plan set is in this project and has not been read yet. Reading it is what produces the rooms. ${planState.documents === 1 ? "1 document is" : `${planState.documents} documents are`} waiting.`,
+      go: "Read the plans",
+    };
+  }
+  return {
+    say: "This project has no rooms yet, and rooms come from the plan set. Plans are read on their own screen — the drawings are not evidence about a room, they are what the rooms are taken from.",
+    go: "Upload the plan set",
+  };
+}
+
 function renderUploadPickerNote() {
   const room = pickedRoom("upload");
   const note = $("#upload-room-note");
@@ -2686,8 +2748,9 @@ function renderUploadPickerNote() {
        without a room, rooms come from the plan set, and the plan set is
        uploaded somewhere this screen never named. The sentence gave the right
        answer and no way to act on it. */
+    const step = planSetNextStep();
     note.className = "room-picker-note warn";
-    note.innerHTML = `This project has no rooms yet, and rooms come from the plan set. Plans are read on their own screen — the drawings are not evidence about a room, they are what the rooms are taken from. <button type="button" class="room-picker-link" id="upload-open-plans">Upload the plan set &rarr;</button>`;
+    note.innerHTML = `${escapeText(step.say)} <button type="button" class="room-picker-link" id="upload-open-plans">${escapeText(step.go)} &rarr;</button>`;
     const toPlans = $("#upload-open-plans");
     if (toPlans) toPlans.addEventListener("click", openProjectPlans);
   } else if (!room) {

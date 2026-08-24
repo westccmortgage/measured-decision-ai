@@ -13,7 +13,7 @@
  */
 import { chromium } from "/opt/node22/lib/node_modules/playwright/index.mjs";
 import http from "http"; import fs from "fs"; import path from "path";
-import { plansUploadedRows, plansReadingRows, roomsNoEvidenceRows, machineWorkingRows, aiReviewedRows } from "./seed.mjs";
+import { plansUploadedRows, plansReadingRows, roomsNoEvidenceRows, machineWorkingRows, aiReviewedRows, baselineAwaitingApprovalRows } from "./seed.mjs";
 
 const ROOT = path.resolve(".");
 const TYPES = { ".html": "text/html", ".js": "text/javascript", ".css": "text/css" };
@@ -103,6 +103,34 @@ console.log("\n── the plan set is being read, and the job says 62% ──");
   const second = await readMeter();
   check("and it does not climb on its own while the job says nothing new",
     second === first, `${first}% → ${second}% with no new report`);
+  await context.close();
+}
+
+/* The same screen, three different reasons for having no rooms. Telling
+   somebody to upload a plan set they have already uploaded is the deadlock
+   again, one screen further along. */
+console.log("\n── no rooms, and the plans are already in the project ──");
+{
+  const { context, page } = await open(plansUploadedRows(), "/studio/");
+  const note = await page.locator("#upload-room-note").first().innerText().catch(() => "");
+  check("it does not ask for a plan set that is already there",
+    !/upload the plan set/i.test(note), note);
+  check("it says the plans have not been read yet", /not been read yet/i.test(note), note);
+  const onward = await page.evaluate(() => document.querySelector("#upload-open-plans")?.textContent.trim() || null);
+  check("and reading them is one press away", /read the plans/i.test(onward || ""), onward || "no control");
+  await context.close();
+}
+
+console.log("\n── no rooms, and the roadmap is waiting for approval ──");
+{
+  const { context, page } = await open(baselineAwaitingApprovalRows(), "/studio/");
+  const note = await page.locator("#upload-room-note").first().innerText().catch(() => "");
+  /* Approving the roadmap is what creates the rooms. Saying anything else here
+     sends a person back to a screen they have already finished with. */
+  check("it says approval is what creates the rooms", /approve the roadmap/i.test(note), note);
+  check("it does not send them back to upload plans again", !/upload the plan set/i.test(note), note);
+  const onward = await page.evaluate(() => document.querySelector("#upload-open-plans")?.textContent.trim() || null);
+  check("and the approval screen is one press away", /approve/i.test(onward || ""), onward || "no control");
   await context.close();
 }
 
