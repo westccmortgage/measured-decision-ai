@@ -171,6 +171,56 @@ console.log("\n── the machine has never reported at all ──");
   await context.close();
 }
 
+/* The stage is shared. What it wore for a room that could not be read must not
+   still be on it when a room that can be read is running — a live AI run under
+   "Start the 360 machine" offers to start a machine whose work is already done,
+   and the meter and "View results" never come back. Seen in production. */
+console.log("\n── reading a room that can be read, right after one that could not ──");
+{
+  const context = await browser.newContext({ viewport: { width: 430, height: 900 } });
+  await context.route("**://*/**", (r) => (r.request().url().startsWith(base) ? r.continue() : r.abort()));
+  await context.addInitScript(`window.__seed = ${JSON.stringify({ rows: machineFinishedYesterdayRows() })};`);
+  await context.addInitScript({ path: "studio/tests/fake-supabase.js" });
+  const page = await context.newPage();
+  await page.goto(`${base}/studio/`, { waitUntil: "networkidle" });
+  await page.waitForTimeout(900);
+  await page.evaluate(() => {
+    const b = [...document.querySelectorAll("button")].find((x) => (x.textContent || "").includes("3001 Hutton"));
+    if (b) b.click();
+  });
+  await page.waitForTimeout(1300);
+
+  const after = await page.evaluate(async () => {
+    const pick = async (match) => {
+      const picker = document.querySelector("#upload-room");
+      const option = [...picker.options].find((o) => match.test(o.textContent));
+      picker.value = option.value;
+      picker.dispatchEvent(new Event("change", { bubbles: true }));
+      await new Promise((r) => setTimeout(r, 250));
+      document.querySelector("#focus-process")?.click();
+      await new Promise((r) => setTimeout(r, 700));
+    };
+    /* First the room waiting on the machine, then the one holding a stitched
+       master the AI can actually read. */
+    await pick(/Master Bedroom/);
+    const blocked = document.querySelector("#focus-start-machine")?.hidden === false;
+    await pick(/Bath #1/);
+    return {
+      blockedShowedStart: blocked,
+      startStillThere: document.querySelector("#focus-start-machine")?.hidden === false,
+      altStillThere: document.querySelector("#focus-blocked-action")?.hidden === false,
+      meterBack: document.querySelector(".focus-processing-meter")?.hidden === false,
+      resultsBack: document.querySelector("#focus-view-results")?.hidden === false,
+    };
+  });
+  check("the blocked room did offer to start the machine", after.blockedShowedStart === true);
+  check("and the live run does not still offer it", after.startStillThere === false);
+  check("nor the export alternative", after.altStillThere === false);
+  check("the progress meter comes back", after.meterBack === true);
+  check("and so does the way to the results", after.resultsBack === true);
+  await context.close();
+}
+
 await browser.close(); server.close();
 console.log(bad ? `\n${bad} FAILURES` : "\nALL OK");
 process.exit(bad ? 1 : 0);
