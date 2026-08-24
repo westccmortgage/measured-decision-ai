@@ -12,7 +12,7 @@
       href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap"
       rel="stylesheet"
     >
-    <link rel="stylesheet" href="studio.css?v=60bb921dd4">
+    <link rel="stylesheet" href="studio.css?v=94020005d5">
   </head>
   <body>
     <section class="simple-intake" id="simple-intake">
@@ -94,6 +94,15 @@
           <span class="studio-mark" aria-hidden="true"><i></i><i></i><i></i></span>
           <span>Measured Decision <strong>Studio</strong></span>
         </button>
+        <!-- One question, one answer, with the thing itself attached. Everything
+             in the record is already here; this is the way to reach any of it
+             without remembering which screen it lives on. -->
+        <div class="focus-search" id="focus-search">
+          <input id="focus-search-input" type="search" autocomplete="off" spellcheck="false"
+                 placeholder="Find anything in this project" aria-label="Find anything in this project"
+                 aria-controls="focus-search-results" aria-expanded="false">
+          <div class="focus-search-results" id="focus-search-results" role="listbox" hidden></div>
+        </div>
         <div class="focus-top-actions">
           <button class="focus-text-button" id="focus-switch-project" type="button">Projects</button>
           <button class="focus-text-button" id="focus-sign-out" type="button">Sign out</button>
@@ -1211,7 +1220,7 @@
     <script src="trades360.js?v=6111550f8e"></script>
     <script src="money360.js?v=55e421da52"></script>
     <script src="report.js?v=9b9c4b9070"></script>
-    <script src="studio.js?v=652ebec0dd"></script>
+    <script src="studio.js?v=8b04b8ccf8"></script>
     <script src="pano360.js?v=06da266b46"></script>
     <script src="capture-task-bridge.js?v=715b200611"></script>
   </body>

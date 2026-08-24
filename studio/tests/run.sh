@@ -35,6 +35,7 @@ run "the chain, state by state"       studio/tests/e2e-chain.mjs
 run "accepting a missing capture"     studio/tests/e2e-waiver.mjs
 run "a capture waiting for the machine" studio/tests/e2e-waiting-machine.mjs
 run "removing a project"              studio/tests/e2e-remove-project.mjs
+run "finding things in the record"    studio/tests/e2e-search.mjs
 
 printf "\n%s\n" "────────────────────────────────────────────"
 if [ "$fail" = "0" ]; then echo "ALL CHECKS PASS"; else echo "SOMETHING FAILED — see above"; fi
