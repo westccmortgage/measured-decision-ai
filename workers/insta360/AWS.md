@@ -52,6 +52,28 @@ left on after an empty queue is the only expensive mistake this project can
 make. A stopped instance costs nothing for compute; only its 200 GiB disk keeps
 billing, at roughly $16 a month, until the instance is terminated.
 
+## Where the stitch actually works
+
+The container is given the instance's ephemeral NVMe as its workspace
+(`-v .../mdai-work:/work -e TMPDIR=/work`), and the script picks the first
+mounted filesystem with at least 20 GiB free.
+
+Without that mount the stitch unpacks inside the container, on Docker's overlay,
+which lives on the root disk — and on this image the root disk is 72 GB with the
+CUDA toolchain already occupying most of it. One 0.5 GiB lens pair needs several
+GiB of workspace to unpack, so a machine reporting under 8 GiB free on `/` was
+one large capture away from dying on "no space left on device", while 109 GiB sat
+unused on the NVMe.
+
+Do not try to make room by deleting things on `/`. What is using it is the
+driver, CUDA and the DLAMI toolchain the worker depends on. If a machine ever
+does report no space with the mount in place, the honest answers are a bigger
+root volume or a smaller capture — not a prune.
+
+The NVMe is scratch by definition: it is wiped when the instance stops. That is
+exactly right here, because the only durable output — the stitched master — is
+uploaded to S3 before the capture is finished with.
+
 ## Working a second queue
 
 Start the same instance again. EC2 → Instances → select it → **Instance state →
