@@ -41,7 +41,7 @@ export DEBIAN_FRONTEND=noninteractive
 # are what hung the previous version.
 export NEEDRESTART_MODE=a NEEDRESTART_SUSPEND=1 UCF_FORCE_CONFOLD=1
 
-MDAI_VERSION="2026-08-24.1 · AWS GPU image, no driver install, restartable"
+MDAI_VERSION="2026-08-24.2 · AWS GPU image, restartable, workspace on the NVMe"
 SUPABASE_URL="https://hbqlhplgqwuesrovbiye.supabase.co"
 AWS_REGION="us-east-2"
 AWS_S3_BUCKET="measured-decision-production-808454010303"
@@ -229,5 +229,36 @@ python3 test_worker.py || stop "the worker failed its own test; the queue was no
 MDAI_STATE="working"
 step "running the queue"
 [ -n "$RUN_ID" ] && echo "MDAI_RUN_ID=${RUN_ID}" >> /opt/mdai/worker.env
-docker run --rm --gpus all --env-file /opt/mdai/worker.env \
-  measured-decision/insta360-worker:3.1.1
+
+# The stitch downloads both lens files, unpacks them, and writes a master. With
+# no mount that all happens inside the container, on Docker's overlay, which
+# lives on the root disk — and on this image the root disk is 72 GB with the
+# CUDA toolchain already occupying most of it. A single 0.5 GiB pair needs
+# several GiB of workspace, and the machine was running with under 8 GiB free
+# while 109 GiB sat unused on the instance's ephemeral NVMe.
+#
+# So the work goes where the space is. The NVMe is scratch by definition — it is
+# wiped when the instance stops — which is exactly right for a workspace whose
+# only durable output is already uploaded to S3 before the capture is finished.
+MDAI_WORK=""
+for candidate in /opt/dlami/nvme /mnt /var/tmp; do
+  [ -d "$candidate" ] || continue
+  free_kb=$(df -Pk "$candidate" 2>/dev/null | awk 'NR==2 {print $4}')
+  [ -n "$free_kb" ] || continue
+  # 20 GiB, so a large capture has room to unpack rather than dying halfway.
+  if [ "$free_kb" -gt 20971520 ]; then MDAI_WORK="${candidate}/mdai-work"; break; fi
+done
+if [ -n "$MDAI_WORK" ]; then
+  mkdir -p "$MDAI_WORK"
+  step "workspace on ${MDAI_WORK} ($(df -Ph "$MDAI_WORK" | awk 'NR==2 {print $4}') free)"
+  docker run --rm --gpus all --env-file /opt/mdai/worker.env \
+    -v "${MDAI_WORK}:/work" -e TMPDIR=/work \
+    measured-decision/insta360-worker:3.1.1
+else
+  # Saying so is the point: a stitch that dies on "no space left on device"
+  # halfway through looks like a broken SDK, and eight machines were blamed for
+  # that once already.
+  step "no disk with 20 GiB free — working on the container overlay, which may run out"
+  docker run --rm --gpus all --env-file /opt/mdai/worker.env \
+    measured-decision/insta360-worker:3.1.1
+fi
