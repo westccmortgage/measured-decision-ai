@@ -54,6 +54,41 @@ values
   ('dddddddd-0000-0000-0000-000000000002','aaaaaaaa-0000-0000-0000-000000000002','bbbbbbbb-0000-0000-0000-000000000002',null,
    'organizations/b/properties/c/evidence/two.jpg','two.jpg','Property evidence','image/jpeg',2048,'44444444-4444-4444-4444-444444444444','phone');
 
+-- A plan baseline with one phase and two planned captures, so the rules about
+-- accepting a capture that will never be made have something to act on.
+insert into public.document_baselines(id, organization_id, property_id, version, state,
+  source_document_ids, analysis, created_by)
+values ('eeeeeeee-0000-0000-0000-000000000001','aaaaaaaa-0000-0000-0000-000000000001',
+  'bbbbbbbb-0000-0000-0000-000000000001', 1, 'approved', '{}'::uuid[], '{}'::jsonb,
+  '11111111-1111-1111-1111-111111111111');
+
+insert into public.construction_phases(id, organization_id, property_id, baseline_id,
+  code, name, sequence, objective, starts_when, ends_when, concealment_risk)
+values ('ffffffff-0000-0000-0000-000000000001','aaaaaaaa-0000-0000-0000-000000000001',
+  'bbbbbbbb-0000-0000-0000-000000000001','eeeeeeee-0000-0000-0000-000000000001',
+  'DEMO','Selective demolition',1,'Record removals','demolition starts','new work covers it','high');
+
+insert into public.capture_requirements(id, organization_id, property_id, baseline_id, phase_id,
+  title, system, priority, capture_type, rationale, before_concealment)
+values
+  ('ffffffff-0000-0000-0000-00000000000a','aaaaaaaa-0000-0000-0000-000000000001',
+   'bbbbbbbb-0000-0000-0000-000000000001','eeeeeeee-0000-0000-0000-000000000001',
+   'ffffffff-0000-0000-0000-000000000001','Post-demolition record','structure','critical','photo',
+   'Exposed conditions get covered','before new work'),
+  ('ffffffff-0000-0000-0000-00000000000b','aaaaaaaa-0000-0000-0000-000000000001',
+   'bbbbbbbb-0000-0000-0000-000000000001','eeeeeeee-0000-0000-0000-000000000001',
+   'ffffffff-0000-0000-0000-000000000001','Removed finishes record','finishes','normal','photo',
+   'Removals cannot be reconstructed','before new work');
+
+insert into public.capture_tasks(id, organization_id, property_id, baseline_id, requirement_id, status)
+values
+  ('ffffffff-0000-0000-0000-0000000000aa','aaaaaaaa-0000-0000-0000-000000000001',
+   'bbbbbbbb-0000-0000-0000-000000000001','eeeeeeee-0000-0000-0000-000000000001',
+   'ffffffff-0000-0000-0000-00000000000a','ready'),
+  ('ffffffff-0000-0000-0000-0000000000bb','aaaaaaaa-0000-0000-0000-000000000001',
+   'bbbbbbbb-0000-0000-0000-000000000001','eeeeeeee-0000-0000-0000-000000000001',
+   'ffffffff-0000-0000-0000-00000000000b','ready');
+
 \set QUIET off
 create or replace function pg_temp.check(label text, condition boolean) returns void
 language plpgsql as $$
@@ -368,5 +403,77 @@ select pg_temp.check('every table in public enforces row-level security',
     where t.schemaname = 'public'
       and not exists (select 1 from pg_class c join pg_namespace n on n.oid = c.relnamespace
                       where n.nspname = 'public' and c.relname = t.tablename and c.relrowsecurity)) = 0);
+
+-- ============================ accepting a capture that will never be made
+--
+-- Whole phases finish before anybody starts keeping a record. Demolition on a
+-- house bought mid-project is the ordinary case. A manager has to be able to
+-- close that gap for good — and the record has to keep saying the evidence
+-- does not exist, name who accepted that, and say why.
+
+set local role authenticated;
+set local test.uid = '22222222-2222-2222-2222-222222222222';
+select pg_temp.refused('a contributor cannot accept a missing capture',
+  $$select public.waive_capture_task('ffffffff-0000-0000-0000-0000000000aa',
+      'accepted_no_evidence', 'The demolition finished before we were engaged')$$);
+reset role;
+
+set local role authenticated;
+set local test.uid = '11111111-1111-1111-1111-111111111111';
+select pg_temp.refused('and nobody can accept one without saying why',
+  $$select public.waive_capture_task('ffffffff-0000-0000-0000-0000000000aa',
+      'accepted_no_evidence', 'n/a')$$);
+select pg_temp.refused('nor invent a kind of acceptance',
+  $$select public.waive_capture_task('ffffffff-0000-0000-0000-0000000000aa',
+      'never_mind', 'The demolition finished before we were engaged')$$);
+reset role;
+
+set local role authenticated;
+set local test.uid = '11111111-1111-1111-1111-111111111111';
+select pg_temp.affects('an owner accepts it, with a reason',
+  $$select public.waive_capture_task('ffffffff-0000-0000-0000-0000000000aa',
+      'accepted_no_evidence', 'Demolition completed before this record began')$$, 1);
+reset role;
+
+select pg_temp.check('the record keeps saying no evidence exists, and names who accepted that',
+  (select status from public.capture_tasks where id = 'ffffffff-0000-0000-0000-0000000000aa') = 'waived'
+  and (select waived_by from public.capture_tasks where id = 'ffffffff-0000-0000-0000-0000000000aa')
+      = '11111111-1111-1111-1111-111111111111'
+  and (select waiver_reason from public.capture_tasks where id = 'ffffffff-0000-0000-0000-0000000000aa')
+      = 'Demolition completed before this record began');
+
+select pg_temp.check('and the acceptance is in the audit trail',
+  (select count(*) from public.audit_events
+    where action = 'capture_task.waived'
+      and entity_id = 'ffffffff-0000-0000-0000-0000000000aa') = 1);
+
+-- Evidence that exists is not a gap. Accepting one here would bury a real
+-- record behind a sentence claiming none was made.
+insert into public.evidence_items(id, organization_id, property_id, space_id, storage_path,
+  original_filename, media_type, mime_type, byte_size, created_by, source_type, capture_task_id)
+values ('dddddddd-0000-0000-0000-00000000000f','aaaaaaaa-0000-0000-0000-000000000001',
+  'bbbbbbbb-0000-0000-0000-000000000001','cccccccc-0000-0000-0000-000000000001',
+  'organizations/a/properties/b/evidence/demo.jpg','demo.jpg','Property evidence','image/jpeg',
+  512,'11111111-1111-1111-1111-111111111111','phone','ffffffff-0000-0000-0000-0000000000bb');
+
+set local role authenticated;
+set local test.uid = '11111111-1111-1111-1111-111111111111';
+select pg_temp.refused('a capture that already holds evidence cannot be accepted as missing',
+  $$select public.waive_capture_task('ffffffff-0000-0000-0000-0000000000bb',
+      'accepted_no_evidence', 'We never captured this one either')$$);
+
+select pg_temp.affects('an acceptance can be withdrawn',
+  $$select public.lift_capture_waiver('ffffffff-0000-0000-0000-0000000000aa',
+      'The site photographer found the demolition set')$$, 1);
+reset role;
+
+select pg_temp.check('and the capture returns to the roadmap, carrying no trace of acceptance',
+  (select status from public.capture_tasks where id = 'ffffffff-0000-0000-0000-0000000000aa') = 'blocked'
+  and (select waiver_reason from public.capture_tasks where id = 'ffffffff-0000-0000-0000-0000000000aa') is null);
+
+select pg_temp.check('while the withdrawal itself stays on the record',
+  (select count(*) from public.audit_events
+    where action = 'capture_task.waiver_lifted'
+      and entity_id = 'ffffffff-0000-0000-0000-0000000000aa') = 1);
 
 rollback;

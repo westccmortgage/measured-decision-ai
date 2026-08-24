@@ -359,3 +359,29 @@ dialog form { padding: 0; }
   .hero-copy, .empty-state p, .assignment-heading p { max-width: 100%; }
   dialog { width: calc(100vw - 24px); max-width: none; }
 }
+
+/* Accepting that a planned capture will never be made. It is deliberately not
+   styled as a success: nothing was recorded, and the panel should not look like
+   something was. */
+.waiver-panel { border: 1px solid rgba(255, 190, 120, 0.22); border-radius: 12px; padding: 14px 16px; }
+.waiver-form { display: grid; gap: 10px; margin-top: 10px; }
+.waiver-form label { display: grid; gap: 5px; font-size: 12px; color: #93a7b6; }
+.waiver-form select,
+.waiver-form textarea {
+  width: 100%; padding: 9px 11px; border-radius: 9px;
+  border: 1px solid rgba(255, 255, 255, 0.14); background: rgba(255, 255, 255, 0.04);
+  color: inherit; font: inherit; resize: vertical;
+}
+.waiver-actions { display: flex; flex-wrap: wrap; gap: 8px; }
+.waiver-current {
+  margin-top: 10px; padding: 11px 13px; border-radius: 10px;
+  background: rgba(255, 190, 120, 0.08); border: 1px solid rgba(255, 190, 120, 0.2);
+  font-size: 13px; line-height: 1.55;
+}
+.waiver-current strong { display: block; margin-bottom: 3px; color: #ffcf9a; }
+.waiver-current em { font-style: normal; color: #93a7b6; }
+.task-waiver-note {
+  display: block; margin-top: 8px; padding: 7px 9px; border-radius: 8px;
+  background: rgba(255, 190, 120, 0.08); border: 1px solid rgba(255, 190, 120, 0.18);
+  color: #ffcf9a; font-size: 12px; line-height: 1.5; text-align: left;
+}

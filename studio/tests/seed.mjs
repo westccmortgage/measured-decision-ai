@@ -211,3 +211,41 @@ export const baselineAwaitingApprovalRows = () => {
   r.spaces = [];
   return r;
 };
+
+/* An approved roadmap with one phase whose work finished before anybody started
+   keeping a record — the ordinary case for a house bought mid-project, and the
+   one the roadmap had no way to close. */
+export const roadmapRows = ({ waived = false } = {}) => {
+  const r = clone(roomsNoEvidenceRows());
+  r.document_baselines[0].state = "approved";
+  r.construction_phases = [{
+    id: "ph-1", organization_id: ORG, property_id: PROPERTY, baseline_id: "bl-1",
+    code: "DEMO", name: "Selective demolition", sequence: 2,
+    objective: "Document removals and newly exposed conditions",
+    starts_when: "demolition starts", ends_when: "new work covers it",
+    concealment_risk: "high", source_refs: [], created_at: "2026-08-23T07:20:00Z",
+  }];
+  r.plan_spaces = [];
+  r.capture_requirements = [{
+    id: "req-1", organization_id: ORG, property_id: PROPERTY, baseline_id: "bl-1",
+    phase_id: "ph-1", plan_space_id: null, title: "Post-demolition exposed-condition record",
+    system: "structure", priority: "high", capture_type: "photo",
+    rationale: "Newly exposed retained conditions may be covered immediately after demolition.",
+    instructions: [], must_show: [], acceptance_criteria: [],
+    before_concealment: "before new work covers it", plan_refs: ["A110"],
+    source_document_ids: ["doc-1"], evidence_tags: [], created_at: "2026-08-23T07:20:00Z",
+  }];
+  r.capture_tasks = [{
+    id: "task-1", organization_id: ORG, property_id: PROPERTY, baseline_id: "bl-1",
+    requirement_id: "req-1", space_id: null,
+    status: waived ? "waived" : "ready",
+    waiver_kind: waived ? "accepted_no_evidence" : null,
+    waiver_reason: waived ? "Demolition finished before we were engaged; the owner has no photographs of it." : null,
+    waived_by: waived ? "user-1" : null,
+    waived_at: waived ? "2026-08-23T09:00:00Z" : null,
+    assigned_to: null, created_at: "2026-08-23T07:20:00Z", updated_at: "2026-08-23T07:20:00Z",
+  }];
+  r.field_assignments = [];
+  r.field_quality_checks = [];
+  return r;
+};
