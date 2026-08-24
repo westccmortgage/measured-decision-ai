@@ -46,7 +46,28 @@ SDK, builds the worker image, runs the worker's own self-test, works the queue,
 uploads its log, stops itself.
 
 It stops itself in every case: when the queue empties, when a check fails, and
-in the worst case on a three-hour deadline set in the first seconds.
+in the worst case on a three-hour deadline set in the first seconds. That is
+deliberate. A g4dn.xlarge costs about $0.53 an hour while it runs, and a machine
+left on after an empty queue is the only expensive mistake this project can
+make. A stopped instance costs nothing for compute; only its 200 GiB disk keeps
+billing, at roughly $16 a month, until the instance is terminated.
+
+## Working a second queue
+
+Start the same instance again. EC2 → Instances → select it → **Instance state →
+Start instance**. It boots, works whatever is queued, and stops itself again.
+
+This works from version `2026-08-24.1` onward. Before it, cloud-init ran the
+user data once per instance and never again, so a restarted machine came up
+doing nothing and charged for the privilege — the only way to work a new queue
+was to build a whole new instance from the launch form. The script now installs
+a copy of itself at `/opt/mdai/boot.sh` and a systemd unit that runs it on every
+later boot. `systemctl enable` without `--now` affects future boots only, so
+nothing runs twice on the first one.
+
+An instance created before that version does not have the unit, and starting it
+will not work a queue. Build one new machine from the current user data; from
+then on, start and stop that one.
 
 ## Reading what happened
 

@@ -20,10 +20,11 @@
 #
 # So this file no longer installs a driver at all. AWS publishes an image with
 # the driver, Docker and the container toolkit already in it, and using it
-# removes every failure this project has actually had. There is no reboot and no
-# systemd unit either: with nothing to install that needs one, the whole run
-# happens here, which also removes the failure where logs never appeared because
-# the second boot never came.
+# removes every failure this project has actually had. There is no reboot: the
+# whole run happens here, which also removes the failure where logs never
+# appeared because the second boot never came. There is one systemd unit, and it
+# installs nothing — it exists only so that starting this machine again works,
+# instead of forcing somebody to build a new one from a form every time.
 #
 # The machine now also says what it is doing, into the same record the Studio
 # reads. Every earlier machine was silent until someone fetched a log by hand,
@@ -40,7 +41,7 @@ export DEBIAN_FRONTEND=noninteractive
 # are what hung the previous version.
 export NEEDRESTART_MODE=a NEEDRESTART_SUSPEND=1 UCF_FORCE_CONFOLD=1
 
-MDAI_VERSION="2026-08-21.3 · AWS GPU image (Ubuntu 22.04), no driver install, no reboot"
+MDAI_VERSION="2026-08-24.1 · AWS GPU image, no driver install, restartable"
 SUPABASE_URL="https://hbqlhplgqwuesrovbiye.supabase.co"
 AWS_REGION="us-east-2"
 AWS_S3_BUCKET="measured-decision-production-808454010303"
@@ -97,6 +98,44 @@ step "starting · ${MDAI_VERSION}"
 shutdown -h +180
 
 mkdir -p /opt/mdai
+
+# The machine stops itself when the queue is empty, which is correct — a GPU
+# left running is the only expensive mistake here. But cloud-init runs user data
+# once per instance and never again, so starting that stopped machine brought up
+# a host that did nothing and charged for it. The only way to work a new queue
+# was to build a whole new instance, by hand, from a form.
+#
+# So the script installs itself. A copy runs from a systemd unit on every later
+# boot, and starting the stopped machine is all it takes. `enable` without
+# `--now` touches future boots only, so nothing runs twice today.
+#
+# The copy holds the service role key, like the cloud-init copy beside it in
+# /var/lib/cloud/. Both are root-only, and the key is never written anywhere a
+# non-root process can read.
+install_boot_unit() {
+  local source="/var/lib/cloud/instance/user-data.txt"
+  [ -r "$source" ] || return 0
+  install -m 600 "$source" /opt/mdai/boot.sh || return 0
+  cat > /etc/systemd/system/mdai-worker.service <<'UNIT'
+[Unit]
+Description=Measured Decision 360 worker
+After=network-online.target docker.service
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=/bin/bash /opt/mdai/boot.sh
+RemainAfterExit=no
+TimeoutStartSec=0
+
+[Install]
+WantedBy=multi-user.target
+UNIT
+  systemctl daemon-reload || return 0
+  systemctl enable mdai-worker.service || return 0
+  step "this machine can now be restarted instead of rebuilt"
+}
+install_boot_unit || true
 cat > /opt/mdai/worker.env <<ENV
 SUPABASE_URL=${SUPABASE_URL}
 SUPABASE_SERVICE_ROLE_KEY=${SUPABASE_SERVICE_ROLE_KEY}
