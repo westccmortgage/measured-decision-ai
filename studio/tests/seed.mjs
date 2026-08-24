@@ -249,3 +249,23 @@ export const roadmapRows = ({ waived = false } = {}) => {
   r.field_quality_checks = [];
   return r;
 };
+
+/* The machine building itself: booted eight minutes ago, last word four minutes
+   ago, and nothing since because fetching the SDK and building the image emit
+   nothing between them.
+ *
+ * This is a healthy machine. The screen used to call it dead after three
+ * minutes of quiet and offer to start the one that was already running.
+ */
+export const machinePreparingRows = () => {
+  const r = clone(rows);
+  const booted = new Date(Date.now() - 8 * 60_000).toISOString();
+  const lastWord = new Date(Date.now() - 4 * 60_000).toISOString();
+  r.worker_machine_runs = [{
+    id: "run-2", instance_id: "i-0aaa", region: "us-east-2", worker_version: "2026-08-24.2",
+    state: "preparing", step: "building the worker image", exit_code: null, message: null,
+    log_url: null, jobs_claimed: 0, jobs_completed: 0, jobs_failed: 0,
+    started_at: booted, last_seen_at: lastWord, finished_at: null,
+  }];
+  return r;
+};
