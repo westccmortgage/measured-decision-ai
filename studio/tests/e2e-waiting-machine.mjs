@@ -90,6 +90,10 @@ async function pressProcess(world) {
         const b = document.querySelector("#focus-blocked-action");
         return b && !b.hidden ? b.textContent.trim() : null;
       })(),
+      start: (() => {
+        const b = document.querySelector("#focus-start-machine");
+        return b && !b.hidden ? b.textContent.trim() : null;
+      })(),
       meterShown: document.querySelector(".focus-processing-meter")?.hidden === false,
     };
   });
@@ -120,6 +124,11 @@ console.log("\n── the machine stitched two captures yesterday, and is off no
     /360 export/i.test(state.action || ""), state.action || "");
   check("the alternative is explained, not just offered",
     /Insta360 Studio/i.test(state.alt) && /reads it straight away/i.test(state.alt), state.alt);
+  /* The screen that is waiting on the machine is where the machine gets
+     started. Sending somebody to a cloud console is the manual step that made
+     the whole product feel unfinished. */
+  check("the machine can be started from here", /start the 360 machine/i.test(state.start || ""),
+    state.start || "(no start control)");
   await context.close();
 }
 
@@ -127,6 +136,10 @@ console.log("\n── the machine is working right now ──");
 {
   const { context, state } = await pressProcess(machineWorkingRows());
   check("it says the machine is running", /running now/i.test(state.copy), state.copy);
+  /* Offering to start a machine that is already working is how somebody ends up
+     pressing a button that does nothing. */
+  check("and does not offer to start one that is already working", state.start === null,
+    state.start || "");
   /* Quoting one whole sentence inside another produced "The machine is running
      now — The 360 machine is running — …". Say it once. */
   check("and says so once, not twice",

@@ -74,6 +74,75 @@ The NVMe is scratch by definition: it is wiped when the instance stops. That is
 exactly right here, because the only durable output — the stitched master — is
 uploaded to S3 before the capture is finished with.
 
+## Starting on its own
+
+A capture that arrives creates a stitching job, and that job asks for the
+machine — no console, no person. Somebody watching a room that is waiting can
+also press **Start the 360 machine** in Studio. Both go through the same
+decision in `supabase/functions/_shared/wake-360-machine.ts`.
+
+Three rules keep an automatic starter from becoming an automatic bill:
+
+1. It never starts a machine that is already running, so it asks AWS what state
+   the instance is in before acting. `StartInstances` on a running instance is
+   not an error, which is exactly why it has to be checked.
+2. It never starts one with nothing queued. The cost has to buy something.
+3. It never starts one twice inside ten minutes. Ten files dropped together are
+   one machine, not ten.
+
+Every attempt is written to `machine_wake_events`, refusals included, so a
+machine that woke nine times in an hour is visible before it is a surprise on
+the invoice. Any Studio member can read that table; nobody signed out can.
+
+### Turning it on
+
+It ships inert. With no instance configured the answer is "not configured" and
+nothing happens, which is deliberate — switching it on is a decision made with
+an instance id and an IAM policy in front of you.
+
+**1. Give the key permission to start that one instance, and nothing else.**
+In IAM, attach this to the user or role whose keys the Edge Functions already
+use. `Resource` names the single instance on purpose: a policy that says `*`
+here can start anything in the account.
+
+```json
+{
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Effect": "Allow",
+      "Action": "ec2:StartInstances",
+      "Resource": "arn:aws:ec2:us-east-2:<account-id>:instance/<instance-id>"
+    },
+    {
+      "Effect": "Allow",
+      "Action": "ec2:DescribeInstances",
+      "Resource": "*"
+    }
+  ]
+}
+```
+
+`DescribeInstances` cannot be scoped to one instance — AWS does not support
+resource-level permissions on it — so it is read-only and separate.
+
+**2. Set the instance in Supabase.** Project → Settings → Edge Functions →
+Secrets:
+
+    AWS_360_INSTANCE_ID = i-...
+
+Optionally `AWS_360_REGION` if the machine is not in `AWS_S3_REGION`, and
+`AWS_360_ACCESS_KEY_ID` / `AWS_360_SECRET_ACCESS_KEY` to use a separate key for
+starting the machine from the one that reads the bucket. Without those it falls
+back to the object store's key.
+
+Secrets are set in the Supabase dashboard, never in a file and never in a
+message: anything pasted into a chat or a commit stays there.
+
+**3. The instance must be one that restarts.** Auto-start only helps if the
+machine works a queue when it boots, which needs the systemd unit from
+`2026-08-24.1` or later. An older instance will start, do nothing, and bill.
+
 ## Working a second queue
 
 Start the same instance again. EC2 → Instances → select it → **Instance state →

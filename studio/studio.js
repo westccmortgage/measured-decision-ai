@@ -3720,6 +3720,55 @@ function showBlockedProcessing(room, blocked) {
     action.textContent = waitingForMachine ? "Upload a 360 export instead" : "Back to the upload screen";
     action.dataset.openPicker = waitingForMachine ? "1" : "";
   }
+  /* The machine is started from here now, not from a cloud console. Uploading a
+     capture already asks for it on its own; this is the same request made
+     deliberately by somebody looking at the room that is waiting. */
+  const start = $("#focus-start-machine");
+  if (start) {
+    start.hidden = !waitingForMachine;
+    start.disabled = false;
+    start.textContent = "Start the 360 machine";
+  }
+}
+
+/* What came back is what is shown. "Starting…" over "nothing is queued" or over
+   "it is already running" would be a lie, and those are useful answers. */
+async function startCaptureMachine() {
+  const button = $("#focus-start-machine");
+  if (!button || button.disabled) return;
+  if (!cloud.schemaReady || !cloud.session) {
+    notify("Sign in before starting the 360 machine");
+    return;
+  }
+  button.disabled = true;
+  button.textContent = "Asking the machine to start…";
+  try {
+    const { data, error } = await cloud.client.functions.invoke("capture-machine", { body: {} });
+    if (error) throw error;
+    if (data?.error) throw new Error(data.error);
+    const said = {
+      started: "The 360 machine is starting. It takes a couple of minutes to come up, then it works the queue in order.",
+      already_awake: "The 360 machine is already running — it takes the queue in order.",
+      nothing_queued: "Nothing is waiting to be stitched, so the machine was left alone.",
+      too_soon: "The machine was started a few minutes ago and is still coming up.",
+      not_configured: "No 360 machine is connected to this deployment yet, so nothing could be started.",
+      failed: "The 360 machine could not be started. The capture is safe and still queued.",
+    }[data?.outcome] || data?.detail || "The machine was asked to start.";
+    notify(said, 9000);
+    $("#focus-processing-copy").textContent = said;
+    /* A machine that is coming up will report in on its own; the screen catches
+       up the next time the record is read rather than guessing at it here. */
+    if (data?.outcome === "started" || data?.outcome === "already_awake") {
+      button.textContent = "The machine is coming up";
+      scheduleStitchPoll();
+      return;
+    }
+  } catch (error) {
+    console.error(error);
+    notify("The 360 machine could not be reached. The capture is safe and still queued.");
+  }
+  button.disabled = false;
+  button.textContent = "Start the 360 machine";
 }
 
 /* Every other path through this stage is a real run, so both controls go back
@@ -3727,6 +3776,8 @@ function showBlockedProcessing(room, blocked) {
 function resetProcessingStageControls() {
   const meter = document.querySelector(".focus-processing-meter");
   if (meter) meter.hidden = false;
+  const start = $("#focus-start-machine");
+  if (start) { start.hidden = true; start.disabled = false; }
   const view = $("#focus-view-results");
   if (view) view.hidden = false;
   const action = $("#focus-blocked-action");
@@ -4441,6 +4492,7 @@ $("#focus-view-results").addEventListener("click", () => {
   renderFocusResults();
   showFocusStage("results");
 });
+$("#focus-start-machine").addEventListener("click", startCaptureMachine);
 $("#focus-blocked-action").addEventListener("click", (event) => {
   const openPicker = event.currentTarget.dataset.openPicker === "1";
   resetProcessingStageControls();

@@ -404,6 +404,40 @@ select pg_temp.check('every table in public enforces row-level security',
       and not exists (select 1 from pg_class c join pg_namespace n on n.oid = c.relnamespace
                       where n.nspname = 'public' and c.relname = t.tablename and c.relrowsecurity)) = 0);
 
+-- ================================= starting the machine on its own
+--
+-- The record of every wake request is where a runaway bill becomes visible, so
+-- it has to be readable by the people paying it and by nobody else.
+
+insert into public.machine_wake_events(requested_by_kind, instance_id, outcome, queued_jobs, detail)
+values ('upload', 'i-test', 'started', 3, '3 captures waiting');
+
+-- Setting the role without clearing the identity leaves auth.uid() answering
+-- with whoever ran the previous block, and "anon" then reads as a signed-in
+-- member. The first draft of this check passed for that reason.
+set local role anon;
+set local test.uid = '';
+select pg_temp.check('a signed-out caller cannot watch the machine',
+  (select count(*) from public.machine_wake_events) = 0);
+reset role;
+
+-- A member of a different organisation still sees it, and that is the intent:
+-- the machine is shared infrastructure rather than one customer's possession,
+-- and the row carries no evidence and no customer text — only its own state.
+set local role authenticated;
+set local test.uid = '44444444-4444-4444-4444-444444444444';
+select pg_temp.check('another organisation sees the shared machine, not its work',
+  (select count(*) from public.machine_wake_events) = 1
+  and (select count(*) from public.evidence_items
+       where organization_id = 'aaaaaaaa-0000-0000-0000-000000000001') = 0);
+reset role;
+
+set local role authenticated;
+set local test.uid = '11111111-1111-1111-1111-111111111111';
+select pg_temp.check('a Studio member sees what the machine was asked to do',
+  (select count(*) from public.machine_wake_events) = 1);
+reset role;
+
 -- ============================ accepting a capture that will never be made
 --
 -- Whole phases finish before anybody starts keeping a record. Demolition on a
