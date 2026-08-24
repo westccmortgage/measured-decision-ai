@@ -2923,3 +2923,11 @@ dialog textarea { min-height:78px; resize:vertical; }
 .focus-roadmap li.answers { cursor: pointer; }
 .focus-roadmap li.answers:hover,
 .focus-roadmap li.answers:focus-visible { background: rgba(255, 255, 255, 0.04); outline: none; }
+
+/* The way forward when the AI cannot read a room yet. Not an error panel — the
+   evidence is safe, it just is not readable in this form today. */
+.focus-processing-alt {
+  margin: 0; padding: 13px 15px; border-radius: 11px;
+  background: rgba(91, 216, 206, 0.07); border: 1px solid rgba(91, 216, 206, 0.18);
+  color: #b9cdd9; font-size: 14px; line-height: 1.6;
+}

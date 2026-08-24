@@ -3666,20 +3666,80 @@ function analysisBlocker(room) {
         .map((item) => [...item.sourceIds].sort().join("|")),
     )];
     if (paired.length) {
-      const machine = machineLine();
-      return `This room holds ${paired.length === 1 ? "a complete 360 capture" : `${paired.length} complete 360 captures`}. A browser cannot read the camera's INSV format, so the 360 machine stitches ${paired.length === 1 ? "it" : "them"} into a playable master first — the AI reads that. ${
-        machine || "The machine has not run yet."
-      }`;
+      /* What the machine did yesterday is not what is happening to this file.
+         "The 360 machine finished 1 day ago — 2 captures stitched" appended to
+         a capture uploaded a minute ago reads as reassurance that it is being
+         handled. It is not: the machine is off, and this capture will sit in
+         the queue until somebody starts it. Say which of those is true. */
+      const machine = machineStatus();
+      /* Composed from the machine's own report rather than wrapped around
+         machineLine(), which already opens with "The 360 machine is running"
+         and produced a stutter when quoted inside another sentence. */
+      let now;
+      if (machine.awake) {
+        const done = machine.completed ? `, ${machine.completed} stitched so far` : "";
+        now = `The 360 machine is running now — ${machine.step || "working"}${done} — and it takes the queue in order.`;
+      } else if (machine.known && machine.everRan && machine.minutes != null) {
+        const what = machine.stopped ? "stopped" : machine.finished ? "finished" : "last reported";
+        now = `Nothing is stitching this right now: the 360 machine ${what} ${machineAgo(machine.minutes)} and has to be started again before this capture can be read.`;
+      } else {
+        now = "Nothing is stitching this right now — the 360 machine has to be started before this capture can be read.";
+      }
+      return `This room holds ${paired.length === 1 ? "a complete 360 capture" : `${paired.length} complete 360 captures`}. The original${paired.length === 1 ? " is" : "s are"} safe and linked to this project. A browser cannot read the camera's INSV format, so the 360 machine stitches ${paired.length === 1 ? "it" : "them"} into a playable master first — the AI reads that. ${now}`;
     }
     return "One lens file of this 360 capture is missing. Both halves are what the 360 machine stitches from — upload the matching INSV file.";
   }
   return "This room holds documents only. The AI reads photos, video and stitched 360 captures; add one of those to interpret the space.";
 }
 
+/* Why the AI cannot read this room yet, kept on screen, with the way forward.
+   A capture waiting for the machine is not a dead end: a 360 MP4 exported from
+   Insta360 Studio is playable in a browser and readable by the model today,
+   without waiting for anything of ours. */
+function showBlockedProcessing(room, blocked) {
+  showFocusStage("process");
+  const waitingForMachine = !machineStatus().awake && /360 machine/.test(blocked);
+  $("#focus-processing-title").textContent = waitingForMachine
+    ? "Waiting for the 360 machine"
+    : "The AI cannot read this room yet";
+  $("#focus-processing-copy").textContent = blocked;
+  const meter = document.querySelector(".focus-processing-meter");
+  /* A meter at 0% beside a headline about waiting suggests something is
+     counting. Nothing is. */
+  if (meter) meter.hidden = true;
+  $("#focus-processing-status").textContent = room?.name ? `Room: ${room.name}` : "";
+  $("#focus-processing-machine").hidden = true;
+  $("#focus-processing-list").innerHTML = waitingForMachine
+    ? `<p class="focus-processing-alt">You do not have to wait for it. Insta360 Studio exports a full 360 MP4 from the same capture — that plays in a browser and the AI reads it straight away. The camera originals stay in the record either way.</p>`
+    : "";
+  const view = $("#focus-view-results");
+  if (view) { view.hidden = true; view.disabled = true; }
+  const action = $("#focus-blocked-action");
+  if (action) {
+    action.hidden = false;
+    action.textContent = waitingForMachine ? "Upload a 360 export instead" : "Back to the upload screen";
+    action.dataset.openPicker = waitingForMachine ? "1" : "";
+  }
+}
+
+/* Every other path through this stage is a real run, so both controls go back
+   to what they were before anything is shown. */
+function resetProcessingStageControls() {
+  const meter = document.querySelector(".focus-processing-meter");
+  if (meter) meter.hidden = false;
+  const view = $("#focus-view-results");
+  if (view) view.hidden = false;
+  const action = $("#focus-blocked-action");
+  if (action) { action.hidden = true; action.dataset.openPicker = ""; }
+}
+
 async function runFocusRoomAnalysis(room) {
   const blocked = analysisBlocker(room);
   if (blocked) {
-    notify(blocked, 9000);
+    /* A sentence that vanishes in nine seconds is what "I press Process with AI
+       and nothing happens" actually looks like. The answer stays on screen, and
+       it carries the one thing a person can still do. */
+    showBlockedProcessing(room, blocked);
     return;
   }
   if (!cloud.schemaReady || !cloud.propertyId) {
@@ -4305,6 +4365,7 @@ async function processFocusEvidence() {
   $("#focus-process").disabled = true;
   closeFocusSheet(false);
   showFocusStage("process");
+  resetProcessingStageControls();
   $("#focus-view-results").disabled = true;
   $("#focus-processing-title").textContent = "Processing evidence\u2026";
   $("#focus-processing-copy").textContent = candidates.length > 1
@@ -4379,6 +4440,12 @@ $("#focus-process").addEventListener("click", () => {
 $("#focus-view-results").addEventListener("click", () => {
   renderFocusResults();
   showFocusStage("results");
+});
+$("#focus-blocked-action").addEventListener("click", (event) => {
+  const openPicker = event.currentTarget.dataset.openPicker === "1";
+  resetProcessingStageControls();
+  showFocusStage("upload");
+  if (openPicker) $("#focus-evidence-files")?.click();
 });
 $("#focus-add-more").addEventListener("click", () => showFocusStage("upload"));
 $("#focus-open-report").addEventListener("click", openProjectReport);
