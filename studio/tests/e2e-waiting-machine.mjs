@@ -13,7 +13,7 @@
  */
 import { chromium } from "/opt/node22/lib/node_modules/playwright/index.mjs";
 import http from "http"; import fs from "fs"; import path from "path";
-import { rows, machineWorkingRows, ORG } from "./seed.mjs";
+import { rows, machineWorkingRows, machinePreparingRows, ORG } from "./seed.mjs";
 
 const ROOT = path.resolve(".");
 const TYPES = { ".html": "text/html", ".js": "text/javascript", ".css": "text/css" };
@@ -145,6 +145,21 @@ console.log("\n── the machine is working right now ──");
   check("and says so once, not twice",
     (state.copy.match(/360 machine is running/gi) || []).length === 1, state.copy);
   check("and does not tell them to start it", !/has to be started/i.test(state.copy), state.copy);
+  await context.close();
+}
+
+console.log("\n── the machine is building itself ──");
+{
+  const { context, state } = await pressProcess(machinePreparingRows());
+  /* Fetching the SDK and building the image emit nothing between them and take
+     ten to twenty minutes. Three minutes of quiet used to be enough to declare
+     a healthy machine dead and offer to start the one already running. */
+  check("a machine that is preparing is not called dead",
+    !/nothing is stitching this right now/i.test(state.copy), state.copy);
+  check("it says what it is doing", /getting itself ready/i.test(state.copy), state.copy);
+  check("and how long that takes", /ten to twenty minutes/i.test(state.copy), state.copy);
+  check("it does not offer to start a machine that is already starting",
+    state.start === null, state.start || "");
   await context.close();
 }
 

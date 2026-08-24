@@ -74,7 +74,17 @@
           updateUser: () => Promise.resolve({ error: null }),
         },
         from: builder,
-        rpc(name, args) { window.__rpcCalls.push({ name, args }); return result(true); },
+        rpc(name, args) {
+          window.__rpcCalls.push({ name, args });
+          /* A few RPCs return rows rather than a boolean, and a screen built on
+             the wrong shape breaks only in production. Answer in the shape the
+             function actually answers in. */
+          if (seed.rpc && Object.prototype.hasOwnProperty.call(seed.rpc, name)) {
+            return result(seed.rpc[name]);
+          }
+          if (name === "removed_projects") return result([]);
+          return result(true);
+        },
         functions: {
           invoke(name, opts) {
             window.__rpcCalls.push({ name, args: opts?.body });

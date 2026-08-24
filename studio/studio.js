@@ -1425,14 +1425,18 @@ function propertyTypeLabel(value) {
 
 function renderPropertyDirectory() {
   const properties = cloud.properties || [];
-  /* A list of projects, nothing else. Every row is the same one action. */
+  /* Two actions per row now, so the row can no longer be one button — a button
+     inside a button is not valid and the inner one stops being reachable. */
   elements.propertyDirectory.innerHTML = properties
     .map(
       (property) =>
-        `<button class="property-directory-card" type="button" data-property-id="${escapeText(property.id)}">
-        <h2>Open ${escapeText(property.name)}</h2>
-        <small>→</small>
-      </button>`,
+        `<article class="property-directory-card">
+        <button class="property-open" type="button" data-property-id="${escapeText(property.id)}">
+          <h2>Open ${escapeText(property.name)}</h2>
+          <small>→</small>
+        </button>
+        <button class="property-remove" type="button" data-remove-property="${escapeText(property.id)}" data-property-name="${escapeText(property.name)}" aria-label="Remove ${escapeText(property.name)}">Remove</button>
+      </article>`,
     )
     .join("");
   $("#empty-property-state").hidden = properties.length > 0;
@@ -1442,6 +1446,78 @@ function renderPropertyDirectory() {
     .forEach((button) =>
       button.addEventListener("click", () => openProperty(button.dataset.propertyId)),
     );
+  elements.propertyDirectory
+    .querySelectorAll("[data-remove-property]")
+    .forEach((button) =>
+      button.addEventListener("click", () =>
+        removeProject(button.dataset.removeProperty, button.dataset.propertyName)),
+    );
+}
+
+/* Removing a project hides it. It does not destroy anything: the evidence, the
+   rooms and the audit trail all stay exactly where they were, and the removal
+   is itself an audited event naming who did it and what was inside at the time.
+   Saying that plainly is the difference between a person removing a test
+   project and a person afraid to touch the button. */
+async function removeProject(propertyId, name) {
+  if (!propertyId) return;
+  const confirmed = window.confirm(
+    `Remove "${name}" from your projects?\n\n` +
+    "Nothing is destroyed. The evidence, the rooms and the record stay as they are, " +
+    "and the project can be put back from \"Removed projects\" below.",
+  );
+  if (!confirmed) return;
+  try {
+    const { error } = await cloud.client.rpc("soft_delete_project", {
+      p_property_id: propertyId,
+      p_reason: null,
+    });
+    if (error) throw error;
+    notify(`${name} was removed. It can be put back from "Removed projects".`);
+    await loadPropertyDirectory();
+  } catch (error) {
+    console.error(error);
+    /* The database owns the rule about who may remove a project, so what it
+       refused is what the person is told. */
+    notify(error.message || "This project could not be removed.");
+  }
+}
+
+async function restoreProject(propertyId, name) {
+  try {
+    const { error } = await cloud.client.rpc("restore_project", { p_property_id: propertyId });
+    if (error) throw error;
+    notify(`${name} is back in your projects.`);
+    await loadPropertyDirectory();
+  } catch (error) {
+    console.error(error);
+    notify(error.message || "This project could not be put back.");
+  }
+}
+
+/* What was removed, and the way back. Only an owner or administrator sees
+   anything here, because removed_projects() answers for nobody else. */
+async function renderRemovedProjects() {
+  const panel = $("#removed-projects");
+  const list = $("#removed-projects-list");
+  if (!panel || !list) return;
+  const { data, error } = await cloud.client.rpc("removed_projects");
+  const removed = error ? [] : (data || []);
+  panel.hidden = removed.length === 0;
+  $("#removed-projects-count").textContent = removed.length ? `· ${removed.length}` : "";
+  list.innerHTML = removed
+    .map(
+      (project) =>
+        `<div class="removed-project">
+        <div><strong>${escapeText(project.name)}</strong><small>Removed ${escapeText(formatEvidenceDate(project.deleted_at))}. Nothing was destroyed.</small></div>
+        <button class="secondary-button" type="button" data-restore-property="${escapeText(project.id)}" data-property-name="${escapeText(project.name)}">Put it back</button>
+      </div>`,
+    )
+    .join("");
+  list.querySelectorAll("[data-restore-property]").forEach((button) =>
+    button.addEventListener("click", () =>
+      restoreProject(button.dataset.restoreProperty, button.dataset.propertyName)),
+  );
 }
 
 async function loadPropertyDirectory() {
@@ -1453,6 +1529,9 @@ async function loadPropertyDirectory() {
   if (error) throw error;
   cloud.properties = data || [];
   renderPropertyDirectory();
+  /* Never lets the list fail to load: somebody whose role cannot see removed
+     projects still gets their projects. */
+  renderRemovedProjects().catch((error) => console.error("Removed projects", error));
 }
 
 async function hydrateCloudRecord() {
@@ -2275,9 +2354,22 @@ async function hydrateMachineRun() {
   machineRun = data?.[0] || null;
 }
 
-/* Every step this machine takes is shorter than three minutes, so three minutes
-   without a word means it went away rather than that it is busy. */
+/* How long silence is allowed to last before it means the machine went away
+   rather than that it is busy — and it depends entirely on what it is doing.
+   Once it is working the queue, every step is shorter than three minutes, so
+   three minutes of quiet is a machine that died.
+   Preparing is a different animal: fetching the licensed SDK and building the
+   worker image emit nothing between them and take ten to twenty minutes the
+   first time. Three minutes there declared a perfectly healthy machine dead and
+   told somebody to start the machine that was already building itself. */
 const MACHINE_SILENT_MINUTES = 3;
+const MACHINE_PREPARING_MINUTES = 25;
+
+function machineSilenceAllowance(state) {
+  return state === "starting" || state === "preparing"
+    ? MACHINE_PREPARING_MINUTES
+    : MACHINE_SILENT_MINUTES;
+}
 
 function machineStatus() {
   if (!machineRunLoaded) return { known: false };
@@ -2285,14 +2377,16 @@ function machineStatus() {
   const seen = Date.parse(machineRun.last_seen_at || machineRun.started_at || "");
   const minutes = Number.isFinite(seen) ? Math.floor((Date.now() - seen) / 60000) : null;
   const finished = machineRun.state === "finished" || machineRun.state === "stopped";
+  const preparing = machineRun.state === "starting" || machineRun.state === "preparing";
   return {
     known: true,
     everRan: true,
     finished,
     stopped: machineRun.state === "stopped",
+    preparing: preparing && !finished,
     /* minutes is checked against null on purpose: an unreadable timestamp is not
        a machine that reported one second ago. */
-    awake: !finished && minutes != null && minutes < MACHINE_SILENT_MINUTES,
+    awake: !finished && minutes != null && minutes < machineSilenceAllowance(machineRun.state),
     minutes,
     step: machineRun.step || "",
     message: machineRun.message || "",
@@ -2324,6 +2418,11 @@ function machineLine() {
     return `The 360 machine reported "${machine.step || "an unnamed step"}" without a readable time`;
   }
   if (machine.awake) {
+    /* Building itself is not the same as working the queue, and a person
+       waiting deserves to know which one they are watching. */
+    if (machine.preparing) {
+      return `The 360 machine is getting itself ready — ${machine.step || "preparing"}`;
+    }
     const done = machine.completed ? ` · ${machine.completed} stitched so far` : "";
     return `The 360 machine is running — ${machine.step || "working"}${done}`;
   }
@@ -3676,7 +3775,9 @@ function analysisBlocker(room) {
          machineLine(), which already opens with "The 360 machine is running"
          and produced a stutter when quoted inside another sentence. */
       let now;
-      if (machine.awake) {
+      if (machine.awake && machine.preparing) {
+        now = `The 360 machine is getting itself ready — ${machine.step || "preparing"}. The first build takes ten to twenty minutes, then it works the queue in order.`;
+      } else if (machine.awake) {
         const done = machine.completed ? `, ${machine.completed} stitched so far` : "";
         now = `The 360 machine is running now — ${machine.step || "working"}${done} — and it takes the queue in order.`;
       } else if (machine.known && machine.everRan && machine.minutes != null) {

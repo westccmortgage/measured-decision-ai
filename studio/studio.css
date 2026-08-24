@@ -2931,3 +2931,65 @@ dialog textarea { min-height:78px; resize:vertical; }
   background: rgba(91, 216, 206, 0.07); border: 1px solid rgba(91, 216, 206, 0.18);
   color: #b9cdd9; font-size: 14px; line-height: 1.6;
 }
+
+/* A project row does two things now: open it, or take it off the list. The
+   remove control is deliberately quiet — it is the rarer action, and a
+   destructive-looking button next to every project invites the wrong click. */
+.property-directory-card { position: relative; padding: 0; }
+.property-open {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 18px;
+  min-height: 78px;
+  padding: 20px 24px;
+  border: 0;
+  background: none;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+.property-remove {
+  align-self: stretch;
+  padding: 0 18px;
+  border: 0;
+  border-left: 1px solid var(--line);
+  background: none;
+  color: #6f8797;
+  font: inherit;
+  font-size: 13px;
+  cursor: pointer;
+  transition: 140ms ease;
+}
+.property-remove:hover,
+.property-remove:focus-visible { background: rgba(255, 120, 120, 0.09); color: #ff9d9d; outline: none; }
+
+/* Nothing was destroyed, so the way back is on the same screen as the way out. */
+.removed-projects {
+  margin-top: 26px;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  background: rgba(10, 20, 33, 0.4);
+}
+.removed-projects > summary {
+  padding: 15px 20px;
+  cursor: pointer;
+  font-size: 14px;
+  color: #93a7b6;
+  list-style: none;
+}
+.removed-projects > summary::-webkit-details-marker { display: none; }
+.removed-projects > summary::before { content: "▸ "; color: #6f8797; }
+.removed-projects[open] > summary::before { content: "▾ "; }
+.removed-project {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 14px 20px;
+  border-top: 1px solid var(--line);
+}
+.removed-project strong { display: block; font-size: 15px; }
+.removed-project small { color: #6f8797; font-size: 12.5px; }
