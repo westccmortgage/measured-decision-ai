@@ -1,4 +1,5 @@
 import { safeError } from "../_shared/safe-error.ts";
+import { wake360Machine } from "../_shared/wake-360-machine.ts";
 import { createClient } from "npm:@supabase/supabase-js@2";
 import {
   AbortMultipartUploadCommand,
@@ -537,6 +538,16 @@ Deno.serve(async (request) => {
       if (row.entity_type === "evidence" && /\.insv$/i.test(row.original_filename)) {
         const { error: captureGroupError } = await admin.rpc("reconcile_insta360_capture", { p_evidence_id: inserted.id });
         if (captureGroupError) console.error("Insta360 capture grouping could not be completed", captureGroupError);
+        /* A capture that just landed is work the machine has to do, so the queue
+           asks for the machine rather than waiting for somebody to remember it.
+           The upload does not depend on the answer: a machine that cannot be
+           started is a slower stitch, not a lost file, and failing the upload
+           over it would turn an inconvenience into data loss. */
+        else {
+          wake360Machine(admin, "upload").catch((wakeError) =>
+            console.error("The 360 machine could not be asked to start", wakeError)
+          );
+        }
       }
       if (
         row.entity_type === "evidence" &&
