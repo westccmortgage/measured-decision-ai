@@ -12,7 +12,7 @@
       href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap"
       rel="stylesheet"
     >
-    <link rel="stylesheet" href="studio.css?v=d7aaca1ebf">
+    <link rel="stylesheet" href="studio.css?v=55bc03ee72">
   </head>
   <body>
     <section class="simple-intake" id="simple-intake">
@@ -147,12 +147,37 @@
           </div>
           <div class="focus-upload-done" id="focus-upload-done" hidden>
             <p><b>✓</b> <span id="focus-upload-done-copy">Evidence uploaded successfully</span></p>
+            <!-- A count somebody cannot open is not information. This is the
+                 list behind the number. -->
+            <button class="focus-file-list-open" id="focus-open-files" type="button">See every file →</button>
           </div>
           <div class="focus-stage-actions">
             <button class="focus-secondary-action" id="focus-upload-more" type="button" hidden>Upload more</button>
             <button class="focus-primary-action" id="focus-process" type="button" disabled>Process with AI</button>
           </div>
         </section>
+
+        <!-- Every file in the project, with the room it sits in. Built because
+             "31 files in this project" was a number with nothing under it, and
+             the filing mistake it was hiding — the same capture uploaded three
+             times into one room — is invisible from inside any single room. -->
+        <div class="focus-files" id="focus-files" hidden role="dialog" aria-label="Every file in this project">
+          <div class="focus-files-panel">
+            <header>
+              <div>
+                <p class="eyebrow">Every file in this project</p>
+                <h2 id="focus-files-count">Files</h2>
+              </div>
+              <button class="focus-files-close" id="focus-files-close" type="button" aria-label="Close">×</button>
+            </header>
+            <div class="focus-files-tools">
+              <input type="search" id="focus-files-search" placeholder="Filter by name or room" aria-label="Filter files">
+              <label><input type="checkbox" id="focus-files-dupes"> Only names that appear more than once</label>
+            </div>
+            <div class="focus-files-list" id="focus-files-list"></div>
+            <p class="focus-files-note" id="focus-files-note"></p>
+          </div>
+        </div>
 
         <section class="focus-stage focus-processing-stage" id="focus-processing-stage" hidden>
           <!-- One room at a time, chosen deliberately. Reading the whole project
@@ -1220,7 +1245,7 @@
     <script src="trades360.js?v=6111550f8e"></script>
     <script src="money360.js?v=55e421da52"></script>
     <script src="report.js?v=9b9c4b9070"></script>
-    <script src="studio.js?v=e92d4ccb9f"></script>
+    <script src="studio.js?v=92303b2bdc"></script>
     <script src="pano360.js?v=77da06d9fe"></script>
     <script src="capture-task-bridge.js?v=715b200611"></script>
   </body>
