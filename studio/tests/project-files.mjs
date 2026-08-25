@@ -190,6 +190,64 @@ check("choosing opens the list narrowed to the playable captures",
 check("and every one of them can be opened",
   chooser.openable === 9, `${chooser.openable} openable`);
 
+console.log("\n── the result of the room you are actually in ──");
+/* The report, verbatim: "I look at Master Bedroom on the second floor, then I
+   say show me the result, and it shows me I can open the 360 of Hallway."
+   The newest master in this project is Hallway 107 at 04:47, and the card
+   offered it regardless of where the person was. */
+const followsRoom = await page.evaluate(async () => {
+  document.querySelector("#focus-files-close")?.click();
+  await new Promise((r) => setTimeout(r, 200));
+  /* Choose the room the way a person does, on the AI-processing screen. */
+  document.querySelector("#focus-process")?.click();
+  await new Promise((r) => setTimeout(r, 700));
+  const picker = document.querySelector("#analyze-room");
+  const option = [...picker.options].find((o) => /Master Bedroom 205A/.test(o.textContent));
+  picker.value = option.value;
+  picker.dispatchEvent(new Event("change", { bubbles: true }));
+  await new Promise((r) => setTimeout(r, 400));
+  document.querySelector('[data-focus-step="results"]')?.click();
+  await new Promise((r) => setTimeout(r, 900));
+  const open = document.querySelector('[data-vr-action="open"]');
+  return {
+    label: open?.textContent.replace(/\s+/g, " ").trim() || "",
+    elsewhere: document.querySelector(".focus-vr-elsewhere")?.textContent || "",
+  };
+});
+check("the result names the room you were looking at",
+  /Master Bedroom 205A/.test(followsRoom.label), followsRoom.label || "(no button)");
+check("and not the newest capture in some other room",
+  !/Hallway/.test(followsRoom.label), followsRoom.label || "");
+/* That room has a playable capture, so there is nothing to apologise for. */
+check("with no note about standing somewhere else",
+  followsRoom.elsewhere === "", followsRoom.elsewhere.slice(0, 160));
+
+console.log("\n── a room that has no playable capture yet ──");
+const borrowed = await page.evaluate(async () => {
+  document.querySelector("#focus-process")?.click();
+  await new Promise((r) => setTimeout(r, 700));
+  const picker = document.querySelector("#analyze-room");
+  /* Hallway 200A holds six camera originals and no stitched master. */
+  const option = [...picker.options].find((o) => /Hallway 200A/.test(o.textContent));
+  picker.value = option.value;
+  picker.dispatchEvent(new Event("change", { bubbles: true }));
+  await new Promise((r) => setTimeout(r, 400));
+  document.querySelector('[data-focus-step="results"]')?.click();
+  await new Promise((r) => setTimeout(r, 900));
+  return {
+    label: document.querySelector('[data-vr-action="open"]')?.textContent.replace(/\s+/g, " ").trim() || "",
+    elsewhere: (document.querySelector(".focus-vr-elsewhere")?.textContent || "").replace(/\s+/g, " "),
+  };
+});
+/* Offering another room is fine. Offering it silently, as though it were the
+   answer to the question asked, is not. */
+check("it says the room you are in has nothing playable yet",
+  /Hallway 200A has no playable 360 yet/.test(borrowed.elsewhere), borrowed.elsewhere.slice(0, 200));
+check("and names the room the capture it offers is actually in",
+  /The capture below is in /.test(borrowed.elsewhere), borrowed.elsewhere.slice(0, 220));
+check("while still offering a way to stand somewhere",
+  /Open 360 view — /.test(borrowed.label), borrowed.label || "(no button)");
+
 check("nothing threw", errors.length === 0, errors.join(" | "));
 
 await browser.close(); server.close();
