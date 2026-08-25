@@ -4,6 +4,7 @@ import {
   PLAN_WORKFLOW_INSTRUCTIONS,
 } from "../_shared/agent-contracts.ts";
 import { signedObjectReadUrl } from "../_shared/aws-object-store.ts";
+import { openAITransport } from "../_shared/openai-transport.ts";
 
 const allowedOrigins = new Set([
   "https://measureddecision.com",
@@ -470,9 +471,14 @@ Deno.serve(async (request) => {
   const supabaseUrl = Deno.env.get("SUPABASE_URL");
   const anonKey = Deno.env.get("SUPABASE_ANON_KEY") || Deno.env.get("SUPABASE_PUBLISHABLE_KEY");
   const serviceKey = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY");
-  const openAIKey = Deno.env.get("OPENAI_API_KEY");
   const model = Deno.env.get("OPENAI_PLAN_MODEL") || Deno.env.get("OPENAI_MODEL") || "gpt-5.6-sol";
-  if (!supabaseUrl || !anonKey || !serviceKey || !openAIKey) {
+  let aiTransport: ReturnType<typeof openAITransport>;
+  try {
+    aiTransport = openAITransport();
+  } catch {
+    return json(request, { error: "Server configuration is incomplete" }, 500);
+  }
+  if (!supabaseUrl || !anonKey || !serviceKey) {
     return json(request, { error: "Server configuration is incomplete" }, 500);
   }
 
@@ -554,8 +560,8 @@ Deno.serve(async (request) => {
         return json(request, { job_id: job.id, state: "processing", progress_stage: "finalizing", progress_percent: 90 });
       }
 
-      const providerResponse = await fetch(`https://api.openai.com/v1/responses/${encodeURIComponent(job.provider_job_id)}`, {
-        headers: { Authorization: `Bearer ${openAIKey}`, "Content-Type": "application/json" },
+      const providerResponse = await fetch(`${aiTransport.baseUrl}/responses/${encodeURIComponent(job.provider_job_id)}`, {
+        headers: aiTransport.headers,
       });
       const providerPayload = await providerResponse.json();
       if (!providerResponse.ok) throw new Error(providerError(providerPayload, `Could not read background response (${providerResponse.status})`));
@@ -663,9 +669,9 @@ Deno.serve(async (request) => {
       })),
     ];
 
-    const openAIResponse = await fetch("https://api.openai.com/v1/responses", {
+    const openAIResponse = await fetch(`${aiTransport.baseUrl}/responses`, {
       method: "POST",
-      headers: { Authorization: `Bearer ${openAIKey}`, "Content-Type": "application/json" },
+      headers: aiTransport.headers,
       body: JSON.stringify({
         model,
         background: true,

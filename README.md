@@ -74,12 +74,15 @@ governing PDF plan set instead of from an unstructured site walk:
 
 Production also requires migrations `006_external_object_storage.sql` through
 `009_governing_plan_attestation.sql` plus `object-storage`, `field-workflow`,
-`field-quality-check`, and `vision-release`. The plan worker
-uses `OPENAI_PLAN_MODEL`, then `OPENAI_MODEL`, and requires the same server-only
-`OPENAI_API_KEY` already used by evidence analysis. See
-[`docs/AI_OPERATING_CONTRACT.md`](docs/AI_OPERATING_CONTRACT.md) for its scope
-and non-inference rules. The versioned specialist responsibilities, routing,
-training loop, and current activation status are defined in
+`field-quality-check`, and `vision-release`. The plan worker uses
+`OPENAI_PLAN_MODEL`, then `OPENAI_MODEL`. Evidence and plan analysis prefer the
+server-only Cloudflare AI Gateway transport when its account ID and token are
+configured, and otherwise fall back to the existing server-only `OPENAI_API_KEY`.
+See [`docs/CLOUDFLARE_AI_GATEWAY.md`](docs/CLOUDFLARE_AI_GATEWAY.md) for Unified
+Billing activation and privacy behavior, and
+[`docs/AI_OPERATING_CONTRACT.md`](docs/AI_OPERATING_CONTRACT.md) for the model's
+scope and non-inference rules. The versioned specialist responsibilities,
+routing, training loop, and current activation status are defined in
 [`docs/AGENT_OPERATING_MODEL.md`](docs/AGENT_OPERATING_MODEL.md).
 
 Field emails use Resend. Configure these Supabase Edge Function secrets before
