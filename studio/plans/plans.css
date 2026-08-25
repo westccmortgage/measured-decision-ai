@@ -85,7 +85,7 @@ select:focus, input:focus { border-color: var(--cyan); box-shadow: 0 0 0 2px rgb
 .metrics strong { display: block; font-size: 23px; line-height: 1.25; }
 
 .workflow-grid { display: grid; grid-template-columns: minmax(0, 1fr) 340px; gap: 18px; align-items: start; }
-.panel, .baseline-section, .roadmap-section { border: 1px solid var(--line); background: rgba(8, 22, 35, .72); }
+.panel, .baseline-section, .roadmap-section, .routes-section { border: 1px solid var(--line); background: rgba(8, 22, 35, .72); }
 .panel-heading, .section-heading { min-height: 66px; display: flex; align-items: center; justify-content: space-between; gap: 18px; padding: 13px 18px; border-bottom: 1px solid var(--line); }
 .panel-heading p, .section-heading > div > p { margin: 0 0 3px; color: var(--cyan); text-transform: uppercase; letter-spacing: .1em; font-size: 9px; font-weight: 700; }
 
@@ -181,7 +181,7 @@ select:focus, input:focus { border-color: var(--cyan); box-shadow: 0 0 0 2px rgb
   .analysis-progress-track > i, .analysis-pulse::before, .analysis-pulse::after { animation: none; }
 }
 
-.baseline-section, .roadmap-section { margin-top: 18px; }
+.baseline-section, .roadmap-section, .routes-section { margin-top: 18px; }
 .heading-actions, .roadmap-filters { display: flex; gap: 10px; align-items: center; }
 .baseline-summary { display: grid; grid-template-columns: 1.4fr 1fr 1fr; }
 .summary-card { min-height: 155px; padding: 18px; border-right: 1px solid var(--line); }
@@ -384,4 +384,32 @@ dialog form { padding: 0; }
   display: block; margin-top: 8px; padding: 7px 9px; border-radius: 8px;
   background: rgba(255, 190, 120, 0.08); border: 1px solid rgba(255, 190, 120, 0.18);
   color: #ffcf9a; font-size: 12px; line-height: 1.5; text-align: left;
+}
+
+/* How the rooms connect. Deliberately not a diagram: a plan set supports the
+   statement "these two rooms have a door between them" and does not support
+   any drawing of where that door is, so the screen says the thing the record
+   can stand behind and nothing more. The state of each route is the loudest
+   thing on the row, because an unconfirmed reading presented quietly is an
+   unconfirmed reading presented as a fact. */
+.routes-intro { margin: 0; padding: 14px 18px 0; color: #9babb8; max-width: 720px; }
+.route-list { display: grid; gap: 1px; margin-top: 14px; background: var(--line); border-top: 1px solid var(--line); }
+.route-row { display: grid; grid-template-columns: minmax(0,1fr) 118px 128px auto; gap: 16px; align-items: center; padding: 14px 18px; background: #081624; }
+.route-pair { min-width: 0; display: grid; gap: 3px; }
+.route-pair strong { font-size: 14px; font-weight: 500; }
+.route-pair small { color: #698196; font-size: 10px; }
+.route-kind { color: #adbdc8; font-size: 10px; text-transform: uppercase; letter-spacing: .08em; }
+.route-state { font-size: 9px; font-weight: 700; text-transform: uppercase; letter-spacing: .1em; color: var(--amber); }
+.route-state.confirmed { color: var(--green); }
+.route-actions { display: flex; gap: 8px; justify-self: end; }
+.route-actions .button { min-height: 34px; padding: 0 12px; font-size: 11px; }
+/* A room the plans name and the record does not have. Dropping the row would
+   read as "there is no door there", so it stays and says what is wrong. */
+.route-row.unmapped { background: #0b1524; }
+.route-missing { color: var(--amber); font-size: 10px; }
+.route-empty-room { color: #698196; font-size: 10px; }
+
+@media (max-width: 860px) {
+  .route-row { grid-template-columns: minmax(0,1fr); gap: 10px; }
+  .route-actions { justify-self: start; }
 }

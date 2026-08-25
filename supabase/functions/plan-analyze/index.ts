@@ -38,7 +38,7 @@ const schema = {
   type: "object",
   additionalProperties: false,
   required: [
-    "project_summary", "source_register", "levels", "spaces", "systems",
+    "project_summary", "source_register", "levels", "spaces", "space_links", "systems",
     "phases", "capture_requirements", "gaps", "assumptions",
   ],
   properties: {
@@ -84,6 +84,34 @@ const schema = {
           level: { type: "string" },
           name: { type: "string" },
           classification: { type: "string" },
+          source_refs: { type: "array", items: { type: "string" } },
+        },
+      },
+    },
+    /* How the rooms connect, which is what makes a plan set a building rather
+       than a list. Only openings a sheet actually draws: a door is a fact on
+       the sheet, "these rooms are probably next to each other" is not. */
+    space_links: {
+      type: "array",
+      items: {
+        type: "object",
+        additionalProperties: false,
+        required: [
+          "from_building", "from_level", "from_space_name",
+          "to_building", "to_level", "to_space_name",
+          "connection", "source_refs",
+        ],
+        properties: {
+          from_building: { type: "string" },
+          from_level: { type: "string" },
+          from_space_name: { type: "string" },
+          to_building: { type: "string" },
+          to_level: { type: "string" },
+          to_space_name: { type: "string" },
+          connection: {
+            type: "string",
+            enum: ["door", "opening", "stairs", "corridor", "exterior_door", "other"],
+          },
           source_refs: { type: "array", items: { type: "string" } },
         },
       },
@@ -368,6 +396,45 @@ async function finalizeAnalysis(
       : { data: [], error: null };
     if (spacesError) throw spacesError;
 
+    /* How the rooms connect. The pair is the identity of an opening, so it is
+       normalised here rather than trusted: the smaller id first, and a door
+       named twice from either side is one row. A link naming a room that is
+       not in this baseline is dropped — silently connecting it to the nearest
+       similar name is exactly the believable wrong this product refuses. */
+    const spaceKeyOf = (building: unknown, level: unknown, name: unknown) =>
+      `${safeText(building, "").toLowerCase()}|${safeText(level, "").toLowerCase()}|${safeText(name, "").toLowerCase()}`;
+    const idByKey = new Map(
+      (insertedSpaces || []).map((space) => [spaceKeyOf(space.building, space.level, space.name), space.id]),
+    );
+    const linkRows: Array<Record<string, unknown>> = [];
+    const seenLinks = new Set<string>();
+    const rawLinks = Array.isArray(analysis.space_links) ? analysis.space_links : [];
+    let unresolvedLinks = 0;
+    for (const link of rawLinks as Array<Record<string, unknown>>) {
+      const fromId = idByKey.get(spaceKeyOf(link.from_building, link.from_level, link.from_space_name));
+      const toId = idByKey.get(spaceKeyOf(link.to_building, link.to_level, link.to_space_name));
+      if (!fromId || !toId || fromId === toId) { unresolvedLinks += 1; continue; }
+      const low = fromId < toId ? fromId : toId;
+      const high = fromId < toId ? toId : fromId;
+      const connection = safeText(link.connection, "opening");
+      const key = `${low}|${high}|${connection}`;
+      if (seenLinks.has(key)) continue;
+      seenLinks.add(key);
+      linkRows.push({
+        organization_id: job.organization_id,
+        property_id: job.property_id,
+        baseline_id: baseline.id,
+        from_plan_space_id: low,
+        to_plan_space_id: high,
+        connection,
+        source_refs: Array.isArray(link.source_refs) ? link.source_refs : [],
+      });
+    }
+    if (linkRows.length) {
+      const { error: linksError } = await admin.from("plan_space_links").insert(linkRows);
+      if (linksError) throw linksError;
+    }
+
     const phaseRows = analysis.phases.map((phase: Record<string, unknown>) => ({
       organization_id: job.organization_id,
       property_id: job.property_id,
@@ -388,15 +455,12 @@ async function finalizeAnalysis(
     if (phasesError || !insertedPhases) throw phasesError || new Error("Could not create phases");
 
     const phaseByCode = new Map(insertedPhases.map((phase) => [phase.code, phase.id]));
-    const spaceKey = (building: unknown, level: unknown, name: unknown) =>
-      `${safeText(building, "").toLowerCase()}|${safeText(level, "").toLowerCase()}|${safeText(name, "").toLowerCase()}`;
-    const spaceByKey = new Map((insertedSpaces || []).map((space) => [spaceKey(space.building, space.level, space.name), space.id]));
 
     const requirementRows = analysis.capture_requirements.flatMap((requirement: Record<string, unknown>) => {
       const phaseId = phaseByCode.get(requirement.phase_code);
       if (!phaseId) return [];
       const planSpaceId = requirement.space_name
-        ? spaceByKey.get(spaceKey(requirement.building, requirement.level, requirement.space_name)) || null
+        ? idByKey.get(spaceKeyOf(requirement.building, requirement.level, requirement.space_name)) || null
         : null;
       return [{
         organization_id: job.organization_id,
@@ -448,6 +512,8 @@ async function finalizeAnalysis(
         version,
         document_ids: job.document_ids,
         model,
+        space_links: linkRows.length,
+        space_links_unresolved: unresolvedLinks,
         agent_key: "plan_interpreter",
         collaborating_agents: ["document_controller", "capture_planner", "verification_guard"],
         agent_contract_version: AGENT_CONTRACT_VERSION,

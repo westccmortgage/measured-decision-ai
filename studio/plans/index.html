@@ -9,7 +9,7 @@
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
-    <link rel="stylesheet" href="plans.css?v=992e10022d">
+    <link rel="stylesheet" href="plans.css?v=d7562b5ec0">
   </head>
   <body>
     <div class="boot-screen" id="boot-screen">
@@ -174,6 +174,26 @@
           </div>
           <div class="phase-list" id="phase-list"></div>
         </section>
+
+        <!-- A plan set says which rooms open into which. That is what turns a
+             list of rooms into a building somebody can walk through, in the
+             browser and in a headset. It is still a reading of a drawing until
+             a person who knows the place confirms it. -->
+        <section class="routes-section" id="routes-section" hidden>
+          <div class="section-heading">
+            <div><p>05 · How the rooms connect</p><h2>Confirm the way through</h2></div>
+            <div class="heading-actions">
+              <span class="state-pill" id="routes-state">Not read yet</span>
+            </div>
+          </div>
+          <p class="routes-intro">These are the openings the AI read on the sheets — doors, cased openings, stairs. Nothing here is a fact yet. Confirm the ones that are really there and reject the ones that are not; what you confirm is what somebody can walk through.</p>
+          <div class="route-list" id="route-list"></div>
+          <div class="empty-state" id="routes-empty" hidden>
+            <strong>The plan set did not name any openings</strong>
+            <p>The rooms are in the record, but nothing in the analysed sheets said how they connect. Re-analysing a set that includes floor plans is what would find them.</p>
+          </div>
+          <p class="governance-note"><i></i>A confirmed route says a person recognised the opening. It does not certify dimensions, egress, accessibility, or code compliance.</p>
+        </section>
       </main>
     </div>
 
@@ -279,6 +299,6 @@
     <script src="../config.js?v=0772f5f463"></script>
     <script src="../s3-upload.js?v=b1a9bebb93"></script>
     <script src="../recent-projects.js?v=529636c5de"></script>
-    <script src="plans.js?v=8342312fe9"></script>
+    <script src="plans.js?v=55e37ee352"></script>
   </body>
 </html>
