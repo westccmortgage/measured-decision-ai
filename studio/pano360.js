@@ -125,6 +125,10 @@
     .pano-stage>img,.pano-stage>video.pano-flat{max-width:100%;max-height:100%;object-fit:contain}
     .pano-stage>.pano-doc{padding:32px;text-align:center;color:#a5b8c8}
     .pano-stage>.pano-doc a{display:inline-block;margin-top:16px;padding:14px 22px;border-radius:10px;background:#52d2df;color:#06111d;font-weight:600;text-decoration:none}
+    .pano-say{position:absolute;left:50%;bottom:calc(22px + env(safe-area-inset-bottom));transform:translateX(-50%);max-width:calc(100% - 32px);text-align:center;padding:11px 16px;border-radius:12px;background:rgba(4,9,15,.92);border:1px solid rgba(255,255,255,.14);color:#dbe7ef;font-size:13px;line-height:1.5;z-index:3}
+    .pano-say[hidden]{display:none}
+    .pano-say.bad{border-color:rgba(255,140,140,.5);color:#ffc9c9}
+    .pano-say.good{border-color:rgba(127,214,168,.5);color:#bdf0d4}
     .pano-hint{position:absolute;left:50%;top:calc(74px + env(safe-area-inset-top));transform:translateX(-50%);max-width:calc(100% - 32px);text-align:center;padding:8px 14px;border-radius:999px;background:rgba(4,9,15,.72);color:#a5b8c8;font-size:12px;pointer-events:none;transition:opacity 400ms ease}
     .pano-foot{display:flex;flex-wrap:wrap;gap:8px;padding:10px 14px calc(12px + env(safe-area-inset-bottom));background:linear-gradient(0deg,rgba(4,9,15,.94),rgba(4,9,15,0));position:absolute;inset:auto 0 0;z-index:2}
     .pano-foot button{flex:1 1 auto;min-height:46px;padding:0 16px;border:1px solid #35506a;border-radius:10px;background:rgba(10,20,33,.82);color:#edf4f7;font:inherit;font-size:13px;font-weight:600;cursor:pointer}
@@ -263,9 +267,20 @@
   function startSphere(media, isVideo, onFrame, onVRChange) {
     const canvas = document.createElement("canvas");
     stage.appendChild(canvas);
+    /* xrCompatible from the start, exactly as the headset probe asked for it.
+       Asking an existing context to become XR compatible afterwards is allowed
+       to lose and restore it, and a restored context has no program, no buffer
+       and no texture — which looks from the outside like a button that does
+       nothing. Browsers with no WebXR ignore the attribute. */
+    const attributes = { antialias: false, alpha: false, xrCompatible: true };
+    /* WebGL 2 first, which is what the headset probe used and what worked in
+       the headset. The shaders are ES 1.00 and a WebGL 2 context accepts them
+       unchanged, so this costs nothing and removes the last difference between
+       the page that opened an immersive session and the one that would not. */
     const gl =
-      canvas.getContext("webgl", { antialias: false, alpha: false }) ||
-      canvas.getContext("experimental-webgl", { antialias: false, alpha: false });
+      canvas.getContext("webgl2", attributes) ||
+      canvas.getContext("webgl", attributes) ||
+      canvas.getContext("experimental-webgl", attributes);
     if (!gl) throw new Error("WebGL unavailable");
 
     const program = gl.createProgram();
@@ -361,10 +376,17 @@
           optionalFeatures: ["local-floor"],
         });
       } catch (error) {
-        return { ok: false, why: "The headset would not open an immersive view." };
+        /* The name and message the device gave. A generic sentence here is what
+           turns a fixable problem into an afternoon. */
+        return {
+          ok: false,
+          why: `The headset refused to open an immersive view — ${error.name || "error"}: ${error.message || error}`,
+        };
       }
       try {
-        await gl.makeXRCompatible();
+        /* Already asked for at creation; this is the belt to that pair of
+           braces, and a no-op when the context is compatible. */
+        if (gl.makeXRCompatible) await gl.makeXRCompatible();
         const program2 = gl.createProgram();
         gl.attachShader(program2, compile(gl, gl.VERTEX_SHADER, XR_VERTEX_SHADER));
         gl.attachShader(program2, compile(gl, gl.FRAGMENT_SHADER, XR_FRAGMENT_SHADER));
@@ -439,7 +461,10 @@
       } catch (error) {
         try { await session.end(); } catch (_) { /* already gone */ }
         xr = null;
-        return { ok: false, why: "The immersive view could not be set up." };
+        return {
+          ok: false,
+          why: `The immersive view could not be set up — ${error.name || "error"}: ${error.message || error}`,
+        };
       }
     }
 
@@ -564,6 +589,26 @@
     }
 
     return { dispose, lookAt, view, canvas, enterVR, exitVR, xrViews: () => xr?.views || 0 };
+  }
+
+  /* Somewhere to say what happened that is still on the screen when it happens.
+     The first draft wrote failures into the drag hint — a node that is removed
+     the moment somebody drags the sphere, which every person does before
+     reaching for anything in the bar. Pressing the button then looked exactly
+     like pressing a dead button, which is the complaint this was meant to
+     prevent. */
+  function announce(text, tone) {
+    let node = root.querySelector("[data-pano-say]");
+    if (!node) {
+      node = document.createElement("p");
+      node.className = "pano-say";
+      node.setAttribute("data-pano-say", "");
+      node.setAttribute("role", "status");
+      stage.appendChild(node);
+    }
+    node.hidden = !text;
+    node.className = `pano-say${tone ? ` ${tone}` : ""}`;
+    node.textContent = text || "";
   }
 
   function hide(node) {
@@ -1138,11 +1183,21 @@
           vrButton.onclick = async () => {
             if (sphere.xrViews()) { sphere.exitVR(); return; }
             vrButton.disabled = true;
+            announce("Opening the immersive view…");
             const result = await sphere.enterVR();
             vrButton.disabled = false;
-            /* What went wrong, on the screen, rather than a button that does
-               nothing when pressed. */
-            if (!result.ok && hintNode) hintNode.textContent = result.why;
+            if (result.ok) {
+              /* Two views is stereo. One is a flat pane inside a headset, which
+                 is a different product. Worth saying once. */
+              window.setTimeout(() => {
+                const views = sphere.xrViews();
+                announce(views ? `Immersive view running · ${views} view${views === 1 ? "" : "s"}${views >= 2 ? " (stereo)" : " (flat)"}` : "", views >= 2 ? "good" : "bad");
+              }, 900);
+              return;
+            }
+            /* Never nothing. A press that fails says why, in the words the
+               device used. */
+            announce(result.why, "bad");
           };
         });
         mountMarkers(sphere, isVideo ? media : null, options);

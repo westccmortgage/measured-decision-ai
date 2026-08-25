@@ -3378,15 +3378,61 @@ function focusEvidenceUrl(item) {
   return `${window.location.origin}${window.location.pathname}?property=${encodeURIComponent(cloud.propertyId)}&evidence=${encodeURIComponent(item.id)}`;
 }
 
+/* The link opens Studio on this capture — after a sign-in, because the record
+   is private and a link that skipped that would make evidence public.
+   The old message said "open it in Vision Pro Safari" as though that were all
+   it took, so somebody who did exactly that landed on a sign-in screen and
+   reasonably called the button broken. */
 async function copyFocusLink(item) {
   const url = focusEvidenceUrl(item);
   if (!url) return;
+  let copied = false;
   try {
     await navigator.clipboard.writeText(url);
-    notify("Link copied. Open it in Vision Pro Safari to inspect the space in the headset.", 6000);
+    copied = true;
   } catch {
-    window.prompt("Copy this link and open it in Vision Pro Safari:", url);
+    copied = false;
   }
+  /* Shown rather than announced: a clipboard that refused leaves nothing to
+     paste, and a toast that fades leaves nothing to read. The link is on the
+     screen either way. */
+  showLinkForHeadset(url, copied);
+}
+
+function showLinkForHeadset(url, copied) {
+  const existing = document.getElementById("headset-link-dialog");
+  if (existing) existing.remove();
+  const dialog = document.createElement("dialog");
+  dialog.id = "headset-link-dialog";
+  dialog.className = "headset-link";
+  dialog.innerHTML = `
+    <h3>${copied ? "Link copied" : "Here is the link"}</h3>
+    <p>Open it in the headset's browser and sign in — it lands straight on this
+       capture. The sign-in is what keeps the record private.</p>
+    <input id="headset-link-url" type="text" readonly value="${escapeText(url)}">
+    <div class="headset-link-actions">
+      <button class="focus-secondary-action" type="button" id="headset-link-copy">${copied ? "Copy again" : "Copy"}</button>
+      <button class="focus-primary-action" type="button" id="headset-link-done">Done</button>
+    </div>
+    <p class="headset-link-note">Already wearing the headset? Open Studio there,
+       sign in once, and use <strong>Stand in this room</strong> — no link needed.</p>`;
+  document.body.appendChild(dialog);
+  const field = dialog.querySelector("#headset-link-url");
+  dialog.querySelector("#headset-link-copy").addEventListener("click", async () => {
+    field.select();
+    try {
+      await navigator.clipboard.writeText(url);
+      dialog.querySelector("#headset-link-copy").textContent = "Copied";
+    } catch {
+      /* Selected and ready for a manual copy, which is the fallback that has
+         never needed a permission. */
+      dialog.querySelector("#headset-link-copy").textContent = "Press ⌘C";
+    }
+  });
+  dialog.querySelector("#headset-link-done").addEventListener("click", () => dialog.close());
+  dialog.addEventListener("close", () => dialog.remove());
+  dialog.showModal();
+  field.select();
 }
 
 function openEvidenceViewer(item, room, focusMarkerId = null) {
