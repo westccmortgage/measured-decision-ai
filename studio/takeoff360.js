@@ -58,6 +58,26 @@
     return Number.isFinite(total) && total > 0 ? total : null;
   }
 
+  /* "2x6", "2×6 D.J.", "2" x 6" x 6' DECKING", "2x6 #1 @6" O.C. (F.R.T.)" —
+     the ways a sheet writes a lumber size. The size is the two numbers around
+     the x; everything else (grade, treatment, a mark like D.J.) is annotation.
+     Returns "2x6" or null — an unreadable size is a gap, not a guess. */
+  function normalizeLumberSize(text) {
+    const raw = String(text || "").toLowerCase().replace(/[×✕]/g, "x");
+    const match = raw.match(/(\d+)\s*"?\s*x\s*(\d+)/);
+    return match ? `${Number(match[1])}x${Number(match[2])}` : null;
+  }
+
+  /* "1,640 SQ. FT.", "1640", 1640 — a printed area or count. The number is the
+     digits (commas allowed); "SQ. FT." and its periods are label, not value. */
+  function parsePrintedNumber(text) {
+    if (typeof text === "number" && Number.isFinite(text)) return text > 0 ? text : null;
+    const match = String(text || "").match(/\d[\d,]*(?:\.\d+)?/);
+    if (!match) return null;
+    const value = Number(match[0].replace(/,/g, ""));
+    return Number.isFinite(value) && value > 0 ? value : null;
+  }
+
   function stockLengthFor(inches) {
     const feet = inches / 12;
     for (const stock of STOCK_LENGTHS_FT) if (feet <= stock) return stock;
@@ -79,7 +99,7 @@
     const height = parseFeetInches(wall.height) ?? 97.125; /* 8' precut studs */
     const spacing = Number(wall.stud_spacing_inches) || 16;
     if (length == null) return { unmeasured: true, wall };
-    const size = /^2x[0-9]+$/.test(String(wall.stud_size || "")) ? wall.stud_size : "2x4";
+    const size = normalizeLumberSize(wall.stud_size) || "2x4";
     const corners = Math.max(0, Number(wall.corners) || 0);
     const intersections = Math.max(0, Number(wall.intersections) || 0);
     const openings = Array.isArray(wall.openings) ? wall.openings : [];
@@ -193,21 +213,22 @@
     const gaps = [];
     const label = deck.label || "deck";
 
-    let areaSqft = Number(String(deck.area_sqft ?? "").replace(/[^0-9.]/g, "")) || null;
+    let areaSqft = parsePrintedNumber(deck.area_sqft);
+    const overallLength = parseFeetInches(deck.length);
+    const overallWidth = parseFeetInches(deck.width);
     if (areaSqft) {
       steps.push(`area: ${areaSqft} sq ft as printed`);
-    } else {
-      const length = parseFeetInches(deck.length);
-      const width = parseFeetInches(deck.width);
-      if (length != null && width != null) {
-        areaSqft = (length / 12) * (width / 12);
-        steps.push(`area: ${(length / 12).toFixed(2)}' × ${(width / 12).toFixed(2)}' = ${areaSqft.toFixed(0)} sq ft from printed overalls — jogs not netted, so this is the outer bound`);
+      if (overallLength != null && overallWidth != null) {
+        const bound = (overallLength / 12) * (overallWidth / 12);
+        steps.push(`check: overalls ${(overallLength / 12).toFixed(2)}' × ${(overallWidth / 12).toFixed(2)}' bound ${bound.toFixed(0)} sq ft — the printed area governs; the bound is not netted for jogs`);
       }
+    } else if (overallLength != null && overallWidth != null) {
+      areaSqft = (overallLength / 12) * (overallWidth / 12);
+      steps.push(`area: ${(overallLength / 12).toFixed(2)}' × ${(overallWidth / 12).toFixed(2)}' = ${areaSqft.toFixed(0)} sq ft from printed overalls — jogs not netted, so this is the outer bound`);
     }
 
-    const spacing = parseFeetInches(deck.joist_spacing)
-      ?? (Number(String(deck.joist_spacing ?? "").replace(/[^0-9.]/g, "")) || null);
-    const joistSize = /^\d+x\d+$/.test(String(deck.joist_size || "")) ? deck.joist_size : null;
+    const spacing = parseFeetInches(deck.joist_spacing) ?? parsePrintedNumber(deck.joist_spacing);
+    const joistSize = normalizeLumberSize(deck.joist_size);
     if (areaSqft && spacing && joistSize) {
       const joistLf = Math.ceil((areaSqft * 12) / spacing);
       lines.push({
@@ -224,8 +245,8 @@
     /* The walking surface. Board decking is exact arithmetic per face width at
        zero gap — the stated upper bound, because the gap between boards is a
        product spec the sheets rarely print. Sheathing is exact per 4×8 sheet. */
-    const decking = String(deck.decking || "");
-    const boardMatch = decking.match(/2\s*x\s*(4|6)/i);
+    const decking = String(deck.decking || "").replace(/[×✕]/g, "x");
+    const boardMatch = decking.match(/2\s*"?\s*x\s*(4|6)/i);
     const sheetMatch = decking.match(/plywood|sheathing|19\/32|23\/32|osb/i);
     if (areaSqft && boardMatch) {
       const face = boardMatch[1] === "6" ? 5.5 : 3.5;
@@ -277,7 +298,7 @@
     return { lines, steps, gaps };
   }
 
-  const api = { parseFeetInches, takeoffWall, takeoff, takeoffDeck, stockLengthFor, headerDepthFor };
+  const api = { parseFeetInches, normalizeLumberSize, parsePrintedNumber, takeoffWall, takeoff, takeoffDeck, stockLengthFor, headerDepthFor };
   if (typeof window !== "undefined") window.MDAITakeoff360 = api;
   if (typeof module !== "undefined" && module.exports) module.exports = api;
 })();

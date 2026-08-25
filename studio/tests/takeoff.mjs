@@ -152,6 +152,39 @@ console.log("\n── a deck, worked by hand from the Sarita sheets ──");
     result.steps.some((step) => /1640 sq ft × 12 \/ 16/.test(step)), JSON.stringify(result.steps));
 }
 
+console.log("\n── the deck as the sheets actually spell it ──");
+/* The re-run on the real set came back with the sheets' own spellings and the
+   calculator refused them: joist size "2×6 D.J." (a mark suffix and a Unicode
+   multiplication sign), spacing "@6\" O.C." from the FLOOR JOIST SCHEDULE,
+   area "1,640 SQ. FT." whose label periods broke the old digit strip, and the
+   finish legend's decking "2\" x 6\" x 6' DECKING". Hand arithmetic at the
+   printed spacing: 1640 × 12 / 6 = 3280 LF of joists; decking 1640 × 12 / 5.5
+   = 3578.18 → 3579 LF. The printed area governs over the 82' × 25.33' outer
+   bound the overalls imply. */
+{
+  const { takeoffDeck, normalizeLumberSize, parsePrintedNumber } = require("../takeoff360.js");
+  check('"2×6 D.J." is the lumber size 2x6', normalizeLumberSize("2×6 D.J.") === "2x6");
+  check("the finish legend's board size reads as 2x6", normalizeLumberSize("2\" x 6\" x 6' DECKING") === "2x6");
+  check("prose is not a size", normalizeLumberSize("composite planks") === null);
+  check('"1,640 SQ. FT." is 1640, label periods and all', parsePrintedNumber("1,640 SQ. FT.") === 1640);
+  const result = takeoffDeck({
+    label: "(N) Type V-B Wood Deck", area_sqft: "1,640 SQ. FT.",
+    length: "82'-0\"", width: "25'-4\"",
+    joist_size: "2×6 D.J.", joist_spacing: '@6" O.C.', joist_treatment: "F.R.T.",
+    decking: "WD-1: 2\" x 6\" x 6' DECKING",
+    beams: [], columns: [], piles: null, guardrail: "", guardrail_length: "",
+    source_refs: ["S-2.0", "A-210"],
+  });
+  const joists = result.lines.find((line) => /joist/.test(line.item));
+  const boards = result.lines.find((line) => /decking/.test(line.item));
+  check("printed area governs over the overalls' bound",
+    result.steps.some((s) => /1640 sq ft as printed/.test(s)) && result.steps.some((s) => /printed area governs/.test(s)),
+    JSON.stringify(result.steps));
+  check("joists at the schedule's 6\" o.c.: 3280 LF", joists?.quantity === 3280, JSON.stringify(joists));
+  check("the legend's decking parses: 3579 LF", boards?.quantity === 3579, JSON.stringify(boards));
+  check("no false gaps remain", result.gaps.length === 0, JSON.stringify(result.gaps));
+}
+
 console.log("\n── a deck the sheets did not dimension ──");
 {
   const { takeoffDeck } = require("../takeoff360.js");
