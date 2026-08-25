@@ -39,7 +39,7 @@ const schema = {
   type: "object",
   additionalProperties: false,
   required: [
-    "project_summary", "source_register", "levels", "spaces", "space_links", "systems",
+    "project_summary", "source_register", "levels", "spaces", "space_links", "framing_walls", "systems",
     "phases", "capture_requirements", "gaps", "assumptions",
   ],
   properties: {
@@ -112,6 +112,47 @@ const schema = {
           connection: {
             type: "string",
             enum: ["door", "opening", "stairs", "corridor", "exterior_door", "other"],
+          },
+          source_refs: { type: "array", items: { type: "string" } },
+        },
+      },
+    },
+    /* Framed walls with their PRINTED dimensions, for the takeoff draft. Only
+       what a sheet actually states: a dimension string, a stud callout, an
+       opening width from the schedule. Measuring by scale is forbidden — a
+       guess that looks like a measurement — and a wall with no printed length
+       is reported with length "" so it lands in the gaps, never invented. */
+    framing_walls: {
+      type: "array",
+      items: {
+        type: "object",
+        additionalProperties: false,
+        required: [
+          "label", "building", "level", "length", "height", "stud_size",
+          "stud_spacing_inches", "corners", "intersections", "openings", "source_refs",
+        ],
+        properties: {
+          label: { type: "string" },
+          building: { type: "string" },
+          level: { type: "string" },
+          length: { type: "string" },
+          height: { type: "string" },
+          stud_size: { type: "string" },
+          stud_spacing_inches: { type: ["number", "null"] },
+          corners: { type: "integer" },
+          intersections: { type: "integer" },
+          openings: {
+            type: "array",
+            items: {
+              type: "object",
+              additionalProperties: false,
+              required: ["label", "width", "source_refs"],
+              properties: {
+                label: { type: "string" },
+                width: { type: "string" },
+                source_refs: { type: "array", items: { type: "string" } },
+              },
+            },
           },
           source_refs: { type: "array", items: { type: "string" } },
         },

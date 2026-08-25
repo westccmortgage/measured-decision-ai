@@ -20,6 +20,7 @@ const state = {
   phases: [],
   planSpaces: [],
   spaceLinks: [],
+  approvedTakeoff: null,
   requirements: [],
   tasks: [],
   assignments: [],
@@ -586,6 +587,15 @@ async function openProperty(propertyId) {
     const routeResult = await client.rpc("project_space_links", { p_property_id: propertyId });
     if (routeResult.error) console.error("routes", routeResult.error);
     state.spaceLinks = routeResult.data || [];
+    const takeoffResult = await client
+      .from("material_takeoffs")
+      .select("id, kind, lines, gaps, measured_walls, state, approved_at, calculator_version")
+      .eq("baseline_id", state.baseline.id)
+      .eq("kind", "wood_framing")
+      .eq("state", "approved")
+      .limit(1);
+    if (takeoffResult.error) console.error("takeoff", takeoffResult.error);
+    state.approvedTakeoff = takeoffResult.data?.[0] || null;
   }
   render();
   elements.sync.textContent = state.activeAnalysisJob
@@ -611,6 +621,7 @@ function render() {
   renderBaseline();
   renderRoadmap();
   renderRoutes();
+  renderTakeoff();
   if (state.baseline && !state.activeAnalysisJob && state.analysisOutcome !== "failed") {
     const approved = state.baseline.state === "approved";
     renderAnalysisProgress(100, analysisStages.length - 1, {
@@ -792,6 +803,124 @@ async function reviewRoute(linkId, verdict) {
     setBusy(false, `Cloud connected · ${state.role}`);
   }
 }
+
+/* The wood takeoff draft.
+ *
+ * Three parties, each doing the only thing it is trusted with. The AI read the
+ * dimensions the sheets print — never measured by scale — each with its sheet
+ * citation. The calculator (takeoff360.js, deterministic, tested by hand)
+ * turns those into lumber counts and shows its arithmetic. The person signs,
+ * and what they signed is stored verbatim.
+ *
+ * A wall without a printed length is a gap said out loud, never a guess:
+ * an order that silently omits a wall reads as a smaller house. */
+const TAKEOFF_CALCULATOR_VERSION = "takeoff360-1";
+
+function takeoffDraft() {
+  const walls = Array.isArray(state.baseline?.analysis?.framing_walls)
+    ? state.baseline.analysis.framing_walls
+    : [];
+  if (!walls.length || !window.MDAITakeoff360) return null;
+  return { walls, result: window.MDAITakeoff360.takeoff(walls) };
+}
+
+function renderTakeoff() {
+  const section = $("#takeoff-section");
+  if (!section) return;
+  section.hidden = !state.baseline;
+  if (section.hidden) return;
+
+  const approved = state.approvedTakeoff;
+  const draft = takeoffDraft();
+  const pill = $("#takeoff-state");
+  const approve = $("#approve-takeoff");
+  const grid = $("#takeoff-grid");
+  const empty = $("#takeoff-empty");
+  const intro = $("#takeoff-intro");
+
+  /* Nothing extracted: the honest empty state, with the reason and the way
+     forward, not a bare table. */
+  if (!draft && !approved) {
+    pill.textContent = "No dimensions read";
+    pill.className = "state-pill intake";
+    approve.hidden = true;
+    grid.hidden = true;
+    empty.hidden = false;
+    intro.textContent = "";
+    return;
+  }
+
+  const showing = approved
+    ? { lines: approved.lines, gaps: approved.gaps || [], measuredWalls: approved.measured_walls, traces: [] }
+    : { lines: draft.result.lines, gaps: [
+        ...draft.result.gaps,
+        ...draft.result.unmeasured.map((wall) => `${wall.label || "a wall"} has no printed length (${(wall.source_refs || []).join(", ") || "no sheet cited"})`),
+      ], measuredWalls: draft.result.measuredWalls, traces: draft.result.traces };
+
+  empty.hidden = true;
+  grid.hidden = false;
+  pill.textContent = approved
+    ? `Approved ${new Date(approved.approved_at).toLocaleDateString("en-US", { month: "short", day: "numeric" })}`
+    : "Read by AI · not approved";
+  pill.className = `state-pill ${approved ? "approved" : "baseline_review"}`;
+  /* The same authority that approves the roadmap, plus the project manager. */
+  const mayApprove = canApproveBaseline() || state.role === "project_manager";
+  approve.hidden = Boolean(approved) || !mayApprove;
+  intro.textContent = approved
+    ? `Signed as a verification baseline: material the plans imply across ${showing.measuredWalls} dimensioned wall${showing.measuredWalls === 1 ? "" : "s"}. Compare it against invoices and captures — a large gap between the three is the question worth asking.`
+    : `Computed from ${showing.measuredWalls} wall${showing.measuredWalls === 1 ? "" : "s"} whose dimensions are printed on the sheets. Every line is traceable; nothing is measured by scale. Check it, then approve it as the verification baseline.`;
+
+  const body = $("#takeoff-table tbody");
+  body.innerHTML = (showing.lines || []).map((line) => `
+    <tr${/REVIEW/.test(line.item) ? ` class="review"` : ""}><td>${escapeHtml(line.item)}</td><td>${escapeHtml(String(line.quantity))} ${escapeHtml(line.unit || "")}</td></tr>`).join("");
+
+  $("#takeoff-gaps").innerHTML = showing.gaps.length
+    ? `<p><strong>${showing.gaps.length} thing${showing.gaps.length === 1 ? "" : "s"} the sheets did not answer:</strong></p>` +
+      showing.gaps.map((gap) => `<p>· ${escapeHtml(gap)}</p>`).join("")
+    : `<p class="clear">Every wall the AI read carries a printed dimension.</p>`;
+
+  $("#takeoff-trace").innerHTML = showing.traces.length
+    ? showing.traces.map((trace) => `
+        <article><strong>${escapeHtml(trace.wall)} · ${escapeHtml((trace.source_refs || []).join(", ") || "no sheet cited")}</strong>
+        ${(trace.steps || []).map((step) => `<small>${escapeHtml(step)}</small>`).join("")}</article>`).join("")
+    : `<small>The arithmetic is shown while the draft is unapproved; the signed copy stores it verbatim in the record.</small>`;
+}
+
+async function approveTakeoff() {
+  const draft = takeoffDraft();
+  if (!draft || state.busy) return;
+  const gaps = [
+    ...draft.result.gaps,
+    ...draft.result.unmeasured.map((wall) => `${wall.label || "a wall"} has no printed length (${(wall.source_refs || []).join(", ") || "no sheet cited"})`),
+  ];
+  const warning = gaps.length
+    ? `\n\nIt carries ${gaps.length} open gap${gaps.length === 1 ? "" : "s"} — walls or openings the sheets did not dimension. Those stay open on the record.`
+    : "";
+  if (!window.confirm(`Approve this draft as the verification baseline?\n\nIt is not an estimate: no waste, no cut optimisation, only walls with printed dimensions.${warning}`)) return;
+  setBusy(true, "Recording the approval…");
+  try {
+    const { error } = await client.rpc("approve_material_takeoff", {
+      p_baseline_id: state.baseline.id,
+      p_kind: "wood_framing",
+      p_lines: draft.result.lines,
+      p_traces: draft.result.traces,
+      p_gaps: gaps,
+      p_measured_walls: draft.result.measuredWalls,
+      p_calculator_version: TAKEOFF_CALCULATOR_VERSION,
+      p_note: null,
+    });
+    if (error) throw error;
+    notify("The takeoff is signed as this baseline's verification draft.");
+    await openProperty(state.property.id);
+  } catch (error) {
+    console.error(error);
+    notify(error.message || "The takeoff could not be approved", "error");
+  } finally {
+    setBusy(false, `Cloud connected · ${state.role}`);
+  }
+}
+
+$("#approve-takeoff")?.addEventListener("click", approveTakeoff);
 
 /* The roadmap shown here and the roadmap the field is running can be different
    versions. Saying so is the difference between "nothing works" and "approve

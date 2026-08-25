@@ -987,4 +987,76 @@ select pg_temp.refused('somebody from another organisation cannot move a file',
                                         'cccccccc-0000-0000-0000-000000000003')$$);
 reset role;
 
+--
+-- The draft lumber order: computed deterministically from printed dimensions,
+-- signed by a person, stored verbatim. The rules here keep the signature
+-- honest — what was approved is what stays, and nobody outside the project
+-- sees or signs anything.
+
+set local role authenticated;
+set local test.uid = '22222222-2222-2222-2222-222222222222';
+select pg_temp.refused('a contributor cannot approve a takeoff',
+  $$select public.approve_material_takeoff('eeeeeeee-0000-0000-0000-000000000001', 'wood_framing',
+      '[{"item":"2x4 stud","quantity":14,"unit":"pieces"}]'::jsonb, '[]'::jsonb, '[]'::jsonb, 1, 'test-1')$$);
+reset role;
+
+set local role authenticated;
+set local test.uid = '33333333-3333-3333-3333-333333333333';
+select pg_temp.refused('an empty takeoff is refused',
+  $$select public.approve_material_takeoff('eeeeeeee-0000-0000-0000-000000000001', 'wood_framing',
+      '[]'::jsonb, '[]'::jsonb, '[]'::jsonb, 0, 'test-1')$$);
+select pg_temp.refused('and an unknown kind is refused',
+  $$select public.approve_material_takeoff('eeeeeeee-0000-0000-0000-000000000001', 'gold_leaf',
+      '[{"item":"x","quantity":1,"unit":"pieces"}]'::jsonb, '[]'::jsonb, '[]'::jsonb, 1, 'test-1')$$);
+
+select public.approve_material_takeoff('eeeeeeee-0000-0000-0000-000000000001', 'wood_framing',
+  '[{"item":"2x4 stud · 92 5/8\" precut","quantity":14,"unit":"pieces"},{"item":"2x4 plate · 12''","quantity":3,"unit":"pieces"}]'::jsonb,
+  '[{"wall":"A","source_refs":["A-201"],"steps":["studs: ceil(144/16)+1 = 10, + 4 corners"]}]'::jsonb,
+  '["wall C on A-202 has no printed length"]'::jsonb, 2, 'takeoff360-1', 'Draft for verification');
+
+select pg_temp.check('a reviewer approves a takeoff and it is stored verbatim',
+  (select lines->0->>'quantity' from public.material_takeoffs
+    where baseline_id = 'eeeeeeee-0000-0000-0000-000000000001' and state = 'approved') = '14');
+select pg_temp.check('with its gaps said out loud',
+  (select jsonb_array_length(gaps) from public.material_takeoffs where state = 'approved') = 1);
+
+-- Approving again supersedes; it never overwrites what was signed.
+select public.approve_material_takeoff('eeeeeeee-0000-0000-0000-000000000001', 'wood_framing',
+  '[{"item":"2x4 stud · 92 5/8\" precut","quantity":20,"unit":"pieces"}]'::jsonb,
+  '[]'::jsonb, '[]'::jsonb, 2, 'takeoff360-1', 'Corrected after site walk');
+select pg_temp.check('a second approval supersedes the first',
+  (select count(*) from public.material_takeoffs where baseline_id = 'eeeeeeee-0000-0000-0000-000000000001') = 2
+  and (select count(*) from public.material_takeoffs
+        where baseline_id = 'eeeeeeee-0000-0000-0000-000000000001' and state = 'approved') = 1);
+select pg_temp.check('and the first, superseded, still says what was signed',
+  (select lines->0->>'quantity' from public.material_takeoffs where state = 'superseded') = '14');
+reset role;
+
+set local role authenticated;
+set local test.uid = '11111111-1111-1111-1111-111111111111';
+select pg_temp.check('the approval is on the record, naming who signed',
+  exists(select 1 from public.audit_events
+          where action = 'takeoff.approved'
+            and actor_id = '33333333-3333-3333-3333-333333333333'
+            and detail->>'kind' = 'wood_framing'));
+reset role;
+
+set local role authenticated;
+set local test.uid = '44444444-4444-4444-4444-444444444444';
+select pg_temp.check('another organisation does not see the takeoff',
+  (select count(*) from public.material_takeoffs) = 0);
+select pg_temp.refused('nor can it approve one here',
+  $$select public.approve_material_takeoff('eeeeeeee-0000-0000-0000-000000000001', 'wood_framing',
+      '[{"item":"x","quantity":1,"unit":"pieces"}]'::jsonb, '[]'::jsonb, '[]'::jsonb, 1, 'test-1')$$);
+reset role;
+
+set local role anon;
+set local test.uid = '';
+select pg_temp.refused('nobody signed out can approve',
+  $$select public.approve_material_takeoff('eeeeeeee-0000-0000-0000-000000000001', 'wood_framing',
+      '[{"item":"x","quantity":1,"unit":"pieces"}]'::jsonb, '[]'::jsonb, '[]'::jsonb, 1, 'test-1')$$);
+select pg_temp.check('and the takeoffs are invisible signed out',
+  (select count(*) from public.material_takeoffs) = 0);
+reset role;
+
 rollback;

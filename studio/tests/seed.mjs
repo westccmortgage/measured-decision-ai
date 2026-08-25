@@ -250,6 +250,28 @@ export const roadmapRows = ({ waived = false } = {}) => {
   return r;
 };
 
+/* A plan set whose sheets print framing dimensions: two measured walls, one
+   the drawings left undimensioned, and a door from the schedule. Exactly what
+   the takeoff draft is fed in production. */
+export const takeoffRows = () => {
+  const r = clone(roadmapRows());
+  r.document_baselines[0].analysis = {
+    framing_walls: [
+      { label: "Wall A1", building: "Main House", level: "Level 1", length: "12'", height: "8'",
+        stud_size: "2x4", stud_spacing_inches: 16, corners: 2, intersections: 0,
+        openings: [], source_refs: ["A-201"] },
+      { label: "Wall A2", building: "Main House", level: "Level 1", length: "20'", height: "8'",
+        stud_size: "2x4", stud_spacing_inches: 16, corners: 2, intersections: 0,
+        openings: [{ label: "door D1", width: "3'", source_refs: ["A-601"] }], source_refs: ["A-201"] },
+      { label: "Wall B1", building: "Main House", level: "Level 1", length: "", height: "8'",
+        stud_size: "2x4", stud_spacing_inches: 16, corners: 0, intersections: 0,
+        openings: [], source_refs: ["A-202"] },
+    ],
+  };
+  r.material_takeoffs = [];
+  return r;
+};
+
 /* The real project, as it actually stands: 24 rooms, 35 files, ten rooms
    holding captures — and one room holding the same pair three times over,
    because each upload looked as though it had failed. Generated from the

@@ -413,3 +413,23 @@ dialog form { padding: 0; }
   .route-row { grid-template-columns: minmax(0,1fr); gap: 10px; }
   .route-actions { justify-self: start; }
 }
+
+/* The takeoff draft. A table, because an order is a table; the trace folded
+   away because the arithmetic matters when disputed and is noise when not. */
+.takeoff-section { margin-top: 18px; border: 1px solid var(--line); background: rgba(8, 22, 35, .72); }
+.takeoff-grid { display: grid; grid-template-columns: minmax(0, 1.3fr) minmax(0, 1fr); gap: 1px; background: var(--line); border-top: 1px solid var(--line); margin-top: 14px; }
+.takeoff-lines, .takeoff-side { background: #081624; padding: 16px 18px; }
+.takeoff-lines h3 { margin: 0 0 10px; font-size: 13px; }
+#takeoff-table { width: 100%; border-collapse: collapse; font-size: 12px; }
+#takeoff-table th { text-align: left; color: var(--cyan); text-transform: uppercase; letter-spacing: .08em; font-size: 9px; padding: 6px 8px; border-bottom: 1px solid var(--line); }
+#takeoff-table td { padding: 7px 8px; border-bottom: 1px solid var(--line-soft, #17283d); color: #c6d2dc; }
+#takeoff-table td:last-child { text-align: right; font-variant-numeric: tabular-nums; color: var(--text); }
+#takeoff-table tr.review td { color: var(--amber); }
+.takeoff-gaps p { margin: 0 0 8px; color: var(--amber); font-size: 11px; }
+.takeoff-gaps p.clear { color: var(--green); }
+.takeoff-trace summary { cursor: pointer; color: #8fa2b5; font-size: 11px; margin-top: 10px; }
+.takeoff-trace div { margin-top: 8px; }
+.takeoff-trace article { margin-bottom: 10px; }
+.takeoff-trace strong { display: block; font-size: 11px; color: #c6d2dc; }
+.takeoff-trace small { display: block; color: #698196; font-size: 10px; font-variant-numeric: tabular-nums; }
+@media (max-width: 860px) { .takeoff-grid { grid-template-columns: minmax(0, 1fr); } }

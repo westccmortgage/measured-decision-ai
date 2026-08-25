@@ -1,0 +1,130 @@
+/* The framing calculator, checked by hand.
+ *
+ * Every expected number below was worked out on paper before the code ran,
+ * because a takeoff test that trusts the calculator to generate its own
+ * expectations tests nothing. The rules are the standard platform-framing
+ * conventions stated at the top of takeoff360.js; if a rule changes, the
+ * arithmetic here changes with it, visibly.
+ *
+ * The other half of the contract matters as much as the numbers: a dimension
+ * the parser cannot read is a gap to report, never a zero to compute with —
+ * a wall order that silently omits a wall reads as a smaller house.
+ */
+import { createRequire } from "module";
+const require = createRequire(import.meta.url);
+const { parseFeetInches, takeoffWall, takeoff, stockLengthFor, headerDepthFor } = require("../takeoff360.js");
+
+let bad = 0;
+const check = (label, ok, detail = "") => {
+  console.log(`${ok ? "  ok  " : "  FAIL"} ${label}${detail ? `\n         ${detail}` : ""}`);
+  if (!ok) bad++;
+};
+
+console.log("\n── reading what a drawing writes ──");
+check(`12'-6" is 150 inches`, parseFeetInches(`12'-6"`) === 150, String(parseFeetInches(`12'-6"`)));
+check(`12' alone is 144`, parseFeetInches("12'") === 144, String(parseFeetInches("12'")));
+check(`96" alone is 96`, parseFeetInches(`96"`) === 96, String(parseFeetInches(`96"`)));
+check(`12 ft 6 in works too`, parseFeetInches("12 ft 6 in") === 150, String(parseFeetInches("12 ft 6 in")));
+check(`a half inch survives: 12'-6 1/2"`, parseFeetInches(`12'-6 1/2"`) === 150.5, String(parseFeetInches(`12'-6 1/2"`)));
+check("a number passes through", parseFeetInches(150) === 150);
+/* The rule the whole thing rests on: unreadable is null, not zero. */
+check("prose is not a length", parseFeetInches("verify in field") === null, String(parseFeetInches("verify in field")));
+check("empty is not a length", parseFeetInches("") === null);
+check("zero is not a length", parseFeetInches("0'") === null);
+
+console.log("\n── one plain wall, worked by hand ──");
+/* 12' wall, 16" o.c., two corners, no openings.
+   Run studs: ceil(144/16)+1 = 10. Corners: 2×2 = 4. Total 14.
+   Plates: 3×144 = 432" = 36' → 3 pieces of 12' stock. */
+{
+  const result = takeoffWall({ label: "A", length: "12'", stud_spacing_inches: 16, corners: 2 });
+  const studs = result.lines.find((line) => /stud/.test(line.item));
+  const plates = result.lines.find((line) => /plate/.test(line.item));
+  check("10 run studs + 4 corner studs = 14", studs?.quantity === 14, JSON.stringify(studs));
+  check("standard height uses precut studs", /92 5\/8/.test(studs?.item || ""), studs?.item);
+  check("plates: 36 feet in three 12' pieces", plates?.quantity === 3 && /12'/.test(plates.item), JSON.stringify(plates));
+  check("and the trace shows the arithmetic",
+    result.trace.some((step) => /ceil\(144" \/ 16"\) \+ 1 = 10/.test(step)), result.trace[0]);
+}
+
+console.log("\n── a wall with a door and a window ──");
+/* 20' wall @16, 2 corners. Run: ceil(240/16)+1 = 16, corners 4 → 20.
+   3' door: 2 kings + 2 trimmers = 4. 5' window: 2 kings + 2 trimmers = 4.
+   Total studs 28.
+   Headers: 3' span (36") → 2×6, 42" long → 2 pieces of 8' stock.
+            5' span (60") → 2x8, 66" → 2 pieces of 8'. */
+{
+  const result = takeoffWall({
+    label: "B", length: "20'", stud_spacing_inches: 16, corners: 2,
+    openings: [
+      { label: "door D1", width: "3'" },
+      { label: "window W2", width: "5'" },
+    ],
+  });
+  const studs = result.lines.find((line) => /stud/.test(line.item));
+  check("16 + 4 + 4 + 4 = 28 studs", studs?.quantity === 28, JSON.stringify(studs));
+  const header26 = result.lines.find((line) => /2x6 header/.test(line.item));
+  const header28 = result.lines.find((line) => /2x8 header/.test(line.item));
+  check("the 3' door gets a doubled 2x6 header", header26?.quantity === 2, JSON.stringify(header26));
+  check("the 5' window gets a doubled 2x8 header", header28?.quantity === 2, JSON.stringify(header28));
+}
+
+console.log("\n── the header depth table ──");
+check("4' span → 2x6", headerDepthFor(48) === "2x6");
+check("6' span → 2x8", headerDepthFor(72) === "2x8");
+check("8' span → 2x10", headerDepthFor(96) === "2x10");
+check("wider → 2x12", headerDepthFor(120) === "2x12");
+/* A 9' opening is past the table's confidence, and the order line says so
+   rather than pricing it as routine. */
+{
+  const result = takeoffWall({ label: "G", length: "16'", openings: [{ label: "slider", width: "9'" }] });
+  const wide = result.lines.find((line) => /REVIEW: span over 8'/.test(line.item));
+  check("a 9' span is flagged for review on the order line", Boolean(wide), JSON.stringify(result.lines));
+}
+
+console.log("\n── wide openings and tall walls ──");
+{
+  /* Over 6' of span carries two trimmers a side: 2 kings + 4 trimmers = 6. */
+  const result = takeoffWall({ label: "C", length: "10'", openings: [{ label: "opening", width: "7'" }] });
+  const studs = result.lines.find((line) => /stud/.test(line.item));
+  /* Run: ceil(120/16)+1 = 9, no corners; + 6 = 15. */
+  check("a 7' opening carries doubled trimmers: 9 + 6 = 15", studs?.quantity === 15, JSON.stringify(studs));
+}
+{
+  const result = takeoffWall({ label: "D", length: "10'", height: "10'" });
+  const studs = result.lines.find((line) => /stud/.test(line.item));
+  check("a 10' wall uses 10' stock, not precuts", /10'/.test(studs?.item || ""), studs?.item);
+}
+check("stock steps up, never down", stockLengthFor(97) === 10 && stockLengthFor(145) === 14);
+
+console.log("\n── the whole set, with the gaps said out loud ──");
+{
+  const result = takeoff([
+    { label: "A", length: "12'", corners: 2, source_refs: ["A-201"] },
+    { label: "B", length: "20'", corners: 2, source_refs: ["A-201"], openings: [{ label: "D1", width: "3'" }] },
+    /* The wall the drawings did not dimension. */
+    { label: "C", length: "verify in field", source_refs: ["A-202"] },
+    /* And an opening with no width. */
+    { label: "D", length: "8'", openings: [{ label: "W9", width: "" }], source_refs: ["A-203"] },
+  ]);
+  check("measured walls are counted", result.measuredWalls === 3, String(result.measuredWalls));
+  check("the unmeasured wall is returned, not dropped",
+    result.unmeasured.length === 1 && result.unmeasured[0].label === "C", JSON.stringify(result.unmeasured));
+  check("the widthless opening is a named gap",
+    result.gaps.some((gap) => /W9/.test(gap) && /no readable width/.test(gap)), JSON.stringify(result.gaps));
+  check("lines merge across walls",
+    result.lines.filter((line) => /plate/.test(line.item)).length >= 1, JSON.stringify(result.lines.map((l) => l.item)));
+  check("every trace names its sheets",
+    result.traces.every((trace) => Array.isArray(trace.source_refs)), JSON.stringify(result.traces[0]));
+}
+
+console.log("\n── determinism, the whole point ──");
+{
+  const walls = [{ label: "A", length: "17'-3 1/2\"", corners: 3, openings: [{ label: "D", width: "2'-8\"" }] }];
+  const a = JSON.stringify(takeoff(walls));
+  const b = JSON.stringify(takeoff(walls));
+  check("the same walls produce the same order, byte for byte", a === b);
+}
+
+console.log(bad ? `\n${bad} FAILURES` : "\nALL OK");
+process.exit(bad ? 1 : 0);
