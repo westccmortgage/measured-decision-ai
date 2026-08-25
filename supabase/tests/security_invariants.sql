@@ -796,4 +796,77 @@ select pg_temp.check('and the routes themselves are invisible signed out',
   (select count(*) from public.plan_space_links) = 0);
 reset role;
 
+--
+-- A 360 capture belongs to a room. Two camera originals uploaded into a second
+-- room used to merge into the first room's capture group, which kept the first
+-- room's space_id — so the second room reported itself empty while its own rows
+-- sat in the record with its id on them, and the stitched master would have
+-- been filed in the first room too.
+
+insert into public.evidence_items(id, organization_id, property_id, space_id, storage_path,
+  original_filename, media_type, mime_type, byte_size, created_by, source_type)
+values
+  ('caca0000-0000-0000-0000-000000000001','aaaaaaaa-0000-0000-0000-000000000001',
+   'bbbbbbbb-0000-0000-0000-000000000001','cccccccc-0000-0000-0000-000000000002',
+   'org/a/hall/VID_20250222_042646_00_016.insv','VID_20250222_042646_00_016.insv',
+   '360 camera original','application/octet-stream',1024,'11111111-1111-1111-1111-111111111111','360_camera'),
+  ('caca0000-0000-0000-0000-000000000002','aaaaaaaa-0000-0000-0000-000000000001',
+   'bbbbbbbb-0000-0000-0000-000000000001','cccccccc-0000-0000-0000-000000000002',
+   'org/a/hall/VID_20250222_042646_10_016.insv','VID_20250222_042646_10_016.insv',
+   '360 camera original','application/octet-stream',1024,'11111111-1111-1111-1111-111111111111','360_camera'),
+  -- The identical capture, uploaded again into a different room.
+  ('caca0000-0000-0000-0000-000000000003','aaaaaaaa-0000-0000-0000-000000000001',
+   'bbbbbbbb-0000-0000-0000-000000000001','cccccccc-0000-0000-0000-000000000003',
+   'org/a/kitchen/VID_20250222_042646_00_016.insv','VID_20250222_042646_00_016.insv',
+   '360 camera original','application/octet-stream',1024,'11111111-1111-1111-1111-111111111111','360_camera'),
+  ('caca0000-0000-0000-0000-000000000004','aaaaaaaa-0000-0000-0000-000000000001',
+   'bbbbbbbb-0000-0000-0000-000000000001','cccccccc-0000-0000-0000-000000000003',
+   'org/a/kitchen/VID_20250222_042646_10_016.insv','VID_20250222_042646_10_016.insv',
+   '360 camera original','application/octet-stream',1024,'11111111-1111-1111-1111-111111111111','360_camera');
+
+-- The server runs this after every upload, as the service role.
+select public.reconcile_insta360_capture('caca0000-0000-0000-0000-000000000001');
+select public.reconcile_insta360_capture('caca0000-0000-0000-0000-000000000002');
+select public.reconcile_insta360_capture('caca0000-0000-0000-0000-000000000003');
+select public.reconcile_insta360_capture('caca0000-0000-0000-0000-000000000004');
+
+select pg_temp.check('the same capture in two rooms is two captures',
+  (select count(*) from public.capture_360_groups
+    where property_id = 'bbbbbbbb-0000-0000-0000-000000000001'
+      and capture_key = 'vid_20250222_042646_016') = 2);
+
+-- The failure exactly: one room's capture holding the other room's originals.
+select pg_temp.check('each capture holds only the originals from its own room',
+  (select bool_and(cardinality(source_evidence_ids) = 2)
+     from public.capture_360_groups
+    where capture_key = 'vid_20250222_042646_016'));
+
+select pg_temp.check('and the second room really is one of them',
+  exists(select 1 from public.capture_360_groups
+          where capture_key = 'vid_20250222_042646_016'
+            and space_id = 'cccccccc-0000-0000-0000-000000000003'));
+
+-- A complete pair is what the machine stitches from, so each room gets its own
+-- job rather than one room's capture being stitched and the other's forgotten.
+select pg_temp.check('both are ready to stitch',
+  (select count(*) from public.capture_360_groups
+    where capture_key = 'vid_20250222_042646_016' and state = 'ready') = 2);
+select pg_temp.check('and each has its own stitch job',
+  (select count(*) from public.capture_360_jobs j
+     join public.capture_360_groups g on g.id = j.capture_group_id
+    where g.capture_key = 'vid_20250222_042646_016') = 2);
+
+-- One lens on its own is not a capture, and saying so is what tells somebody a
+-- file is missing rather than silently borrowing one from another room.
+insert into public.evidence_items(id, organization_id, property_id, space_id, storage_path,
+  original_filename, media_type, mime_type, byte_size, created_by, source_type)
+values ('caca0000-0000-0000-0000-000000000005','aaaaaaaa-0000-0000-0000-000000000001',
+   'bbbbbbbb-0000-0000-0000-000000000001','cccccccc-0000-0000-0000-000000000001',
+   'org/a/garage/VID_20250222_049999_00_099.insv','VID_20250222_049999_00_099.insv',
+   '360 camera original','application/octet-stream',1024,'11111111-1111-1111-1111-111111111111','360_camera');
+select public.reconcile_insta360_capture('caca0000-0000-0000-0000-000000000005');
+select pg_temp.check('a lone lens file waits for its pair instead of joining another room',
+  (select state from public.capture_360_groups
+    where capture_key = 'vid_20250222_049999_099') = 'waiting_for_pair');
+
 rollback;

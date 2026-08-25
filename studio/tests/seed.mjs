@@ -250,6 +250,32 @@ export const roadmapRows = ({ waived = false } = {}) => {
   return r;
 };
 
+/* The same 360 capture uploaded twice: once to the room it was first put in,
+   and again — the identical pair of camera originals — to a second room.
+   This is the shape that made a room report itself empty while its files sat
+   in the database with its own id on them. */
+export const sameCaptureTwoRoomsRows = () => {
+  const r = clone(rows);
+  r.evidence_items = [
+    file("ev-old-00", "space-viewable", "VID_20250222_042646_00_016.insv", "application/octet-stream", {
+      media_type: "360 camera original", created_at: "2026-08-25T03:02:00Z",
+    }),
+    file("ev-old-10", "space-viewable", "VID_20250222_042646_10_016.insv", "application/octet-stream", {
+      media_type: "360 camera original", created_at: "2026-08-25T03:02:30Z",
+    }),
+    /* The very same capture, uploaded again into a different room. Later
+       timestamps, so the project-wide collapse picked the older pair's room. */
+    file("ev-new-00", "space-empty", "VID_20250222_042646_00_016.insv", "application/octet-stream", {
+      media_type: "360 camera original", created_at: "2026-08-25T06:10:00Z",
+    }),
+    file("ev-new-10", "space-empty", "VID_20250222_042646_10_016.insv", "application/octet-stream", {
+      media_type: "360 camera original", created_at: "2026-08-25T06:10:30Z",
+    }),
+  ];
+  r.capture_360_jobs = [];
+  return r;
+};
+
 /* A plan set that named three rooms and two ways between them, one of which
    leads somewhere the record has no room for. That last case is the one worth
    seeding: it is what happens on every real project where the plans show an
