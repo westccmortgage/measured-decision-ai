@@ -39,7 +39,7 @@ const schema = {
   type: "object",
   additionalProperties: false,
   required: [
-    "project_summary", "source_register", "levels", "spaces", "space_links", "framing_walls", "systems",
+    "project_summary", "source_register", "levels", "spaces", "space_links", "framing_walls", "framing_decks", "systems",
     "phases", "capture_requirements", "gaps", "assumptions",
   ],
   properties: {
@@ -154,6 +154,75 @@ const schema = {
               },
             },
           },
+          source_refs: { type: "array", items: { type: "string" } },
+        },
+      },
+    },
+    /* Exterior decks and similar framed platforms. A deck's lumber is joists
+       over an area, beams and posts on a pile grid, and a walking surface —
+       none of which is a framed wall, and a schema that only knows walls read
+       a nine-sheet deck set as "no framing dimensions".
+       Counts of labelled members (P1 piles, COL.2 posts, BM.1 beams) are read
+       by counting the marks drawn on the plan — that is reading the drawing,
+       like counting corners. Lengths and areas remain printed-only. */
+    framing_decks: {
+      type: "array",
+      items: {
+        type: "object",
+        additionalProperties: false,
+        required: [
+          "label", "building", "level", "length", "width", "area_sqft",
+          "joist_size", "joist_spacing", "joist_treatment", "decking",
+          "beams", "columns", "piles", "guardrail", "guardrail_length", "source_refs",
+        ],
+        properties: {
+          label: { type: "string" },
+          building: { type: "string" },
+          level: { type: "string" },
+          length: { type: "string" },
+          width: { type: "string" },
+          area_sqft: { type: "string" },
+          joist_size: { type: "string" },
+          joist_spacing: { type: "string" },
+          joist_treatment: { type: "string" },
+          decking: { type: "string" },
+          beams: {
+            type: "array",
+            items: {
+              type: "object",
+              additionalProperties: false,
+              required: ["mark", "description", "count_drawn"],
+              properties: {
+                mark: { type: "string" },
+                description: { type: "string" },
+                count_drawn: { type: "integer" },
+              },
+            },
+          },
+          columns: {
+            type: "array",
+            items: {
+              type: "object",
+              additionalProperties: false,
+              required: ["mark", "description", "count_drawn"],
+              properties: {
+                mark: { type: "string" },
+                description: { type: "string" },
+                count_drawn: { type: "integer" },
+              },
+            },
+          },
+          piles: {
+            type: "object",
+            additionalProperties: false,
+            required: ["description", "count_drawn"],
+            properties: {
+              description: { type: "string" },
+              count_drawn: { type: "integer" },
+            },
+          },
+          guardrail: { type: "string" },
+          guardrail_length: { type: "string" },
           source_refs: { type: "array", items: { type: "string" } },
         },
       },
