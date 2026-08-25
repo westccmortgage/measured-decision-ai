@@ -65,13 +65,101 @@
     uniform sampler2D source;
     uniform mat4 invProjection;
     uniform mat3 viewRotation;
+    uniform vec3 forward;
+    uniform float angularScale;
     const float PI = 3.14159265359;
     void main() {
       vec4 eye = invProjection * vec4(vScreen, -1.0, 1.0);
       vec3 dir = normalize(viewRotation * normalize(eye.xyz / eye.w));
+      /* A room captured on one lens has no stereo and no parallax, so nothing
+         tells the eye how far a wall is and it reads as larger than it is. This
+         widens or narrows how much of the sphere lands in the same field — a
+         viewing preference, not a correction: the capture is already at true
+         angular scale. Held at 1.0 it does nothing at all. */
+      if (abs(angularScale - 1.0) > 0.001) {
+        float a = acos(clamp(dot(dir, forward), -1.0, 1.0));
+        vec3 axis = cross(forward, dir);
+        float len = length(axis);
+        if (len > 0.00001) {
+          axis /= len;
+          float b = clamp(a * angularScale, 0.0, PI);
+          float c = cos(b);
+          float sn = sin(b);
+          dir = normalize(forward * c + cross(axis, forward) * sn + axis * dot(axis, forward) * (1.0 - c));
+        }
+      }
       float u = atan(dir.x, -dir.z) / (2.0 * PI) + 0.5;
       float v = acos(clamp(dir.y, -1.0, 1.0)) / PI;
       gl_FragColor = texture2D(source, vec2(u, v));
+    }`;
+
+  /* Where a marker is, as a direction, derived from the shader rather than
+     guessed at.
+
+     The shader reads the sphere with
+        u = atan(dir.x, -dir.z) / 2PI + 0.5
+        v = acos(dir.y) / PI
+     so running those two backwards is the only mapping that puts a pin on the
+     thing it was placed on. A pin that is a few degrees out looks like a pin
+     somebody placed carelessly, which is the worst kind of wrong: believable. */
+  function markerDirection(u, v) {
+    const theta = (u - 0.5) * Math.PI * 2;
+    const phi = v * Math.PI;
+    const horizontal = Math.sin(phi);
+    return [horizontal * Math.sin(theta), Math.cos(phi), -horizontal * Math.cos(theta)];
+  }
+
+  /* The same journey back, so a test can prove the pair are inverses instead of
+     taking it on trust. */
+  function directionToUV(direction) {
+    const [x, y, z] = direction;
+    return {
+      u: Math.atan2(x, -z) / (Math.PI * 2) + 0.5,
+      v: Math.acos(Math.max(-1, Math.min(1, y))) / Math.PI,
+    };
+  }
+
+  if (typeof window !== "undefined") {
+    window.MDAIPano360Math = { markerDirection, directionToUV };
+  }
+
+  const MARKER_VERTEX_SHADER = `
+    attribute vec2 corner;
+    uniform mat4 projection;
+    uniform mat3 viewRotationInverse;
+    uniform vec3 markerDirection;
+    uniform float markerSize;
+    varying vec2 vCorner;
+    void main() {
+      vCorner = corner;
+      /* The pin sits on a sphere of fixed radius and always faces the viewer:
+         its plane is built from the view's own right and up axes, so it never
+         turns edge-on however somebody walks around it. */
+      vec3 centre = markerDirection * 6.0;
+      vec3 right = normalize(vec3(viewRotationInverse[0][0], viewRotationInverse[1][0], viewRotationInverse[2][0]));
+      vec3 up = normalize(vec3(viewRotationInverse[0][1], viewRotationInverse[1][1], viewRotationInverse[2][1]));
+      vec3 world = centre + (right * corner.x + up * corner.y) * markerSize;
+      gl_Position = projection * vec4(mat3(
+        viewRotationInverse[0][0], viewRotationInverse[0][1], viewRotationInverse[0][2],
+        viewRotationInverse[1][0], viewRotationInverse[1][1], viewRotationInverse[1][2],
+        viewRotationInverse[2][0], viewRotationInverse[2][1], viewRotationInverse[2][2]
+      ) * world, 1.0);
+    }`;
+
+  const MARKER_FRAGMENT_SHADER = `
+    precision mediump float;
+    varying vec2 vCorner;
+    uniform vec4 markerColour;
+    uniform float looking;
+    void main() {
+      float radius = length(vCorner);
+      if (radius > 1.0) discard;
+      /* A ring rather than a blob: it has to be visible against timber and
+         daylight alike without hiding what it points at. */
+      float edge = smoothstep(1.0, 0.86, radius);
+      float hole = smoothstep(0.52, 0.66, radius);
+      float alpha = edge * mix(hole, 1.0, looking * 0.55);
+      gl_FragColor = vec4(markerColour.rgb, markerColour.a * alpha);
     }`;
 
   function invert4(m) {
@@ -114,6 +202,11 @@
     .pano-bar{display:flex;align-items:center;gap:12px;padding:calc(10px + env(safe-area-inset-top)) 14px 10px;background:linear-gradient(180deg,rgba(4,9,15,.94),rgba(4,9,15,0));position:absolute;inset:0 0 auto;z-index:2}
     .pano-bar .pano-titles{min-width:0;flex:1}
     .pano-bar .pano-vr{background:rgba(91,216,206,.16);border-color:rgba(91,216,206,.5);color:#9fefe8}
+    .pano-scale{flex:0 0 auto;display:flex;align-items:center;gap:8px;min-height:44px;padding:0 12px;border:1px solid #2b425c;border-radius:10px;background:rgba(10,20,33,.72);color:#8fa2b5;font-size:11px}
+    .pano-scale[hidden]{display:none}
+    .pano-scale input{width:104px;accent-color:#52d2df}
+    .pano-scale em{font-style:normal;color:#edf4f7;font-variant-numeric:tabular-nums;min-width:38px;text-align:right}
+    @media (max-width:640px){.pano-scale span{display:none}.pano-scale input{width:76px}}
     .pano-bar strong{display:block;font-size:15px;line-height:1.25;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
     .pano-bar small{display:block;margin-top:2px;color:#8fa2b5;font-size:11px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
     .pano-icon{flex:0 0 auto;min-width:44px;min-height:44px;padding:0 12px;border:1px solid #2b425c;border-radius:10px;background:rgba(10,20,33,.72);color:#edf4f7;font:inherit;font-size:13px;cursor:pointer}
@@ -222,6 +315,16 @@
         <!-- Only ever shown once the headset has said it can do this. A button
              that fails when pressed is worse than one that was never there. -->
         <button class="pano-icon pano-vr" type="button" data-pano-vr hidden>◉ Stand in this room</button>
+        <!-- A monoscopic capture has no stereo and no parallax, so a true-scale
+             room can still read as too large. This changes how much of the
+             sphere lands in the same field. It is a viewing preference; the
+             capture itself is never altered. -->
+        <label class="pano-scale" data-pano-scale hidden>
+          <span>Room size</span>
+          <input type="range" min="60" max="160" step="5" value="100" data-pano-scale-input
+                 aria-label="How large the room reads in the headset, in percent">
+          <em data-pano-scale-value>100%</em>
+        </label>
       </div>
       <div class="pano-stage" data-pano-stage></div>
       <div class="pano-foot" data-pano-foot></div>`;
@@ -232,6 +335,9 @@
     subtitleNode = root.querySelector("[data-pano-subtitle]");
     gyroButton = root.querySelector("[data-pano-gyro]");
     vrButton = root.querySelector("[data-pano-vr]");
+    scaleControl = root.querySelector("[data-pano-scale]");
+    scaleInput = root.querySelector("[data-pano-scale-input]");
+    scaleValue = root.querySelector("[data-pano-scale-value]");
     markerButton = root.querySelector("[data-pano-markers]");
     markerButton.addEventListener("click", openMarkerList);
     root.querySelector("[data-pano-close]").addEventListener("click", close);
@@ -241,6 +347,35 @@
   }
 
   let vrButton = null;
+  let scaleControl = null;
+  let scaleInput = null;
+  let scaleValue = null;
+
+  /* Remembered, because somebody who has settled on how a room should read
+     should not have to settle on it again every time they open one. What is
+     stored is the number on the slider — the thing a person chose — not the
+     shader's factor, which is an implementation detail that may change. */
+  const SIZE_KEY = "mdai.pano360.roomSize";
+  const SIZE_MIN = 60;
+  const SIZE_MAX = 160;
+
+  /* Smaller room means more of the sphere in the same field of view, which is
+     a LARGER angular factor. Getting this the wrong way round is invisible in
+     code review and obvious the second somebody puts the headset on: they ask
+     for half the room and get twice as much of it. */
+  const sizeToAngularScale = (size) => 100 / size;
+
+  function rememberedRoomSize() {
+    try {
+      const stored = Number(window.localStorage?.getItem(SIZE_KEY));
+      if (Number.isFinite(stored) && stored >= SIZE_MIN && stored <= SIZE_MAX) return stored;
+    } catch (_) { /* private browsing; the default is fine */ }
+    return 100;
+  }
+
+  function rememberRoomSize(size) {
+    try { window.localStorage?.setItem(SIZE_KEY, String(size)); } catch (_) { /* nothing to do */ }
+  }
 
   /* Asked once, and only ever answered by the device. */
   let immersiveOffered = null;
@@ -367,6 +502,17 @@
        playing capture keeps playing when the headset takes over. */
     let xr = null;
 
+    /* Held out here rather than inside the session, because the list and the
+       preference are both set from the flat viewer long before anybody reaches
+       for the headset. Kept inside, a marker placed on a laptop would simply
+       not be in the room. */
+    let headsetMarkerSource = [];
+    let headsetMarkers = [];
+    let headsetAngularScale = 1;
+
+    let onMarkerChosen = null;
+    function whenMarkerChosen(handler) { onMarkerChosen = handler; }
+
     async function enterVR() {
       if (xr?.session) return { ok: true, already: true };
       if (!navigator.xr) return { ok: false, why: "This browser cannot open an immersive view." };
@@ -397,7 +543,33 @@
         const xrUniforms = {
           invProjection: gl.getUniformLocation(program2, "invProjection"),
           viewRotation: gl.getUniformLocation(program2, "viewRotation"),
+          forward: gl.getUniformLocation(program2, "forward"),
+          angularScale: gl.getUniformLocation(program2, "angularScale"),
         };
+
+        /* The pins, in the room rather than on a pane in front of it. */
+        const markerProgram = gl.createProgram();
+        gl.attachShader(markerProgram, compile(gl, gl.VERTEX_SHADER, MARKER_VERTEX_SHADER));
+        gl.attachShader(markerProgram, compile(gl, gl.FRAGMENT_SHADER, MARKER_FRAGMENT_SHADER));
+        gl.linkProgram(markerProgram);
+        if (!gl.getProgramParameter(markerProgram, gl.LINK_STATUS)) {
+          throw new Error(gl.getProgramInfoLog(markerProgram) || "Marker program link failed");
+        }
+        const markerUniforms = {
+          projection: gl.getUniformLocation(markerProgram, "projection"),
+          viewRotationInverse: gl.getUniformLocation(markerProgram, "viewRotationInverse"),
+          markerDirection: gl.getUniformLocation(markerProgram, "markerDirection"),
+          markerSize: gl.getUniformLocation(markerProgram, "markerSize"),
+          markerColour: gl.getUniformLocation(markerProgram, "markerColour"),
+          looking: gl.getUniformLocation(markerProgram, "looking"),
+        };
+        const markerCorner = gl.getAttribLocation(markerProgram, "corner");
+        const markerQuad = gl.createBuffer();
+        gl.bindBuffer(gl.ARRAY_BUFFER, markerQuad);
+        gl.bufferData(gl.ARRAY_BUFFER, new Float32Array([
+          -1, -1, 1, -1, -1, 1,
+          -1, 1, 1, -1, 1, 1,
+        ]), gl.STATIC_DRAW);
         const xrPosition = gl.getAttribLocation(program2, "position");
 
         session.updateRenderState({ baseLayer: new XRWebGLLayer(session, gl) });
@@ -407,7 +579,22 @@
         }
         if (!reference) throw new Error("no reference space");
 
-        xr = { session, reference, program2, xrUniforms, xrPosition, views: 0 };
+        xr = {
+          session, reference, program2, xrUniforms, xrPosition, views: 0,
+          markers: headsetMarkers, looking: null, forward: [0, 0, -1],
+          /* 1.0 is the capture at true angular scale, which is where it starts.
+             Anything else is somebody's preference about how a room reads. */
+          angularScale: headsetAngularScale,
+        };
+
+        /* A pinch, a controller trigger, a tap — whatever the device calls
+           choosing something. Opening the pin somebody is looking at is the
+           whole point of putting pins in the room. */
+        session.addEventListener("select", () => {
+          const marker = xr?.looking;
+          if (!marker) return;
+          onMarkerChosen?.(marker.id);
+        });
 
         session.requestAnimationFrame(function xrFrame(time, frame) {
           if (!xr?.session) return;
@@ -429,19 +616,69 @@
           gl.vertexAttribPointer(xrPosition, 2, gl.FLOAT, false, 0, 0);
           gl.activeTexture(gl.TEXTURE0);
           gl.bindTexture(gl.TEXTURE_2D, texture);
+          /* Where the head is pointing, taken once per frame from the first
+             view: the two eyes look the same way. */
+          const head = pose.views[0].transform.inverse.matrix;
+          const forward = [-head[2], -head[6], -head[10]];
+          xr.forward = forward;
+
+          /* The pin nearest to where somebody is looking, and only if they are
+             looking near it at all. Highlighting whatever happens to be closest
+             would light one up permanently, wherever the head turned. */
+          let looked = null;
+          let best = Math.cos(0.14);
+          for (const marker of xr.markers) {
+            const dot = marker.dir[0] * forward[0] + marker.dir[1] * forward[1] + marker.dir[2] * forward[2];
+            if (dot > best) { best = dot; looked = marker; }
+          }
+          xr.looking = looked;
+
           for (const view of pose.views) {
             const viewport = layer.getViewport(view);
             gl.viewport(viewport.x, viewport.y, viewport.width, viewport.height);
-            gl.uniformMatrix4fv(xrUniforms.invProjection, false, invert4(view.projectionMatrix));
             const m = view.transform.inverse.matrix;
             /* World → eye read the other way is eye → world, which for a
                rotation is the transpose. */
-            gl.uniformMatrix3fv(xrUniforms.viewRotation, false, new Float32Array([
+            const rotation = new Float32Array([
               m[0], m[4], m[8],
               m[1], m[5], m[9],
               m[2], m[6], m[10],
-            ]));
+            ]);
+            gl.useProgram(program2);
+            gl.bindBuffer(gl.ARRAY_BUFFER, buffer);
+            gl.enableVertexAttribArray(xrPosition);
+            gl.vertexAttribPointer(xrPosition, 2, gl.FLOAT, false, 0, 0);
+            gl.bindTexture(gl.TEXTURE_2D, texture);
+            gl.uniformMatrix4fv(xrUniforms.invProjection, false, invert4(view.projectionMatrix));
+            gl.uniformMatrix3fv(xrUniforms.viewRotation, false, rotation);
+            gl.uniform3f(xrUniforms.forward, forward[0], forward[1], forward[2]);
+            gl.uniform1f(xrUniforms.angularScale, xr.angularScale);
             gl.drawArrays(gl.TRIANGLES, 0, 3);
+
+            if (!xr.markers.length) continue;
+            gl.useProgram(markerProgram);
+            gl.bindBuffer(gl.ARRAY_BUFFER, markerQuad);
+            gl.enableVertexAttribArray(markerCorner);
+            gl.vertexAttribPointer(markerCorner, 2, gl.FLOAT, false, 0, 0);
+            gl.enable(gl.BLEND);
+            gl.blendFunc(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA);
+            gl.uniformMatrix4fv(markerUniforms.projection, false, view.projectionMatrix);
+            gl.uniformMatrix3fv(markerUniforms.viewRotationInverse, false, rotation);
+            for (const marker of xr.markers) {
+              const isLooked = marker === looked;
+              gl.uniform3f(markerUniforms.markerDirection, marker.dir[0], marker.dir[1], marker.dir[2]);
+              gl.uniform1f(markerUniforms.markerSize, isLooked ? 0.46 : 0.32);
+              gl.uniform1f(markerUniforms.looking, isLooked ? 1 : 0);
+              /* Confirmed by a person and seen only by the AI are different
+                 things, and a pin is exactly where that distinction gets lost
+                 if it is not carried. */
+              const colour = marker.confirmed
+                ? [0.50, 0.84, 0.66, 0.95]
+                : [1.0, 0.81, 0.60, 0.95];
+              gl.uniform4f(markerUniforms.markerColour, colour[0], colour[1], colour[2], colour[3]);
+              gl.drawArrays(gl.TRIANGLES, 0, 6);
+            }
+            gl.disable(gl.BLEND);
           }
         });
 
@@ -467,6 +704,39 @@
         };
       }
     }
+
+    /* Read from the same list the flat viewer draws, so a pin added on a laptop
+       is in the room the next time somebody stands in it. */
+    function setHeadsetMarkers(list) {
+      headsetMarkerSource = Array.isArray(list) ? list : [];
+      headsetMarkers = headsetMarkerSource
+        .filter((marker) => Number.isFinite(Number(marker?.u)) && Number.isFinite(Number(marker?.v)))
+        .map((marker) => ({
+          id: marker.id,
+          label: marker.label || "",
+          confirmed: marker.confirmed === true,
+          dir: markerDirection(Number(marker.u), Number(marker.v)),
+        }));
+      if (xr) {
+        xr.markers = headsetMarkers;
+        /* The pin somebody was looking at may have just been removed; keeping
+           the old object would light a ring that is no longer in the list. */
+        xr.looking = headsetMarkers.find((marker) => marker.id === xr.looking?.id) || null;
+      }
+      return headsetMarkers.length;
+    }
+
+    /* Held between 0.6 and 1.7: far enough to change how a room reads, close
+       enough that nobody is asked to look through a fisheye. The upper end is
+       the inverse of the smallest room the control offers — a slider that says
+       60% and silently delivers 63% is a slider that lies. */
+    function setAngularScale(value) {
+      headsetAngularScale = Math.max(0.6, Math.min(1.7, Number(value) || 1));
+      if (xr) xr.angularScale = headsetAngularScale;
+      return headsetAngularScale;
+    }
+
+    function angularScale() { return headsetAngularScale; }
 
     function exitVR() {
       if (xr?.session) xr.session.end().catch(() => undefined);
@@ -588,7 +858,12 @@
       window.requestAnimationFrame(step);
     }
 
-    return { dispose, lookAt, view, canvas, enterVR, exitVR, xrViews: () => xr?.views || 0 };
+    return {
+      dispose, lookAt, view, canvas, enterVR, exitVR,
+      setHeadsetMarkers, setAngularScale, angularScale, whenMarkerChosen,
+      xrViews: () => xr?.views || 0,
+      xrMarkerCount: () => headsetMarkers.length,
+    };
   }
 
   /* Somewhere to say what happened that is still on the screen when it happens.
@@ -824,6 +1099,7 @@
         marker.state = button.dataset.markerReview;
         markerState.onReview?.(marker, marker.state);
         renderMarkerPins();
+        syncHeadsetMarkers();
         openMarkerCard(marker);
       });
     });
@@ -909,6 +1185,7 @@
       });
       markerState.list.push(marker);
       markerState.onPlace?.(marker);
+      syncHeadsetMarkers();
       stop();
       renderMarkerPins();
       updateMarkerButton();
@@ -1015,6 +1292,24 @@
     });
   }
 
+  /* One list, two places it is drawn: the pins on the flat pane and the rings
+     standing in the room. They are fed from the same array on purpose — a
+     marker confirmed on a laptop is green in the headset the moment somebody
+     puts it on, and a marker that only the AI has seen is never shown as
+     confirmed in either. */
+  function syncHeadsetMarkers() {
+    if (!markerState.sphere?.setHeadsetMarkers) return 0;
+    return markerState.sphere.setHeadsetMarkers(
+      markerState.list.map((marker) => ({
+        id: marker.id,
+        label: marker.label || "",
+        u: marker.u,
+        v: marker.v,
+        confirmed: marker.state === "confirmed",
+      })),
+    );
+  }
+
   function mountMarkers(sphere, media, options) {
     markerState.sphere = sphere;
     markerState.media = media;
@@ -1031,10 +1326,18 @@
     renderMarkerPins();
     updateMarkerButton();
     renderMarkerAction();
+    syncHeadsetMarkers();
+    /* Looking at a pin in the room and choosing it opens the same card the
+       flat viewer opens. Somebody in a headset gets the evidence, not a dot. */
+    sphere?.whenMarkerChosen?.((id) => {
+      const marker = markerState.list.find((item) => item.id === id);
+      if (marker) openMarkerCard(marker);
+    });
     if (sphere?.canvas) bindMarkerTaps(sphere.canvas);
   }
 
   function resetMarkers() {
+    markerState.sphere?.setHeadsetMarkers?.([]);
     markerState.list = [];
     markerState.sphere = null;
     markerState.media = null;
@@ -1083,6 +1386,12 @@
 
   function teardown() {
     resetMarkers();
+    /* Both belong to a sphere that is about to stop existing. Left on screen
+       they are two controls that do nothing, which is the same failure as a
+       button that does nothing when pressed. */
+    if (vrButton) { vrButton.hidden = true; vrButton.onclick = null; }
+    if (scaleControl) scaleControl.hidden = true;
+    if (scaleInput) scaleInput.oninput = null;
     if (!session) return;
     session.dispose?.();
     session = null;
@@ -1179,7 +1488,21 @@
         headsetCanDoThis().then((offered) => {
           if (!vrButton) return;
           vrButton.hidden = !offered;
+          if (scaleControl) scaleControl.hidden = !offered;
           if (!offered) return;
+          if (scaleInput) {
+            const apply = (size) => {
+              sphere.setAngularScale(sizeToAngularScale(size));
+              scaleInput.value = String(size);
+              if (scaleValue) scaleValue.textContent = `${size}%`;
+            };
+            apply(rememberedRoomSize());
+            scaleInput.oninput = () => {
+              const size = Math.max(SIZE_MIN, Math.min(SIZE_MAX, Number(scaleInput.value) || 100));
+              apply(size);
+              rememberRoomSize(size);
+            };
+          }
           vrButton.onclick = async () => {
             if (sphere.xrViews()) { sphere.exitVR(); return; }
             vrButton.disabled = true;

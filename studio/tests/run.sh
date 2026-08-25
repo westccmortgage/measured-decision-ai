@@ -38,6 +38,8 @@ run "removing a project"              studio/tests/e2e-remove-project.mjs
 run "finding things in the record"    studio/tests/e2e-search.mjs
 run "the headset probe"               studio/tests/vr-check.mjs
 run "standing in a real capture"      studio/tests/pano-vr.mjs
+run "a pin is where it was placed"    studio/tests/marker-direction.mjs
+run "pressing a pin in the room"      studio/tests/pano-markers-vr.mjs
 
 printf "\n%s\n" "────────────────────────────────────────────"
 if [ "$fail" = "0" ]; then echo "ALL CHECKS PASS"; else echo "SOMETHING FAILED — see above"; fi
