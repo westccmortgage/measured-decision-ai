@@ -9,7 +9,7 @@
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
-    <link rel="stylesheet" href="plans.css?v=d7562b5ec0">
+    <link rel="stylesheet" href="plans.css?v=471161c401">
   </head>
   <body>
     <div class="boot-screen" id="boot-screen">
@@ -194,6 +194,32 @@
           </div>
           <p class="governance-note"><i></i>A confirmed route says a person recognised the opening. It does not certify dimensions, egress, accessibility, or code compliance.</p>
         </section>
+
+        <!-- A draft lumber order, computed from the dimensions the sheets
+             actually print. The AI reads; a fixed calculator counts; a person
+             signs. Nothing here is an estimate, and the screen says so. -->
+        <section class="takeoff-section" id="takeoff-section" hidden>
+          <div class="section-heading">
+            <div><p>06 · Wood takeoff draft</p><h2>What the plans imply in lumber</h2></div>
+            <div class="heading-actions">
+              <span class="state-pill" id="takeoff-state">Not computed</span>
+              <button class="button primary" id="approve-takeoff" type="button" hidden>Approve this draft</button>
+            </div>
+          </div>
+          <p class="routes-intro" id="takeoff-intro"></p>
+          <div class="takeoff-grid" id="takeoff-grid" hidden>
+            <div class="takeoff-lines"><h3>Order draft</h3><table id="takeoff-table"><thead><tr><th>Item</th><th>Qty</th></tr></thead><tbody></tbody></table></div>
+            <div class="takeoff-side">
+              <div class="takeoff-gaps" id="takeoff-gaps"></div>
+              <details class="takeoff-trace"><summary>The arithmetic, wall by wall</summary><div id="takeoff-trace"></div></details>
+            </div>
+          </div>
+          <div class="empty-state" id="takeoff-empty" hidden>
+            <strong>The plan set printed no framing dimensions the AI could read</strong>
+            <p id="takeoff-empty-copy">A takeoff needs dimensioned floor plans. Re-analysing a set that includes them is what would produce one.</p>
+          </div>
+          <p class="governance-note"><i></i>A draft for verification, not a contractor's estimate. It excludes waste, cut optimisation, and regional practice, and it only counts walls whose dimensions are printed on the sheets. Approval records that a person accepted it as a verification baseline.</p>
+        </section>
       </main>
     </div>
 
@@ -299,6 +325,7 @@
     <script src="../config.js?v=0772f5f463"></script>
     <script src="../s3-upload.js?v=49e7eb1bcf"></script>
     <script src="../recent-projects.js?v=529636c5de"></script>
-    <script src="plans.js?v=55e37ee352"></script>
+    <script src="../takeoff360.js?v=9e414b5b3c"></script>
+    <script src="plans.js?v=1565f4bd6f"></script>
   </body>
 </html>

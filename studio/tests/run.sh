@@ -41,6 +41,8 @@ run "a capture waiting for the machine" studio/tests/e2e-waiting-machine.mjs
 run "removing a project"              studio/tests/e2e-remove-project.mjs
 run "finding things in the record"    studio/tests/e2e-search.mjs
 run "how the rooms connect"           studio/tests/e2e-routes.mjs
+run "the lumber a plan implies"       studio/tests/takeoff.mjs
+run "signing the takeoff draft"       studio/tests/e2e-takeoff.mjs
 run "a page open for three hours"     studio/tests/aged-session.mjs
 run "the headset probe"               studio/tests/vr-check.mjs
 run "standing in a real capture"      studio/tests/pano-vr.mjs

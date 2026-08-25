@@ -1,4 +1,4 @@
-export const AGENT_CONTRACT_VERSION = "2026-08-25.1";
+export const AGENT_CONTRACT_VERSION = "2026-08-25.2";
 
 export type AgentKey =
   | "document_controller"
@@ -110,6 +110,9 @@ export const PLAN_WORKFLOW_INSTRUCTIONS = [
   "- Record a space_link only where a sheet actually draws the opening: a door, doorway, cased opening, stair, or corridor connecting two named spaces. Two rooms sharing a wall, appearing next to each other, or being adjacent in a schedule is not a connection. Rooms whose connection you cannot see belong in gaps, not in space_links.",
   "- Name both ends of a space_link with the exact building, level and space name used in spaces. A link naming a space that is not in spaces will be discarded.",
   "- A space_link is a way through, not a direction of travel: record each opening once.",
+  "- Record a framing_wall for each framed wall run a floor plan dimensions: the PRINTED dimension string exactly as written (e.g. \"12'-6\\\"\"), the stud size and spacing from the wall type callout or general notes, corner and intersection counts read from the plan geometry, and each opening with its width from the door/window schedule. Cite the sheet for every wall and every opening.",
+  "- Never measure a drawing by its scale. A wall whose length is not printed gets length \"\" and a gap naming the wall and sheet — a scaled guess dressed as a dimension is the exact failure this product exists to refuse.",
+  "- Framing dimensions feed a deterministic draft takeoff that a person verifies. You extract what the sheets state; you never compute lumber quantities yourself.",
   "- A construction phase is an evidence gate, not a promised calendar date.",
   "- Prioritize captures immediately before work becomes concealed: concrete placement, waterproofing cover-up, insulation/drywall, ceiling closure, utility burial, finish enclosure, and equipment access closure when applicable.",
   "- Prefer a room-level 360 orientation plus close evidence of each component that matters. Use video only when motion, continuity, or a route must be demonstrated.",
