@@ -41,11 +41,79 @@
       gl_FragColor = texture2D(source, vec2(u, v));
     }`;
 
+  /* The immersive path needs its own pair of shaders, and not because somebody
+     preferred matrices. A headset hands back its own projection for each eye —
+     asymmetric, and different between them — and there is no yaw, pitch and
+     field of view that describes it. Unprojecting the pixel uses whatever the
+     device gives, exactly as given.
+
+     The last two lines are copied from the flat shader on purpose. They are the
+     convention that decides which way round the sphere is, and two copies of it
+     that drift apart would put the ceiling underfoot in the headset while the
+     laptop looked perfect. */
+  const XR_VERTEX_SHADER = `
+    attribute vec2 position;
+    varying vec2 vScreen;
+    void main() {
+      vScreen = position;
+      gl_Position = vec4(position, 0.0, 1.0);
+    }`;
+
+  const XR_FRAGMENT_SHADER = `
+    precision highp float;
+    varying vec2 vScreen;
+    uniform sampler2D source;
+    uniform mat4 invProjection;
+    uniform mat3 viewRotation;
+    const float PI = 3.14159265359;
+    void main() {
+      vec4 eye = invProjection * vec4(vScreen, -1.0, 1.0);
+      vec3 dir = normalize(viewRotation * normalize(eye.xyz / eye.w));
+      float u = atan(dir.x, -dir.z) / (2.0 * PI) + 0.5;
+      float v = acos(clamp(dir.y, -1.0, 1.0)) / PI;
+      gl_FragColor = texture2D(source, vec2(u, v));
+    }`;
+
+  function invert4(m) {
+    const out = new Float32Array(16);
+    const a00 = m[0], a01 = m[1], a02 = m[2], a03 = m[3];
+    const a10 = m[4], a11 = m[5], a12 = m[6], a13 = m[7];
+    const a20 = m[8], a21 = m[9], a22 = m[10], a23 = m[11];
+    const a30 = m[12], a31 = m[13], a32 = m[14], a33 = m[15];
+    const b00 = a00 * a11 - a01 * a10, b01 = a00 * a12 - a02 * a10;
+    const b02 = a00 * a13 - a03 * a10, b03 = a01 * a12 - a02 * a11;
+    const b04 = a01 * a13 - a03 * a11, b05 = a02 * a13 - a03 * a12;
+    const b06 = a20 * a31 - a21 * a30, b07 = a20 * a32 - a22 * a30;
+    const b08 = a20 * a33 - a23 * a30, b09 = a21 * a32 - a22 * a31;
+    const b10 = a21 * a33 - a23 * a31, b11 = a22 * a33 - a23 * a32;
+    let det = b00 * b11 - b01 * b10 + b02 * b09 + b03 * b08 - b04 * b07 + b05 * b06;
+    if (!det) return out;
+    det = 1.0 / det;
+    out[0] = (a11 * b11 - a12 * b10 + a13 * b09) * det;
+    out[1] = (a02 * b10 - a01 * b11 - a03 * b09) * det;
+    out[2] = (a31 * b05 - a32 * b04 + a33 * b03) * det;
+    out[3] = (a22 * b04 - a21 * b05 - a23 * b03) * det;
+    out[4] = (a12 * b08 - a10 * b11 - a13 * b07) * det;
+    out[5] = (a00 * b11 - a02 * b08 + a03 * b07) * det;
+    out[6] = (a32 * b02 - a30 * b05 - a33 * b01) * det;
+    out[7] = (a20 * b05 - a22 * b02 + a23 * b01) * det;
+    out[8] = (a10 * b10 - a11 * b08 + a13 * b06) * det;
+    out[9] = (a01 * b08 - a00 * b10 - a03 * b06) * det;
+    out[10] = (a30 * b04 - a31 * b02 + a33 * b00) * det;
+    out[11] = (a21 * b02 - a20 * b04 - a23 * b00) * det;
+    out[12] = (a11 * b07 - a10 * b09 - a12 * b06) * det;
+    out[13] = (a00 * b09 - a01 * b07 + a02 * b06) * det;
+    out[14] = (a31 * b01 - a30 * b03 - a32 * b00) * det;
+    out[15] = (a20 * b03 - a21 * b01 + a22 * b00) * det;
+    return out;
+  }
+
   const STYLE = `
     .pano-overlay{position:fixed;inset:0;z-index:120;display:flex;flex-direction:column;background:#04090f}
     .pano-overlay[hidden]{display:none}
     .pano-bar{display:flex;align-items:center;gap:12px;padding:calc(10px + env(safe-area-inset-top)) 14px 10px;background:linear-gradient(180deg,rgba(4,9,15,.94),rgba(4,9,15,0));position:absolute;inset:0 0 auto;z-index:2}
     .pano-bar .pano-titles{min-width:0;flex:1}
+    .pano-bar .pano-vr{background:rgba(91,216,206,.16);border-color:rgba(91,216,206,.5);color:#9fefe8}
     .pano-bar strong{display:block;font-size:15px;line-height:1.25;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
     .pano-bar small{display:block;margin-top:2px;color:#8fa2b5;font-size:11px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
     .pano-icon{flex:0 0 auto;min-width:44px;min-height:44px;padding:0 12px;border:1px solid #2b425c;border-radius:10px;background:rgba(10,20,33,.72);color:#edf4f7;font:inherit;font-size:13px;cursor:pointer}
@@ -147,6 +215,9 @@
         <div class="pano-titles"><strong data-pano-title>Evidence</strong><small data-pano-subtitle></small></div>
         <button class="pano-icon" type="button" data-pano-markers hidden>◎ Mark</button>
         <button class="pano-icon" type="button" data-pano-gyro aria-pressed="false" hidden>Look around</button>
+        <!-- Only ever shown once the headset has said it can do this. A button
+             that fails when pressed is worse than one that was never there. -->
+        <button class="pano-icon pano-vr" type="button" data-pano-vr hidden>◉ Stand in this room</button>
       </div>
       <div class="pano-stage" data-pano-stage></div>
       <div class="pano-foot" data-pano-foot></div>`;
@@ -156,12 +227,27 @@
     titleNode = root.querySelector("[data-pano-title]");
     subtitleNode = root.querySelector("[data-pano-subtitle]");
     gyroButton = root.querySelector("[data-pano-gyro]");
+    vrButton = root.querySelector("[data-pano-vr]");
     markerButton = root.querySelector("[data-pano-markers]");
     markerButton.addEventListener("click", openMarkerList);
     root.querySelector("[data-pano-close]").addEventListener("click", close);
     document.addEventListener("keydown", (event) => {
       if (event.key === "Escape" && !root.hidden) close();
     });
+  }
+
+  let vrButton = null;
+
+  /* Asked once, and only ever answered by the device. */
+  let immersiveOffered = null;
+  async function headsetCanDoThis() {
+    if (immersiveOffered !== null) return immersiveOffered;
+    try {
+      immersiveOffered = Boolean(navigator.xr && await navigator.xr.isSessionSupported("immersive-vr"));
+    } catch (_) {
+      immersiveOffered = false;
+    }
+    return immersiveOffered;
   }
 
   function compile(gl, type, source) {
@@ -174,7 +260,7 @@
     return shader;
   }
 
-  function startSphere(media, isVideo, onFrame) {
+  function startSphere(media, isVideo, onFrame, onVRChange) {
     const canvas = document.createElement("canvas");
     stage.appendChild(canvas);
     const gl =
@@ -244,6 +330,12 @@
       resize();
       if (isVideo || !state.textureReady) uploadTexture();
       if (!state.textureReady) return;
+      /* Named rather than assumed: the immersive path links a second program,
+         and uniforms set against whichever one happens to be current is a bug
+         that only appears after somebody has used the headset once. */
+      gl.useProgram(program);
+      gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+      gl.bindTexture(gl.TEXTURE_2D, texture);
       gl.uniform1f(uniforms.yaw, view.yaw);
       gl.uniform1f(uniforms.pitch, view.pitch);
       gl.uniform1f(uniforms.tanHalfFov, Math.tan(view.fov / 2));
@@ -253,6 +345,106 @@
       // The marker layer is positioned from the very same view the shader just
       // drew, in the same frame, so a pin can never lag the sphere by a frame.
       onFrame?.({ yaw: view.yaw, pitch: view.pitch, fov: view.fov, aspect });
+    }
+
+    /* Standing in the room rather than looking at it.
+       Built lazily, on the same context and against the same texture, so a
+       playing capture keeps playing when the headset takes over. */
+    let xr = null;
+
+    async function enterVR() {
+      if (xr?.session) return { ok: true, already: true };
+      if (!navigator.xr) return { ok: false, why: "This browser cannot open an immersive view." };
+      let session;
+      try {
+        session = await navigator.xr.requestSession("immersive-vr", {
+          optionalFeatures: ["local-floor"],
+        });
+      } catch (error) {
+        return { ok: false, why: "The headset would not open an immersive view." };
+      }
+      try {
+        await gl.makeXRCompatible();
+        const program2 = gl.createProgram();
+        gl.attachShader(program2, compile(gl, gl.VERTEX_SHADER, XR_VERTEX_SHADER));
+        gl.attachShader(program2, compile(gl, gl.FRAGMENT_SHADER, XR_FRAGMENT_SHADER));
+        gl.linkProgram(program2);
+        if (!gl.getProgramParameter(program2, gl.LINK_STATUS)) {
+          throw new Error(gl.getProgramInfoLog(program2) || "XR program link failed");
+        }
+        const xrUniforms = {
+          invProjection: gl.getUniformLocation(program2, "invProjection"),
+          viewRotation: gl.getUniformLocation(program2, "viewRotation"),
+        };
+        const xrPosition = gl.getAttribLocation(program2, "position");
+
+        session.updateRenderState({ baseLayer: new XRWebGLLayer(session, gl) });
+        let reference = null;
+        for (const kind of ["local-floor", "local", "viewer"]) {
+          try { reference = await session.requestReferenceSpace(kind); break; } catch (_) { /* try the next */ }
+        }
+        if (!reference) throw new Error("no reference space");
+
+        xr = { session, reference, program2, xrUniforms, xrPosition, views: 0 };
+
+        session.requestAnimationFrame(function xrFrame(time, frame) {
+          if (!xr?.session) return;
+          session.requestAnimationFrame(xrFrame);
+          /* The capture is a video, so the texture has to be refreshed here as
+             well — the flat loop is not running while the headset is. */
+          if (isVideo || !state.textureReady) uploadTexture();
+          if (!state.textureReady) return;
+          const pose = frame.getViewerPose(reference);
+          if (!pose) return;
+          xr.views = pose.views.length;
+          const layer = session.renderState.baseLayer;
+          gl.bindFramebuffer(gl.FRAMEBUFFER, layer.framebuffer);
+          gl.clearColor(0, 0, 0, 1);
+          gl.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT);
+          gl.useProgram(program2);
+          gl.bindBuffer(gl.ARRAY_BUFFER, buffer);
+          gl.enableVertexAttribArray(xrPosition);
+          gl.vertexAttribPointer(xrPosition, 2, gl.FLOAT, false, 0, 0);
+          gl.activeTexture(gl.TEXTURE0);
+          gl.bindTexture(gl.TEXTURE_2D, texture);
+          for (const view of pose.views) {
+            const viewport = layer.getViewport(view);
+            gl.viewport(viewport.x, viewport.y, viewport.width, viewport.height);
+            gl.uniformMatrix4fv(xrUniforms.invProjection, false, invert4(view.projectionMatrix));
+            const m = view.transform.inverse.matrix;
+            /* World → eye read the other way is eye → world, which for a
+               rotation is the transpose. */
+            gl.uniformMatrix3fv(xrUniforms.viewRotation, false, new Float32Array([
+              m[0], m[4], m[8],
+              m[1], m[5], m[9],
+              m[2], m[6], m[10],
+            ]));
+            gl.drawArrays(gl.TRIANGLES, 0, 3);
+          }
+        });
+
+        session.addEventListener("end", () => {
+          xr = null;
+          /* Taking the headset off must give the flat viewer back, not a black
+             rectangle where a room used to be. */
+          gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+          gl.useProgram(program);
+          onVRChange?.(false);
+          if (state.alive && !state.frame) draw();
+        });
+        window.cancelAnimationFrame(state.frame);
+        state.frame = 0;
+        onVRChange?.(true);
+        return { ok: true };
+      } catch (error) {
+        try { await session.end(); } catch (_) { /* already gone */ }
+        xr = null;
+        return { ok: false, why: "The immersive view could not be set up." };
+      }
+    }
+
+    function exitVR() {
+      if (xr?.session) xr.session.end().catch(() => undefined);
     }
 
     const pointers = new Map();
@@ -371,7 +563,7 @@
       window.requestAnimationFrame(step);
     }
 
-    return { dispose, lookAt, view, canvas };
+    return { dispose, lookAt, view, canvas, enterVR, exitVR, xrViews: () => xr?.views || 0 };
   }
 
   function hide(node) {
@@ -927,13 +1119,32 @@
 
     const start = () => {
       try {
-        const sphere = startSphere(media, isVideo, layoutMarkerPins);
+        const sphere = startSphere(media, isVideo, layoutMarkerPins, (inHeadset) => {
+          if (!vrButton) return;
+          vrButton.textContent = inHeadset ? "◉ Leave the room" : "◉ Stand in this room";
+        });
         session = {
           dispose: () => {
+            sphere.exitVR();
             sphere.dispose();
             if (isVideo) media.pause();
           },
         };
+        /* The control appears only after the device has said it can. */
+        headsetCanDoThis().then((offered) => {
+          if (!vrButton) return;
+          vrButton.hidden = !offered;
+          if (!offered) return;
+          vrButton.onclick = async () => {
+            if (sphere.xrViews()) { sphere.exitVR(); return; }
+            vrButton.disabled = true;
+            const result = await sphere.enterVR();
+            vrButton.disabled = false;
+            /* What went wrong, on the screen, rather than a button that does
+               nothing when pressed. */
+            if (!result.ok && hintNode) hintNode.textContent = result.why;
+          };
+        });
         mountMarkers(sphere, isVideo ? media : null, options);
         // Arriving from a findings row: land looking at the point that row is
         // about, not at whatever direction the capture happened to start in.
