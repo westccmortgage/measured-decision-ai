@@ -3139,3 +3139,6 @@ dialog textarea { min-height:78px; resize:vertical; }
 .focus-finding button { min-height: 34px; padding: 0 12px; border: 1px solid rgba(239, 193, 120, .45); border-radius: 9px; background: rgba(56, 44, 21, .4); color: var(--amber); font: inherit; font-size: 12px; cursor: pointer; white-space: nowrap; }
 .focus-finding button:hover { border-color: var(--amber); }
 @media (max-width: 720px) { .focus-finding { grid-template-columns: minmax(0, 1fr); } .focus-finding button { justify-self: start; } }
+/* The finding being worked on: the panel is this and the way back, so pressing
+   a remedy visibly changed the screen. */
+.focus-finding.working { background: rgba(56, 44, 21, .32); }
