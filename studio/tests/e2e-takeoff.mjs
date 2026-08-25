@@ -14,7 +14,7 @@
  */
 import { chromium } from "/opt/node22/lib/node_modules/playwright/index.mjs";
 import http from "http"; import fs from "fs"; import path from "path";
-import { takeoffRows } from "./seed.mjs";
+import { takeoffRows, deckTakeoffRows } from "./seed.mjs";
 
 const ROOT = path.resolve(".");
 const TYPES = { ".html": "text/html", ".js": "text/javascript", ".css": "text/css" };
@@ -120,6 +120,30 @@ console.log("\n── a plan set with printed dimensions ──");
   check("and the calculator names its version",
     signed.args?.p_calculator_version === "takeoff360-1", signed.args?.p_calculator_version);
   check("nothing threw", errors.length === 0, errors.join(" | "));
+  await context.close();
+}
+
+console.log("\n── a deck set with no framed walls at all ──");
+/* The Sarita report, reproduced: nine sheets of wood deck, schedules printed,
+   and the section said "no framing dimensions the AI could read". */
+{
+  const { context, page, errors } = await openPlans(deckTakeoffRows());
+  const deck = await page.evaluate(() => ({
+    pill: document.querySelector("#takeoff-state")?.textContent.trim(),
+    rows: [...document.querySelectorAll("#takeoff-table tbody tr")].map((row) => row.innerText.replace(/\s+/g, " ").trim()),
+    gaps: document.querySelector("#takeoff-gaps")?.innerText.replace(/\s+/g, " ") || "",
+    emptyShown: document.querySelector("#takeoff-empty")?.hidden === false,
+  }));
+  check("a deck is lumber the section can read", deck.emptyShown === false, JSON.stringify(deck.pill));
+  check("joist footage is on the order: 1230 LF",
+    deck.rows.some((row) => /2x6 joist \(F\.R\.T\.\).*1230 LF/.test(row)), JSON.stringify(deck.rows));
+  check("decking is there as a stated upper bound",
+    deck.rows.some((row) => /decking 2x6.*3579 LF/.test(row)), JSON.stringify(deck.rows));
+  check("the pile count is on it, counted as drawn",
+    deck.rows.some((row) => /pile.*14 drawn on plan/.test(row)), JSON.stringify(deck.rows));
+  check("and the guardrail without a printed run is a gap",
+    /guardrail/.test(deck.gaps) && /no printed run length/.test(deck.gaps), deck.gaps.slice(0, 200));
+  check("nothing threw on the deck set", errors.length === 0, errors[0] || "");
   await context.close();
 }
 

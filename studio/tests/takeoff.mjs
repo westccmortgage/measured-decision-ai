@@ -118,6 +118,54 @@ console.log("\n── the whole set, with the gaps said out loud ──");
     result.traces.every((trace) => Array.isArray(trace.source_refs)), JSON.stringify(result.traces[0]));
 }
 
+console.log("\n── a deck, worked by hand from the Sarita sheets ──");
+/* The set that exposed the gap: a nine-sheet wood deck — S-2.0 schedules,
+   A-210 printed dimensions — read by a calculator that only knew stud walls
+   and answered "no framing dimensions". These numbers follow the sheets:
+   area 1,640 sq ft as printed; joists 2x6 F.R.T.; the schedules' marks.
+   Hand arithmetic: joists 1640 × 12 / 16 = 1230 LF.
+   Decking 2x6 at zero gap: 1640 × 12 / 5.5 = 3578.18 → 3579 LF. */
+{
+  const { takeoffDeck } = require("../takeoff360.js");
+  const result = takeoffDeck({
+    label: "Exterior deck", area_sqft: "1640",
+    joist_size: "2x6", joist_spacing: '16"', joist_treatment: "F.R.T.",
+    decking: "2x6 decking",
+    beams: [{ mark: "BM.1", description: "Parallam PSL 2.0E 7.0\"x14.0\"", count_drawn: 4 }],
+    columns: [{ mark: "COL.2", description: "8x8 #1", count_drawn: 12 }],
+    piles: { count_drawn: 14, description: '18" dia concrete pile' },
+    guardrail: '42" guardrail', guardrail_length: "",
+    source_refs: ["S-2.0", "A-210"],
+  });
+  const joists = result.lines.find((line) => /joist/.test(line.item));
+  const decking = result.lines.find((line) => /decking/.test(line.item));
+  check("joist footage is area over spacing: 1230 LF", joists?.quantity === 1230, JSON.stringify(joists));
+  check("decking is area over face width, called an upper bound",
+    decking?.quantity === 3579 && /upper bound/.test(decking.item), JSON.stringify(decking));
+  check("drawn marks are counted, not measured",
+    result.lines.some((line) => line.quantity === 14 && /pile/.test(line.item))
+    && result.lines.some((line) => line.quantity === 4 && /BM\.1/.test(line.item)),
+    JSON.stringify(result.lines.map((l) => `${l.quantity} ${l.item}`)));
+  check("a guardrail with no printed run is a gap, not a guess",
+    result.gaps.some((gap) => /guardrail/.test(gap) && /no printed run length/.test(gap)), JSON.stringify(result.gaps));
+  check("and every step is written out",
+    result.steps.some((step) => /1640 sq ft × 12 \/ 16/.test(step)), JSON.stringify(result.steps));
+}
+
+console.log("\n── a deck the sheets did not dimension ──");
+{
+  const { takeoffDeck } = require("../takeoff360.js");
+  const result = takeoffDeck({
+    label: "Mystery deck", area_sqft: "", length: "", width: "",
+    joist_size: "2x6", joist_spacing: "", joist_treatment: "",
+    decking: "composite planks", beams: [], columns: [],
+    piles: { count_drawn: 0, description: "" }, guardrail: "", guardrail_length: "",
+    source_refs: ["S-9"],
+  });
+  check("no area and no spacing produce gaps, never quantities",
+    result.lines.length === 0 && result.gaps.length >= 2, JSON.stringify(result.gaps));
+}
+
 console.log("\n── determinism, the whole point ──");
 {
   const walls = [{ label: "A", length: "17'-3 1/2\"", corners: 3, openings: [{ label: "D", width: "2'-8\"" }] }];

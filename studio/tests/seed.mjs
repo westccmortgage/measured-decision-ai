@@ -272,6 +272,31 @@ export const takeoffRows = () => {
   return r;
 };
 
+/* The Sarita shape: a nine-sheet deck set with no framed walls at all. The
+   schedules and printed overalls carry everything; a takeoff that only knew
+   stud walls answered "no framing dimensions" to this exact input. */
+export const deckTakeoffRows = () => {
+  const r = clone(takeoffRows());
+  r.document_baselines[0].analysis = {
+    framing_walls: [],
+    framing_decks: [{
+      label: "Exterior deck", building: "Main House", level: "Deck level",
+      length: "82'-0\"", width: "25'-4\"", area_sqft: "1640",
+      joist_size: "2x6", joist_spacing: "16\"", joist_treatment: "F.R.T.",
+      decking: "2x6 decking",
+      beams: [
+        { mark: "BM.1", description: "Parallam PSL 2.0E 7.0\"x14.0\"", count_drawn: 4 },
+        { mark: "BM.2", description: "Parallam PSL 2.0E 5.25\"x11.25\"", count_drawn: 6 },
+      ],
+      columns: [{ mark: "COL.2", description: "8x8 #1", count_drawn: 12 }],
+      piles: { count_drawn: 14, description: "18\" dia concrete pile, 18'-0\" embedment" },
+      guardrail: "42\" high guardrail", guardrail_length: "",
+      source_refs: ["S-2.0", "A-210"],
+    }],
+  };
+  return r;
+};
+
 /* The real project, as it actually stands: 24 rooms, 35 files, ten rooms
    holding captures — and one room holding the same pair three times over,
    because each upload looked as though it had failed. Generated from the

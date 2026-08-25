@@ -820,8 +820,11 @@ function takeoffDraft() {
   const walls = Array.isArray(state.baseline?.analysis?.framing_walls)
     ? state.baseline.analysis.framing_walls
     : [];
-  if (!walls.length || !window.MDAITakeoff360) return null;
-  return { walls, result: window.MDAITakeoff360.takeoff(walls) };
+  const decks = Array.isArray(state.baseline?.analysis?.framing_decks)
+    ? state.baseline.analysis.framing_decks
+    : [];
+  if ((!walls.length && !decks.length) || !window.MDAITakeoff360) return null;
+  return { walls, decks, result: window.MDAITakeoff360.takeoff(walls, decks) };
 }
 
 function renderTakeoff() {
@@ -867,8 +870,8 @@ function renderTakeoff() {
   const mayApprove = canApproveBaseline() || state.role === "project_manager";
   approve.hidden = Boolean(approved) || !mayApprove;
   intro.textContent = approved
-    ? `Signed as a verification baseline: material the plans imply across ${showing.measuredWalls} dimensioned wall${showing.measuredWalls === 1 ? "" : "s"}. Compare it against invoices and captures — a large gap between the three is the question worth asking.`
-    : `Computed from ${showing.measuredWalls} wall${showing.measuredWalls === 1 ? "" : "s"} whose dimensions are printed on the sheets. Every line is traceable; nothing is measured by scale. Check it, then approve it as the verification baseline.`;
+    ? `Signed as a verification baseline: material the plans imply across ${showing.measuredWalls} dimensioned framed element${showing.measuredWalls === 1 ? "" : "s"}. Compare it against invoices and captures — a large gap between the three is the question worth asking.`
+    : `Computed from ${showing.measuredWalls} framed element${showing.measuredWalls === 1 ? "" : "s"} — walls and decks — whose dimensions are printed on the sheets. Every line is traceable; nothing is measured by scale. Check it, then approve it as the verification baseline.`;
 
   const body = $("#takeoff-table tbody");
   body.innerHTML = (showing.lines || []).map((line) => `

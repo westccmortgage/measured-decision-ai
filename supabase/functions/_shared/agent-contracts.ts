@@ -1,4 +1,4 @@
-export const AGENT_CONTRACT_VERSION = "2026-08-25.2";
+export const AGENT_CONTRACT_VERSION = "2026-08-25.3";
 
 export type AgentKey =
   | "document_controller"
@@ -112,6 +112,7 @@ export const PLAN_WORKFLOW_INSTRUCTIONS = [
   "- A space_link is a way through, not a direction of travel: record each opening once.",
   "- Record a framing_wall for each framed wall run a floor plan dimensions: the PRINTED dimension string exactly as written (e.g. \"12'-6\\\"\"), the stud size and spacing from the wall type callout or general notes, corner and intersection counts read from the plan geometry, and each opening with its width from the door/window schedule. Cite the sheet for every wall and every opening.",
   "- Never measure a drawing by its scale. A wall whose length is not printed gets length \"\" and a gap naming the wall and sheet — a scaled guess dressed as a dimension is the exact failure this product exists to refuse.",
+  "- Record a framing_deck for each framed exterior deck or platform: printed overall dimensions and area, the joist size/spacing/treatment from the floor joist schedule, decking from the finish legend, and each scheduled beam, column and pile mark with its description. For count_drawn, count the labelled marks actually drawn on the framing and foundation plans (every P1, every COL.2) — counting drawn marks is reading the drawing, like counting corners. If marks are ambiguous or partially hidden, record count_drawn 0 and add a gap.",
   "- Framing dimensions feed a deterministic draft takeoff that a person verifies. You extract what the sheets state; you never compute lumber quantities yourself.",
   "- A construction phase is an evidence gate, not a promised calendar date.",
   "- Prioritize captures immediately before work becomes concealed: concrete placement, waterproofing cover-up, insulation/drywall, ceiling closure, utility burial, finish enclosure, and equipment access closure when applicable.",

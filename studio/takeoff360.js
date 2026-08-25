@@ -134,12 +134,23 @@
   /* The whole set of walls the AI read, turned into one order draft. Walls
      without a readable length are returned as what they are — gaps that need a
      person — never silently dropped and never guessed at. */
-  function takeoff(walls) {
+  function takeoff(walls, decks) {
     const lines = new Map();
     const traces = [];
     const gaps = [];
     const unmeasured = [];
     let measuredWalls = 0;
+    for (const deck of Array.isArray(decks) ? decks : []) {
+      const result = takeoffDeck(deck);
+      if (result.lines.length) measuredWalls += 1;
+      traces.push({ wall: deck.label || "deck", source_refs: deck.source_refs || [], steps: result.steps });
+      gaps.push(...result.gaps);
+      for (const line of result.lines) {
+        const key = line.item;
+        if (!lines.has(key)) lines.set(key, { item: line.item, quantity: 0, unit: line.unit });
+        lines.get(key).quantity += line.quantity;
+      }
+    }
     for (const wall of Array.isArray(walls) ? walls : []) {
       const result = takeoffWall(wall);
       if (result.unmeasured) {
@@ -164,7 +175,109 @@
     };
   }
 
-  const api = { parseFeetInches, takeoffWall, takeoff, stockLengthFor, headerDepthFor };
+  /* A deck is not a wall. Its lumber is joists over an area, beams and posts
+     on a pile grid, and a walking surface — and the first version of this
+     calculator had no vocabulary for any of it, so a deck plan produced "no
+     framing dimensions" while the schedules sat printed on S-2.0. This is the
+     deck's arithmetic, under the same rules: printed numbers in, every step
+     shown, unreadable is a gap and never a zero.
+
+     Joist linear feet from an area is exact arithmetic, not estimation:
+     LF = area / spacing — one joist-line every `spacing` across the whole
+     surface, independent of which way the joists run. Piece counts, by
+     contrast, need span layout, which is a builder's cut list, not a
+     drawing's fact — so LF is what this states. */
+  function takeoffDeck(deck) {
+    const lines = [];
+    const steps = [];
+    const gaps = [];
+    const label = deck.label || "deck";
+
+    let areaSqft = Number(String(deck.area_sqft ?? "").replace(/[^0-9.]/g, "")) || null;
+    if (areaSqft) {
+      steps.push(`area: ${areaSqft} sq ft as printed`);
+    } else {
+      const length = parseFeetInches(deck.length);
+      const width = parseFeetInches(deck.width);
+      if (length != null && width != null) {
+        areaSqft = (length / 12) * (width / 12);
+        steps.push(`area: ${(length / 12).toFixed(2)}' × ${(width / 12).toFixed(2)}' = ${areaSqft.toFixed(0)} sq ft from printed overalls — jogs not netted, so this is the outer bound`);
+      }
+    }
+
+    const spacing = parseFeetInches(deck.joist_spacing)
+      ?? (Number(String(deck.joist_spacing ?? "").replace(/[^0-9.]/g, "")) || null);
+    const joistSize = /^\d+x\d+$/.test(String(deck.joist_size || "")) ? deck.joist_size : null;
+    if (areaSqft && spacing && joistSize) {
+      const joistLf = Math.ceil((areaSqft * 12) / spacing);
+      lines.push({
+        item: `${joistSize} joist${deck.joist_treatment ? ` (${deck.joist_treatment})` : ""} — linear feet`,
+        quantity: joistLf, unit: "LF",
+      });
+      steps.push(`joists: ${areaSqft.toFixed(0)} sq ft × 12 / ${spacing}" o.c. = ${joistLf} LF`);
+    } else {
+      if (!areaSqft) gaps.push(`${label}: no printed area or overall dimensions, so joist footage cannot be computed`);
+      if (!spacing) gaps.push(`${label}: joist spacing is not printed`);
+      if (!joistSize && deck.joist_size) gaps.push(`${label}: joist size "${deck.joist_size}" is not a lumber size this calculator reads`);
+    }
+
+    /* The walking surface. Board decking is exact arithmetic per face width at
+       zero gap — the stated upper bound, because the gap between boards is a
+       product spec the sheets rarely print. Sheathing is exact per 4×8 sheet. */
+    const decking = String(deck.decking || "");
+    const boardMatch = decking.match(/2\s*x\s*(4|6)/i);
+    const sheetMatch = decking.match(/plywood|sheathing|19\/32|23\/32|osb/i);
+    if (areaSqft && boardMatch) {
+      const face = boardMatch[1] === "6" ? 5.5 : 3.5;
+      const boardLf = Math.ceil((areaSqft * 12) / face);
+      lines.push({ item: `decking 2x${boardMatch[1]} — linear feet (zero gap, upper bound)`, quantity: boardLf, unit: "LF" });
+      steps.push(`decking: ${areaSqft.toFixed(0)} sq ft × 12 / ${face}" face = ${boardLf} LF at zero board gap`);
+    } else if (areaSqft && sheetMatch) {
+      const sheets = Math.ceil(areaSqft / 32);
+      lines.push({ item: `deck sheathing ${decking.trim()} — 4×8 sheets`, quantity: sheets, unit: "sheets" });
+      steps.push(`sheathing: ${areaSqft.toFixed(0)} sq ft / 32 sq ft per sheet = ${sheets} sheets`);
+    } else if (decking && areaSqft) {
+      gaps.push(`${label}: decking "${decking.trim()}" — the area is ${areaSqft.toFixed(0)} sq ft, but this product's coverage is not something the sheets state`);
+    }
+
+    /* Members that are drawn and labelled are counted, not measured: counting
+       the P1 marks on a foundation plan is reading the drawing, the same way
+       counting corners is. A mark with no count stays a question. */
+    for (const beam of Array.isArray(deck.beams) ? deck.beams : []) {
+      const count = Number(beam.count_drawn) || 0;
+      if (count > 0) {
+        lines.push({ item: `beam ${beam.mark || ""}: ${String(beam.description || "").trim()}`.trim(), quantity: count, unit: "drawn on plan" });
+        steps.push(`${beam.mark || "beam"}: ${count} drawn on the framing plan`);
+      } else {
+        gaps.push(`${label}: beam ${beam.mark || ""} (${String(beam.description || "").trim()}) is scheduled but its drawn count was not read`);
+      }
+    }
+    for (const column of Array.isArray(deck.columns) ? deck.columns : []) {
+      const count = Number(column.count_drawn) || 0;
+      if (count > 0) {
+        lines.push({ item: `column ${column.mark || ""}: ${String(column.description || "").trim()}`.trim(), quantity: count, unit: "drawn on plan" });
+      } else {
+        gaps.push(`${label}: column ${column.mark || ""} is scheduled but its drawn count was not read`);
+      }
+    }
+    if (deck.piles && (Number(deck.piles.count_drawn) || 0) > 0) {
+      lines.push({ item: `pile: ${String(deck.piles.description || "").trim()}`, quantity: Number(deck.piles.count_drawn), unit: "drawn on plan" });
+    } else if (deck.piles?.description) {
+      gaps.push(`${label}: piles are scheduled (${String(deck.piles.description).trim()}) but their drawn count was not read`);
+    }
+
+    const railLength = parseFeetInches(deck.guardrail_length);
+    if (deck.guardrail && railLength != null) {
+      lines.push({ item: `guardrail: ${String(deck.guardrail).trim()}`, quantity: Math.ceil(railLength / 12), unit: "LF" });
+      steps.push(`guardrail: ${Math.ceil(railLength / 12)} LF as printed`);
+    } else if (deck.guardrail) {
+      gaps.push(`${label}: a guardrail is specified (${String(deck.guardrail).trim()}) but no printed run length was read`);
+    }
+
+    return { lines, steps, gaps };
+  }
+
+  const api = { parseFeetInches, takeoffWall, takeoff, takeoffDeck, stockLengthFor, headerDepthFor };
   if (typeof window !== "undefined") window.MDAITakeoff360 = api;
   if (typeof module !== "undefined" && module.exports) module.exports = api;
 })();
