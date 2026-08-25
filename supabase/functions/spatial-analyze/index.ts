@@ -4,6 +4,7 @@ import {
   EVIDENCE_WORKFLOW_INSTRUCTIONS,
 } from "../_shared/agent-contracts.ts";
 import { signedObjectReadUrl } from "../_shared/aws-object-store.ts";
+import { openAITransport } from "../_shared/openai-transport.ts";
 
 const OPENAI_MODEL = Deno.env.get("OPENAI_MODEL") || "gpt-5.6-sol";
 const STORAGE_BUCKET = "property-evidence";
@@ -290,13 +291,21 @@ Deno.serve(async (request) => {
     Deno.env.get("SUPABASE_ANON_KEY") ||
     Deno.env.get("SUPABASE_PUBLISHABLE_KEY");
   const serviceRoleKey = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY");
-  const openAIKey = Deno.env.get("OPENAI_API_KEY");
   const authorization = request.headers.get("Authorization");
+  let aiTransport: ReturnType<typeof openAITransport>;
+  try {
+    aiTransport = openAITransport({ zeroDataRetention: true });
+  } catch {
+    return jsonResponse(
+      request,
+      { error: "Worker configuration incomplete" },
+      500,
+    );
+  }
   if (
     !supabaseUrl ||
     !publishableKey ||
     !serviceRoleKey ||
-    !openAIKey ||
     !authorization
   ) {
     return jsonResponse(
@@ -489,12 +498,9 @@ Deno.serve(async (request) => {
 
     const responseSchema = analysisSchema(job.evidence_ids, sphericalFrames.length > 0);
     const runFingerprint = await promptFingerprint(EVIDENCE_WORKFLOW_INSTRUCTIONS, responseSchema);
-    const openAIResponse = await fetch("https://api.openai.com/v1/responses", {
+    const openAIResponse = await fetch(`${aiTransport.baseUrl}/responses`, {
       method: "POST",
-      headers: {
-        Authorization: `Bearer ${openAIKey}`,
-        "Content-Type": "application/json",
-      },
+      headers: aiTransport.headers,
       body: JSON.stringify({
         model: OPENAI_MODEL,
         store: false,
@@ -647,6 +653,7 @@ Deno.serve(async (request) => {
         entity_id: job.id,
         detail: {
           provider: "openai",
+          transport: aiTransport.transport,
           model: OPENAI_MODEL,
           model_version: servedModel,
           prompt_fingerprint: runFingerprint,
@@ -673,6 +680,7 @@ Deno.serve(async (request) => {
       suggestion_id: suggestion.id,
       analysis,
       model: OPENAI_MODEL,
+      transport: aiTransport.transport,
       analyzed_images: imageCount,
       analyzed_video_frames: videoFrames.length,
     });
