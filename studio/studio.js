@@ -209,15 +209,34 @@ function waitForMediaEvent(target, eventName, timeoutMs = 20000) {
 }
 
 async function extractVideoFrames(item, frameLimit = 4) {
-  if (!item?.src || !isVideo(item) || frameLimit < 1) return [];
+  /* These used to be silent returns: no frames, no reason, no warning. The
+     caller then sent an empty request and the server refused it, and what a
+     person saw was the word "Failed". A reason nobody can read is not a
+     reason. */
+  if (!isVideo(item)) throw new Error("This file is not a video");
+  if (frameLimit < 1) throw new Error("No frames were requested");
+  const source = await freshEvidenceSrc(item);
+  if (!source) throw new Error("The link to this file could not be renewed");
   const video = document.createElement("video");
   video.crossOrigin = "anonymous";
   video.muted = true;
   video.preload = "auto";
   video.playsInline = true;
-  video.src = item.src;
+  video.src = source;
   try {
-    if (video.readyState < 1) await waitForMediaEvent(video, "loadedmetadata");
+    if (video.readyState < 1) {
+      try {
+        await waitForMediaEvent(video, "loadedmetadata");
+      } catch (error) {
+        /* The one failure worth retrying rather than reporting. A signature can
+           expire between the check above and this fetch, and a person should
+           never be told to reload a page to fix that. */
+        const renewed = await freshEvidenceSrc(item, { force: true });
+        if (!renewed || renewed === source) throw error;
+        video.src = renewed;
+        await waitForMediaEvent(video, "loadedmetadata");
+      }
+    }
     const duration = Number(video.duration);
     if (!Number.isFinite(duration) || duration <= 0) {
       throw new Error("The video duration is unavailable");
@@ -268,18 +287,44 @@ async function extractVideoFrames(item, frameLimit = 4) {
 
 async function prepareVideoFrames(source) {
   const items = Array.isArray(source) ? source : source?.evidence || [];
+  const videos = items.filter(isVideo);
   const frames = [];
   const warnings = [];
-  for (const item of items.filter(isVideo)) {
+  const reasons = [];
+  for (const item of videos) {
     if (frames.length >= 8) break;
     try {
       frames.push(...(await extractVideoFrames(item, Math.min(4, 8 - frames.length))));
     } catch (error) {
       console.warn("Video keyframe extraction failed", item.name, error);
       warnings.push(item.name || "Video");
+      /* Kept, because "some videos could not be sampled" is not a reason and
+         the reason is what somebody needs in order to do anything about it. */
+      reasons.push(`${item.name || "Video"}: ${error?.message || "could not be read"}`);
     }
   }
-  return { frames, warnings };
+  return { frames, warnings, reasons, videoCount: videos.length };
+}
+
+/* Why an analysis is not worth sending, in words, or null when it is.
+ *
+ * There are two ways into analysis and the first version of this guard was
+ * written into one of them. The one that was missed is the one the button
+ * actually uses. So it lives here, once, and both call it.
+ *
+ * The failure it prevents: every video in the room failed to open, the request
+ * goes out with an empty frame list, the server refuses it in a tenth of a
+ * second, and a person reads the word "Failed". */
+function nothingToAnalyse(scope, roomName, prepared) {
+  if (prepared.frames.length) return null;
+  /* Stills are sent as themselves and need no frame extraction, so a room with
+     photographs in it always has something to look at. */
+  if ((scope || []).some((item) => isImage(item))) return null;
+  if (!prepared.videoCount) return null;
+  const count = prepared.videoCount;
+  return `None of the ${count} video${count === 1 ? "" : "s"} in ${roomName} could be read, so there was nothing to analyse. ${
+    prepared.reasons[0] || "The files could not be opened."
+  } Nothing was sent and nothing was changed — press Process with AI again, and if it repeats the file itself may be unreadable.`;
 }
 
 function applyAnalysisResult(room, analysis, suggestionId) {
@@ -616,13 +661,33 @@ function placeMarker(room, marker) {
 function evidenceThumbnail(item, className = "room-thumb") {
   if (!item?.src) return `<span class="${className}"></span>`;
   if (isImage(item)) {
-    return `<img class="${className}" src="${escapeText(item.src)}" alt="">`;
+    /* Tagged so a thumbnail whose signature died while the page sat open can
+       find its own file again instead of staying a broken square. */
+    return `<img class="${className}" src="${escapeText(item.src)}" data-evidence-thumb="${escapeText(item.id || "")}" alt="">`;
   }
   if (isVideo(item)) {
     return `<span class="${className} video-thumb" aria-hidden="true">▶</span>`;
   }
   return `<span class="${className} document-thumb" aria-hidden="true">DOC</span>`;
 }
+
+/* Image load failures do not bubble, so this listens in the capture phase and
+   covers every thumbnail on every screen, including ones drawn after it. One
+   renewal per element: a file that is genuinely gone must not become an
+   endless loop of signing requests. */
+const thumbnailsRenewed = new Set();
+document.addEventListener("error", (event) => {
+  const image = event.target;
+  if (!(image instanceof HTMLImageElement)) return;
+  const id = image.dataset?.evidenceThumb;
+  if (!id || thumbnailsRenewed.has(id)) return;
+  thumbnailsRenewed.add(id);
+  const item = rooms.flatMap((room) => room.evidence || []).find((entry) => entry.id === id);
+  if (!item) return;
+  freshEvidenceSrc(item, { force: true })
+    .then((url) => { if (url) image.src = url; })
+    .catch(() => { /* leave the broken square; it is the truthful one */ });
+}, true);
 
 function loadRooms() {
   try {
@@ -1057,18 +1122,33 @@ function showEvidence(item, roomName = currentRoom()?.name || "Room") {
     return;
   }
 
-  if (isVideo(item)) {
-    elements.video.src = item.src;
-    elements.video.hidden = false;
-  } else if (isImage(item)) {
-    elements.image.src = item.src;
-    elements.image.alt = `${roomName} evidence capture`;
-    elements.image.hidden = false;
-  } else {
-    elements.documentName.textContent = item.name || "Document evidence";
-    elements.documentOpen.href = item.src;
-    elements.documentOpen.hidden = false;
-    elements.document.hidden = false;
+  /* Renewed if the page has been open a while. This runs without waiting so the
+     panel never blanks; the element gets the current URL first and the renewed
+     one a moment later if it differs. */
+  const showWith = (url) => {
+    if (isVideo(item)) {
+      elements.video.src = url;
+      elements.video.hidden = false;
+    } else if (isImage(item)) {
+      elements.image.src = url;
+      elements.image.alt = `${roomName} evidence capture`;
+      elements.image.hidden = false;
+    } else {
+      elements.documentName.textContent = item.name || "Document evidence";
+      elements.documentOpen.href = url;
+      elements.documentOpen.hidden = false;
+      elements.document.hidden = false;
+    }
+  };
+  const showing = item.src;
+  showWith(showing);
+  if (signedUrlIsStale(item)) {
+    freshEvidenceSrc(item, { force: true }).then((url) => {
+      /* Somebody may have moved to another file while this was in flight, and
+         painting the old one back over it would be worse than a stale link. */
+      if (!url || url === showing || activeEvidenceId !== item.id) return;
+      showWith(url);
+    }).catch(() => { /* the panel keeps what it had */ });
   }
 
   $("#expand-image").hidden = !isImage(item);
@@ -1393,6 +1473,49 @@ async function recordClientEvent(action, detail = {}) {
   }
 }
 
+/* A signed URL is a fact with an expiry date, and the Studio used to treat it
+   as a fact with none: every file was signed once when the project opened, and
+   the signature was good for exactly one hour.
+ *
+ * Nothing then refreshed it. After an hour on the same page — which is every
+ * real working session — every link on the screen was dead at once. Thumbnails
+ * stopped loading, opening a capture failed, and "Process with AI" died in a
+ * tenth of a second because the browser could not read a single frame out of a
+ * video it was no longer allowed to fetch. It read as "all my files are
+ * broken", and none of them were.
+ *
+ * Two sibling screens already had this right: operations and capture sign at
+ * the moment of use. This brings the Studio in line. Time spent on the page
+ * stops meaning anything. */
+const SIGNED_URL_TTL_MS = 60 * 60 * 1000;
+/* Re-signed with ten minutes to spare, because a URL that expires between the
+   click and the request has expired. */
+const SIGNED_URL_REFRESH_MS = 50 * 60 * 1000;
+
+function signedUrlIsStale(item) {
+  if (!item?.src) return true;
+  /* A local object URL belongs to this page and outlives nothing but it. */
+  if (item.src.startsWith("blob:")) return false;
+  return Date.now() - (item.srcSignedAt || 0) >= SIGNED_URL_REFRESH_MS;
+}
+
+/* The URL to use right now. Never read item.src directly for anything that can
+   fail in front of a person. */
+async function freshEvidenceSrc(item, { force = false } = {}) {
+  if (!item?.id) return item?.src || "";
+  if (item.src?.startsWith("blob:")) return item.src;
+  if (!force && !signedUrlIsStale(item)) return item.src;
+  const url = await signedEvidenceUrl(item.storagePath, {
+    id: item.id,
+    storage_provider: item.storageProvider,
+  });
+  if (url) {
+    item.src = url;
+    item.srcSignedAt = Date.now();
+  }
+  return item.src || "";
+}
+
 async function signedEvidenceUrl(storagePath, record = null) {
   if (!storagePath) return "";
   if (record?.storage_provider === "aws-s3") {
@@ -1589,6 +1712,9 @@ async function hydrateCloudRecord() {
     ]);
   if (spacesError) throw spacesError;
   if (evidenceError) throw evidenceError;
+  /* Fresh signatures for everything below, so a thumbnail that gave up once is
+     allowed to try again. */
+  thumbnailsRenewed.clear();
   /* Only asked for when it can change what the screen says: a project with no
      rooms is the one case where the plan set decides the next step. */
   if (!(spaceRows || []).length) await hydratePlanState(property.id);
@@ -1597,6 +1723,9 @@ async function hydrateCloudRecord() {
     (evidenceRows || []).map(async (item) => ({
       id: item.id,
       src: await signedEvidenceUrl(item.storage_path, item),
+      /* When that signature was minted, so anything about to use it can tell
+         whether it is still worth anything. */
+      srcSignedAt: Date.now(),
       storagePath: item.storage_path,
       storageProvider: item.storage_provider,
       storageBucket: item.storage_bucket,
@@ -3435,7 +3564,9 @@ function showLinkForHeadset(url, copied) {
   field.select();
 }
 
-function openEvidenceViewer(item, room, focusMarkerId = null) {
+/* Async because a signature is renewed before the file opens. Every caller
+   fires and forgets, so nothing waits on it. */
+async function openEvidenceViewer(item, room, focusMarkerId = null) {
   if (!item) return;
   /* Opening a file to look at it is recorded; a thumbnail appearing in a list is
      not. One is a person choosing to see something and is what "who saw what"
@@ -3446,8 +3577,11 @@ function openEvidenceViewer(item, room, focusMarkerId = null) {
     filename: item.name || null,
     space_id: room?.id || null,
   });
+  /* Renewed before the file is opened, not read out of whatever was signed
+     when the page loaded. */
+  const source = await freshEvidenceSrc(item);
   if (!window.MDAIPano360) {
-    if (item.src) window.open(item.src, "_blank", "noopener");
+    if (source) window.open(source, "_blank", "noopener");
     return;
   }
   const spatial = focusIsSpatial(item);
@@ -3485,8 +3619,16 @@ function openEvidenceViewer(item, room, focusMarkerId = null) {
       },
     });
   }
-  if (item.src) {
-    actions.push({ label: "Open the original file", onSelect: () => window.open(item.src, "_blank", "noopener") });
+  if (source) {
+    /* Signed again at the moment of the press: this panel can sit open for a
+       long time before anybody reaches for the original. */
+    actions.push({
+      label: "Open the original file",
+      onSelect: async () => {
+        const url = await freshEvidenceSrc(item);
+        if (url) window.open(url, "_blank", "noopener");
+      },
+    });
   }
 
   const markers = spatial ? roomMarkers(room, item) : [];
@@ -3512,7 +3654,7 @@ function openEvidenceViewer(item, room, focusMarkerId = null) {
   });
 
   window.MDAIPano360.open({
-    src: item.src,
+    src: source,
     mediaType: item.mimeType || "",
     spatial,
     trim: evidenceTrimWindow(item, item.sourceMetadata?.duration_seconds),
@@ -4503,6 +4645,19 @@ async function analyzeFocusRoom(room, onStatus, options = {}) {
     .filter((item) => item.storagePath && (isImage(item) || isVideo(item)))
     .map((item) => item.id);
   if (!evidenceIds.length) return { skipped: true };
+
+  /* Frames first, job row second.
+   *
+   * It used to be the other way round, and refusing to send then left a row
+   * sitting in "queued" for ever — a job the record says was asked for and
+   * that nothing will ever finish. Nothing is written down until there is
+   * something worth writing down. */
+  onStatus(`Preparing ${room.name}`);
+  const prepared = await prepareVideoFrames(scope);
+  const { frames, warnings } = prepared;
+  const blocked = nothingToAnalyse(scope, room.name, prepared);
+  if (blocked) throw new Error(blocked);
+
   const { data: jobRow, error: jobError } = await cloud.client
     .from("analysis_jobs")
     .insert({
@@ -4524,16 +4679,12 @@ async function analyzeFocusRoom(room, onStatus, options = {}) {
     roomName: room.name,
     evidenceCount: evidenceIds.length,
     profile: "Property evidence · conservative",
-    status: "Preparing evidence",
+    status: "Analyzing evidence",
     createdAt: new Date().toLocaleString("en-US", { month: "short", day: "numeric", hour: "numeric", minute: "2-digit" }),
   };
   jobs.unshift(localJob);
   saveJobs();
   try {
-    onStatus(`Preparing ${room.name}`);
-    const { frames, warnings } = await prepareVideoFrames(scope);
-    localJob.status = "Analyzing evidence";
-    saveJobs();
     onStatus(`AI is reviewing ${room.name}`);
     const { data, error } = await cloud.client.functions.invoke(config.aiFunctionName, {
       body: { job_id: jobRow.id, video_frames: frames },
@@ -5487,7 +5638,10 @@ $("#request-analysis").addEventListener("click", async () => {
         : "Secure AI analysis started",
     );
 
-    const { frames, warnings } = await prepareVideoFrames(room);
+    const prepared = await prepareVideoFrames(room);
+    const { frames, warnings } = prepared;
+    const blocked = nothingToAnalyse(room.evidence, room.name, prepared);
+    if (blocked) throw new Error(blocked);
     localJob.status = "Analyzing evidence";
     saveJobs();
     const { data, error } = await cloud.client.functions.invoke(
