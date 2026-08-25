@@ -3124,3 +3124,18 @@ dialog textarea { min-height:78px; resize:vertical; }
    one somebody is standing in. Silently swapping one room for another is how
    "show me the result" answered with a different floor of the building. */
 .focus-vr-elsewhere { margin: 10px 0 0; color: var(--amber); font-size: 12px; }
+
+/* The record, examined. Findings sit above the list because they are the
+   reason to have opened it; each carries its remedy, because a warning without
+   one is a chore assigned to the reader. Amber, not red: nothing is broken,
+   something needs a decision. */
+.focus-files-findings { border-bottom: 1px solid var(--line-soft); background: rgba(56, 44, 21, .18); }
+.focus-files-findings[hidden] { display: none; }
+.focus-findings-head { margin: 0; padding: 12px 22px 6px; color: var(--amber); font-size: 12px; }
+.focus-findings-clear { margin: 0; padding: 12px 22px; color: var(--green); font-size: 12px; }
+.focus-finding { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 14px; align-items: center; padding: 10px 22px; }
+.focus-finding strong { display: block; font-size: 13px; font-weight: 500; }
+.focus-finding small { color: var(--muted); font-size: 11px; }
+.focus-finding button { min-height: 34px; padding: 0 12px; border: 1px solid rgba(239, 193, 120, .45); border-radius: 9px; background: rgba(56, 44, 21, .4); color: var(--amber); font: inherit; font-size: 12px; cursor: pointer; white-space: nowrap; }
+.focus-finding button:hover { border-color: var(--amber); }
+@media (max-width: 720px) { .focus-finding { grid-template-columns: minmax(0, 1fr); } .focus-finding button { justify-self: start; } }

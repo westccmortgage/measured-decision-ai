@@ -190,6 +190,81 @@ check("choosing opens the list narrowed to the playable captures",
 check("and every one of them can be opened",
   chooser.openable === 9, `${chooser.openable} openable`);
 
+console.log("\n── what a repeated name actually means ──");
+/* "This name appears more than once" said the same thing about two situations
+   that mean opposite things, and somebody had to ask what it meant. */
+const meanings = await page.evaluate(async () => {
+  document.querySelector("#focus-open-files")?.click();
+  await new Promise((r) => setTimeout(r, 700));
+  /* The section before this one left a room filter in the box. Reading rows
+     through somebody else's filter is how a test asserts about the wrong set
+     and reports the wrong thing. */
+  const search = document.querySelector("#focus-files-search");
+  search.value = "";
+  search.dispatchEvent(new Event("input", { bubbles: true }));
+  document.querySelector("#focus-files-dupes").click();
+  await new Promise((r) => setTimeout(r, 400));
+  const rows = [...document.querySelectorAll(".focus-file-row")];
+  const read = (needle, room) => rows
+    .filter((row) => row.querySelector("strong")?.textContent.includes(needle))
+    .map((row) => ({
+      room: row.querySelector(".focus-file-room")?.selectedOptions?.[0]?.textContent || "",
+      note: row.querySelector(".focus-file-dupe")?.textContent || "",
+    }))
+    .find((entry) => entry.room.includes(room));
+  return {
+    /* Same capture in two different rooms: it was taken in one of them. */
+    acrossRooms: read("042228_00_011", "Dining Room 102"),
+    /* Same capture three times in one room: re-uploads. */
+    sameRoom: read("042646_00_016", "Hallway 200A"),
+  };
+});
+check("a capture in two rooms says it can only have been taken in one",
+  /a capture was taken in one room, not two/.test(meanings.acrossRooms?.note || ""),
+  JSON.stringify(meanings.acrossRooms));
+check("and names the other room it is in",
+  /also in Family Room 105/.test(meanings.acrossRooms?.note || ""),
+  JSON.stringify(meanings.acrossRooms));
+/* Hallway 200A is both at once: three copies of the capture, and the same
+   capture in another room. The note has to carry both, and still explain the
+   repeats — saying only one half leaves the other to be found later. */
+check("a capture repeated inside one room says how many",
+  /3 copies here/.test(meanings.sameRoom?.note || ""), JSON.stringify(meanings.sameRoom));
+check("and why there are three of it",
+  /the extras are re-uploads/.test(meanings.sameRoom?.note || ""), JSON.stringify(meanings.sameRoom));
+check("and still names the other room it is in",
+  /also in Double Height 209/.test(meanings.sameRoom?.note || ""), JSON.stringify(meanings.sameRoom));
+
+console.log("\n── opening a camera original ──");
+/* A browser cannot play INSV. The first version answered that with a greyed
+   button and no explanation — a dead end dressed as a control. */
+const opening = await page.evaluate(async () => {
+  document.querySelector("#focus-files-dupes").click();
+  const search = document.querySelector("#focus-files-search");
+  search.value = "042228";
+  search.dispatchEvent(new Event("input", { bubbles: true }));
+  await new Promise((r) => setTimeout(r, 400));
+  const rows = [...document.querySelectorAll(".focus-file-row")];
+  const insv = rows.find((row) => /042228_00_011\.insv/.test(row.querySelector("strong")?.textContent || "")
+    && /Family Room 105/.test(row.querySelector(".focus-file-room")?.selectedOptions?.[0]?.textContent || ""));
+  const disabled = rows.map((row) => row.querySelector("[data-file-open]")?.disabled);
+  insv?.querySelector("[data-file-open]")?.click();
+  await new Promise((r) => setTimeout(r, 1400));
+  return {
+    anyDisabled: disabled.some(Boolean),
+    title: document.querySelector("[data-pano-title]")?.textContent || "",
+    shown: document.querySelector(".pano-overlay")?.hidden === false,
+  };
+});
+check("no file is offered a button that cannot be pressed", opening.anyDisabled === false);
+/* Family Room 105 holds both the originals and the stitched master of this
+   capture. Pressing Open on an original is a request to see the space. */
+check("opening a camera original reaches the playable master of its capture",
+  /042228_011-vr-master/.test(opening.title), opening.title || "(nothing opened)");
+check("and the viewer actually opens", opening.shown === true);
+await page.evaluate(() => document.querySelector("[data-pano-close]")?.click());
+await page.waitForTimeout(300);
+
 console.log("\n── the result of the room you are actually in ──");
 /* The report, verbatim: "I look at Master Bedroom on the second floor, then I
    say show me the result, and it shows me I can open the 360 of Hallway."
@@ -247,6 +322,110 @@ check("and names the room the capture it offers is actually in",
   /The capture below is in /.test(borrowed.elsewhere), borrowed.elsewhere.slice(0, 220));
 check("while still offering a way to stand somewhere",
   /Open 360 view — /.test(borrowed.label), borrowed.label || "(no button)");
+
+console.log("\n── the gate: the machine says it before the bytes move ──");
+/* Every filing mistake so far was knowable at the moment of upload, and the
+   Studio knew it and said nothing. This is where it says it. */
+const gate = await page.evaluate(async () => {
+  document.querySelector('[data-focus-step="upload"]')?.click();
+  await new Promise((r) => setTimeout(r, 500));
+  /* Choose Hallway 200A — the room already holding three copies of this pair. */
+  const building = document.querySelector("#upload-building");
+  building.value = building.options[0].value;
+  building.dispatchEvent(new Event("change", { bubbles: true }));
+  await new Promise((r) => setTimeout(r, 300));
+  const picker = document.querySelector("#upload-room");
+  const option = [...picker.options].find((o) => /Hallway 200A/.test(o.textContent));
+  picker.value = option.value;
+  picker.dispatchEvent(new Event("change", { bubbles: true }));
+  await new Promise((r) => setTimeout(r, 300));
+
+  const asked = [];
+  window.confirm = (message) => { asked.push(message); return false; };
+  const fakeFile = new File(["x"], "VID_20250222_042646_00_016.insv", { type: "application/octet-stream" });
+  const before = window.__writes.length;
+  await window.__uploadFocusEvidence?.([fakeFile]);
+  return {
+    hooked: Boolean(window.__uploadFocusEvidence),
+    asked: asked.join(" || "),
+    wrote: window.__writes.length - before,
+    said: [...document.querySelectorAll("[role=status], .toast, #toast")].map((n) => n.textContent).join(" ")
+      || document.body.innerText.replace(/\s+/g, " ").slice(0, 400),
+  };
+});
+if (!gate.hooked) {
+  check("the upload entry is reachable from a test", false, "no __uploadFocusEvidence hook");
+} else {
+  check("uploading a file the room already holds asks first",
+    /already in Hallway 200A/.test(gate.asked), gate.asked.slice(0, 200) || "(no question)");
+  check("and says a second copy does not replace the first",
+    /does not replace the first/.test(gate.asked), gate.asked.slice(0, 240));
+  check("and points at the room it also lives in, with the remedy",
+    /already in Double Height 209/.test(gate.asked) && /move it from/i.test(gate.asked),
+    gate.asked.slice(0, 400));
+  check("answering no uploads nothing", gate.wrote === 0, `${gate.wrote} write(s)`);
+}
+
+console.log("\n── the engine: what the record itself has wrong ──");
+/* The gate stops new mistakes at the door. This reads the ones already inside
+   — computed from the same rows the list shows, each finding carrying its
+   remedy, and nothing changed until a person chooses. */
+const engine = await page.evaluate(async () => {
+  document.querySelector("#focus-open-files")?.click();
+  await new Promise((r) => setTimeout(r, 800));
+  const box = document.querySelector("#focus-files-findings");
+  const items = [...(box?.querySelectorAll(".focus-finding") || [])].map((node) => ({
+    title: node.querySelector("strong")?.textContent || "",
+    detail: node.querySelector("small")?.textContent || "",
+    remedy: node.querySelector("button")?.textContent || "",
+  }));
+  return { shown: box && !box.hidden, head: box?.querySelector(".focus-findings-head")?.textContent || "", items };
+});
+check("the findings are on top of the list", engine.shown === true);
+check("and say that nothing changes until a person chooses",
+  /nothing is changed until you choose/i.test(engine.head), engine.head);
+/* Hallway 200A: the same pair three times. The remedy names the extras and
+   keeps the oldest. */
+/* Earlier in this same session the move test sent one 10_016 lens to Living
+   Room 103. The engine reports the record as it now stands — 00_016 three
+   times in Hallway, 10_016 twice — and it also caught what that move created:
+   a lens sitting in Living Room 103 with no pair. The engine seeing through
+   the consequences of this test's own actions is the engine working. */
+const repeats = engine.items.filter((item) => /is in Hallway 200A [23] times/.test(item.title));
+check("the repeated uploads are found, per lens file",
+  repeats.length === 2, `${repeats.length} finding(s): ${JSON.stringify(engine.items.map((i) => i.title))}`);
+check("and the lens split off by the earlier move is caught as a lone half",
+  engine.items.some((item) => /in Living Room 103 is one lens of a pair/.test(item.title)),
+  JSON.stringify(engine.items.map((i) => i.title)));
+check("its remedy is removing the extras, not the original",
+  repeats.every((item) => /Remove the extra copies/.test(item.remedy) && /re-uploads of the copy from/.test(item.detail)),
+  JSON.stringify(repeats[0] || {}));
+/* The capture filed in two rooms: a question for a person, so the remedy is
+   the list narrowed to it, never an automatic move. */
+const twoRooms = engine.items.filter((item) => /is filed in 2 rooms/.test(item.title));
+check("captures filed in two rooms are each found",
+  twoRooms.length >= 2, `${twoRooms.length} finding(s)`);
+check("and their remedy is a decision, not an action",
+  twoRooms.every((item) => /only somebody who was there can say/.test(item.detail)),
+  JSON.stringify(twoRooms[0] || {}));
+
+console.log("\n── acting on a finding removes the extras and only the extras ──");
+const acted = await page.evaluate(async () => {
+  window.confirm = () => true;
+  const box = document.querySelector("#focus-files-findings");
+  const target = [...box.querySelectorAll(".focus-finding")]
+    .find((node) => /is in Hallway 200A 3 times/.test(node.querySelector("strong")?.textContent || ""));
+  target?.querySelector("button")?.click();
+  await new Promise((r) => setTimeout(r, 900));
+  return {
+    calls: window.__rpcCalls.filter((c) => c.name === "soft_delete_evidence").map((c) => c.args),
+  };
+});
+check("two removals are asked of the record, not three",
+  acted.calls.length === 2, `${acted.calls.length} call(s)`);
+check("each carries the reason a reader needs",
+  acted.calls.every((args) => /Duplicate upload/.test(args?.p_reason || "")),
+  JSON.stringify(acted.calls[0] || {}));
 
 check("nothing threw", errors.length === 0, errors.join(" | "));
 

@@ -232,6 +232,10 @@ function collapseInsta360Sources(items) {
       type: "360 capture",
       mimeType: "application/x-insta360-capture",
       sourceIds: sources.map((source) => source.id),
+      /* The filenames behind the tile. The tile renames itself "360 capture
+         016", and anything asking "is this file already here?" — the upload
+         gate — needs the real names, not the display one. */
+      sourceNames: sources.map((source) => source.name),
       sourceMetadata: { ...sources[0].sourceMetadata, insta360_capture_key: key },
       status: paired ? "Original pair verified · VR processing prepared" : "Waiting for the matching camera original",
     });
@@ -3645,11 +3649,177 @@ function fileListVisibleRows() {
   });
 }
 
+/* "This name appears more than once" said the same thing about two situations
+   that mean opposite things, so it said nothing anybody could act on. Somebody
+   had to ask what it meant, which is the label failing.
+
+   The same capture in two rooms is a filing mistake: it was taken in one room.
+   The same capture twice in one room is a re-upload — usually one that looked
+   as though it had failed. Different problems, different sentences. */
+function duplicateNote(row, rows) {
+  const twins = rows.filter(
+    (other) => other.filename.toLowerCase() === String(row.filename || "").toLowerCase(),
+  );
+  if (twins.length < 2) return "";
+  const inThisRoom = twins.filter((other) => other.room_id === row.room_id).length;
+  const otherRooms = [...new Set(
+    twins.filter((other) => other.room_id !== row.room_id).map((other) => other.room_name).filter(Boolean),
+  )];
+  if (inThisRoom > 1 && otherRooms.length) {
+    /* Both at once, which is exactly what a room full of re-uploads of a
+       capture that also lives elsewhere looks like. Saying only one half of it
+       leaves the other half to be discovered later. */
+    return `${inThisRoom} copies here — the extras are re-uploads — and also in ${otherRooms.join(", ")}`;
+  }
+  if (inThisRoom > 1) {
+    return `${inThisRoom} copies of this file in this room — the extras are re-uploads`;
+  }
+  return `also in ${otherRooms.join(", ")} — a capture was taken in one room, not two`;
+}
+
+/* The record, examined: what is wrong in it right now, each finding with its
+ * remedy attached.
+ *
+ * "The machine should see this and not allow it" — said after a day of filing
+ * mistakes that were each individually visible and collectively invisible. The
+ * gate above stops new ones at the door. This reads what is already inside:
+ * every finding is computed from the same rows the list shows, and every
+ * finding carries the action that resolves it, because a warning without a
+ * remedy is a chore assigned to whoever reads it.
+ *
+ * It never acts on its own. The product rule is that the AI présents and a
+ * person decides; a cleaner that deletes what it is sure about is the rule
+ * broken where it would hurt most — on originals. */
+function recordFindings(rows) {
+  const findings = [];
+  const byName = new Map();
+  rows.forEach((row) => {
+    const key = String(row.filename || "").toLowerCase();
+    if (!byName.has(key)) byName.set(key, []);
+    byName.get(key).push(row);
+  });
+
+  byName.forEach((twins, key) => {
+    if (twins.length < 2) return;
+    /* Copies inside one room: re-uploads. The keeper is the oldest — it is the
+       one the record has known longest — and the extras are named one by one so
+       "remove the extras" is a decision about specific files, not a category. */
+    const byRoom = new Map();
+    twins.forEach((row) => {
+      const room = row.room_id || "unfiled";
+      if (!byRoom.has(room)) byRoom.set(room, []);
+      byRoom.get(room).push(row);
+    });
+    byRoom.forEach((inRoom) => {
+      if (inRoom.length < 2) return;
+      const sorted = [...inRoom].sort((a, b) => new Date(a.uploaded_at) - new Date(b.uploaded_at));
+      findings.push({
+        kind: "repeat_uploads",
+        title: `${sorted[0].filename} is in ${sorted[0].room_name || "a room"} ${inRoom.length} times`,
+        detail: `Uploaded again on ${sorted.slice(1).map((row) => formatEvidenceDate(row.uploaded_at)).join(", ")} — re-uploads of the copy from ${formatEvidenceDate(sorted[0].uploaded_at)}. The extras add nothing to the record.`,
+        remedy: "Remove the extra copies",
+        extras: sorted.slice(1).map((row) => row.id),
+        keeper: sorted[0].id,
+      });
+    });
+    /* The same capture in two rooms: it was taken in one. Which one is a fact
+       about the building, so the machine lays out the choice and stops. */
+    const roomsHolding = [...new Set(twins.map((row) => row.room_name).filter(Boolean))];
+    if (roomsHolding.length > 1) {
+      findings.push({
+        kind: "two_rooms",
+        title: `${twins[0].filename} is filed in ${roomsHolding.length} rooms`,
+        detail: `${roomsHolding.join(" and ")} both hold it. A capture was taken in one room — the other filing is wrong, and which one is something only somebody who was there can say.`,
+        remedy: `Open the list and move the wrong one`,
+        filter: twins[0].filename,
+      });
+    }
+  });
+
+  /* A lens file with no pair anywhere: the other half was never uploaded. */
+  rows.forEach((row) => {
+    const match = String(row.filename || "").toLowerCase().match(/^(.*)_(00|10)_([0-9]+)\.insv$/);
+    if (!match) return;
+    const otherLens = `${match[1]}_${match[2] === "00" ? "10" : "00"}_${match[3]}.insv`;
+    const paired = rows.some(
+      (other) => other.room_id === row.room_id
+        && String(other.filename || "").toLowerCase() === otherLens,
+    );
+    if (!paired) {
+      findings.push({
+        kind: "missing_lens",
+        title: `${row.filename} in ${row.room_name || "a room"} is one lens of a pair`,
+        detail: `The matching ${otherLens} is not in that room, so the 360 machine cannot stitch this capture. Upload the other half, or move it here if it is filed elsewhere.`,
+        remedy: "Show this capture",
+        filter: `${match[1]}_`.replace(/^vid_/, "vid_"),
+      });
+    }
+  });
+
+  return findings;
+}
+
+function renderRecordFindings() {
+  const box = $("#focus-files-findings");
+  if (!box) return;
+  const findings = recordFindings(fileList.rows);
+  if (!findings.length) {
+    box.hidden = false;
+    box.innerHTML = `<p class="focus-findings-clear">✓ The record is consistent — no repeated uploads, no capture filed in two rooms, no half of a pair missing.</p>`;
+    return;
+  }
+  box.hidden = false;
+  box.innerHTML = `<p class="focus-findings-head">${findings.length} thing${findings.length === 1 ? "" : "s"} in this record need${findings.length === 1 ? "s" : ""} a decision. Nothing is changed until you choose.</p>` +
+    findings.map((finding, index) => `
+      <article class="focus-finding">
+        <div><strong>${escapeText(finding.title)}</strong><small>${escapeText(finding.detail)}</small></div>
+        <button type="button" data-finding="${index}">${escapeText(finding.remedy)}</button>
+      </article>`).join("");
+  box.querySelectorAll("[data-finding]").forEach((button) => {
+    button.addEventListener("click", () => actOnFinding(findings[Number(button.dataset.finding)]));
+  });
+}
+
+async function actOnFinding(finding) {
+  if (!finding) return;
+  if (finding.kind === "repeat_uploads") {
+    const ok = window.confirm(
+      `Remove ${finding.extras.length} extra cop${finding.extras.length === 1 ? "y" : "ies"}?\n\nThe original from the first upload stays exactly as it is. The removals go on the audit record with your name.`,
+    );
+    if (!ok) return;
+    let removed = 0;
+    for (const id of finding.extras) {
+      const { error } = await cloud.client.rpc("soft_delete_evidence", {
+        p_evidence_id: id,
+        p_reason: "Duplicate upload of the same file into the same room",
+      });
+      if (error) { notify(error.message || "A copy could not be removed", 6000); break; }
+      removed += 1;
+    }
+    if (removed) {
+      notify(`${removed} extra cop${removed === 1 ? "y" : "ies"} removed. The first upload is untouched.`, 6000);
+      await hydrateCloudRecord();
+      await openFileList();
+    }
+    return;
+  }
+  /* The findings that need a person: narrow the list to the files in question
+     and let them decide with the move control that already exists. */
+  fileList.search = finding.filter || "";
+  fileList.dupesOnly = false;
+  const search = $("#focus-files-search");
+  if (search) search.value = fileList.search;
+  const dupes = $("#focus-files-dupes");
+  if (dupes) dupes.checked = false;
+  renderFileList();
+}
+
 function renderFileList() {
   const list = $("#focus-files-list");
   const visible = fileListVisibleRows();
   const dupes = fileList.rows.filter((row) => row.duplicate_name).length;
   $("#focus-files-count").textContent = `${fileList.rows.length} file${fileList.rows.length === 1 ? "" : "s"}`;
+  renderRecordFindings();
   $("#focus-files-note").textContent = dupes
     ? `${dupes} of them share a name with another file. The same capture in two rooms is legitimate; the same capture twice in one room is usually an upload that looked like it failed.`
     : "Every file the record holds for this project, and the room it is filed in.";
@@ -3668,20 +3838,23 @@ function renderFileList() {
   list.innerHTML = visible.map((row) => {
     const when = row.happened_at ? formatEvidenceDate(row.happened_at) : "date unavailable";
     const size = row.byte_size ? formatFileSize(row.byte_size) : "";
-    const playable = String(row.mime_type || "").startsWith("video/") || String(row.mime_type || "").startsWith("image/");
+    const note = row.duplicate_name ? duplicateNote(row, fileList.rows) : "";
     return `
     <article class="focus-file-row">
       <div class="focus-file-name">
         <strong title="${escapeText(row.filename)}">${escapeText(row.filename)}</strong>
         <small>${escapeText(row.media_type || "Evidence")} · ${escapeText(when)}${size ? ` · ${escapeText(size)}` : ""}${
-          row.duplicate_name ? ` · <span class="focus-file-dupe">this name appears more than once</span>` : ""
+          note ? ` · <span class="focus-file-dupe">${escapeText(note)}</span>` : ""
         }</small>
       </div>
       <select class="focus-file-room" data-file-room="${escapeText(row.id)}" aria-label="Room for ${escapeText(row.filename)}">
         ${options.replace(`value="${escapeText(row.room_id || "")}"`, `value="${escapeText(row.room_id || "")}" selected`)}
       </select>
       <div class="focus-file-actions">
-        <button type="button" data-file-open="${escapeText(row.id)}"${playable ? "" : " disabled"}>Open</button>
+        <!-- Never disabled. A browser cannot play a camera original, but that is
+             something to say, not a reason to hand somebody a grey button and
+             no explanation. -->
+        <button type="button" data-file-open="${escapeText(row.id)}">Open</button>
       </div>
     </article>`;
   }).join("");
@@ -3697,6 +3870,32 @@ function renderFileList() {
 /* Opening any capture, from anywhere in the project. The results screen offers
    exactly one — the newest — which is why a project with nine playable rooms
    let somebody stand in one of them. */
+/* Pressing Open on a camera original.
+ *
+ * A browser cannot play the camera's INSV format, and the first version of this
+ * list answered that with a greyed-out button and no explanation — a dead end
+ * dressed as a control.
+ *
+ * What somebody pressing it wants is to see the space. If the machine has
+ * already stitched this capture into a playable master, and that master is in
+ * the same room, that is the thing to open — the original and the master are
+ * two halves of one capture. If it has not, the viewer says so in words. Either
+ * way the press does something. */
+/* The capture a playable master came from.
+ *
+ * The machine names its output <capture key>-vr-master.mp4, so comparing the
+ * export key straight against the originals' key never matched: one said
+ * vid_..._011 and the other vid_..._011-vr-master. What the record actually
+ * states, when the reconciliation has run, is ready_360.capture_key — that is
+ * read first, and the name is only the fallback. */
+function masterCaptureKey(item) {
+  const declared = item?.sourceMetadata?.ready_360?.capture_key
+    || item?.sourceMetadata?.insta360_capture_key;
+  if (declared) return String(declared).toLowerCase();
+  const stem = exportCaptureKey(item?.name);
+  return stem ? stem.replace(/-vr-master$/, "") : null;
+}
+
 function openFileFromList(evidenceId) {
   const row = fileList.rows.find((entry) => entry.id === evidenceId);
   const { item, room } = tileFor(evidenceId);
@@ -3704,8 +3903,18 @@ function openFileFromList(evidenceId) {
     notify("That file is in the record but is not something the viewer can open.", 5000);
     return;
   }
+  let opening = item;
+  if (focusIsCameraOriginal(item) || item.mimeType === "application/x-insta360-capture") {
+    const key = insta360CaptureKey(item) || item.sourceMetadata?.insta360_capture_key;
+    const master = key
+      ? (room?.evidence || []).find(
+          (entry) => focusIsSpatial(entry) && masterCaptureKey(entry) === key,
+        )
+      : null;
+    if (master) opening = master;
+  }
   closeFileList();
-  openEvidenceViewer(item, room);
+  openEvidenceViewer(opening, room);
 }
 
 async function moveFileToRoom(evidenceId, spaceId, select) {
@@ -4835,11 +5044,58 @@ function openFocusStudio() {
 
 /* --------------------------------------------------------------------- Upload */
 
+/* The gate: what the record already knows about a file, said before the bytes
+ * move.
+ *
+ * Every filing mistake in this record so far was knowable at the moment of
+ * upload — the same capture already in another room, the same file already in
+ * this one — and the Studio knew it and said nothing. The person found out a
+ * day later, from a count that did not add up. "The machine should have seen
+ * this" is exactly right: this is where it sees it.
+ *
+ * It warns and asks; it does not silently refuse. The person may genuinely
+ * mean it — a re-shoot with the same filename, a corrected export — and a gate
+ * that cannot be overridden is a different bug wearing a safety vest. */
+function uploadGateQuestions(files) {
+  const questions = [];
+  for (const file of files) {
+    const name = String(file.name || "").toLowerCase();
+    const chosen = rooms.find((room) => room.id === uploadRoomId) || null;
+    const holders = [];
+    for (const room of rooms) {
+      const holds = (room.evidence || []).some((item) =>
+        (item.sourceNames || [item.name]).some((entry) => String(entry || "").toLowerCase() === name),
+      );
+      if (holds) holders.push(room);
+    }
+    if (!holders.length) continue;
+    const here = chosen && holders.some((room) => room.id === chosen.id);
+    const elsewhere = holders.filter((room) => !chosen || room.id !== chosen.id);
+    if (here) {
+      questions.push(`${file.name} is already in ${chosen.name}. Uploading it again makes a second copy there — it does not replace the first.`);
+    }
+    if (elsewhere.length) {
+      questions.push(`${file.name} is already in ${elsewhere.map((room) => room.name).join(", ")}. A capture was taken in one room — if it is filed wrongly, move it from "See every file" instead of uploading it again.`);
+    }
+  }
+  return questions;
+}
+
 async function uploadFocusEvidence(fileList) {
   const files = [...fileList].filter(focusFileAllowed);
   if (!files.length || focusUploadBusy) {
     if (fileList?.length) notify("Choose photos, video, PDF, INSV, INSP, or LRV files");
     return;
+  }
+  const questions = uploadGateQuestions(files);
+  if (questions.length) {
+    const proceed = window.confirm(
+      `${questions.join("\n\n")}\n\nUpload anyway?`,
+    );
+    if (!proceed) {
+      notify("Nothing was uploaded. The files already in the record are untouched.", 6000);
+      return;
+    }
   }
   focusUploadBusy = true;
   focusProcessingComplete = false;
@@ -5188,6 +5444,10 @@ document.addEventListener("keydown", (event) => {
 });
 
 $("#focus-evidence-files").addEventListener("change", (event) => uploadFocusEvidence(event.target.files));
+/* The upload entry, reachable by the test harness. The gate above it is the
+   thing that must never rot silently, and a gate nothing can drive is a gate
+   nothing can prove. */
+window.__uploadFocusEvidence = uploadFocusEvidence;
 const focusUploadCard = document.querySelector(".focus-upload-card");
 ["dragenter", "dragover"].forEach((eventName) => focusUploadCard.addEventListener(eventName, (event) => {
   event.preventDefault();
