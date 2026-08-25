@@ -92,7 +92,18 @@
                whole 360 half of the product looks absent and the test reports a
                fault that only exists in the harness. */
             if (opts?.body?.operation === "get_url") {
-              return result({ signed_url: `blob:fake/${opts.body.record_id}`, expires_in: 3600 });
+              /* Shaped like the real thing, and deliberately NOT a blob: URL.
+                 It used to be one, and blob: URLs belong to the page and never
+                 expire — so the Studio's freshness check short-circuited and
+                 the whole "this signature is an hour old" path was invisible to
+                 every test. A stand-in that cannot fail the way production
+                 fails is a stand-in that proves nothing.
+                 The counter makes each renewal distinguishable from the last. */
+              window.__signCount = (window.__signCount || 0) + 1;
+              return result({
+                signed_url: `https://storage.test/evidence/${opts.body.record_id}?sig=${window.__signCount}`,
+                expires_in: 3600,
+              });
             }
             return result({});
           },

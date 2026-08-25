@@ -79,12 +79,30 @@
     });
   }
 
-  async function putWithRetry(url, blob, onBytes) {
+  /* A part URL is signed for an hour, and a batch of 24 parts is 768 MiB. On a
+     slow uplink the tail of a batch can be reached after that hour is gone, and
+     every retry here used to re-send the same dead URL — three attempts at a
+     signature that had already expired, then the upload failed with hours of a
+     camera original already transferred.
+     So a retry gets a new signature, not another go at the old one. */
+  async function putWithRetry(url, blob, onBytes, resign = null) {
     let lastError;
+    let current = url;
+    let attempt = 0;
     for (const wait of RETRY_DELAYS) {
       if (wait) await delay(wait);
+      if (attempt && resign) {
+        try {
+          const renewed = await resign();
+          if (renewed) current = renewed;
+        } catch (error) {
+          /* Keep the URL we have and let the retry speak for itself. */
+          console.warn("Could not renew the upload signature", error);
+        }
+      }
+      attempt += 1;
       try {
-        return await putPart(url, blob, onBytes);
+        return await putPart(current, blob, onBytes);
       } catch (error) {
         lastError = error;
         if (!navigator.onLine) await delay(2000);
@@ -193,10 +211,24 @@
           const end = Math.min(file.size, start + partSize);
           const blob = file.slice(start, end);
           activeBytes.set(partNumber, 0);
-          const etag = await putWithRetry(urlByPart.get(partNumber), blob, (loaded) => {
-            activeBytes.set(partNumber, loaded);
-            report("uploading");
-          });
+          const etag = await putWithRetry(
+            urlByPart.get(partNumber),
+            blob,
+            (loaded) => {
+              activeBytes.set(partNumber, loaded);
+              report("uploading");
+            },
+            async () => {
+              const fresh = await invoke(client, authorized({
+                operation: "sign_parts",
+                session_id: session.session_id,
+                part_numbers: [partNumber],
+              }));
+              const renewed = (fresh.urls || []).find((item) => Number(item.part_number) === partNumber)?.url;
+              if (renewed) urlByPart.set(partNumber, renewed);
+              return renewed || null;
+            },
+          );
           activeBytes.delete(partNumber);
           completed.set(partNumber, { part_number: partNumber, etag, size: blob.size });
           committedBytes += blob.size;
