@@ -37,6 +37,7 @@ run "a capture waiting for the machine" studio/tests/e2e-waiting-machine.mjs
 run "removing a project"              studio/tests/e2e-remove-project.mjs
 run "finding things in the record"    studio/tests/e2e-search.mjs
 run "the headset probe"               studio/tests/vr-check.mjs
+run "standing in a real capture"      studio/tests/pano-vr.mjs
 
 printf "\n%s\n" "────────────────────────────────────────────"
 if [ "$fail" = "0" ]; then echo "ALL CHECKS PASS"; else echo "SOMETHING FAILED — see above"; fi
