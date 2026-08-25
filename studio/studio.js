@@ -3512,6 +3512,151 @@ function newestSpatial() {
   return { item, room: rooms.find((candidate) => candidate.evidence.includes(item)) || null };
 }
 
+/* Every file in the project, with the room it sits in.
+ *
+ * "31 files in this project" was a number with nothing under it: no way to see
+ * what they were, which room each was in, or that the same capture had been
+ * uploaded three times. And the one 360 button on the results screen opens the
+ * newest capture and only that one, so a project with nine playable rooms let
+ * somebody stand in exactly one of them.
+ *
+ * This is the list behind the number, and the way into any room from it. */
+const fileList = { rows: [], search: "", dupesOnly: false, busy: false };
+
+function focusFilesPanel() { return $("#focus-files"); }
+
+async function openFileList() {
+  const panel = focusFilesPanel();
+  if (!panel || !cloud.propertyId) return;
+  panel.hidden = false;
+  $("#focus-files-list").innerHTML = `<p class="focus-files-empty">Reading the record…</p>`;
+  try {
+    const { data, error } = await cloud.client.rpc("project_files", { p_property_id: cloud.propertyId });
+    if (error) throw error;
+    fileList.rows = data || [];
+    renderFileList();
+  } catch (error) {
+    console.error("project files", error);
+    /* Never an empty box. If the list cannot be read, the reason is the list. */
+    $("#focus-files-list").innerHTML = `<p class="focus-files-empty">${escapeText(
+      error.message || "The file list could not be read.",
+    )}</p>`;
+  }
+}
+
+function closeFileList() {
+  const panel = focusFilesPanel();
+  if (panel) panel.hidden = true;
+}
+
+function fileListVisibleRows() {
+  const term = fileList.search.trim().toLowerCase();
+  return fileList.rows.filter((row) => {
+    if (fileList.dupesOnly && !row.duplicate_name) return false;
+    if (!term) return true;
+    return `${row.filename} ${row.room_name || ""} ${row.room_level || ""}`.toLowerCase().includes(term);
+  });
+}
+
+function renderFileList() {
+  const list = $("#focus-files-list");
+  const visible = fileListVisibleRows();
+  const dupes = fileList.rows.filter((row) => row.duplicate_name).length;
+  $("#focus-files-count").textContent = `${fileList.rows.length} file${fileList.rows.length === 1 ? "" : "s"}`;
+  $("#focus-files-note").textContent = dupes
+    ? `${dupes} of them share a name with another file. The same capture in two rooms is legitimate; the same capture twice in one room is usually an upload that looked like it failed.`
+    : "Every file the record holds for this project, and the room it is filed in.";
+
+  if (!visible.length) {
+    list.innerHTML = `<p class="focus-files-empty">${
+      fileList.rows.length ? "Nothing matches that filter." : "This project holds no files yet."
+    }</p>`;
+    return;
+  }
+
+  const options = rooms
+    .map((room) => `<option value="${escapeText(room.id)}">${escapeText(room.level ? `${room.name} · ${room.level}` : room.name)}</option>`)
+    .join("");
+
+  list.innerHTML = visible.map((row) => {
+    const when = row.happened_at ? formatEvidenceDate(row.happened_at) : "date unavailable";
+    const size = row.byte_size ? formatFileSize(row.byte_size) : "";
+    const playable = String(row.mime_type || "").startsWith("video/") || String(row.mime_type || "").startsWith("image/");
+    return `
+    <article class="focus-file-row">
+      <div class="focus-file-name">
+        <strong title="${escapeText(row.filename)}">${escapeText(row.filename)}</strong>
+        <small>${escapeText(row.media_type || "Evidence")} · ${escapeText(when)}${size ? ` · ${escapeText(size)}` : ""}${
+          row.duplicate_name ? ` · <span class="focus-file-dupe">this name appears more than once</span>` : ""
+        }</small>
+      </div>
+      <select class="focus-file-room" data-file-room="${escapeText(row.id)}" aria-label="Room for ${escapeText(row.filename)}">
+        ${options.replace(`value="${escapeText(row.room_id || "")}"`, `value="${escapeText(row.room_id || "")}" selected`)}
+      </select>
+      <div class="focus-file-actions">
+        <button type="button" data-file-open="${escapeText(row.id)}"${playable ? "" : " disabled"}>Open</button>
+      </div>
+    </article>`;
+  }).join("");
+
+  list.querySelectorAll("[data-file-room]").forEach((select) => {
+    select.addEventListener("change", () => moveFileToRoom(select.dataset.fileRoom, select.value, select));
+  });
+  list.querySelectorAll("[data-file-open]").forEach((button) => {
+    button.addEventListener("click", () => openFileFromList(button.dataset.fileOpen));
+  });
+}
+
+/* Opening any capture, from anywhere in the project. The results screen offers
+   exactly one — the newest — which is why a project with nine playable rooms
+   let somebody stand in one of them. */
+function openFileFromList(evidenceId) {
+  const row = fileList.rows.find((entry) => entry.id === evidenceId);
+  const room = rooms.find((entry) => entry.id === row?.room_id);
+  const item = (room?.evidence || []).find((entry) => entry.id === evidenceId)
+    || (room?.evidence || []).find((entry) => (entry.sourceIds || []).includes(evidenceId));
+  if (!item) {
+    notify("That file is in the record but is not something the viewer can open.", 5000);
+    return;
+  }
+  closeFileList();
+  openEvidenceViewer(item, room);
+}
+
+async function moveFileToRoom(evidenceId, spaceId, select) {
+  const row = fileList.rows.find((entry) => entry.id === evidenceId);
+  if (!row || fileList.busy || spaceId === row.room_id) return;
+  const target = rooms.find((entry) => entry.id === spaceId);
+  if (!target) return;
+  fileList.busy = true;
+  select.disabled = true;
+  try {
+    const { error } = await cloud.client.rpc("move_evidence_to_room", {
+      p_evidence_id: evidenceId,
+      p_space_id: spaceId,
+      p_reason: null,
+    });
+    if (error) throw error;
+    row.room_id = spaceId;
+    row.room_name = target.name;
+    row.room_level = target.level;
+    /* The file did not change; only where the record says it was taken. Saying
+       so is the difference between a correction and a replacement. */
+    notify(`${row.filename} is now filed in ${target.name}. The file itself is unchanged.`, 5000);
+    await hydrateCloudRecord();
+    renderFileList();
+  } catch (error) {
+    console.error("move evidence", error);
+    /* Put the picker back where it was, so the screen never shows a room the
+       record did not accept. */
+    select.value = row.room_id || "";
+    notify(error.message || "That file could not be moved.", 6000);
+  } finally {
+    fileList.busy = false;
+    select.disabled = false;
+  }
+}
+
 function openFirstSpatial() {
   const newest = newestSpatial();
   if (!newest) {
@@ -4431,7 +4576,14 @@ function renderFocusResults() {
     ? `<p class="focus-vr-note">${escapeText(stats.stitchLine)}. Originals are never altered — a stitch writes a new file beside them.</p>`
     : "";
   if (stats.spatial.length) {
-    vrCard.innerHTML = `<header><h3>Spatial evidence</h3><span class="focus-vr-badge">VR-ready</span></header><p>${stats.spatial.length} capture${stats.spatial.length === 1 ? " is" : "s are"} playable as a full sphere. Open one here, or send the link to a headset for review in place.</p>${stitchNote}<div class="focus-vr-actions"><button class="focus-primary-action" type="button" data-vr-action="open">${escapeText(newestSpatialLabel())} <span>&rarr;</span></button><button class="focus-secondary-action" type="button" data-vr-action="copy">Copy link for Vision Pro</button></div>`;
+    vrCard.innerHTML = `<header><h3>Spatial evidence</h3><span class="focus-vr-badge">VR-ready</span></header><p>${stats.spatial.length} capture${stats.spatial.length === 1 ? " is" : "s are"} playable as a full sphere. Open one here, or send the link to a headset for review in place.</p>${stitchNote}<div class="focus-vr-actions"><button class="focus-primary-action" type="button" data-vr-action="open">${escapeText(newestSpatialLabel())} <span>&rarr;</span></button>${
+      /* This card offered exactly one room — the newest capture — so a project
+         with nine playable rooms let somebody stand in one of them and gave no
+         way to reach the rest. */
+      stats.spatial.length > 1
+        ? `<button class="focus-secondary-action" type="button" data-vr-action="choose">Stand in another room (${stats.spatial.length})</button>`
+        : ""
+    }<button class="focus-secondary-action" type="button" data-vr-action="copy">Copy link for Vision Pro</button></div>`;
   } else if (stats.paired360 || stats.waiting360) {
     const pairText = `${stats.paired360} paired 360 capture${stats.paired360 === 1 ? "" : "s"}`;
     const waitingText = stats.waiting360
@@ -4446,6 +4598,18 @@ function renderFocusResults() {
     button.addEventListener("click", () => {
       if (action === "open") openFirstSpatial();
       else if (action === "copy") copyFocusLink(stats.spatial[0]);
+      else if (action === "choose") {
+        /* Straight into the list, already narrowed to the captures somebody can
+           stand in, so choosing a room is one press rather than a hunt. */
+        fileList.search = "vr-master";
+        fileList.dupesOnly = false;
+        openFileList().then(() => {
+          const search = $("#focus-files-search");
+          if (search) search.value = fileList.search;
+          const dupes = $("#focus-files-dupes");
+          if (dupes) dupes.checked = false;
+        });
+      }
       else showFocusStage("upload");
     });
   });
@@ -4906,6 +5070,25 @@ async function processFocusEvidence() {
 }
 
 /* -------------------------------------------------------------------- Wiring */
+
+$("#focus-open-files")?.addEventListener("click", openFileList);
+$("#focus-files-close")?.addEventListener("click", closeFileList);
+$("#focus-files")?.addEventListener("click", (event) => {
+  /* Pressing the dimmed area outside the panel closes it, the way every other
+     overlay in the Studio behaves. */
+  if (event.target === $("#focus-files")) closeFileList();
+});
+$("#focus-files-search")?.addEventListener("input", (event) => {
+  fileList.search = event.target.value || "";
+  renderFileList();
+});
+$("#focus-files-dupes")?.addEventListener("change", (event) => {
+  fileList.dupesOnly = Boolean(event.target.checked);
+  renderFileList();
+});
+document.addEventListener("keydown", (event) => {
+  if (event.key === "Escape" && !$("#focus-files")?.hidden) closeFileList();
+});
 
 $("#focus-evidence-files").addEventListener("change", (event) => uploadFocusEvidence(event.target.files));
 const focusUploadCard = document.querySelector(".focus-upload-card");

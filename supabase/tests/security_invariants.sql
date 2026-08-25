@@ -869,4 +869,122 @@ select pg_temp.check('a lone lens file waits for its pair instead of joining ano
   (select state from public.capture_360_groups
     where capture_key = 'vid_20250222_049999_099') = 'waiting_for_pair');
 
+--
+-- The list behind the count, and putting a file in the room it belongs to.
+--
+-- "31 files in this project" was a number with nothing under it. A count
+-- somebody cannot open is not information — and the filing mistake it was
+-- hiding (the same capture uploaded three times into one room) is invisible
+-- from inside any single room.
+
+set local role authenticated;
+set local test.uid = '11111111-1111-1111-1111-111111111111';
+
+/* Counted from the record rather than written down here: a magic number in a
+   test is a number that goes stale the first time a fixture moves. */
+select pg_temp.check('every file in the project is listed, and nothing else',
+  (select count(*) from public.project_files('bbbbbbbb-0000-0000-0000-000000000001'))
+  = (select count(*) from public.evidence_items
+      where property_id = 'bbbbbbbb-0000-0000-0000-000000000001' and deleted_at is null));
+
+-- Removed evidence is out of the record, so it is out of the list.
+select pg_temp.check('a removed file is not in the list',
+  not exists(select 1 from public.project_files('bbbbbbbb-0000-0000-0000-000000000001')
+              where id = 'dddddddd-0000-0000-0000-0000000000f1'));
+
+select pg_temp.check('and each one names the room it sits in',
+  (select room_name from public.project_files('bbbbbbbb-0000-0000-0000-000000000001')
+    where filename = 'VID_20250222_049999_00_099.insv') = 'Garage');
+
+-- The same capture in two rooms is legitimate. Being unable to see that it
+-- happened is not.
+select pg_temp.check('a name that appears twice is flagged as such',
+  (select bool_and(duplicate_name) from public.project_files('bbbbbbbb-0000-0000-0000-000000000001')
+    where filename = 'VID_20250222_042646_00_016.insv'));
+select pg_temp.check('and a name that appears once is not',
+  (select duplicate_name from public.project_files('bbbbbbbb-0000-0000-0000-000000000001')
+    where filename = 'VID_20250222_049999_00_099.insv') = false);
+reset role;
+
+set local role authenticated;
+set local test.uid = '44444444-4444-4444-4444-444444444444';
+select pg_temp.refused('another organisation cannot list this project''s files',
+  $$select * from public.project_files('bbbbbbbb-0000-0000-0000-000000000001')$$);
+reset role;
+
+set local role anon;
+set local test.uid = '';
+select pg_temp.refused('nor can anybody signed out',
+  $$select * from public.project_files('bbbbbbbb-0000-0000-0000-000000000001')$$);
+reset role;
+
+-- Moving is not re-uploading: the file, its digest and its history are
+-- untouched, and the correction is recorded with who made it.
+set local role authenticated;
+set local test.uid = '22222222-2222-2222-2222-222222222222';
+select public.move_evidence_to_room('caca0000-0000-0000-0000-000000000005',
+                                    'cccccccc-0000-0000-0000-000000000002',
+                                    'It was taken in the hall, not the garage');
+select pg_temp.check('a contributor can say which room a file was taken in',
+  (select space_id from public.evidence_items where id = 'caca0000-0000-0000-0000-000000000005')
+    = 'cccccccc-0000-0000-0000-000000000002');
+select pg_temp.check('and the file itself is untouched',
+  (select original_filename || '|' || byte_size::text from public.evidence_items
+    where id = 'caca0000-0000-0000-0000-000000000005')
+    = 'VID_20250222_049999_00_099.insv|1024');
+
+-- The capture it belonged to has to follow, or the room it left keeps claiming
+-- a file that is no longer in it.
+select pg_temp.check('the capture follows the file into its new room',
+  exists(select 1 from public.capture_360_groups
+          where capture_key = 'vid_20250222_049999_099'
+            and space_id = 'cccccccc-0000-0000-0000-000000000002'));
+select pg_temp.check('and the room it left no longer claims it',
+  not exists(select 1 from public.capture_360_groups
+              where capture_key = 'vid_20250222_049999_099'
+                and space_id = 'cccccccc-0000-0000-0000-000000000001'
+                and 'caca0000-0000-0000-0000-000000000005' = any(source_evidence_ids)));
+
+reset role;
+
+-- Evidence about one property filed under another is the one thing this record
+-- must never do. The room id is written out rather than selected, because row
+-- level security hides the other project's rooms from this user — the subquery
+-- returned null and the refusal came from "no such room", which is a different
+-- rule and left the cross-project guard untested.
+insert into public.spaces(id, organization_id, property_id, name, created_by) values
+  ('cccccccc-0000-0000-0000-0000000000ff','aaaaaaaa-0000-0000-0000-000000000002',
+   'bbbbbbbb-0000-0000-0000-000000000002','Other Client Kitchen','44444444-4444-4444-4444-444444444444');
+
+set local role authenticated;
+set local test.uid = '22222222-2222-2222-2222-222222222222';
+select pg_temp.refused('a file cannot be moved into another project''s room',
+  $$select public.move_evidence_to_room('caca0000-0000-0000-0000-000000000005',
+      'cccccccc-0000-0000-0000-0000000000ff')$$);
+select pg_temp.check('and it stayed where it was',
+  (select space_id from public.evidence_items where id = 'caca0000-0000-0000-0000-000000000005')
+    = 'cccccccc-0000-0000-0000-000000000002');
+reset role;
+
+set local role authenticated;
+set local test.uid = '11111111-1111-1111-1111-111111111111';
+select pg_temp.check('the move is on the record, with who made it',
+  exists(select 1 from public.audit_events
+          where action = 'evidence.moved'
+            and entity_id = 'caca0000-0000-0000-0000-000000000005'
+            and actor_id = '22222222-2222-2222-2222-222222222222'
+            and detail->>'reason' = 'It was taken in the hall, not the garage'));
+-- Said plainly, so nobody reading this later wonders whether a file was swapped.
+select pg_temp.check('and it states that the file itself did not change',
+  (select detail->>'file_unchanged' from public.audit_events
+    where action = 'evidence.moved' limit 1) = 'true');
+reset role;
+
+set local role authenticated;
+set local test.uid = '44444444-4444-4444-4444-444444444444';
+select pg_temp.refused('somebody from another organisation cannot move a file',
+  $$select public.move_evidence_to_room('caca0000-0000-0000-0000-000000000001',
+                                        'cccccccc-0000-0000-0000-000000000003')$$);
+reset role;
+
 rollback;
