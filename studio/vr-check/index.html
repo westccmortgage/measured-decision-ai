@@ -1,0 +1,117 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+    <title>360 headset check · Measured Decision</title>
+    <!--
+      What a headset can actually do, asked rather than assumed.
+
+      Walking a project room to room needs three things, and only the third is
+      in doubt: a graph of which room adjoins which, markers on the doorways,
+      and a real immersive session in the headset. The viewer this product ships
+      today has no WebXR in it at all, so what a headset shows is a flat page
+      that follows your head — not somewhere you are standing.
+
+      Before building the immersive half on a guess about what visionOS Safari
+      supports, this page asks the device and shows the answer. It carries no
+      evidence and needs no account: the sphere is a test pattern generated in
+      the browser, so it can be opened on any headset without exposing a project.
+
+      Read the answer, then press the button. What the pattern shows tells us
+      whether the sphere is oriented correctly, which is the other thing that
+      cannot be checked from a laptop.
+    -->
+    <style>
+      :root { color-scheme: dark; }
+      * { box-sizing: border-box; }
+      body {
+        margin: 0;
+        min-height: 100vh;
+        background: #06121d;
+        color: #e8f1f6;
+        font: 16px/1.6 -apple-system, BlinkMacSystemFont, "Segoe UI", Inter, sans-serif;
+        padding: 28px 20px 60px;
+      }
+      main { max-width: 640px; margin: 0 auto; }
+      h1 { font-size: clamp(24px, 5vw, 34px); line-height: 1.2; margin: 0 0 6px; }
+      .lede { color: #93a7b6; margin: 0 0 26px; }
+      .card {
+        border: 1px solid #1c2c3c;
+        border-radius: 14px;
+        background: rgba(10, 20, 33, 0.6);
+        padding: 18px 20px;
+        margin-bottom: 16px;
+      }
+      .card h2 { margin: 0 0 12px; font-size: 13px; letter-spacing: 0.09em; text-transform: uppercase; color: #6f8797; }
+      dl { margin: 0; display: grid; grid-template-columns: 1fr auto; gap: 9px 16px; align-items: baseline; }
+      dt { color: #93a7b6; font-size: 14px; }
+      dd { margin: 0; font-weight: 600; text-align: right; font-size: 14px; }
+      .yes { color: #7fd6a8; }
+      .no { color: #ff9d9d; }
+      .unknown { color: #ffcf9a; }
+      button {
+        width: 100%;
+        min-height: 56px;
+        border: 0;
+        border-radius: 12px;
+        background: #5bd8ce;
+        color: #04222a;
+        font: inherit;
+        font-size: 17px;
+        font-weight: 700;
+        cursor: pointer;
+      }
+      button:disabled { background: #1c2c3c; color: #6f8797; cursor: not-allowed; }
+      button.secondary { background: transparent; border: 1px solid #1c2c3c; color: #e8f1f6; margin-top: 10px; font-weight: 600; }
+      #log {
+        margin: 0;
+        font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+        font-size: 12.5px;
+        line-height: 1.7;
+        color: #93a7b6;
+        white-space: pre-wrap;
+        word-break: break-word;
+      }
+      canvas { position: fixed; inset: 0; width: 100%; height: 100%; display: none; touch-action: none; }
+      canvas.showing { display: block; }
+      #exit {
+        position: fixed; top: 16px; right: 16px; z-index: 5; width: auto;
+        min-height: 44px; padding: 0 18px; display: none;
+      }
+      #exit.showing { display: block; }
+      .hint { color: #6f8797; font-size: 13.5px; margin: 14px 0 0; }
+    </style>
+  </head>
+  <body>
+    <canvas id="stage"></canvas>
+    <button id="exit" class="secondary">Close</button>
+
+    <main>
+      <h1>What can this headset do?</h1>
+      <p class="lede">Nothing here is from a project. The sphere is a test pattern
+        drawn in the browser, so this page is safe to open anywhere.</p>
+
+      <div class="card">
+        <h2>What the browser says</h2>
+        <dl id="capabilities"></dl>
+      </div>
+
+      <div class="card">
+        <h2>Try it</h2>
+        <button id="enter" disabled>Checking…</button>
+        <button id="flat" class="secondary">Look at the sphere without VR</button>
+        <p class="hint">In the immersive view you should be standing inside a
+          coloured room. Each wall is a different colour and carries its
+          direction. The ceiling is light, the floor is dark.</p>
+      </div>
+
+      <div class="card">
+        <h2>What happened</h2>
+        <p id="log">Waiting.</p>
+      </div>
+    </main>
+
+    <script src="vr-check.js"></script>
+  </body>
+</html>
