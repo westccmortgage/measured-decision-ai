@@ -757,6 +757,25 @@ function formatFileSize(bytes) {
 async function uploadEvidenceToCloud(file, room, mediaType, metadata, onProgress) {
   const now = new Date();
   if (!window.MDAIObjectStorage) throw new Error("The secure S3 uploader did not load. Reload the page and retry.");
+  /* The caller measures the file before handing it over — dimensions, duration,
+     equirectangular projection, the capture key that links an export back to the
+     camera originals, the trim window that keeps the operator out of the
+     analysis. All of it was computed and then dropped here, because this built
+     source_metadata from a fixed list of keys instead of forwarding what it was
+     given. Reading a project back therefore lost every one of them: no duration
+     to trim against, no capture key to reconcile an export with its pair.
+     Whatever the caller measured travels with the file. */
+  const { subject, context, intakeMode, evidenceCategory, vr, ...measured } = metadata || {};
+  const sourceMetadata = {
+    ...measured,
+    source: "measured-decision-studio",
+    last_modified: file.lastModified || null,
+    subject: subject || null,
+    context: context || null,
+    intake_mode: intakeMode || null,
+    evidence_category: evidenceCategory || null,
+    vr: vr || null,
+  };
   const result = await window.MDAIObjectStorage.upload({
     client: cloud.client,
     entityType: "evidence",
@@ -767,15 +786,7 @@ async function uploadEvidenceToCloud(file, room, mediaType, metadata, onProgress
     metadata: {
       media_type: mediaType,
       captured_at: now.toISOString(),
-      source_metadata: {
-        source: "measured-decision-studio",
-        last_modified: file.lastModified || null,
-        subject: metadata.subject || null,
-        context: metadata.context || null,
-        intake_mode: metadata.intakeMode || null,
-        evidence_category: metadata.evidenceCategory || null,
-        vr: metadata.vr || null,
-      },
+      source_metadata: sourceMetadata,
     },
     onProgress,
   });
@@ -793,17 +804,9 @@ async function uploadEvidenceToCloud(file, room, mediaType, metadata, onProgress
     byteSize: file.size,
     date: formatEvidenceDate(now.toISOString()),
     status: "Private cloud original · Awaiting analysis",
-    subject: metadata.subject || "",
-    context: metadata.context || "",
-    sourceMetadata: {
-      source: "measured-decision-studio",
-      last_modified: file.lastModified || null,
-      subject: metadata.subject || null,
-      context: metadata.context || null,
-      intake_mode: metadata.intakeMode || null,
-      evidence_category: metadata.evidenceCategory || null,
-      vr: metadata.vr || null,
-    },
+    subject: subject || "",
+    context: context || "",
+    sourceMetadata,
   };
 }
 
