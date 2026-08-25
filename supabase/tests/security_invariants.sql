@@ -618,4 +618,182 @@ select pg_temp.refused('nor can anybody signed out',
   $$select * from public.search_project_record('bbbbbbbb-0000-0000-0000-000000000001', 'framing')$$);
 reset role;
 
+--
+-- Walking the project. The plans say which rooms open into which; that is a
+-- fact drawn on a sheet, and it is still only a reading until a person says so.
+-- What is asserted here is the whole of that rule, plus the one case that is
+-- easy to get wrong by being tidy: a route to a room the record does not have
+-- must still come back, saying so, because dropping it reads as "there is no
+-- door there" — a different statement, and an untrue one.
+
+insert into public.plan_spaces(id, organization_id, property_id, baseline_id, building, level, name)
+values
+  ('a1a1a1a1-0000-0000-0000-000000000001','aaaaaaaa-0000-0000-0000-000000000001',
+   'bbbbbbbb-0000-0000-0000-000000000001','eeeeeeee-0000-0000-0000-000000000001','Main House','Level 1','Hall'),
+  ('a1a1a1a1-0000-0000-0000-000000000002','aaaaaaaa-0000-0000-0000-000000000001',
+   'bbbbbbbb-0000-0000-0000-000000000001','eeeeeeee-0000-0000-0000-000000000001','Main House','Level 1','Kitchen'),
+  ('a1a1a1a1-0000-0000-0000-000000000003','aaaaaaaa-0000-0000-0000-000000000001',
+   'bbbbbbbb-0000-0000-0000-000000000001','eeeeeeee-0000-0000-0000-000000000001','Main House','Level 2','Attic');
+
+insert into public.spaces(id, organization_id, property_id, name, created_by, plan_space_id) values
+  ('cccccccc-0000-0000-0000-000000000002','aaaaaaaa-0000-0000-0000-000000000001',
+   'bbbbbbbb-0000-0000-0000-000000000001','Hall','11111111-1111-1111-1111-111111111111',
+   'a1a1a1a1-0000-0000-0000-000000000001'),
+  ('cccccccc-0000-0000-0000-000000000003','aaaaaaaa-0000-0000-0000-000000000001',
+   'bbbbbbbb-0000-0000-0000-000000000001','Kitchen','11111111-1111-1111-1111-111111111111',
+   'a1a1a1a1-0000-0000-0000-000000000002');
+-- The attic is on the plans and nowhere in the record. That is the case.
+
+update public.properties set active_baseline_id = 'eeeeeeee-0000-0000-0000-000000000001'
+ where id = 'bbbbbbbb-0000-0000-0000-000000000001';
+
+insert into public.plan_space_links(
+  id, organization_id, property_id, baseline_id,
+  from_plan_space_id, to_plan_space_id, connection, source_refs)
+values
+  ('a2a2a2a2-0000-0000-0000-000000000001','aaaaaaaa-0000-0000-0000-000000000001',
+   'bbbbbbbb-0000-0000-0000-000000000001','eeeeeeee-0000-0000-0000-000000000001',
+   least('a1a1a1a1-0000-0000-0000-000000000001'::uuid,'a1a1a1a1-0000-0000-0000-000000000002'::uuid),
+   greatest('a1a1a1a1-0000-0000-0000-000000000001'::uuid,'a1a1a1a1-0000-0000-0000-000000000002'::uuid),
+   'door', '["A-101"]'::jsonb),
+  ('a2a2a2a2-0000-0000-0000-000000000002','aaaaaaaa-0000-0000-0000-000000000001',
+   'bbbbbbbb-0000-0000-0000-000000000001','eeeeeeee-0000-0000-0000-000000000001',
+   least('a1a1a1a1-0000-0000-0000-000000000001'::uuid,'a1a1a1a1-0000-0000-0000-000000000003'::uuid),
+   greatest('a1a1a1a1-0000-0000-0000-000000000001'::uuid,'a1a1a1a1-0000-0000-0000-000000000003'::uuid),
+   'stairs', '["A-102"]'::jsonb);
+
+-- One door is one row, whichever way round somebody writes it.
+select pg_temp.refused('the same opening cannot be recorded twice',
+  $$insert into public.plan_space_links(organization_id, property_id, baseline_id,
+      from_plan_space_id, to_plan_space_id, connection)
+    values ('aaaaaaaa-0000-0000-0000-000000000001','bbbbbbbb-0000-0000-0000-000000000001',
+      'eeeeeeee-0000-0000-0000-000000000001',
+      least('a1a1a1a1-0000-0000-0000-000000000001'::uuid,'a1a1a1a1-0000-0000-0000-000000000002'::uuid),
+      greatest('a1a1a1a1-0000-0000-0000-000000000001'::uuid,'a1a1a1a1-0000-0000-0000-000000000002'::uuid),
+      'door')$$);
+
+select pg_temp.refused('nor recorded backwards to get around that',
+  $$insert into public.plan_space_links(organization_id, property_id, baseline_id,
+      from_plan_space_id, to_plan_space_id, connection)
+    values ('aaaaaaaa-0000-0000-0000-000000000001','bbbbbbbb-0000-0000-0000-000000000001',
+      'eeeeeeee-0000-0000-0000-000000000001',
+      greatest('a1a1a1a1-0000-0000-0000-000000000001'::uuid,'a1a1a1a1-0000-0000-0000-000000000002'::uuid),
+      least('a1a1a1a1-0000-0000-0000-000000000001'::uuid,'a1a1a1a1-0000-0000-0000-000000000002'::uuid),
+      'door')$$);
+
+select pg_temp.refused('and a room does not open into itself',
+  $$insert into public.plan_space_links(organization_id, property_id, baseline_id,
+      from_plan_space_id, to_plan_space_id)
+    values ('aaaaaaaa-0000-0000-0000-000000000001','bbbbbbbb-0000-0000-0000-000000000001',
+      'eeeeeeee-0000-0000-0000-000000000001',
+      'a1a1a1a1-0000-0000-0000-000000000001','a1a1a1a1-0000-0000-0000-000000000001')$$);
+
+set local role authenticated;
+set local test.uid = '11111111-1111-1111-1111-111111111111';
+
+select pg_temp.check('an owner can see how the project connects',
+  (select count(*) from public.project_space_links('bbbbbbbb-0000-0000-0000-000000000001')) = 2);
+
+-- The rule the whole product rests on, in one more place it could escape.
+select pg_temp.check('a route the AI read is not confirmed by being read',
+  (select bool_and(state = 'suggested')
+     from public.project_space_links('bbbbbbbb-0000-0000-0000-000000000001')));
+
+select pg_temp.check('the walkable route names both rooms as the record holds them',
+  exists(select 1 from public.project_space_links('bbbbbbbb-0000-0000-0000-000000000001')
+          where from_room_name = 'Hall' and to_room_name = 'Kitchen' and connection = 'door'));
+
+select pg_temp.check('and it carries the sheet it was read from',
+  (select source_refs from public.project_space_links('bbbbbbbb-0000-0000-0000-000000000001')
+    where connection = 'door') = '["A-101"]'::jsonb);
+
+-- The tidy version of this function would drop this row and show three rooms
+-- neatly joined. That would be the plans saying one thing and the screen saying
+-- another, with nobody told.
+select pg_temp.check('a route to a room the record does not have is still returned',
+  exists(select 1 from public.project_space_links('bbbbbbbb-0000-0000-0000-000000000001')
+          where to_plan_name = 'Attic' and to_room_id is null));
+
+select pg_temp.check('and the room that is there says how much evidence it holds',
+  (select from_evidence_count from public.project_space_links('bbbbbbbb-0000-0000-0000-000000000001')
+    where connection = 'door') = 0);
+
+set local test.uid = '22222222-2222-2222-2222-222222222222';
+select pg_temp.refused('a contributor cannot confirm how rooms connect',
+  $$select public.review_space_link('a2a2a2a2-0000-0000-0000-000000000001', 'confirmed')$$);
+select pg_temp.refused('nor invent a verdict',
+  $$select public.review_space_link('a2a2a2a2-0000-0000-0000-000000000001', 'probably')$$);
+-- Writes are server-owned; there is no insert policy, by design.
+select pg_temp.refused('nor draw a door straight into the table',
+  $$insert into public.plan_space_links(organization_id, property_id, baseline_id,
+      from_plan_space_id, to_plan_space_id)
+    values ('aaaaaaaa-0000-0000-0000-000000000001','bbbbbbbb-0000-0000-0000-000000000001',
+      'eeeeeeee-0000-0000-0000-000000000001',
+      least('a1a1a1a1-0000-0000-0000-000000000002'::uuid,'a1a1a1a1-0000-0000-0000-000000000003'::uuid),
+      greatest('a1a1a1a1-0000-0000-0000-000000000002'::uuid,'a1a1a1a1-0000-0000-0000-000000000003'::uuid))$$);
+
+set local test.uid = '33333333-3333-3333-3333-333333333333';
+select public.review_space_link('a2a2a2a2-0000-0000-0000-000000000001', 'confirmed', 'walked it');
+select pg_temp.check('a reviewer can, and the record names them',
+  exists(select 1 from public.plan_space_links
+          where id = 'a2a2a2a2-0000-0000-0000-000000000001'
+            and state = 'confirmed'
+            and reviewed_by = '33333333-3333-3333-3333-333333333333'
+            and reviewed_at is not null));
+
+-- The audit trail is readable by owners and administrators only, so the
+-- reviewer who just confirmed the route cannot see their own entry. That is the
+-- existing rule, and worth stating here rather than working around.
+select pg_temp.check('the reviewer who confirmed it cannot read the audit trail',
+  (select count(*) from public.audit_events where action = 'space_link.confirmed') = 0);
+set local test.uid = '11111111-1111-1111-1111-111111111111';
+select pg_temp.check('and the confirmation is in the audit trail',
+  exists(select 1 from public.audit_events
+          where action = 'space_link.confirmed'
+            and entity_id = 'a2a2a2a2-0000-0000-0000-000000000001'
+            and detail->>'note' = 'walked it'));
+set local test.uid = '33333333-3333-3333-3333-333333333333';
+
+-- A door the plans show that is not there is a wrong turn in a headset, so
+-- rejecting one has to take it out of the walk rather than grey it out.
+select public.review_space_link('a2a2a2a2-0000-0000-0000-000000000002', 'rejected');
+select pg_temp.check('a rejected route is not walkable',
+  (select count(*) from public.project_space_links('bbbbbbbb-0000-0000-0000-000000000001')) = 1);
+
+-- Somebody who knows the building can say a door exists that the plans missed.
+select public.add_space_link('cccccccc-0000-0000-0000-000000000002',
+                             'cccccccc-0000-0000-0000-000000000003', 'opening');
+select pg_temp.check('a person saying a door is there confirms the one already read',
+  (select count(*) from public.plan_space_links
+    where property_id = 'bbbbbbbb-0000-0000-0000-000000000001' and state = 'confirmed') = 1);
+
+-- A room somebody typed in by hand has no place on the plan set. Saying that is
+-- better than connecting it to something and being wrong.
+insert into public.spaces(id, organization_id, property_id, name, created_by) values
+  ('cccccccc-0000-0000-0000-000000000004','aaaaaaaa-0000-0000-0000-000000000001',
+   'bbbbbbbb-0000-0000-0000-000000000001','Shed','33333333-3333-3333-3333-333333333333');
+select pg_temp.refused('a room that is not on the plan set cannot be connected yet',
+  $$select public.add_space_link('cccccccc-0000-0000-0000-000000000002',
+                                 'cccccccc-0000-0000-0000-000000000004', 'door')$$);
+select pg_temp.refused('and a room does not open into itself here either',
+  $$select public.add_space_link('cccccccc-0000-0000-0000-000000000002',
+                                 'cccccccc-0000-0000-0000-000000000002', 'door')$$);
+reset role;
+
+set local role authenticated;
+set local test.uid = '44444444-4444-4444-4444-444444444444';
+select pg_temp.refused('another organisation cannot see how this project connects',
+  $$select * from public.project_space_links('bbbbbbbb-0000-0000-0000-000000000001')$$);
+select pg_temp.refused('nor confirm a route in it',
+  $$select public.review_space_link('a2a2a2a2-0000-0000-0000-000000000001', 'rejected')$$);
+reset role;
+
+set local role anon;
+set local test.uid = '';
+select pg_temp.refused('nor can anybody signed out',
+  $$select * from public.project_space_links('bbbbbbbb-0000-0000-0000-000000000001')$$);
+select pg_temp.check('and the routes themselves are invisible signed out',
+  (select count(*) from public.plan_space_links) = 0);
+reset role;
+
 rollback;

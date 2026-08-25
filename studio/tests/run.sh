@@ -36,6 +36,7 @@ run "accepting a missing capture"     studio/tests/e2e-waiver.mjs
 run "a capture waiting for the machine" studio/tests/e2e-waiting-machine.mjs
 run "removing a project"              studio/tests/e2e-remove-project.mjs
 run "finding things in the record"    studio/tests/e2e-search.mjs
+run "how the rooms connect"           studio/tests/e2e-routes.mjs
 run "the headset probe"               studio/tests/vr-check.mjs
 run "standing in a real capture"      studio/tests/pano-vr.mjs
 run "a pin is where it was placed"    studio/tests/marker-direction.mjs

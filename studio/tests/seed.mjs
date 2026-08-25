@@ -250,6 +250,41 @@ export const roadmapRows = ({ waived = false } = {}) => {
   return r;
 };
 
+/* A plan set that named three rooms and two ways between them, one of which
+   leads somewhere the record has no room for. That last case is the one worth
+   seeding: it is what happens on every real project where the plans show an
+   attic, a crawl space or a mechanical closet that nobody has captured. */
+export const routeRows = () => {
+  const r = clone(roadmapRows());
+  r.plan_spaces = [
+    { id: "ps-hall", organization_id: ORG, property_id: PROPERTY, baseline_id: "bl-1",
+      building: "Main House", level: "Level 1", name: "Hall", classification: "circulation", source_refs: [] },
+    { id: "ps-kitchen", organization_id: ORG, property_id: PROPERTY, baseline_id: "bl-1",
+      building: "Main House", level: "Level 1", name: "Kitchen", classification: "room", source_refs: [] },
+    { id: "ps-attic", organization_id: ORG, property_id: PROPERTY, baseline_id: "bl-1",
+      building: "Main House", level: "Level 2", name: "Attic", classification: "room", source_refs: [] },
+  ];
+  return r;
+};
+
+/* What project_space_links answers with. It is an RPC rather than a table read,
+   because a route belongs to the project's active baseline and the screen may
+   be showing another one. */
+export const routeLinks = () => [
+  {
+    link_id: "lk-1", state: "suggested", connection: "door",
+    from_room_id: "space-1", from_room_name: "Hall", from_plan_name: "Hall", from_evidence_count: 0,
+    to_room_id: "space-2", to_room_name: "Kitchen", to_plan_name: "Kitchen", to_evidence_count: 3,
+    source_refs: ["A-101"], reviewed_at: null,
+  },
+  {
+    link_id: "lk-2", state: "confirmed", connection: "stairs",
+    from_room_id: "space-1", from_room_name: "Hall", from_plan_name: "Hall", from_evidence_count: 0,
+    to_room_id: null, to_room_name: null, to_plan_name: "Attic", to_evidence_count: 0,
+    source_refs: ["A-102"], reviewed_at: "2026-08-24T10:00:00Z",
+  },
+];
+
 /* The machine building itself: booted eight minutes ago, last word four minutes
    ago, and nothing since because fetching the SDK and building the image emit
    nothing between them.

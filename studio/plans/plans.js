@@ -19,6 +19,7 @@ const state = {
   baseline: null,
   phases: [],
   planSpaces: [],
+  spaceLinks: [],
   requirements: [],
   tasks: [],
   assignments: [],
@@ -311,6 +312,12 @@ function canWaiveCapture() {
   return ["owner", "admin", "reviewer", "project_manager"].includes(state.role);
 }
 
+/* Confirming how the building is put together is the same authority as
+   approving the roadmap, plus the project manager who has actually walked it. */
+function canConfirmRoutes() {
+  return ["owner", "admin", "reviewer", "project_manager"].includes(state.role);
+}
+
 function canDeletePlans() {
   return ["owner", "admin"].includes(state.role);
 }
@@ -550,6 +557,7 @@ async function openProperty(propertyId) {
   state.selectedDocumentIds = new Set(baselineDocumentIds.length ? baselineDocumentIds : analyzableDocumentIds);
   state.phases = [];
   state.planSpaces = [];
+  state.spaceLinks = [];
   state.requirements = [];
   state.tasks = [];
   state.assignments = [];
@@ -571,6 +579,13 @@ async function openProperty(propertyId) {
     state.tasks = taskResult.data || [];
     state.assignments = assignmentResult.data || [];
     state.qualityChecks = qualityResult.data || [];
+    /* Routes belong to the project's active baseline, not to whichever
+       baseline this screen happens to be showing, so they are read through the
+       function that knows that rather than filtered here. A failure to load
+       them must not take the rest of the screen with it. */
+    const routeResult = await client.rpc("project_space_links", { p_property_id: propertyId });
+    if (routeResult.error) console.error("routes", routeResult.error);
+    state.spaceLinks = routeResult.data || [];
   }
   render();
   elements.sync.textContent = state.activeAnalysisJob
@@ -595,6 +610,7 @@ function render() {
   renderDocuments();
   renderBaseline();
   renderRoadmap();
+  renderRoutes();
   if (state.baseline && !state.activeAnalysisJob && state.analysisOutcome !== "failed") {
     const approved = state.baseline.state === "approved";
     renderAnalysisProgress(100, analysisStages.length - 1, {
@@ -669,6 +685,111 @@ async function deletePlanDocument(documentId) {
   } finally {
     setBusy(false, `Cloud connected · ${state.role}`);
     render();
+  }
+}
+
+/* How the rooms connect.
+ *
+ * The plan set is the only source: a door drawn on a sheet is a fact on the
+ * sheet. What the record can stand behind is "these two rooms have an opening
+ * between them", and nothing about where it is — so this is a list, not a
+ * diagram. A drawn floor plan here would be a picture of a guess.
+ *
+ * Every row wears its state, because an unconfirmed reading shown quietly is an
+ * unconfirmed reading shown as a fact.
+ */
+const ROUTE_KIND_LABEL = {
+  door: "Door",
+  opening: "Opening",
+  stairs: "Stairs",
+  corridor: "Corridor",
+  exterior_door: "Exterior door",
+  other: "Opening",
+};
+
+/* Each end names itself. Two unlabelled lines under "Hall ↔ Kitchen" — one
+   saying "3 files" and one saying "nothing yet" — leave the reader guessing
+   which room is which, and guessing is the thing this product is against. */
+function routeEndCopy(roomName, planName, evidenceCount) {
+  const name = escapeHtml(roomName || planName || "Unnamed space");
+  if (!roomName) {
+    /* The plans name it and the record has no room for it. Hiding the row would
+       read as "there is no door there", which is a different and untrue thing. */
+    return `<small class="route-missing">${name} — on the plans, not in the record</small>`;
+  }
+  return evidenceCount > 0
+    ? `<small>${name} — ${evidenceCount} file${evidenceCount === 1 ? "" : "s"}</small>`
+    : `<small class="route-empty-room">${name} — nothing captured here yet</small>`;
+}
+
+function renderRoutes() {
+  const section = $("#routes-section");
+  if (!section) return;
+  const routes = state.spaceLinks || [];
+  /* Nothing to say before there is an approved plan set with rooms in it. */
+  section.hidden = !state.baseline || !state.planSpaces.length;
+  if (section.hidden) return;
+
+  const confirmed = routes.filter((route) => route.state === "confirmed").length;
+  const pill = $("#routes-state");
+  if (pill) {
+    pill.textContent = routes.length
+      ? `${confirmed} of ${routes.length} confirmed`
+      : "None read";
+    pill.className = `state-pill ${routes.length && confirmed === routes.length ? "approved" : "baseline_review"}`;
+  }
+
+  $("#routes-empty").hidden = routes.length > 0;
+  const list = $("#route-list");
+  list.hidden = routes.length === 0;
+  list.innerHTML = routes.map((route) => {
+    const unmapped = !route.from_room_id || !route.to_room_id;
+    const isConfirmed = route.state === "confirmed";
+    return `
+    <article class="route-row${unmapped ? " unmapped" : ""}">
+      <div class="route-pair">
+        <strong>${escapeHtml(route.from_room_name || route.from_plan_name || "Unnamed space")} ↔ ${escapeHtml(route.to_room_name || route.to_plan_name || "Unnamed space")}</strong>
+        ${routeEndCopy(route.from_room_name, route.from_plan_name, Number(route.from_evidence_count) || 0)}
+        ${routeEndCopy(route.to_room_name, route.to_plan_name, Number(route.to_evidence_count) || 0)}
+      </div>
+      <span class="route-kind">${escapeHtml(ROUTE_KIND_LABEL[route.connection] || "Opening")}</span>
+      <span class="route-state${isConfirmed ? " confirmed" : ""}">${isConfirmed ? "Confirmed by a person" : "Read by AI · not confirmed"}</span>
+      <div class="route-actions">
+        ${canConfirmRoutes() && !isConfirmed ? `<button class="button primary" type="button" data-route-confirm="${route.link_id}">This door is there</button>` : ""}
+        ${canConfirmRoutes() ? `<button class="button secondary" type="button" data-route-reject="${route.link_id}">Not there</button>` : ""}
+      </div>
+    </article>`;
+  }).join("");
+
+  list.querySelectorAll("[data-route-confirm]").forEach((button) => {
+    button.addEventListener("click", () => reviewRoute(button.dataset.routeConfirm, "confirmed"));
+  });
+  list.querySelectorAll("[data-route-reject]").forEach((button) => {
+    button.addEventListener("click", () => reviewRoute(button.dataset.routeReject, "rejected"));
+  });
+}
+
+async function reviewRoute(linkId, verdict) {
+  const route = (state.spaceLinks || []).find((item) => item.link_id === linkId);
+  if (!route || state.busy) return;
+  const pair = `${route.from_room_name || route.from_plan_name} ↔ ${route.to_room_name || route.to_plan_name}`;
+  /* Rejecting takes the route out of the walk, so it is the one that gets
+     asked about. Confirming can be undone by rejecting; a wrong turn inside a
+     headset cannot be undone by anything. */
+  if (verdict === "rejected" && !window.confirm(`Remove the route ${pair}?\n\nNobody will be able to walk between these two rooms until it is read again from a new plan set.`)) return;
+  setBusy(true, verdict === "confirmed" ? "Confirming the route…" : "Removing the route…");
+  try {
+    const { error } = await client.rpc("review_space_link", { p_link_id: linkId, p_state: verdict });
+    if (error) throw error;
+    notify(verdict === "confirmed"
+      ? `${pair} is confirmed. It can be walked.`
+      : `${pair} is not a route.`);
+    await openProperty(state.property.id);
+  } catch (error) {
+    console.error(error);
+    notify(error.message || "The route could not be recorded", "error");
+  } finally {
+    setBusy(false, `Cloud connected · ${state.role}`);
   }
 }
 
