@@ -3612,7 +3612,7 @@ function newestSpatial() {
  * somebody stand in exactly one of them.
  *
  * This is the list behind the number, and the way into any room from it. */
-const fileList = { rows: [], search: "", dupesOnly: false, busy: false };
+const fileList = { rows: [], search: "", dupesOnly: false, busy: false, working: null };
 
 function focusFilesPanel() { return $("#focus-files"); }
 
@@ -3620,6 +3620,7 @@ async function openFileList() {
   const panel = focusFilesPanel();
   if (!panel || !cloud.propertyId) return;
   panel.hidden = false;
+  fileList.working = null;
   $("#focus-files-list").innerHTML = `<p class="focus-files-empty">Reading the record…</p>`;
   try {
     const { data, error } = await cloud.client.rpc("project_files", { p_property_id: cloud.propertyId });
@@ -3762,6 +3763,25 @@ function recordFindings(rows) {
 function renderRecordFindings() {
   const box = $("#focus-files-findings");
   if (!box) return;
+  /* While one finding is being worked on, the panel is that finding and the
+     way back — so pressing its remedy visibly changed the screen, and the list
+     under it is the files it names. */
+  if (fileList.working) {
+    box.hidden = false;
+    box.innerHTML = `
+      <article class="focus-finding working">
+        <div><strong>${escapeText(fileList.working.title)}</strong><small>${escapeText(fileList.working.detail)} The list below is these files — choose the correct room on the wrong one.</small></div>
+        <button type="button" data-finding-back>All findings</button>
+      </article>`;
+    box.querySelector("[data-finding-back]")?.addEventListener("click", () => {
+      fileList.working = null;
+      fileList.search = "";
+      const search = $("#focus-files-search");
+      if (search) search.value = "";
+      renderFileList();
+    });
+    return;
+  }
   const findings = recordFindings(fileList.rows);
   if (!findings.length) {
     box.hidden = false;
@@ -3804,14 +3824,22 @@ async function actOnFinding(finding) {
     return;
   }
   /* The findings that need a person: narrow the list to the files in question
-     and let them decide with the move control that already exists. */
+     and let them decide with the move control that already exists.
+
+     The first version narrowed the list and left the findings panel exactly as
+     it was — six findings tall, filling the visible area. The change happened
+     below the fold, and a click with no visible answer reads as a button that
+     does not work. That was reported as "not clickable", and it effectively
+     was. The panel now collapses to the one finding being worked on. */
   fileList.search = finding.filter || "";
   fileList.dupesOnly = false;
+  fileList.working = finding;
   const search = $("#focus-files-search");
   if (search) search.value = fileList.search;
   const dupes = $("#focus-files-dupes");
   if (dupes) dupes.checked = false;
   renderFileList();
+  $("#focus-files-list")?.scrollTo({ top: 0 });
 }
 
 function renderFileList() {
@@ -4052,16 +4080,38 @@ async function openEvidenceViewer(item, room, focusMarkerId = null) {
   if (focusIsCameraOriginal(item)) {
     const paired = (item.sourceIds?.length || 0) >= 2;
     const stitchState = stitchLine();
+    /* This capture, stitched, anywhere in the project. The person's question is
+       "show me the space", and telling them only that this room's copy is
+       queued — while the identical capture sits playable one room over — is a
+       dead end with the answer in the next sentence. It is offered, not
+       silently substituted: the label says whose room it is. */
+    const captureKey = insta360CaptureKey(item) || item.sourceMetadata?.insta360_capture_key;
+    let masterElsewhere = null;
+    if (captureKey) {
+      for (const other of rooms) {
+        const master = (other.evidence || []).find(
+          (entry) => focusIsSpatial(entry) && masterCaptureKey(entry) === captureKey,
+        );
+        if (master) { masterElsewhere = { item: master, room: other }; break; }
+      }
+    }
     window.MDAIPano360.open({
       src: "",
       title: item.name || "360 camera original",
       subtitle: paired
         ? `Both camera originals are preserved. A browser cannot play the protected INSV format, so the 360 machine stitches a playable master from this pair. ${
             stitchState || "It is queued; the master appears here when the machine has run."
-          }`
+          }${masterElsewhere ? ` This same capture is already stitched in ${masterElsewhere.room.name}.` : ""}`
         : "One camera original is missing. Upload the matching INSV file — the pair is what the 360 machine stitches from.",
       actions: [
-        { label: paired ? "Back to the file list" : "Upload the matching original", primary: true, onSelect: () => { window.MDAIPano360.close(); showFocusStage("upload"); } },
+        masterElsewhere
+          ? { label: `Open the stitched master — ${masterElsewhere.room.name}`, primary: true, onSelect: () => { window.MDAIPano360.close(); openEvidenceViewer(masterElsewhere.item, masterElsewhere.room); } }
+          : null,
+        /* This button said "Back to the file list" and went to the upload
+           screen. A label that lies is worse than no button. */
+        paired
+          ? { label: "Back to the file list", primary: !masterElsewhere, onSelect: () => { window.MDAIPano360.close(); openFileList(); } }
+          : { label: "Upload the matching original", primary: true, onSelect: () => { window.MDAIPano360.close(); showFocusStage("upload"); } },
         room ? { label: `Back to ${roomName}`, onSelect: () => { window.MDAIPano360.close(); openFocusSheet(room.id, focusStage); } } : null,
       ].filter(Boolean),
     });
@@ -5433,6 +5483,8 @@ $("#focus-files")?.addEventListener("click", (event) => {
 });
 $("#focus-files-search")?.addEventListener("input", (event) => {
   fileList.search = event.target.value || "";
+  /* Typing a filter of their own means they have moved on from the finding. */
+  fileList.working = null;
   renderFileList();
 });
 $("#focus-files-dupes")?.addEventListener("change", (event) => {

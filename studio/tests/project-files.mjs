@@ -427,6 +427,79 @@ check("each carries the reason a reader needs",
   acted.calls.every((args) => /Duplicate upload/.test(args?.p_reason || "")),
   JSON.stringify(acted.calls[0] || {}));
 
+console.log("\n── a remedy click visibly answers ──");
+/* "Not clickable": the click worked, the list narrowed — below the fold, while
+   the six-finding panel filled the screen unchanged. A click with no visible
+   answer is a dead button as far as any person can tell. */
+const visibly = await page.evaluate(async () => {
+  document.querySelector("#focus-open-files")?.click();
+  await new Promise((r) => setTimeout(r, 800));
+  const target = [...document.querySelectorAll(".focus-finding button")]
+    .find((b) => /Open the list and move the wrong one/.test(b.textContent));
+  target?.click();
+  await new Promise((r) => setTimeout(r, 400));
+  const working = document.querySelector(".focus-finding.working");
+  const state = {
+    collapsed: document.querySelectorAll(".focus-finding").length,
+    working: working?.innerText.replace(/\s+/g, " ") || "",
+    rows: document.querySelectorAll(".focus-file-row").length,
+  };
+  /* And the way back. */
+  working?.querySelector("[data-finding-back]")?.click();
+  await new Promise((r) => setTimeout(r, 400));
+  state.restored = document.querySelectorAll(".focus-finding").length;
+  state.rowsRestored = document.querySelectorAll(".focus-file-row").length;
+  return state;
+});
+check("the panel collapses to the finding being worked on",
+  visibly.collapsed === 1, `${visibly.collapsed} finding(s) shown`);
+check("and says what the list below now is",
+  /The list below is these files/.test(visibly.working), visibly.working.slice(0, 220));
+check("the list is those files", visibly.rows === 2, `${visibly.rows} row(s)`);
+check("and All findings brings everything back",
+  visibly.restored > 1 && visibly.rowsRestored > visibly.rows,
+  `${visibly.restored} findings, ${visibly.rowsRestored} rows`);
+
+console.log("\n── an original whose room has no master ──");
+/* Hallway 200A: queued. The identical capture is already stitched in Double
+   Height 209, and saying only "queued" while the answer sits one room over is
+   a dead end with the answer in the next sentence. */
+const queued = await page.evaluate(async () => {
+  const search = document.querySelector("#focus-files-search");
+  search.value = "Hallway 200A";
+  search.dispatchEvent(new Event("input", { bubbles: true }));
+  await new Promise((r) => setTimeout(r, 400));
+  [...document.querySelectorAll(".focus-file-row")][0]?.querySelector("[data-file-open]")?.click();
+  await new Promise((r) => setTimeout(r, 1000));
+  const actions = [...document.querySelectorAll(".pano-foot button")].map((b) => b.textContent.trim());
+  const subtitle = document.querySelector("[data-pano-subtitle]")?.textContent || "";
+  const master = [...document.querySelectorAll(".pano-foot button")]
+    .find((b) => /Open the stitched master/.test(b.textContent));
+  master?.click();
+  await new Promise((r) => setTimeout(r, 1200));
+  return {
+    actions,
+    subtitle: subtitle.slice(0, 300),
+    nowShowing: document.querySelector("[data-pano-title]")?.textContent || "",
+    canvas: Boolean(document.querySelector(".pano-overlay canvas")),
+  };
+});
+check("the placeholder says the same capture is stitched elsewhere",
+  /already stitched in Double Height 209/.test(queued.subtitle), queued.subtitle.slice(0, 220));
+check("and offers it by name",
+  queued.actions.some((label) => /Open the stitched master — Double Height 209/.test(label)),
+  JSON.stringify(queued.actions));
+/* The harness's signed URLs are fake and the routing aborts them, so the
+   sphere itself cannot start here — that path is proven by pano-vr against a
+   real data-URL capture. What this can and does prove is that the press lands
+   on the master, not back on the placeholder. */
+check("pressing it opens the master itself",
+  /042646_016-vr-master/.test(queued.nowShowing), queued.nowShowing || "(placeholder)");
+check("and Back to the file list goes to the file list, as it says",
+  queued.actions.includes("Back to the file list"), JSON.stringify(queued.actions));
+await page.evaluate(() => document.querySelector("[data-pano-close]")?.click());
+await page.waitForTimeout(300);
+
 check("nothing threw", errors.length === 0, errors.join(" | "));
 
 await browser.close(); server.close();
