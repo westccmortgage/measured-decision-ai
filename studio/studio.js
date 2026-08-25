@@ -3058,6 +3058,11 @@ function showFocusStage(name) {
   $("#focus-results-stage").hidden = focusStage !== "results";
   if (focusStage === "upload") renderUploadPicker();
   if (focusStage === "process") renderAnalyzePicker();
+  /* Rebuilt on arrival, because what it says depends on the room somebody just
+     chose. Rendered once at load, it kept answering with whichever room was
+     current when the project opened — so choosing Master Bedroom and asking for
+     the result got an offer to stand in a different room on a different floor. */
+  if (focusStage === "results") renderFocusResults();
   /* The processing screen only means something while a run is in flight. Opened
      with nothing running it kept its hardcoded "Processing… 0% Starting…" —
      a dead screen indistinguishable from a hang. Say what is actually true:
@@ -3500,9 +3505,39 @@ function openFieldOperations() {
    surprise: with fourteen captures in a project, "Open 360 view" does not say
    where you are about to be standing. */
 function newestSpatialLabel() {
-  const newest = newestSpatial();
-  const room = newest?.room?.name;
+  const offered = spatialToOffer();
+  const room = offered?.room?.name;
   return room ? `Open 360 view — ${room}` : "Open 360 view";
+}
+
+/* The room the person is working in, in the order they would expect to be
+   understood: the room whose record they have open, then the room chosen for
+   the AI review, then the room chosen for uploading. */
+function currentFocusRoom() {
+  return focusSheetRoom()
+    || rooms.find((room) => room.id === analyzeRoomId)
+    || rooms.find((room) => room.id === uploadRoomId)
+    || null;
+}
+
+function spatialForRoom(room) {
+  const items = (room?.evidence || []).filter((item) => focusIsSpatial(item));
+  if (!items.length) return null;
+  return { item: [...items].sort((a, b) => focusTimestamp(b) - focusTimestamp(a))[0], room };
+}
+
+/* Which capture the screen offers to stand in.
+ *
+ * It used to be the newest in the whole project, always. So somebody who had
+ * just been looking at Master Bedroom 205A asked to see the result and was
+ * offered Hallway 107 — a different room, on a different floor, for no reason
+ * they could see except that it happened to have been stitched most recently.
+ *
+ * The room somebody is in is the room they are asking about. Only when that
+ * room has nothing playable does the newest stand in for it, and then the
+ * screen says so rather than quietly swapping one room for another. */
+function spatialToOffer() {
+  return spatialForRoom(currentFocusRoom()) || newestSpatial();
 }
 
 function newestSpatial() {
@@ -3658,7 +3693,7 @@ async function moveFileToRoom(evidenceId, spaceId, select) {
 }
 
 function openFirstSpatial() {
-  const newest = newestSpatial();
+  const newest = spatialToOffer();
   if (!newest) {
     notify("This project has no playable 360 export yet. Upload an equirectangular MP4 to open the space.", 6000);
     showFocusStage("upload");
@@ -4576,7 +4611,15 @@ function renderFocusResults() {
     ? `<p class="focus-vr-note">${escapeText(stats.stitchLine)}. Originals are never altered — a stitch writes a new file beside them.</p>`
     : "";
   if (stats.spatial.length) {
-    vrCard.innerHTML = `<header><h3>Spatial evidence</h3><span class="focus-vr-badge">VR-ready</span></header><p>${stats.spatial.length} capture${stats.spatial.length === 1 ? " is" : "s are"} playable as a full sphere. Open one here, or send the link to a headset for review in place.</p>${stitchNote}<div class="focus-vr-actions"><button class="focus-primary-action" type="button" data-vr-action="open">${escapeText(newestSpatialLabel())} <span>&rarr;</span></button>${
+    /* Naming the room the person is in, and — when it has nothing playable —
+       saying that plainly instead of offering another room as though it were
+       the answer to the question they asked. */
+    const here = currentFocusRoom();
+    const hereHasOne = Boolean(spatialForRoom(here));
+    const standingIn = here && !hereHasOne
+      ? `<p class="focus-vr-elsewhere">${escapeText(here.name)} has no playable 360 yet — its camera originals are preserved and waiting on the machine. The capture below is in ${escapeText(spatialToOffer()?.room?.name || "another room")}.</p>`
+      : "";
+    vrCard.innerHTML = `<header><h3>Spatial evidence</h3><span class="focus-vr-badge">VR-ready</span></header><p>${stats.spatial.length} capture${stats.spatial.length === 1 ? " is" : "s are"} playable as a full sphere. Open one here, or send the link to a headset for review in place.</p>${standingIn}${stitchNote}<div class="focus-vr-actions"><button class="focus-primary-action" type="button" data-vr-action="open">${escapeText(newestSpatialLabel())} <span>&rarr;</span></button>${
       /* This card offered exactly one room — the newest capture — so a project
          with nine playable rooms let somebody stand in one of them and gave no
          way to reach the rest. */
@@ -4597,7 +4640,7 @@ function renderFocusResults() {
     const action = button.dataset.vrAction;
     button.addEventListener("click", () => {
       if (action === "open") openFirstSpatial();
-      else if (action === "copy") copyFocusLink(stats.spatial[0]);
+      else if (action === "copy") copyFocusLink(spatialToOffer()?.item || stats.spatial[0]);
       else if (action === "choose") {
         /* Straight into the list, already narrowed to the captures somebody can
            stand in, so choosing a room is one press rather than a hunt. */

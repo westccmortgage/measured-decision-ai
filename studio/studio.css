@@ -3120,3 +3120,7 @@ dialog textarea { min-height:78px; resize:vertical; }
   .focus-file-row { grid-template-columns: minmax(0, 1fr); }
   .focus-file-actions { justify-self: start; }
 }
+/* Said out loud when the screen is showing a capture from a room other than the
+   one somebody is standing in. Silently swapping one room for another is how
+   "show me the result" answered with a different floor of the building. */
+.focus-vr-elsewhere { margin: 10px 0 0; color: var(--amber); font-size: 12px; }
