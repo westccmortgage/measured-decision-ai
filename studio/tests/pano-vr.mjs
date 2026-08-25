@@ -108,7 +108,10 @@ console.log("\n── a press that fails has to say so ──");
   /* The whole handler, found by matching braces rather than by slicing a fixed
      number of characters — a fixed slice passes until somebody adds a branch
      above the line being checked, and then reports the wrong thing. */
-  const from = source.indexOf("vrButton.onclick");
+  /* The handler, not the line in teardown that clears it — searching for the
+     bare name found that one first the moment it was added, and quietly sliced
+     three words instead of the function. */
+  const from = source.indexOf("vrButton.onclick = async");
   let depth = 0;
   let to = from;
   for (let i = source.indexOf("{", from); i < source.length; i += 1) {
