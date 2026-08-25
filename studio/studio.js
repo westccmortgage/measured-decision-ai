@@ -173,6 +173,44 @@ function insta360CaptureKey(item) {
  * rooms is two tiles, and a pair accidentally split across rooms shows as two
  * incomplete captures — which is true, and findable, instead of one of them
  * silently vanishing into the other room. */
+/* Which room a file is in.
+ *
+ * This used to be asked by scanning every room for one that contained the
+ * object — rooms.find(room => room.evidence.includes(item)) — which is not a
+ * question about the record but a question about JavaScript object identity.
+ * It gives the wrong answer whenever the tile is not the row: a dual-lens
+ * capture is a synthetic tile standing for two files, and a list rebuilt after
+ * any change is a different set of objects entirely.
+ *
+ * The room travels on the item. Every place that needs it reads it from there,
+ * and nowhere works it out again. */
+/* The tile that stands for a given evidence id.
+ *
+ * A dual-lens capture is one tile carrying two source ids, so "the row" and
+ * "the thing on screen" are not the same object, and every caller that wanted
+ * one from the other wrote its own scan. There were two, and they disagreed:
+ * one searched the whole project, the other only the room it had already
+ * guessed at. */
+function tileFor(evidenceId) {
+  if (!evidenceId) return { item: null, room: null };
+  for (const room of rooms) {
+    const item = (room.evidence || []).find(
+      (entry) => entry.id === evidenceId || (entry.sourceIds || []).includes(evidenceId),
+    );
+    if (item) return { item, room };
+  }
+  return { item: null, room: null };
+}
+
+function roomOf(item) {
+  if (!item) return null;
+  if (item.spaceId) return rooms.find((room) => room.id === item.spaceId) || null;
+  /* A file the record has not placed in a room. Saying null is the truthful
+     answer; guessing which room it looks like it belongs to is how evidence
+     ends up filed somewhere nobody chose. */
+  return null;
+}
+
 function collapseInsta360Sources(items) {
   const grouped = new Map();
   const ordinary = [];
@@ -452,8 +490,7 @@ function saveMoneyQuestions() {
   $("#money-dialog").close();
   if (!saved) return;
   saveProjectCosts(`${saved} cost${saved === 1 ? "" : "s"} recorded`);
-  renderFocusToday();
-  renderFocusResults();
+  renderFocusStudio();
   notify(`${saved} cost${saved === 1 ? "" : "s"} recorded against the work on record.`, 5000);
 }
 
@@ -487,7 +524,7 @@ function openTradeEditor(tradeKey) {
       projectCosts = projectCosts.filter((entry) => entry.id !== button.dataset.dropCost);
       saveProjectCosts("Cost removed");
       $("#cost-dialog").close();
-      renderFocusResults();
+      renderFocusStudio();
     }),
   );
   $("#cost-dialog").showModal();
@@ -515,9 +552,7 @@ function saveCostEntry() {
   costEditor = null;
   $("#cost-dialog").close();
   saveProjectCosts("Cost and document recorded");
-  renderFocusSheet();
-  renderFocusToday();
-  renderFocusResults();
+  renderFocusStudio();
 }
 
 /* Money recorded for work nobody can see is the one thing here that is not a
@@ -543,7 +578,7 @@ function requestTradeDocument(trade) {
     created_at: new Date().toISOString(),
   });
   saveRooms("Request recorded");
-  renderFocusResults();
+  renderFocusStudio();
   notify(text, 7000);
 }
 
@@ -664,7 +699,7 @@ function reviewMarker(room, marker, state) {
         ? "Marker marked incorrect"
         : "Marker sent back for more evidence",
   );
-  renderFocusResults();
+  renderFocusStudio();
 }
 
 function placeMarker(room, marker) {
@@ -672,7 +707,7 @@ function placeMarker(room, marker) {
   room.markers = Array.isArray(room.markers) ? room.markers : [];
   room.markers.push(marker);
   saveRooms("Marker placed");
-  renderFocusResults();
+  renderFocusStudio();
 }
 
 function evidenceThumbnail(item, className = "room-thumb") {
@@ -1955,14 +1990,7 @@ async function openStudioDeepLink() {
   await openProperty(propertyId);
   const evidenceId = params.get("evidence");
   if (!evidenceId) return;
-  const room = rooms.find((candidate) =>
-    (candidate.evidence || []).some(
-      (item) => item.id === evidenceId || (item.sourceIds || []).includes(evidenceId),
-    ),
-  );
-  const item = room?.evidence.find(
-    (candidate) => candidate.id === evidenceId || (candidate.sourceIds || []).includes(evidenceId),
-  );
+  const { item, room } = tileFor(evidenceId);
   if (item) openEvidenceViewer(item, room);
   else notify("That evidence is not part of this project, or it has been removed.", 6000);
 }
@@ -2640,7 +2668,7 @@ function scheduleStitchPoll() {
       render();
       notify("A 360 capture finished stitching and is now playable", 6000);
     }
-    renderFocusResults();
+    renderFocusStudio();
     scheduleStitchPoll();
   }, 10000);
 }
@@ -3025,14 +3053,30 @@ async function ensureFocusDestination(file) {
      master lands beside its originals rather than needing to be re-filed. */
   const captureKey = exportCaptureKey(file?.name);
   if (captureKey) {
-    const paired = rooms.find((room) =>
+    /* Rooms holding that capture — plural, deliberately.
+     *
+     * This used to take the first room it found. The same capture legitimately
+     * sits in two rooms, and then "first" means whichever the array happened to
+     * order first: an export filed somewhere nobody chose, silently, which is
+     * the fault behind most of a day of reports.
+     *
+     * One room is an answer. Two is a question, and a question belongs to the
+     * person, so it falls through to the picker below. */
+    const holders = rooms.filter((room) =>
       (room.evidence || []).some(
         (item) =>
           item.sourceMetadata?.insta360_capture_key === captureKey ||
           insta360CaptureKey(item) === captureKey,
       ),
     );
-    if (paired) return paired;
+    if (holders.length === 1) return holders[0];
+    if (holders.length > 1) {
+      throw new Error(
+        `The originals for this capture are in ${holders.length} rooms — ${holders
+          .map((room) => room.name)
+          .join(", ")}. Choose the room this export belongs to above, then add it again.`,
+      );
+    }
   }
   /* A plan set dropped on the evidence screen is not a mistake worth scolding.
      It is the right file at the wrong door, and the person needs the other door
@@ -3050,19 +3094,28 @@ async function ensureFocusDestination(file) {
   );
 }
 
+/* One way in, one way out.
+ *
+ * This function used to both set the stage and render most of the Studio, while
+ * the whole-Studio render ended by calling it. Two renderers, each the other's
+ * tail, and neither the single place a change goes through — so a screen was
+ * rebuilt only when the path somebody happened to take passed through the right
+ * one. That is how the results card kept answering with the room that was
+ * current when the project opened.
+ *
+ * Now: showFocusStage changes state and renders. applyFocusStage only paints
+ * from state and never renders anything else, so there is no way round. */
 function showFocusStage(name) {
   focusStage = FOCUS_STAGE_ORDER[name] ? name : "upload";
   closeFocusSheet(false);
+  renderFocusStudio();
+  window.scrollTo({ top: 0, behavior: "smooth" });
+}
+
+function applyFocusStage() {
   $("#focus-upload-stage").hidden = focusStage !== "upload";
   $("#focus-processing-stage").hidden = focusStage !== "process";
   $("#focus-results-stage").hidden = focusStage !== "results";
-  if (focusStage === "upload") renderUploadPicker();
-  if (focusStage === "process") renderAnalyzePicker();
-  /* Rebuilt on arrival, because what it says depends on the room somebody just
-     chose. Rendered once at load, it kept answering with whichever room was
-     current when the project opened — so choosing Master Bedroom and asking for
-     the result got an offer to stand in a different room on a different floor. */
-  if (focusStage === "results") renderFocusResults();
   /* The processing screen only means something while a run is in flight. Opened
      with nothing running it kept its hardcoded "Processing… 0% Starting…" —
      a dead screen indistinguishable from a hang. Say what is actually true:
@@ -3110,7 +3163,6 @@ function showFocusStage(name) {
     item.setAttribute("role", answers ? "button" : "presentation");
     item.tabIndex = answers ? 0 : -1;
   });
-  window.scrollTo({ top: 0, behavior: "smooth" });
 }
 
 /* -------------------------------------------------------------- Project today */
@@ -3371,7 +3423,7 @@ function focusChangeItems(stats) {
   const batchFiles = stats.latestBatch.reduce((total, item) => total + focusSourceCount(item), 0);
   const batchSpaces = new Set();
   stats.latestBatch.forEach((item) => {
-    const room = rooms.find((candidate) => candidate.evidence.includes(item));
+    const room = roomOf(item);
     if (room) batchSpaces.add(room.name);
   });
   if (batchFiles) {
@@ -3544,7 +3596,7 @@ function newestSpatial() {
   const spatial = focusEvidenceStats().spatial;
   if (!spatial.length) return null;
   const item = [...spatial].sort((a, b) => focusTimestamp(b) - focusTimestamp(a))[0];
-  return { item, room: rooms.find((candidate) => candidate.evidence.includes(item)) || null };
+  return { item, room: roomOf(item) };
 }
 
 /* Every file in the project, with the room it sits in.
@@ -3647,9 +3699,7 @@ function renderFileList() {
    let somebody stand in one of them. */
 function openFileFromList(evidenceId) {
   const row = fileList.rows.find((entry) => entry.id === evidenceId);
-  const room = rooms.find((entry) => entry.id === row?.room_id);
-  const item = (room?.evidence || []).find((entry) => entry.id === evidenceId)
-    || (room?.evidence || []).find((entry) => (entry.sourceIds || []).includes(evidenceId));
+  const { item, room } = tileFor(evidenceId);
   if (!item) {
     notify("That file is in the record but is not something the viewer can open.", 5000);
     return;
@@ -4764,8 +4814,13 @@ function renderFocusStudio() {
   $("#focus-process").disabled = !stats.rawFiles || focusUploadBusy;
   renderFocusToday();
   renderFocusResults();
+  /* The pickers are part of the screen, not part of arriving at it. Rendered
+     only on arrival, they held whatever they were built with — which is the
+     same snapshot fault, one control lower down. */
+  renderUploadPicker();
+  renderAnalyzePicker();
   if ($("#focus-sheet") && !$("#focus-sheet").hidden) renderFocusSheet();
-  showFocusStage(focusStage);
+  applyFocusStage();
 }
 
 function openFocusStudio() {
@@ -5043,8 +5098,7 @@ function finishFocusProcessing() {
   resultsButton.disabled = false;
   resultsButton.textContent = done.length ? "View results" : "Open the record";
   $("#focus-process").disabled = false;
-  renderFocusToday();
-  renderFocusResults();
+  renderFocusStudio();
   document.querySelector('[data-focus-step="upload"]')?.classList.add("complete");
 }
 
@@ -5156,7 +5210,8 @@ $("#focus-process").addEventListener("click", () => {
   runFocusRoomAnalysis(room);
 });
 $("#focus-view-results").addEventListener("click", () => {
-  renderFocusResults();
+  /* showFocusStage renders. Rendering first was the belt to a brace that no
+     longer exists. */
   showFocusStage("results");
 });
 /* Typing is not a query yet. Waiting a moment after the last keystroke turns a
@@ -5250,9 +5305,7 @@ $("#sheet-confirm").addEventListener("click", async () => {
   room.status = reopening ? "needs" : "confirmed";
   room.note = note;
   saveRooms(cloud.schemaReady ? "Human review saved to cloud" : "Human review saved");
-  renderFocusSheet();
-  renderFocusToday();
-  renderFocusResults();
+  renderFocusStudio();
   notify(reopening ? "This space is back in the verification queue" : "Visible record confirmed by human review");
 });
 
@@ -5490,9 +5543,7 @@ $("#confirm-evidence-delete").addEventListener("click", async () => {
     render();
     // The deletion can be made from the space sheet: every surface that lists
     // the file has to stop listing it, not just the admin inventory.
-    if (focusSheetRoomId) renderFocusSheet();
-    renderFocusToday();
-    renderFocusResults();
+    renderFocusStudio();
     elements.deleteEvidenceDialog.close();
     deletingEvidenceId = null;
     /* "Deleted permanently" was accurate before this and is not any more, which
