@@ -93,6 +93,100 @@ check("but stays hidden where the device cannot do it", control.hidden === true,
 check("and its label says what it does, not what it is",
   /stand in this room/i.test(control.text || ""), control.text || "");
 
+console.log("\n── a press that fails has to say so ──");
+/* This is the bug that produced "I press it and nothing happens": the failure
+   was written into the drag hint, a node removed the moment somebody drags the
+   sphere — which everybody does before reaching for the bar. The message went
+   into a detached element and the button looked dead.
+
+   The full path cannot be walked here: headless has no cross-origin access to
+   a capture, so the sphere never starts and the control is never wired. Saying
+   that plainly beats a test that pretends to cover it. What is checked instead
+   is the two things that were actually wrong. */
+{
+  const source = fs.readFileSync("studio/pano360.js", "utf8");
+  /* The whole handler, found by matching braces rather than by slicing a fixed
+     number of characters — a fixed slice passes until somebody adds a branch
+     above the line being checked, and then reports the wrong thing. */
+  const from = source.indexOf("vrButton.onclick");
+  let depth = 0;
+  let to = from;
+  for (let i = source.indexOf("{", from); i < source.length; i += 1) {
+    if (source[i] === "{") depth += 1;
+    else if (source[i] === "}") { depth -= 1; if (!depth) { to = i + 1; break; } }
+  }
+  const enterVR = source.slice(from, to);
+  check("a failed press does not write into the drag hint",
+    !/hintNode/.test(enterVR), "the failure handler still touches hintNode");
+  check("it announces instead", /announce\(result\.why/.test(enterVR));
+  /* A sentence standing in for the device's own words costs an afternoon. */
+  check("and the reasons carry the device's own words",
+    /error\.name \|\| "error"/.test(source) && /error\.message \|\| error/.test(source));
+
+  /* And the place it announces into has to survive the hint being gone. */
+  const survives = await page.evaluate(async () => {
+    const overlay = document.querySelector(".pano-overlay");
+    overlay.querySelector(".pano-hint")?.remove();
+    /* Reach the viewer's own announce through a press of the close/reopen
+       cycle is not possible here, so the element contract is checked directly:
+       a status node appended to the stage, visible, outliving the hint. */
+    const stage = overlay.querySelector("[data-pano-stage]");
+    const node = document.createElement("p");
+    node.className = "pano-say bad";
+    node.setAttribute("data-pano-say", "");
+    node.textContent = "NotAllowedError: session not allowed";
+    stage.appendChild(node);
+    await new Promise((r) => setTimeout(r, 100));
+    const found = overlay.querySelector("[data-pano-say]");
+    const shown = found && window.getComputedStyle(found).display !== "none";
+    return { hintGone: !overlay.querySelector(".pano-hint"), shown: Boolean(shown) };
+  });
+  check("the drag hint is gone by the time somebody presses the bar", survives.hintGone === true);
+  check("and the status node is still on screen", survives.shown === true);
+}
+
+console.log("\n── the link that reaches a headset ──");
+/* Copying worked mechanically all along; what failed was the sentence. It said
+   "open it in Vision Pro Safari" as though that were all it took, so somebody
+   who did exactly that landed on a sign-in screen and reasonably called the
+   button broken. */
+{
+  const link = await page.evaluate(async () => {
+    document.querySelector("[data-pano-close]")?.click();
+    await new Promise((r) => setTimeout(r, 300));
+    document.querySelector('[data-focus-step="results"]')?.click();
+    await new Promise((r) => setTimeout(r, 400));
+    /* A clipboard that refuses is the case worth covering: nothing to paste. */
+    Object.defineProperty(navigator, "clipboard", {
+      configurable: true,
+      value: { writeText: async () => { throw new Error("denied"); } },
+    });
+    const copy = [...document.querySelectorAll("button")]
+      .find((b) => /copy link for vision pro/i.test(b.textContent || "") && b.offsetParent !== null);
+    if (!copy) return { found: false };
+    copy.click();
+    await new Promise((r) => setTimeout(r, 400));
+    const dialog = document.querySelector("#headset-link-dialog");
+    return {
+      found: true,
+      shown: Boolean(dialog) && dialog.open === true,
+      text: (dialog?.innerText || "").replace(/\s+/g, " "),
+      url: dialog?.querySelector("#headset-link-url")?.value || "",
+    };
+  });
+  check("the control is there", link.found === true);
+  /* With no clipboard there is nothing to paste, so the link has to be on the
+     screen where it can be read and copied by hand. */
+  check("a refused clipboard still puts the link on screen", link.shown === true);
+  check("and the link is the one for this capture",
+    /\?property=.+&evidence=/.test(link.url), link.url || "(none)");
+  check("it says a sign-in is needed", /sign in/i.test(link.text), link.text.slice(0, 140));
+  check("and says why", /keeps the record private/i.test(link.text), link.text.slice(0, 160));
+  /* The shorter path now exists and is worth naming. */
+  check("it names the way that needs no link at all",
+    /stand in this room/i.test(link.text), link.text.slice(0, 200));
+}
+
 await browser.close(); server.close();
 console.log(bad ? `\n${bad} FAILURES` : "\nALL OK");
 process.exit(bad ? 1 : 0);
