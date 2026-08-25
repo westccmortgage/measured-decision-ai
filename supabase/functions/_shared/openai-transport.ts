@@ -7,6 +7,15 @@ export type OpenAITransport = {
 
 type TransportOptions = {
   zeroDataRetention?: boolean;
+  /* Background responses are created once and then retrieved by id, and both
+     calls have to land on the same billing identity or the id means nothing.
+     The gateway's managed billing has proven itself for synchronous calls and
+     not for background ones: a background job created through it sat in
+     "queued" for forty minutes while the same workload, sent directly the
+     previous morning, completed in minutes. A workload that says preferDirect
+     uses the direct OpenAI key when one is configured, and only falls back to
+     the gateway when there is none — the reverse of the default. */
+  preferDirect?: boolean;
 };
 
 function env(name: string) {
@@ -26,6 +35,20 @@ function env(name: string) {
  * OPENAI_API_KEY remains a safe fallback until the gateway secrets are present.
  */
 export function openAITransport(options: TransportOptions = {}): OpenAITransport {
+  if (options.preferDirect) {
+    const directKey = env("OPENAI_API_KEY");
+    if (directKey) {
+      return {
+        provider: "openai",
+        transport: "openai_direct",
+        baseUrl: "https://api.openai.com/v1",
+        headers: {
+          Authorization: `Bearer ${directKey}`,
+          "Content-Type": "application/json",
+        },
+      };
+    }
+  }
   const accountId = env("CLOUDFLARE_ACCOUNT_ID");
   const gatewayId = env("CLOUDFLARE_AI_GATEWAY_ID");
   const gatewayToken = env("CLOUDFLARE_AI_GATEWAY_TOKEN") || env("CLOUDFLARE_API_TOKEN");
