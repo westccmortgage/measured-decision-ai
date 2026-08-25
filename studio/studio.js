@@ -158,16 +158,33 @@ function insta360CaptureKey(item) {
   return match ? `${match[1]}_${match[3]}` : null;
 }
 
+/* A dual-lens capture is two files and one thing, so the two are shown as one
+   tile. The grouping used to be by capture key alone, across the whole project.
+ *
+ * That made the same capture uploaded to a second room disappear from it. The
+ * two rooms' files collapsed into a single tile, and the tile inherited the
+ * room of sources[0] — the oldest row, because the query orders by created_at.
+ * The newly uploaded files were in the database with the right room on them,
+ * and the screen showed the room they belonged to as empty. Which is exactly
+ * what "I uploaded two files into Hallway 200A and it says the room is empty"
+ * looks like from the outside.
+ *
+ * A capture belongs to a room. Grouping is per room, so the same capture in two
+ * rooms is two tiles, and a pair accidentally split across rooms shows as two
+ * incomplete captures — which is true, and findable, instead of one of them
+ * silently vanishing into the other room. */
 function collapseInsta360Sources(items) {
   const grouped = new Map();
   const ordinary = [];
   items.forEach((item) => {
     const key = insta360CaptureKey(item);
     if (!key) { ordinary.push(item); return; }
-    if (!grouped.has(key)) grouped.set(key, []);
-    grouped.get(key).push(item);
+    const roomKey = `${item.spaceId || "unfiled"}|${key}`;
+    if (!grouped.has(roomKey)) grouped.set(roomKey, []);
+    grouped.get(roomKey).push(item);
   });
-  grouped.forEach((sources, key) => {
+  grouped.forEach((sources, roomKey) => {
+    const key = roomKey.slice(roomKey.indexOf("|") + 1);
     const clip = key.split("_").pop();
     const paired = sources.length >= 2;
     ordinary.push({
@@ -1725,6 +1742,11 @@ async function hydrateCloudRecord() {
   const evidenceWithUrls = collapseInsta360Sources(await Promise.all(
     (evidenceRows || []).map(async (item) => ({
       id: item.id,
+      /* The room travels on the item. Without it the collapse below cannot tell
+         two rooms apart, and the room filter had to look every id back up in
+         the raw rows — which also meant the collapsed tile was placed by
+         whichever row happened to be first. */
+      spaceId: item.space_id || null,
       src: await signedEvidenceUrl(item.storage_path, item),
       /* When that signature was minted, so anything about to use it can tell
          whether it is still worth anything. */
@@ -1753,10 +1775,7 @@ async function hydrateCloudRecord() {
     level: space.level || "Unspecified level",
     status: space.review_state === "confirmed" ? "confirmed" : "needs",
     note: "",
-    evidence: evidenceWithUrls.filter((item) => {
-      const source = (evidenceRows || []).find((row) => row.id === item.id);
-      return source?.space_id === space.id;
-    }),
+    evidence: evidenceWithUrls.filter((item) => item.spaceId === space.id),
     visible: [],
     unknown: [
       "Uploaded material has not been analyzed",
