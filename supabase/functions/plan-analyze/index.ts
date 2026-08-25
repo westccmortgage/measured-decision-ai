@@ -581,7 +581,13 @@ Deno.serve(async (request) => {
   const model = Deno.env.get("OPENAI_PLAN_MODEL") || Deno.env.get("OPENAI_MODEL") || "gpt-5.6-sol";
   let aiTransport: ReturnType<typeof openAITransport>;
   try {
-    aiTransport = openAITransport();
+    /* Direct when a key is configured. Plan analysis is a background response:
+       created once, retrieved by id, and both calls must land on the same
+       billing identity. The gateway's managed billing has proven itself for
+       synchronous work and not for this — a background job created through it
+       sat in "queued" for forty minutes while the same workload, sent
+       directly, completed in minutes the day before. */
+    aiTransport = openAITransport({ preferDirect: true });
   } catch {
     return json(request, { error: "Server configuration is incomplete" }, 500);
   }
@@ -671,7 +677,38 @@ Deno.serve(async (request) => {
         headers: aiTransport.headers,
       });
       const providerPayload = await providerResponse.json();
+      if (providerResponse.status === 404) {
+        /* The provider does not recognise this job id — it was created under a
+           different billing identity (a gateway job read directly, or the
+           reverse), or it expired. Nothing will ever finish it. Leaving the row
+           in "processing" is a progress bar frozen at 18% until somebody gives
+           up — the job is failed now, with the way forward in the message. */
+        const message = "The provider no longer recognises this background job. The plan files are safe — press Analyze to start a fresh run.";
+        await markJobFailed(admin, job, message);
+        return json(request, {
+          job_id: job.id, state: "failed", progress_stage: "failed",
+          progress_percent: job.progress_percent || 0,
+          error: message, code: "provider_job_lost",
+        });
+      }
       if (!providerResponse.ok) throw new Error(providerError(providerPayload, `Could not read background response (${providerResponse.status})`));
+      if (providerPayload.status === "queued") {
+        /* Accepted but never started. A legitimate queue clears in minutes; a
+           job that has sat unstarted for a quarter of an hour is not late, it
+           is abandoned — and the screen must say so instead of showing 18%
+           until the end of time. This is exactly what a background job created
+           through a billing identity that will not schedule it looks like. */
+        const queuedAge = job.started_at ? Date.now() - new Date(job.started_at).valueOf() : 0;
+        if (queuedAge > 15 * 60 * 1000) {
+          const message = "The provider accepted this analysis but never started it in 15 minutes. This run is abandoned — the plan files are safe; press Analyze to start a fresh one.";
+          await markJobFailed(admin, job, message);
+          return json(request, {
+            job_id: job.id, state: "failed", progress_stage: "failed",
+            progress_percent: job.progress_percent || 0,
+            error: message, code: "provider_never_started",
+          });
+        }
+      }
       if (["queued", "in_progress"].includes(providerPayload.status)) {
         const percent = providerPayload.status === "queued" ? 18 : 68;
         await admin.from("plan_analysis_jobs").update({
