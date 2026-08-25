@@ -34,7 +34,12 @@
     return data;
   }
 
-  function fingerprint(entityType,organizationId,propertyId,file,fieldAccess,captureAccess,projectAccess){return["mdai-s3-upload-v3",entityType,organizationId,propertyId,fieldAccess?.assignment_id||captureAccess?.session_id||projectAccess?.code||"account",file.name,file.size,file.lastModified||0].join(":")}
+  /* The room is part of what identifies a stored session, not a detail hanging
+     off it. Without it, re-adding a file that already went to another room
+     matched the earlier session, resumed it, and handed back that record —
+     so the upload reported success while the newly chosen room stayed empty.
+     Keyed by room, the same file offered to a second room is a second upload. */
+  function fingerprint(entityType,organizationId,propertyId,spaceId,file,fieldAccess,captureAccess,projectAccess){return["mdai-s3-upload-v4",entityType,organizationId,propertyId,spaceId||"unfiled",fieldAccess?.assignment_id||captureAccess?.session_id||projectAccess?.code||"account",file.name,file.size,file.lastModified||0].join(":")}
 
   function readSession(key) {
     try {
@@ -142,7 +147,7 @@
     } = options;
     if (!client || !file || !organizationId || !propertyId) throw new Error("Upload context is incomplete");
 
-    const storageKey=fingerprint(entityType,organizationId,propertyId,file,fieldAccess,captureAccess,projectAccess);
+    const storageKey=fingerprint(entityType,organizationId,propertyId,spaceId,file,fieldAccess,captureAccess,projectAccess);
     const authorized = (payload) => fieldAccess
       ? { ...payload, field_access: fieldAccess }
       : captureAccess
@@ -156,6 +161,18 @@
       try {
         session = await invoke(client, authorized({ operation: "resume_upload", session_id: prior.session_id }));
         if (session.status === "completed" && session.record) {
+          /* The key now carries the room, so a resumed session should always be
+             the same room. Should is not is: a key can be hand-edited, a room
+             can be renamed underneath one, and this branch reports a completed
+             upload without ever looking at what it is handing back. If it does
+             not match, the stored session is wrong and a real upload is owed —
+             which is the whole failure this fix exists to prevent, and it must
+             not survive in the one branch that reports success without work. */
+          const landed = session.record.space_id || null;
+          if (entityType === "evidence" && spaceId && landed && landed !== spaceId) {
+            clearSession(storageKey);
+            throw new Error("The stored upload belongs to another room");
+          }
           clearSession(storageKey);
           onProgress({ stage: "complete", percent: 100, uploadedBytes: file.size, totalBytes: file.size, resumed: true, label: `${humanBytes(file.size)} of ${humanBytes(file.size)}` });
           return { record: session.record, signed_url: session.signed_url || "" };
@@ -164,6 +181,12 @@
       } catch (error) {
         console.warn("Stored upload session is no longer reusable", error);
         clearSession(storageKey);
+        /* The invoke above may already have assigned before something after it
+           threw, and a half-adopted session would be carried into the upload
+           loop with no part size and no parts. Dropping it here is what makes
+           the next line start a real upload instead. */
+        session = undefined;
+        resumed = false;
       }
     }
     if (!session) {

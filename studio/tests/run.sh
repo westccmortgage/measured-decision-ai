@@ -25,6 +25,7 @@ run "when the machine may start"      studio/tests/machine-wake.mjs
 run "what the AI refusal says"        studio/tests/analysis-blocker.mjs
 run "what the processing screen says" studio/tests/processing-headline.mjs
 run "what the room count says"        studio/tests/room-picker-note.mjs
+run "an upload keeps its room"        studio/tests/upload-room-key.mjs
 run "the create-project form"         studio/tests/create-project-form.mjs
 run "the drop box has a way onward"   studio/tests/intake-dead-end.mjs
 run "the two doors are told apart"    studio/tests/two-doors.mjs
