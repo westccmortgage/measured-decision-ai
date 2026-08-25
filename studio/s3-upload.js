@@ -34,7 +34,12 @@
     return data;
   }
 
-  function fingerprint(entityType,organizationId,propertyId,file,fieldAccess,captureAccess,projectAccess){return["mdai-s3-upload-v3",entityType,organizationId,propertyId,fieldAccess?.assignment_id||captureAccess?.session_id||projectAccess?.code||"account",file.name,file.size,file.lastModified||0].join(":")}
+  /* The room is part of what identifies a stored session, not a detail hanging
+     off it. Without it, re-adding a file that already went to another room
+     matched the earlier session, resumed it, and handed back that record —
+     so the upload reported success while the newly chosen room stayed empty.
+     Keyed by room, the same file offered to a second room is a second upload. */
+  function fingerprint(entityType,organizationId,propertyId,spaceId,file,fieldAccess,captureAccess,projectAccess){return["mdai-s3-upload-v4",entityType,organizationId,propertyId,spaceId||"unfiled",fieldAccess?.assignment_id||captureAccess?.session_id||projectAccess?.code||"account",file.name,file.size,file.lastModified||0].join(":")}
 
   function readSession(key) {
     try {
@@ -124,7 +129,7 @@
     } = options;
     if (!client || !file || !organizationId || !propertyId) throw new Error("Upload context is incomplete");
 
-    const storageKey=fingerprint(entityType,organizationId,propertyId,file,fieldAccess,captureAccess,projectAccess);
+    const storageKey=fingerprint(entityType,organizationId,propertyId,spaceId,file,fieldAccess,captureAccess,projectAccess);
     const authorized = (payload) => fieldAccess
       ? { ...payload, field_access: fieldAccess }
       : captureAccess

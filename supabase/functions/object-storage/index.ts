@@ -315,7 +315,15 @@ Deno.serve(async (request) => {
         : text(body?.entity_type);
       const organizationId=captureSession?.organization_id||projectAccess?.organization_id||fieldAssignment?.organization_id||text(body?.organization_id);
       const propertyId=captureSession?.property_id||projectAccess?.property_id||fieldAssignment?.property_id||text(body?.property_id);
-      const spaceId=captureSession?.default_space_id||projectAccess?.default_space_id||fieldAssignment?.space_id||(body?.space_id?text(body.space_id):null);
+      /* A room the caller actually named outranks the room its token defaults
+         to. Every client — Studio, capture, field, passwordless intake — sends
+         the room the person picked, and it was being discarded whenever the
+         token carried a default, so evidence landed in the default room while
+         the chosen one stayed empty. This widens nothing: the space is checked
+         below against the same organization and property the token already
+         grants, so an explicit id can only name a room inside that project. */
+      const chosenSpaceId=body?.space_id?text(body.space_id):null;
+      const spaceId=chosenSpaceId||captureSession?.default_space_id||projectAccess?.default_space_id||fieldAssignment?.space_id||null;
       const filename = text(body?.file?.name);
       const mimeType = text(body?.file?.type, "application/octet-stream");
       const byteSize = numberValue(body?.file?.size);
