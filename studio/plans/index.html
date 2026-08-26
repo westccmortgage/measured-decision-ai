@@ -90,7 +90,10 @@
         <section class="visual-panel" id="visual-panel" hidden>
           <div class="section-heading">
             <div><p>Visual Evidence</p><h2>What the record shows, room by room</h2></div>
-            <span class="state-pill baseline_review" id="visual-state">Reality channel</span>
+            <div class="heading-actions">
+              <span class="state-pill baseline_review" id="visual-state">Reality channel</span>
+              <button class="button" id="visual-refresh" type="button">Refresh reconciliation</button>
+            </div>
           </div>
           <div class="visual-grid">
             <div class="summary-panel">
@@ -146,6 +149,9 @@
                   <option value="permit">Permit set</option>
                   <option value="addendum">Addendum</option>
                   <option value="change_order">Change order</option>
+                  <option value="invoice">Invoice</option>
+                  <option value="delivery_ticket">Delivery ticket</option>
+                  <option value="receipt">Receipt</option>
                   <option value="other">Other</option>
                 </select>
               </label>
@@ -398,6 +404,6 @@
     <script src="../xlsx360.js?v=afdbd4dd11"></script>
     <script src="../intelligence-routing.js?v=fb5b6b705c"></script>
     <script src="../page-renders.js?v=ebb42cee89"></script>
-    <script src="plans.js?v=4d02e7ae60"></script>
+    <script src="plans.js?v=41e5a47d45"></script>
   </body>
 </html>

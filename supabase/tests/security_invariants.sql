@@ -1221,6 +1221,56 @@ select pg_temp.refused('nobody signed out reconciles',
 reset role;
 
 --
+-- The channels fill themselves. Coverage derives from the evidence record —
+-- and automation never claims full, so it can never manufacture a conflict.
+-- Reconciliation self-derives coverage and falls back component → '*'.
+
+set local role authenticated;
+set local test.uid = '33333333-3333-3333-3333-333333333333';
+select pg_temp.check('invoices are a declared document discipline now',
+  exists (select 1 from pg_constraint where conname = 'project_documents_document_type_check'));
+
+-- Earlier fixtures already put 360 captures into this project, so its
+-- project-wide coverage derives as partial. The 'none' branch is proven on
+-- the other organisation's untouched project — by its own member.
+select public.derive_capture_coverage('bbbbbbbb-0000-0000-0000-000000000001');
+select pg_temp.check('with 360s in the record coverage derives as partial — automation never claims full',
+  (select coverage from public.project_observations
+    where property_id = 'bbbbbbbb-0000-0000-0000-000000000001'
+      and component_key = '*' and kind = 'capture_coverage' and state = 'active') = 'partial'
+  and not exists (select 1 from public.project_observations
+    where component_key = '*' and kind = 'capture_coverage' and coverage = 'full'));
+select public.derive_capture_coverage('bbbbbbbb-0000-0000-0000-000000000001');
+select pg_temp.check('and each derivation supersedes the last, never stacks',
+  (select count(*) from public.project_observations
+    where property_id = 'bbbbbbbb-0000-0000-0000-000000000001'
+      and component_key = '*' and kind = 'capture_coverage' and state = 'active') = 1);
+select pg_temp.refused('a member of another organisation cannot derive coverage here',
+  $$select public.derive_capture_coverage('bbbbbbbb-0000-0000-0000-000000000002')$$);
+reset role;
+
+set local role authenticated;
+set local test.uid = '44444444-4444-4444-4444-444444444444';
+select public.derive_capture_coverage('bbbbbbbb-0000-0000-0000-000000000002');
+select pg_temp.check('a project with no 360 at all derives none — for its own people only',
+  (select coverage from public.project_observations
+    where property_id = 'bbbbbbbb-0000-0000-0000-000000000002'
+      and component_key = '*' and kind = 'capture_coverage' and state = 'active') = 'none');
+reset role;
+
+set local role authenticated;
+set local test.uid = '33333333-3333-3333-3333-333333333333';
+-- The P1 human 'full' coverage row from the earlier scenario outranks the
+-- derived '*' partial; DECK BM has explicit 'none'; BM.1 has neither and
+-- inherits the '*' fallback. One reconcile, three coverage sources.
+select public.reconcile_project('bbbbbbbb-0000-0000-0000-000000000001');
+select pg_temp.check('reconciliation self-derives and component coverage outranks the fallback',
+  (select coverage from public.project_reconciliations where component_key = 'P1' and state = 'active') = 'full'
+  and (select coverage from public.project_reconciliations where component_key = 'DECK BM' and state = 'active') = 'none'
+  and (select coverage from public.project_reconciliations where component_key = 'BM.1' and state = 'active') = 'partial');
+reset role;
+
+--
 -- Human Confirmed means a human confirmed it. The expert layer is the only
 -- door: one line at a time, by a qualified role, with the reviewer's role and
 -- history kept. An owner's general acceptance touches none of this.

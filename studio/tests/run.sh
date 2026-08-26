@@ -48,6 +48,7 @@ run "the owner report"                studio/tests/owner-report.mjs
 run "signing the takeoff draft"       studio/tests/e2e-takeoff.mjs
 run "the owner summary"               studio/tests/e2e-summary.mjs
 run "two channels, one project"       studio/tests/e2e-intelligence.mjs
+run "strict schemas stay strict"      studio/tests/strict-schemas.mjs
 run "a page open for three hours"     studio/tests/aged-session.mjs
 run "the headset probe"               studio/tests/vr-check.mjs
 run "standing in a real capture"      studio/tests/pano-vr.mjs

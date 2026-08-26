@@ -1411,6 +1411,22 @@ $("#summary-rfis")?.addEventListener("click", () => exitSummaryMode("#takeoff-ga
 $("#summary-view-takeoff")?.addEventListener("click", (event) => { event.preventDefault(); exitSummaryMode("#takeoff-section", "technical"); });
 $("#summary-all-rfis")?.addEventListener("click", (event) => { event.preventDefault(); exitSummaryMode("#takeoff-gaps", "technical"); });
 $("#nav-summary")?.addEventListener("click", () => { state.summaryMode = true; applyChannelView(); window.scrollTo({ top: 0, behavior: "smooth" }); });
+$("#visual-refresh")?.addEventListener("click", async () => {
+  if (state.busy) return;
+  setBusy(true, "Reconciling requirement against evidence…");
+  try {
+    const { error } = await client.rpc("reconcile_project", { p_property_id: state.property.id });
+    if (error) throw error;
+    notify("Reconciliation refreshed from the record.");
+    await openProperty(state.property.id);
+    exitSummaryMode("#visual-panel", "visual");
+  } catch (error) {
+    console.error(error);
+    notify(error.message || "Reconciliation could not run", "error");
+  } finally {
+    setBusy(false, `Cloud connected · ${state.role}`);
+  }
+});
 $("#nav-visual")?.addEventListener("click", () => exitSummaryMode("#visual-panel", "visual"));
 $("#nav-technical")?.addEventListener("click", () => exitSummaryMode("#takeoff-section", "technical"));
 
@@ -1860,6 +1876,24 @@ async function savePendingFiles() {
     elements.fileInput.value = "";
     elements.uploadFields.hidden = true;
     await openProperty(state.property.id);
+    /* Sources route themselves: delivery paperwork goes straight to the
+       document-evidence worker, which records what the paper says was
+       delivered — never installation — and refreshes reconciliation. */
+    const documentType = $("#document-type")?.value || "other";
+    if (["invoice", "delivery_ticket", "receipt"].includes(documentType) && uploadedDocumentIds.length) {
+      setMessage("Reading the delivery paperwork — recording what it documents as delivered…");
+      for (const savedId of uploadedDocumentIds) {
+        client.functions.invoke("document-evidence", { body: { document_id: savedId } })
+          .then(({ data, error }) => {
+            if (error || data?.error) {
+              notify(data?.error || "The delivery document could not be read — it stays preserved in the record", "error");
+            } else {
+              notify(`Delivery recorded: ${data.lines_recorded} line${data.lines_recorded === 1 ? "" : "s"}. Installation stays not-yet-evidenced until capture shows it.`);
+              void openProperty(state.property.id);
+            }
+          });
+      }
+    }
     if (uploadedDocumentIds.length) {
       state.selectedDocumentIds = new Set(uploadedDocumentIds);
       render();
