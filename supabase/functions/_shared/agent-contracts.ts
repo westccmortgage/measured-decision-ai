@@ -1,4 +1,4 @@
-export const AGENT_CONTRACT_VERSION = "2026-08-25.5";
+export const AGENT_CONTRACT_VERSION = "2026-08-25.6";
 
 export type AgentKey =
   | "document_controller"
@@ -118,6 +118,8 @@ export const PLAN_WORKFLOW_INSTRUCTIONS = [
   "- A printed area statement is a printed dimension. Text such as \"(N) 1,640 SQ. FT. WOOD DECK\" on any sheet, including the cover, is the deck's printed area — report it verbatim in area_sqft. Overall length and width are the fallback when no area is printed, never the substitute for one.",
   "- A diaphragm or sheathing note is a printed spec. A framing note such as \"DECK DIAPHRAGM TO BE 19/32'' PLYWOOD\" belongs verbatim in framing_deck.sheathing; general and framing notes are part of the sheets and must be read like schedules.",
   "- When high-resolution page tiles accompany the PDFs, the fine print lives there: read schedules, legends, keynotes and title blocks from the tiles, resolve marks against them, and count drawn marks tile by tile, summing per page. A spec you could not find in the PDF is not \"not printed\" until the tiles have been checked too.",
+  "- One member can hold two jobs. On a permeable deck the walking boards are the joists themselves: the finish legend names the same lumber size the joist schedule does, and the joist spacing is the board module. When that is what the sheets show, say so in decking (e.g. \"same 2x6 members as D.J. — permeable deck\") instead of reporting a second product; ordering the boards twice is the failure to refuse.",
+  "- Structural details are sheets too. When a detail prints a framed member this record has no field for — a ledger with its size, knee braces, guard blocking, a steel guard post spec — name it in gaps with its printed size and detail reference, so a person sees the scope the takeoff does not yet order. Never silently drop a printed member.",
   "- Framing dimensions feed a deterministic draft takeoff that a person verifies. You extract what the sheets state; you never compute lumber quantities yourself.",
   "- A construction phase is an evidence gate, not a promised calendar date.",
   "- Prioritize captures immediately before work becomes concealed: concrete placement, waterproofing cover-up, insulation/drywall, ceiling closure, utility burial, finish enclosure, and equipment access closure when applicable.",

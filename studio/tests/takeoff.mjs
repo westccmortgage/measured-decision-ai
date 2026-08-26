@@ -176,13 +176,21 @@ console.log("\n── the deck as the sheets actually spell it ──");
     beams: [], columns: [], piles: null, guardrail: "", guardrail_length: "",
     source_refs: ["S-2.0", "A-210"],
   });
-  const joists = result.lines.find((line) => /joist/.test(line.item));
-  const boards = result.lines.find((line) => /decking/.test(line.item));
+  const joists = result.lines.find((line) => /deck boards|joist/.test(line.item));
   check("printed area governs over the overalls' bound",
     result.steps.some((s) => /1640 sq ft as printed/.test(s)) && result.steps.some((s) => /printed area governs/.test(s)),
     JSON.stringify(result.steps));
-  check("joists at the schedule's 6\" o.c.: 3280 LF", joists?.quantity === 3280, JSON.stringify(joists));
-  check("the legend's decking parses: 3579 LF", boards?.quantity === 3579, JSON.stringify(boards));
+  check("the boards at the schedule's 6\" o.c.: 3280 LF", joists?.quantity === 3280, JSON.stringify(joists));
+  /* The permeable-deck read: the finish legend's 2x6 IS the joist schedule's
+     2x6 — 6" o.c. module over a 5.5" face leaves the ½" drainage gap. One
+     order line; a separate decking line would buy the same boards twice
+     (the double count a side-by-side list would not catch). */
+  check("structure and surface are one order line, not two",
+    /structure and walking surface in one/.test(joists?.item || "")
+    && !result.lines.some((line) => /decking 2x6/.test(line.item)),
+    JSON.stringify(result.lines.map((line) => line.item)));
+  check("and the trace says why",
+    result.steps.some((s) => /one member, two jobs/.test(s) && /0\.5" gap/.test(s)), JSON.stringify(result.steps));
   /* Framing note 3 prints the diaphragm: 1640 / 32 sq ft per 4×8 sheet =
      51.25 → 52 sheets. */
   const sheathing = result.lines.find((line) => /sheathing/.test(line.item));

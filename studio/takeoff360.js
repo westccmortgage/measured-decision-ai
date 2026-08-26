@@ -229,36 +229,55 @@
 
     const spacing = parseFeetInches(deck.joist_spacing) ?? parsePrintedNumber(deck.joist_spacing);
     const joistSize = normalizeLumberSize(deck.joist_size);
+
+    /* One member can hold two jobs. On a permeable deck the walking boards
+       ARE the joists: the finish legend names the same 2x6 the joist schedule
+       does, and the joist spacing is the board module (6" o.c. for a 5.5"
+       face leaves the ½" drainage gap). Ordering "joists" and "decking"
+       separately would buy the same boards twice — the exact double count a
+       person checking two lists side by side would not catch. */
+    const deckingText = String(deck.decking || "").replace(/[×✕]/g, "x");
+    const boardMatch = deckingText.match(/2\s*"?\s*x\s*(4|6)/i);
+    const boardFace = boardMatch ? (boardMatch[1] === "6" ? 5.5 : 3.5) : null;
+    const boardsAreJoists = Boolean(joistSize && boardMatch && spacing
+      && joistSize === `2x${boardMatch[1]}` && spacing <= boardFace + 1.5);
+
     if (areaSqft && spacing && joistSize) {
       const joistLf = Math.ceil((areaSqft * 12) / spacing);
       lines.push({
-        item: `${joistSize} joist${deck.joist_treatment ? ` (${deck.joist_treatment})` : ""} — linear feet`,
+        item: boardsAreJoists
+          ? `${joistSize} deck boards${deck.joist_treatment ? ` (${deck.joist_treatment})` : ""} — structure and walking surface in one — linear feet`
+          : `${joistSize} joist${deck.joist_treatment ? ` (${deck.joist_treatment})` : ""} — linear feet`,
         quantity: joistLf, unit: "LF",
       });
       steps.push(`joists: ${areaSqft.toFixed(0)} sq ft × 12 / ${spacing}" o.c. = ${joistLf} LF`);
+      if (boardsAreJoists) {
+        steps.push(`one member, two jobs: the ${joistSize} boards at ${spacing}" o.c. are both the joists and the walking surface ("${deckingText.trim()}") — ${(spacing - boardFace).toFixed(1)}" gap between ${boardFace}" faces, one order line, not two`);
+      }
     } else {
       if (!areaSqft) gaps.push(`${label}: no printed area or overall dimensions, so joist footage cannot be computed`);
       if (!spacing) gaps.push(`${label}: joist spacing is not printed`);
       if (!joistSize && deck.joist_size) gaps.push(`${label}: joist size "${deck.joist_size}" is not a lumber size this calculator reads`);
     }
 
-    /* The walking surface. Board decking is exact arithmetic per face width at
-       zero gap — the stated upper bound, because the gap between boards is a
-       product spec the sheets rarely print. Sheathing is exact per 4×8 sheet. */
-    const decking = String(deck.decking || "").replace(/[×✕]/g, "x");
-    const boardMatch = decking.match(/2\s*"?\s*x\s*(4|6)/i);
-    const sheetMatch = decking.match(/plywood|sheathing|19\/32|23\/32|osb/i);
-    if (areaSqft && boardMatch) {
-      const face = boardMatch[1] === "6" ? 5.5 : 3.5;
-      const boardLf = Math.ceil((areaSqft * 12) / face);
+    /* The walking surface — unless it already went out with the joists. Board
+       decking is exact arithmetic per face width at zero gap — the stated
+       upper bound, because the gap between boards is a product spec the
+       sheets rarely print. Sheathing is exact per 4×8 sheet. */
+    const sheetMatch = deckingText.match(/plywood|sheathing|19\/32|23\/32|osb/i);
+    if (boardsAreJoists) {
+      /* Already ordered above as the joist line; a second line here would buy
+         the same boards twice. */
+    } else if (areaSqft && boardMatch) {
+      const boardLf = Math.ceil((areaSqft * 12) / boardFace);
       lines.push({ item: `decking 2x${boardMatch[1]} — linear feet (zero gap, upper bound)`, quantity: boardLf, unit: "LF" });
-      steps.push(`decking: ${areaSqft.toFixed(0)} sq ft × 12 / ${face}" face = ${boardLf} LF at zero board gap`);
+      steps.push(`decking: ${areaSqft.toFixed(0)} sq ft × 12 / ${boardFace}" face = ${boardLf} LF at zero board gap`);
     } else if (areaSqft && sheetMatch) {
       const sheets = Math.ceil(areaSqft / 32);
-      lines.push({ item: `deck sheathing ${decking.trim()} — 4×8 sheets`, quantity: sheets, unit: "sheets" });
+      lines.push({ item: `deck sheathing ${deckingText.trim()} — 4×8 sheets`, quantity: sheets, unit: "sheets" });
       steps.push(`sheathing: ${areaSqft.toFixed(0)} sq ft / 32 sq ft per sheet = ${sheets} sheets`);
-    } else if (decking && areaSqft) {
-      gaps.push(`${label}: decking "${decking.trim()}" — the area is ${areaSqft.toFixed(0)} sq ft, but this product's coverage is not something the sheets state`);
+    } else if (deckingText && areaSqft) {
+      gaps.push(`${label}: decking "${deckingText.trim()}" — the area is ${areaSqft.toFixed(0)} sq ft, but this product's coverage is not something the sheets state`);
     }
 
     /* The diaphragm under the walking surface, when the framing notes print
