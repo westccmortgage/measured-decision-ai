@@ -46,6 +46,7 @@ run "the AI's glasses"                studio/tests/page-renders.mjs
 run "the workbook that leaves"        studio/tests/xlsx360.mjs
 run "the owner report"                studio/tests/owner-report.mjs
 run "signing the takeoff draft"       studio/tests/e2e-takeoff.mjs
+run "the owner summary"               studio/tests/e2e-summary.mjs
 run "a page open for three hours"     studio/tests/aged-session.mjs
 run "the headset probe"               studio/tests/vr-check.mjs
 run "standing in a real capture"      studio/tests/pano-vr.mjs

@@ -633,6 +633,7 @@ function render() {
   renderRoadmap();
   renderRoutes();
   renderTakeoff();
+  renderOwnerSummary();
   if (state.baseline && !state.activeAnalysisJob && state.analysisOutcome !== "failed") {
     const approved = state.baseline.state === "approved";
     renderAnalysisProgress(100, analysisStages.length - 1, {
@@ -1227,6 +1228,122 @@ $("#download-takeoff")?.addEventListener("click", () => {
   downloadWorkbook(verifiedOrderSheets(draft, state.property?.name || "project"), "verified-order");
   notify("The human-verified order is downloading.");
 });
+
+/* Level 1: the owner summary.
+ *
+ * A nine-sheet deck produced screens of dense cards; the owner could not
+ * find the answer. This view answers the six questions in thirty seconds —
+ * what was analyzed, the principal result, whether to proceed, the top
+ * risks, the next action, where the download is — and everything deeper
+ * lives one click away behind "View full analysis". Project size grows the
+ * drill-down, never this screen: eight preview rows and three issues,
+ * whether the set is nine sheets or nine hundred. */
+const SUMMARY_STATUS = { ready: "Ready", hold: "Hold" };
+
+function summaryDecision(draft, blockers, rfiCount, holdCount) {
+  if (blockers > 0) return {
+    label: "Blocked — clarification required",
+    tone: "blocked",
+    why: `${blockers} question${blockers === 1 ? "" : "s"} block${blockers === 1 ? "s" : ""} the baseline; the rest of the analysis is ready behind it.`,
+  };
+  if (rfiCount > 0 || holdCount > 0) return {
+    label: "Proceed with conditions",
+    tone: "conditions",
+    why: `The plans support a preliminary takeoff; ${rfiCount} question${rfiCount === 1 ? "" : "s"} stay${rfiCount === 1 ? "s" : ""} open as RFIs${holdCount ? ` and ${holdCount} line${holdCount === 1 ? " is" : "s are"} on hold` : ""}. No action is needed from you to continue.`,
+  };
+  return {
+    label: "Ready for next phase",
+    tone: "ready",
+    why: "The analyzed sheets answered everything the takeoff asked of them.",
+  };
+}
+
+function renderOwnerSummary() {
+  const section = $("#owner-summary");
+  if (!section) return;
+  const draft = takeoffDraft();
+  const hasAnalysis = Boolean(state.baseline) && Boolean(draft);
+  section.hidden = !hasAnalysis;
+  document.body.classList.toggle("summary-mode", hasAnalysis && state.summaryMode !== false);
+  if (!hasAnalysis) return;
+
+  const gaps = takeoffOpenGaps(draft);
+  const proposals = draft.result.proposals || [];
+  const lines = draft.result.lines || [];
+  const holds = lines.filter((line) => line.status === "hold");
+  let blockers = 0;
+  try {
+    if (state.baseline.state !== "approved") blockers = blockingBaselineGaps().length;
+  } catch { blockers = 0; }
+
+  $("#summary-title").textContent = `${state.property?.name || "Project"} — analysis complete`;
+  const decision = summaryDecision(draft, blockers, gaps.length, holds.length);
+  const decisionEl = $("#summary-decision");
+  decisionEl.textContent = decision.label;
+  decisionEl.className = `summary-decision ${decision.tone}`;
+  $("#summary-why").textContent = decision.why;
+  $("#summary-eyebrow").textContent = `Analysis complete · plan set v${state.baseline.version || 1} · ${String(state.baseline.created_at || "").slice(0, 10)}`;
+
+  /* Five numbers, no more. Counted from the record, like everything here. */
+  const sheetCount = Array.isArray(state.baseline.source_document_ids) ? state.baseline.source_document_ids.length : 0;
+  const deckArea = (state.baseline.analysis?.framing_decks || [])
+    .map((deck) => window.MDAITakeoff360.parsePrintedNumber?.(deck.area_sqft))
+    .find((value) => value > 0);
+  const principal = [...lines].sort((a, b) => (b.quantity || 0) - (a.quantity || 0))[0];
+  const numbers = [
+    { value: sheetCount, label: `plan sheet${sheetCount === 1 ? "" : "s"} analyzed` },
+    deckArea ? { value: deckArea.toLocaleString("en-US"), label: "sf printed area" } : null,
+    principal ? { value: `${principal.quantity.toLocaleString("en-US")} ${principal.unit || ""}`.trim(), label: principal.item.split(" — ")[0].slice(0, 34) } : null,
+    { value: gaps.length, label: "open RFIs" },
+    { value: holds.length + blockers, label: "critical issues" },
+  ].filter(Boolean).slice(0, 5);
+  $("#summary-numbers").innerHTML = numbers.map((entry) =>
+    `<article><strong>${escapeHtml(String(entry.value))}</strong><small>${escapeHtml(entry.label)}</small></article>`).join("");
+
+  /* Eight rows of preview: computed lines first, proposals as Verify. */
+  const reviews = activeReviews();
+  const previewRows = [
+    ...lines.map((line) => ({
+      item: line.item.split(" — ")[0],
+      qty: `${line.quantity} ${line.unit || ""}`.trim(),
+      basis: (TAKEOFF_METHOD_LABELS[line.method] || "Derived").replace(" — field verify", ""),
+      status: reviews.get(line.item)?.verdict === "confirmed" || reviews.get(line.item)?.verdict === "corrected"
+        ? "Confirmed" : SUMMARY_STATUS[line.status] || "Ready",
+    })),
+    ...proposals.map((proposal) => ({
+      item: proposal.proposed,
+      qty: "",
+      basis: `AI plan count · ${proposal.confidence}`,
+      status: "Verify",
+    })),
+  ].slice(0, 8);
+  $("#summary-table tbody").innerHTML = previewRows.map((row) =>
+    `<tr><td>${escapeHtml(row.item)}</td><td>${escapeHtml(row.qty)}</td><td>${escapeHtml(row.basis)}</td><td><span class="summary-chip ${escapeHtml(row.status.toLowerCase())}">${escapeHtml(row.status)}</span></td></tr>`).join("");
+
+  /* Three issues: holds first (money waits on them), then RFIs. */
+  const issues = [
+    ...holds.map((line) => ({ title: line.item.split(" — ")[0], impact: line.hold_reason || "On hold before procurement.", status: "Hold" })),
+    ...gaps.filter((gap) => !/^.*HOLD — /.test(gap)).map((gap) => {
+      const [head, ...rest] = gap.split(": ");
+      return { title: rest.length ? rest.join(": ").split(" is scheduled")[0].split(" — ")[0].slice(0, 60) : head.slice(0, 60), impact: gap, status: "RFI" };
+    }),
+  ].slice(0, 3);
+  $("#summary-issues").innerHTML = issues.length
+    ? issues.map((issue) => `<div class="summary-issue"><p><strong>${escapeHtml(issue.title)}</strong> <span class="summary-chip ${issue.status.toLowerCase()}">${escapeHtml(issue.status)}</span></p><small>${escapeHtml(issue.impact)}</small></div>`).join("")
+    : `<p class="summary-clear">No open issues — the sheets answered everything asked of them.</p>`;
+}
+
+function exitSummaryMode(scrollTo) {
+  state.summaryMode = false;
+  document.body.classList.remove("summary-mode");
+  if (scrollTo) document.querySelector(scrollTo)?.scrollIntoView({ behavior: "smooth", block: "start" });
+}
+
+$("#summary-download")?.addEventListener("click", () => $("#download-ai-takeoff")?.click());
+$("#summary-full")?.addEventListener("click", () => exitSummaryMode("#takeoff-section"));
+$("#summary-rfis")?.addEventListener("click", () => exitSummaryMode("#takeoff-gaps"));
+$("#summary-view-takeoff")?.addEventListener("click", (event) => { event.preventDefault(); exitSummaryMode("#takeoff-section"); });
+$("#summary-all-rfis")?.addEventListener("click", (event) => { event.preventDefault(); exitSummaryMode("#takeoff-gaps"); });
 
 if (typeof window !== "undefined") {
   window.__aiTakeoffSheets = () => { const draft = takeoffDraft(); return draft ? aiTakeoffSheets(draft, state.property?.name || "project") : null; };

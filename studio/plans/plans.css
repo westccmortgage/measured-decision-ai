@@ -443,3 +443,52 @@ dialog form { padding: 0; }
 .takeoff-trace strong { display: block; font-size: 11px; color: #c6d2dc; }
 .takeoff-trace small { display: block; color: #698196; font-size: 10px; font-variant-numeric: tabular-nums; }
 @media (max-width: 860px) { .takeoff-grid { grid-template-columns: minmax(0, 1fr); } }
+
+
+/* ── Level 1: the owner summary ─────────────────────────────────────────── */
+.owner-summary { border: 1px solid var(--line); background: rgba(8, 22, 35, .72); padding: 26px clamp(18px, 3vw, 34px) 30px; margin: 25px 0 18px; }
+.summary-head { display: flex; justify-content: space-between; gap: 24px; align-items: flex-start; flex-wrap: wrap; }
+.summary-lead { max-width: 640px; }
+.summary-decision { margin: 10px 0 6px; font-size: 22px; font-weight: 700; letter-spacing: -.02em; }
+.summary-decision.ready { color: var(--green); }
+.summary-decision.conditions { color: var(--amber); }
+.summary-decision.blocked { color: var(--red); }
+.summary-why { margin: 0; color: #9db1c2; font-size: 13px; max-width: 60ch; }
+.summary-actions { display: flex; gap: 10px; flex-wrap: wrap; }
+.summary-numbers { display: grid; grid-template-columns: repeat(auto-fit, minmax(140px, 1fr)); border: 1px solid var(--line); margin: 22px 0 20px; }
+.summary-numbers article { padding: 14px 16px; border-right: 1px solid var(--line); }
+.summary-numbers article:last-child { border-right: 0; }
+.summary-numbers strong { display: block; font-size: 21px; line-height: 1.2; font-variant-numeric: tabular-nums; }
+.summary-numbers small { color: #60798d; font-size: 10px; text-transform: uppercase; letter-spacing: .07em; }
+.summary-grid { display: grid; grid-template-columns: minmax(0, 3fr) minmax(0, 2fr); gap: 22px; align-items: start; }
+.summary-panel h3 { margin-bottom: 10px; font-size: 13px; text-transform: uppercase; letter-spacing: .08em; color: #8ca0b1; }
+.summary-table { width: 100%; border-collapse: collapse; font-size: 12px; }
+.summary-table th { text-align: left; color: #60798d; font-size: 9px; text-transform: uppercase; letter-spacing: .08em; padding: 0 10px 7px 0; border-bottom: 1px solid var(--line); }
+.summary-table td { padding: 8px 10px 8px 0; border-bottom: 1px solid #12283a; vertical-align: top; }
+.summary-table td:nth-child(2) { white-space: nowrap; font-variant-numeric: tabular-nums; }
+.summary-chip { display: inline-block; padding: 1px 8px; border-radius: 999px; border: 1px solid #36536a; font-size: 9px; font-weight: 700; text-transform: uppercase; letter-spacing: .06em; color: #a9bdcc; }
+.summary-chip.ready, .summary-chip.confirmed { color: #7ee1ad; border-color: rgba(84,211,154,.42); }
+.summary-chip.verify { color: #8ce8f3; border-color: rgba(72,211,232,.42); }
+.summary-chip.hold, .summary-chip.rfi { color: #f0c879; border-color: rgba(229,172,75,.42); }
+.summary-issue { border-top: 1px solid #12283a; padding: 9px 0; }
+.summary-issue p { margin: 0 0 3px; font-size: 12px; }
+.summary-issue small { color: #7f94a6; font-size: 11px; }
+.summary-clear { color: var(--green); font-size: 12px; }
+.summary-more { margin: 10px 0 0; font-size: 11px; }
+.summary-more a { color: var(--cyan); }
+
+/* Summary mode: the landing state once analysis exists. Everything deeper is
+   one click away — hidden, not removed. Reload returns here by design. */
+body.summary-mode .metrics,
+body.summary-mode .roadmap-divergence,
+body.summary-mode .workflow-grid,
+body.summary-mode .baseline-section,
+body.summary-mode .roadmap-section,
+body.summary-mode .routes-section,
+body.summary-mode .takeoff-section { display: none; }
+
+@media (max-width: 760px) {
+  .summary-grid { grid-template-columns: 1fr; }
+  .summary-actions { width: 100%; }
+  .summary-actions .button { flex: 1 1 auto; }
+}
