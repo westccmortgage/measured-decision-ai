@@ -22,6 +22,9 @@ const state = {
   spaceLinks: [],
   approvedTakeoff: null,
   takeoffReviews: [],
+  projectRooms: [],
+  projectEvidence: [],
+  reconciliations: [],
   requirements: [],
   tasks: [],
   assignments: [],
@@ -607,6 +610,20 @@ async function openProperty(propertyId) {
       .eq("state", "active");
     if (reviewResult.error) console.error("line reviews", reviewResult.error);
     state.takeoffReviews = reviewResult.data || [];
+  }
+  /* The intelligence core: what the record shows (rooms + evidence) and
+     where requirement meets evidence. Read-only inputs to the summary and
+     the Visual Evidence view; the owner writes none of it. */
+  {
+    const roomsResult = await client.from("spaces").select("id, name").eq("property_id", propertyId);
+    state.projectRooms = roomsResult.data || [];
+    const evidenceResult = await client.from("evidence_items")
+      .select("id, space_id, media_type").eq("property_id", propertyId).is("deleted_at", null);
+    state.projectEvidence = evidenceResult.data || [];
+    const reconResult = await client.from("project_reconciliations")
+      .select("component_key, required_quantity, delivered_quantity, evidenced_quantity, coverage, verdict, narrative")
+      .eq("property_id", propertyId).eq("state", "active");
+    state.reconciliations = reconResult.data || [];
   }
   render();
   elements.sync.textContent = state.activeAnalysisJob
@@ -1264,8 +1281,14 @@ function renderOwnerSummary() {
   const draft = takeoffDraft();
   const hasAnalysis = Boolean(state.baseline) && Boolean(draft);
   section.hidden = !hasAnalysis;
-  document.body.classList.toggle("summary-mode", hasAnalysis && state.summaryMode !== false);
-  if (!hasAnalysis) return;
+  if (!hasAnalysis) {
+    document.body.classList.remove("summary-mode", "view-visual");
+    $("#channel-nav").hidden = true;
+    $("#visual-panel").hidden = true;
+    return;
+  }
+  applyChannelView();
+  if (state.channelView === "visual") renderVisualPanel();
 
   const gaps = takeoffOpenGaps(draft);
   const proposals = draft.result.proposals || [];
@@ -1320,8 +1343,15 @@ function renderOwnerSummary() {
   $("#summary-table tbody").innerHTML = previewRows.map((row) =>
     `<tr><td>${escapeHtml(row.item)}</td><td>${escapeHtml(row.qty)}</td><td>${escapeHtml(row.basis)}</td><td><span class="summary-chip ${escapeHtml(row.status.toLowerCase())}">${escapeHtml(row.status)}</span></td></tr>`).join("");
 
-  /* Three issues: holds first (money waits on them), then RFIs. */
+  /* Three issues: reconciliation discrepancies first (reality disagreeing
+     with the documents outranks paperwork), then holds, then RFIs. */
+  const RECON_SEVERITY = { CONFLICTING: 0, PARTIALLY_SUPPORTED: 1, NOT_EVIDENCED: 2 };
+  const discrepancies = (state.reconciliations || [])
+    .filter((entry) => entry.verdict in RECON_SEVERITY)
+    .sort((a, b) => RECON_SEVERITY[a.verdict] - RECON_SEVERITY[b.verdict])
+    .map((entry) => ({ title: entry.component_key, impact: entry.narrative, status: entry.verdict === "CONFLICTING" ? "Conflict" : entry.verdict === "NOT_EVIDENCED" ? "RFI" : "Verify" }));
   const issues = [
+    ...discrepancies,
     ...holds.map((line) => ({ title: line.item.split(" — ")[0], impact: line.hold_reason || "On hold before procurement.", status: "Hold" })),
     ...gaps.filter((gap) => !/^.*HOLD — /.test(gap)).map((gap) => {
       const [head, ...rest] = gap.split(": ");
@@ -1333,17 +1363,56 @@ function renderOwnerSummary() {
     : `<p class="summary-clear">No open issues — the sheets answered everything asked of them.</p>`;
 }
 
-function exitSummaryMode(scrollTo) {
+/* Level 2 is one project database seen through two channels. The switcher
+   changes the view, never the data: Technical Intelligence is the plan-side
+   workspace, Visual Evidence is the reality side. */
+function applyChannelView() {
+  const summary = state.summaryMode !== false && Boolean($("#owner-summary")) && !$("#owner-summary").hidden;
+  document.body.classList.toggle("summary-mode", summary);
+  document.body.classList.toggle("view-visual", !summary && state.channelView === "visual");
+  $("#channel-nav").hidden = summary;
+  $("#visual-panel").hidden = summary || state.channelView !== "visual";
+}
+
+function exitSummaryMode(scrollTo, view = "technical") {
   state.summaryMode = false;
-  document.body.classList.remove("summary-mode");
+  state.channelView = view;
+  applyChannelView();
+  if (view === "visual") renderVisualPanel();
   if (scrollTo) document.querySelector(scrollTo)?.scrollIntoView({ behavior: "smooth", block: "start" });
 }
 
+function renderVisualPanel() {
+  const rooms = state.projectRooms || [];
+  const byRoom = new Map();
+  for (const item of state.projectEvidence || []) {
+    if (!item.space_id) continue;
+    const bucket = byRoom.get(item.space_id) || { count: 0, spatial: false };
+    bucket.count += 1;
+    if (/360|insv|spatial/i.test(item.media_type || "")) bucket.spatial = true;
+    byRoom.set(item.space_id, bucket);
+  }
+  $("#visual-rooms tbody").innerHTML = rooms.length
+    ? rooms.map((room) => {
+        const bucket = byRoom.get(room.id) || { count: 0, spatial: false };
+        return `<tr><td>${escapeHtml(room.name)}</td><td>${bucket.count} file${bucket.count === 1 ? "" : "s"}</td><td>${bucket.spatial ? "✓" : "<span class='summary-chip rfi'>none</span>"}</td></tr>`;
+      }).join("")
+    : `<tr><td colspan="3">No rooms in the record yet — evidence uploads create them.</td></tr>`;
+  const recon = state.reconciliations || [];
+  $("#visual-recon tbody").innerHTML = recon.length
+    ? recon.map((entry) => `<tr><td>${escapeHtml(entry.component_key)}<small class="line-meta">${escapeHtml(entry.narrative)}</small></td><td><span class="summary-chip ${entry.verdict === "SUPPORTED" ? "ready" : entry.verdict === "CONFLICTING" ? "hold" : "verify"}">${escapeHtml(entry.verdict)}</span></td></tr>`).join("")
+    : `<tr><td colspan="2">No reconciliation yet — it runs when both channels have written their side.</td></tr>`;
+}
+
 $("#summary-download")?.addEventListener("click", () => $("#download-ai-takeoff")?.click());
-$("#summary-full")?.addEventListener("click", () => exitSummaryMode("#takeoff-section"));
-$("#summary-rfis")?.addEventListener("click", () => exitSummaryMode("#takeoff-gaps"));
-$("#summary-view-takeoff")?.addEventListener("click", (event) => { event.preventDefault(); exitSummaryMode("#takeoff-section"); });
-$("#summary-all-rfis")?.addEventListener("click", (event) => { event.preventDefault(); exitSummaryMode("#takeoff-gaps"); });
+$("#summary-visual")?.addEventListener("click", () => exitSummaryMode("#visual-panel", "visual"));
+$("#summary-full")?.addEventListener("click", () => exitSummaryMode("#takeoff-section", "technical"));
+$("#summary-rfis")?.addEventListener("click", () => exitSummaryMode("#takeoff-gaps", "technical"));
+$("#summary-view-takeoff")?.addEventListener("click", (event) => { event.preventDefault(); exitSummaryMode("#takeoff-section", "technical"); });
+$("#summary-all-rfis")?.addEventListener("click", (event) => { event.preventDefault(); exitSummaryMode("#takeoff-gaps", "technical"); });
+$("#nav-summary")?.addEventListener("click", () => { state.summaryMode = true; applyChannelView(); window.scrollTo({ top: 0, behavior: "smooth" }); });
+$("#nav-visual")?.addEventListener("click", () => exitSummaryMode("#visual-panel", "visual"));
+$("#nav-technical")?.addEventListener("click", () => exitSummaryMode("#takeoff-section", "technical"));
 
 if (typeof window !== "undefined") {
   window.__aiTakeoffSheets = () => { const draft = takeoffDraft(); return draft ? aiTakeoffSheets(draft, state.property?.name || "project") : null; };
