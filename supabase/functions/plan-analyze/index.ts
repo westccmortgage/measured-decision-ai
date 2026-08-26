@@ -5,6 +5,7 @@ import {
 } from "../_shared/agent-contracts.ts";
 import { signedObjectReadUrl } from "../_shared/aws-object-store.ts";
 import { openAITransport } from "../_shared/openai-transport.ts";
+import { CHUNK_BYTE_LIMIT, mergeChunkAnalyses, planChunks } from "./chunking.js";
 
 const allowedOrigins = new Set([
   "https://measureddecision.com",
@@ -659,6 +660,298 @@ async function finalizeAnalysis(
   }
 }
 
+/* One provider reading: sign the given documents, gather their high-res
+   tiles, compose the request, launch it as a background response. Shared by
+   the single-shot path and by every chunk of a large set — a chunk is not a
+   different kind of analysis, it is the same reading over fewer files. */
+async function createProviderReading(
+  admin: ReturnType<typeof createClient>,
+  aiTransport: { baseUrl: string; headers: Record<string, string> },
+  model: string,
+  documents: DocumentRow[],
+  registerText: string,
+  chunkNote: string | null,
+) {
+  const signedDocuments: Array<{ row: DocumentRow; url: string }> = [];
+  for (const row of documents) {
+    if (row.storage_provider === "aws-s3") {
+      signedDocuments.push({ row, url: await signedObjectReadUrl(row.storage_path, 3600) });
+    } else {
+      const { data: signed, error: signedError } = await admin.storage
+        .from(row.storage_bucket || "project-documents")
+        .createSignedUrl(row.storage_path, 3600);
+      if (signedError || !signed?.signedUrl) throw new Error(`Could not read ${row.original_filename}`);
+      signedDocuments.push({ row, url: signed.signedUrl });
+    }
+  }
+
+  /* Drawing-desk resolution. The Studio renders each plan page into
+     high-resolution tiles before analysis, because the provider's own PDF
+     rasteriser draws an E-size sheet too small to read a schedule or count
+     a pile mark. When tiles exist they ride along as images; when they do
+     not, the PDFs still go alone — reduced sharpness, never a dead end.
+     The budget is per reading, so a chunked large set gets a full tile
+     budget for every chunk instead of one budget stretched over 200 sheets. */
+  const MAX_RENDER_IMAGES = 80;
+  const renderImages: Array<{ label: string; url: string }> = [];
+  let renderTilesDropped = 0;
+  for (const { row } of signedDocuments) {
+    const { data: renderRecord } = await admin.from("plan_page_renders")
+      .select("document_id, pages, target_dpi").eq("document_id", row.id).maybeSingle();
+    if (!renderRecord) continue;
+    const prefix = `${row.organization_id}/page-renders/${row.id}`;
+    const { data: objects } = await admin.storage.from("project-documents")
+      .list(prefix, { limit: 1000 });
+    const tiles = (objects || [])
+      .filter((object) => object.name.endsWith(".jpg"))
+      .sort((a, b) => {
+        const pageOf = (name: string) => Number((name.match(/^p(\d+)-/) || [])[1] || 0);
+        const partOf = (name: string) => (/-full\.jpg$/.test(name) ? 0 : 1);
+        return pageOf(a.name) - pageOf(b.name) || partOf(a.name) - partOf(b.name) || a.name.localeCompare(b.name);
+      });
+    for (const tile of tiles) {
+      if (renderImages.length >= MAX_RENDER_IMAGES) { renderTilesDropped += 1; continue; }
+      const { data: signedTile } = await admin.storage.from("project-documents")
+        .createSignedUrl(`${prefix}/${tile.name}`, 3600);
+      if (signedTile?.signedUrl) renderImages.push({ label: `${row.original_filename} · ${tile.name}`, url: signedTile.signedUrl });
+    }
+  }
+
+  const userContent: Array<Record<string, unknown>> = [
+    {
+      type: "input_text",
+      text: `Analyze this project document set. Database source register:\n${registerText}`,
+    },
+  ];
+  if (chunkNote) userContent.push({ type: "input_text", text: chunkNote });
+  userContent.push(...signedDocuments.map(({ url }) => ({
+    type: "input_file",
+    file_url: url,
+  })));
+  if (renderImages.length) {
+    userContent.push({
+      type: "input_text",
+      text: [
+        "High-resolution page renders accompany the PDFs, in this order:",
+        ...renderImages.map((image, index) => `${index + 1}. ${image.label}`),
+        "Tile names: p<page>-r<row>c<col> is one quadrant of that page at ~200 dpi; p<page>-full is the whole page. "
+        + "Read fine print — schedules, legends, keynotes, title blocks — from these tiles, and count drawn marks tile by tile, summing across a page without double-counting the overlap-free tile edges.",
+        renderTilesDropped > 0 ? `${renderTilesDropped} additional tiles were omitted to fit the request; the PDFs remain the complete source.` : "",
+      ].filter(Boolean).join("\n"),
+    });
+    for (const image of renderImages) {
+      userContent.push({ type: "input_image", image_url: image.url, detail: "high" });
+    }
+  }
+
+  const openAIResponse = await fetch(`${aiTransport.baseUrl}/responses`, {
+    method: "POST",
+    headers: aiTransport.headers,
+    body: JSON.stringify({
+      model,
+      background: true,
+      store: true,
+      input: [
+        { role: "system", content: [{ type: "input_text", text: PLAN_WORKFLOW_INSTRUCTIONS }] },
+        { role: "user", content: userContent },
+      ],
+      text: {
+        format: {
+          type: "json_schema",
+          name: "construction_plan_baseline",
+          strict: true,
+          schema,
+        },
+      },
+    }),
+  });
+  const openAIPayload = await openAIResponse.json();
+  if (!openAIResponse.ok) {
+    throw new Error(openAIPayload?.error?.message || `OpenAI request failed (${openAIResponse.status})`);
+  }
+  if (!openAIPayload?.id) throw new Error("OpenAI did not return a background response identifier");
+  return openAIPayload as { id: string; status: string };
+}
+
+function chunkNoteFor(chunkIndex: number, chunkTotal: number, documents: DocumentRow[]) {
+  return [
+    `This is chunk ${chunkIndex + 1} of ${chunkTotal} of a larger plan set that exceeds one reading. `
+    + `Only these files are attached: ${documents.map((row) => row.original_filename).join(", ")}. `
+    + "The full source register above lists documents analyzed in other chunks — never invent content from files you cannot see. "
+    + "A mark whose schedule lives in an unattached document goes to gaps with the mark and the sheet you saw it on, exactly like any other unresolved reference.",
+  ].join("");
+}
+
+/* The next pending chunk starts, claimed atomically so two concurrent polls
+   never buy the same reading twice. Returns the launched chunk row or null
+   when another poll got there first (or nothing is pending). */
+async function launchNextPendingChunk(
+  admin: ReturnType<typeof createClient>,
+  aiTransport: { baseUrl: string; headers: Record<string, string> },
+  model: string,
+  job: PlanJob,
+  documentsById: Map<string, DocumentRow>,
+  registerText: string,
+  chunkTotal: number,
+) {
+  const { data: pending } = await admin.from("plan_analysis_chunks")
+    .select("id, chunk_index, document_ids")
+    .eq("job_id", job.id).eq("state", "pending")
+    .order("chunk_index", { ascending: true }).limit(1).maybeSingle();
+  if (!pending) return null;
+  const { data: claimed } = await admin.from("plan_analysis_chunks")
+    .update({ state: "processing", updated_at: new Date().toISOString() })
+    .eq("id", pending.id).eq("state", "pending").select("id, chunk_index, document_ids").maybeSingle();
+  if (!claimed) return null;
+  const chunkDocuments = (claimed.document_ids as string[]).map((id) => documentsById.get(id)).filter(Boolean) as DocumentRow[];
+  try {
+    const payload = await createProviderReading(
+      admin, aiTransport, model, chunkDocuments, registerText,
+      chunkNoteFor(claimed.chunk_index, chunkTotal, chunkDocuments),
+    );
+    await admin.from("plan_analysis_chunks").update({
+      provider_job_id: payload.id,
+      updated_at: new Date().toISOString(),
+    }).eq("id", claimed.id);
+    return claimed;
+  } catch (error) {
+    /* The launch itself failed — the chunk goes back to pending so a later
+       poll retries it instead of the whole run dying on a transient. */
+    await admin.from("plan_analysis_chunks").update({
+      state: "pending", provider_job_id: null,
+      error_message: String(error instanceof Error ? error.message : error).slice(0, 800),
+      updated_at: new Date().toISOString(),
+    }).eq("id", claimed.id);
+    throw error;
+  }
+}
+
+/* One poll of a chunked job: read where the chunks stand, advance exactly
+   one step (poll the running chunk, launch the next, or merge and finalize),
+   and answer with honest progress. Every step is idempotent and every
+   finished chunk is a checkpoint that survives a failure. */
+async function advanceChunkedJob(
+  admin: ReturnType<typeof createClient>,
+  userClient: ReturnType<typeof createClient>,
+  aiTransport: { baseUrl: string; headers: Record<string, string> },
+  model: string,
+  job: PlanJob,
+  userId: string,
+  chunks: Array<Record<string, any>>,
+) {
+  const total = chunks.length;
+  const completeCount = chunks.filter((chunk) => chunk.state === "complete").length;
+  const progress = () => ({
+    job_id: job.id,
+    state: "processing",
+    progress_stage: "reading_documents",
+    progress_percent: 20 + Math.floor(60 * (completeCount / total)),
+    chunks: total,
+    chunks_complete: completeCount,
+  });
+
+  const { data: documents, error: documentError } = await userClient
+    .from("project_documents")
+    .select("id, organization_id, property_id, storage_path, storage_provider, storage_bucket, original_filename, byte_size, document_type, revision_label, issued_at")
+    .in("id", job.document_ids)
+    .eq("organization_id", job.organization_id)
+    .eq("property_id", job.property_id);
+  if (documentError || !documents || documents.length !== job.document_ids.length) {
+    throw new Error("One or more project documents are missing or outside this project");
+  }
+  const orderedDocuments = job.document_ids
+    .map((id) => (documents as DocumentRow[]).find((row) => row.id === id))
+    .filter(Boolean) as DocumentRow[];
+  const documentsById = new Map(orderedDocuments.map((row) => [row.id, row]));
+  const registerText = JSON.stringify(orderedDocuments.map((row) => ({
+    id: row.id,
+    filename: row.original_filename,
+    document_type: row.document_type,
+    revision: row.revision_label,
+    issued_at: row.issued_at,
+  })), null, 2);
+
+  const finalizeIfDone = async () => {
+    const { data: freshChunks } = await admin.from("plan_analysis_chunks")
+      .select("chunk_index, state, analysis")
+      .eq("job_id", job.id).order("chunk_index", { ascending: true });
+    if (!(freshChunks || []).length || (freshChunks || []).some((chunk) => chunk.state !== "complete")) return null;
+    const merged = mergeChunkAnalyses((freshChunks || []).map((chunk) => chunk.analysis));
+    return await finalizeAnalysis(admin, job, orderedDocuments, merged, job.model || model, userId);
+  };
+
+  const failChunk = async (chunk: Record<string, any>, message: string) => {
+    await admin.from("plan_analysis_chunks").update({
+      state: "failed", error_message: message.slice(0, 800), updated_at: new Date().toISOString(),
+    }).eq("id", chunk.id);
+    const resumeMessage =
+      `Chunk ${chunk.chunk_index + 1} of ${total} failed: ${message} ` +
+      `${completeCount} finished chunk${completeCount === 1 ? "" : "s"} stay${completeCount === 1 ? "s" : ""} saved — press Analyze to resume from where it stopped.`;
+    await markJobFailed(admin, job, resumeMessage);
+    return {
+      job_id: job.id, state: "failed", progress_stage: "failed",
+      progress_percent: 20 + Math.floor(60 * (completeCount / total)),
+      error: resumeMessage, code: "chunk_failed",
+    };
+  };
+
+  const processing = chunks.find((chunk) => chunk.state === "processing");
+  if (processing && !processing.provider_job_id) {
+    /* The worker died between claiming the chunk and launching it. Requeue
+       and relaunch — nothing was bought, nothing is lost. */
+    await admin.from("plan_analysis_chunks").update({
+      state: "pending", updated_at: new Date().toISOString(),
+    }).eq("id", processing.id).eq("state", "processing");
+    await launchNextPendingChunk(admin, aiTransport, model, job, documentsById, registerText, total);
+    return progress();
+  }
+  if (processing) {
+    const providerResponse = await fetch(
+      `${aiTransport.baseUrl}/responses/${encodeURIComponent(processing.provider_job_id)}`,
+      { headers: aiTransport.headers },
+    );
+    const providerPayload = await providerResponse.json();
+    if (providerResponse.status === 404) {
+      return await failChunk(processing, "the provider no longer recognises this chunk's background job.");
+    }
+    if (!providerResponse.ok) {
+      throw new Error(providerError(providerPayload, `Could not read chunk response (${providerResponse.status})`));
+    }
+    if (providerPayload.status === "queued") {
+      const queuedAge = processing.updated_at ? Date.now() - new Date(processing.updated_at).valueOf() : 0;
+      if (queuedAge > 15 * 60 * 1000) {
+        return await failChunk(processing, "the provider accepted this chunk but never started it in 15 minutes.");
+      }
+    }
+    if (["queued", "in_progress"].includes(providerPayload.status)) {
+      await admin.from("plan_analysis_jobs").update({
+        progress_stage: "reading_documents",
+        progress_percent: 20 + Math.floor(60 * (completeCount / total)),
+        last_heartbeat_at: new Date().toISOString(),
+      }).eq("id", job.id);
+      return progress();
+    }
+    if (providerPayload.status !== "completed") {
+      return await failChunk(processing, `the chunk's background response ended with ${providerPayload.status || "an unknown status"}.`);
+    }
+    const chunkAnalysis = JSON.parse(responseText(providerPayload));
+    await admin.from("plan_analysis_chunks").update({
+      state: "complete", analysis: chunkAnalysis, error_message: null,
+      updated_at: new Date().toISOString(),
+    }).eq("id", processing.id);
+    await launchNextPendingChunk(admin, aiTransport, model, job, documentsById, registerText, total);
+    const done = await finalizeIfDone();
+    if (done) return done;
+    return { ...progress(), chunks_complete: completeCount + 1, progress_percent: 20 + Math.floor(60 * ((completeCount + 1) / total)) };
+  }
+
+  const done = await finalizeIfDone();
+  if (done) return done;
+  /* Nothing processing, something pending — a poll after a restart. */
+  await launchNextPendingChunk(admin, aiTransport, model, job, documentsById, registerText, total);
+  return progress();
+}
+
 Deno.serve(async (request) => {
   if (request.method === "OPTIONS") return new Response("ok", { headers: corsHeaders(request) });
   if (request.method !== "POST") return json(request, { error: "Method not allowed" }, 405);
@@ -740,6 +1033,16 @@ Deno.serve(async (request) => {
 
       if (job.state === "queued") {
         return json(request, { job_id: job.id, state: "queued", progress_stage: "queued", progress_percent: 4 });
+      }
+      /* A chunked large set carries its provider ids on the chunk rows, not
+         on the job — its polling has its own driver. This must run before the
+         legacy no-provider-id check, which would otherwise declare a healthy
+         chunked run abandoned. */
+      const { data: chunkRows } = await admin.from("plan_analysis_chunks")
+        .select("id, chunk_index, document_ids, provider_job_id, state, updated_at")
+        .eq("job_id", job.id).order("chunk_index", { ascending: true });
+      if (chunkRows && chunkRows.length) {
+        return json(request, await advanceChunkedJob(admin, userClient, aiTransport, model, job, userData.user.id, chunkRows));
       }
       if (!job.provider_job_id) {
         const legacyAge = job.started_at ? Date.now() - new Date(job.started_at).valueOf() : 0;
@@ -849,12 +1152,13 @@ Deno.serve(async (request) => {
       throw new Error("One or more project documents are missing or outside this project");
     }
     const totalBytes = (documents as DocumentRow[]).reduce((sum, item) => sum + Number(item.byte_size || 0), 0);
-    const oversized = (documents as DocumentRow[]).find((item) => Number(item.byte_size || 0) > 49 * 1024 * 1024);
-    if (oversized || totalBytes > 49 * 1024 * 1024) {
+    /* One file over the provider's input limit cannot be split here — it
+       still needs an optimized copy. A SET over the limit no longer fails:
+       it partitions into chunks that each fit, below. */
+    const oversized = (documents as DocumentRow[]).find((item) => Number(item.byte_size || 0) > CHUNK_BYTE_LIMIT);
+    if (oversized) {
       throw new Error(
-        oversized
-          ? `${oversized.original_filename} exceeds the 49 MB AI input limit. Keep the original in Studio and upload an optimized PDF copy for analysis.`
-          : "The selected plan set exceeds the 49 MB combined AI input limit. Analyze smaller discipline sets or upload optimized PDF copies.",
+        `${oversized.original_filename} exceeds the 49 MB AI input limit. Keep the original in Studio and upload an optimized PDF copy for analysis.`,
       );
     }
 
@@ -870,122 +1174,86 @@ Deno.serve(async (request) => {
     }).in("id", job.document_ids);
     await admin.from("properties").update({ workflow_state: "analyzing_plans" }).eq("id", job.property_id);
 
-    const signedDocuments: Array<{ row: DocumentRow; url: string }> = [];
-    for (const row of documents as DocumentRow[]) {
-      if (row.storage_provider === "aws-s3") {
-        signedDocuments.push({ row, url: await signedObjectReadUrl(row.storage_path, 3600) });
-      } else {
-        const { data: signed, error: signedError } = await admin.storage
-          .from(row.storage_bucket || "project-documents")
-          .createSignedUrl(row.storage_path, 3600);
-        if (signedError || !signed?.signedUrl) throw new Error(`Could not read ${row.original_filename}`);
-        signedDocuments.push({ row, url: signed.signedUrl });
-      }
-    }
-
-    const register = signedDocuments.map(({ row }) => ({
+    const orderedDocuments = job.document_ids
+      .map((id) => (documents as DocumentRow[]).find((row) => row.id === id))
+      .filter(Boolean) as DocumentRow[];
+    const register = orderedDocuments.map((row) => ({
       id: row.id,
       filename: row.original_filename,
       document_type: row.document_type,
       revision: row.revision_label,
       issued_at: row.issued_at,
     }));
+    const registerText = JSON.stringify(register, null, 2);
 
-    /* Drawing-desk resolution. The Studio renders each plan page into
-       high-resolution tiles before analysis, because the provider's own PDF
-       rasteriser draws an E-size sheet too small to read a schedule or count
-       a pile mark. When tiles exist they ride along as images; when they do
-       not, the PDFs still go alone — reduced sharpness, never a dead end. */
-    const MAX_RENDER_IMAGES = 80;
-    const renderImages: Array<{ label: string; url: string }> = [];
-    let renderTilesDropped = 0;
-    for (const { row } of signedDocuments) {
-      const { data: renderRecord } = await admin.from("plan_page_renders")
-        .select("document_id, pages, target_dpi").eq("document_id", row.id).maybeSingle();
-      if (!renderRecord) continue;
-      const prefix = `${row.organization_id}/page-renders/${row.id}`;
-      const { data: objects } = await admin.storage.from("project-documents")
-        .list(prefix, { limit: 1000 });
-      const tiles = (objects || [])
-        .filter((object) => object.name.endsWith(".jpg"))
-        .sort((a, b) => {
-          const pageOf = (name: string) => Number((name.match(/^p(\d+)-/) || [])[1] || 0);
-          const partOf = (name: string) => (/-full\.jpg$/.test(name) ? 0 : 1);
-          return pageOf(a.name) - pageOf(b.name) || partOf(a.name) - partOf(b.name) || a.name.localeCompare(b.name);
-        });
-      for (const tile of tiles) {
-        if (renderImages.length >= MAX_RENDER_IMAGES) { renderTilesDropped += 1; continue; }
-        const { data: signedTile } = await admin.storage.from("project-documents")
-          .createSignedUrl(`${prefix}/${tile.name}`, 3600);
-        if (signedTile?.signedUrl) renderImages.push({ label: `${row.original_filename} · ${tile.name}`, url: signedTile.signedUrl });
+    if (totalBytes <= CHUNK_BYTE_LIMIT) {
+      const openAIPayload = await createProviderReading(admin, aiTransport, model, orderedDocuments, registerText, null);
+      const acceptedAt = new Date().toISOString();
+      await admin.from("plan_analysis_jobs").update({
+        provider_job_id: openAIPayload.id,
+        progress_stage: openAIPayload.status === "queued" ? "provider_queued" : "reading_documents",
+        progress_percent: openAIPayload.status === "queued" ? 18 : 32,
+        last_heartbeat_at: acceptedAt,
+      }).eq("id", job.id);
+      return json(request, {
+        job_id: job.id,
+        state: "processing",
+        progress_stage: openAIPayload.status === "queued" ? "provider_queued" : "reading_documents",
+        progress_percent: openAIPayload.status === "queued" ? 18 : 32,
+      }, 202);
+    }
+
+    /* Chunked mode: a set over one reading's limit partitions into chunks
+       that each fit, run one after another as separate provider jobs. Every
+       finished chunk is a checkpoint; a rerun after a failure keeps the
+       finished readings and requeues only the rest — a 200-sheet set never
+       depends on one context window or one uninterrupted run. */
+    const partition = planChunks(orderedDocuments);
+    const { data: existingChunks } = await admin.from("plan_analysis_chunks")
+      .select("id, chunk_index, document_ids, state")
+      .eq("job_id", job.id).order("chunk_index", { ascending: true });
+    const partitionMatches = (existingChunks || []).length === partition.length
+      && (existingChunks || []).every((row, index) => sameIds(row.document_ids || [], partition[index].document_ids));
+    if (!partitionMatches) {
+      const activeJob = job;
+      await admin.from("plan_analysis_chunks").delete().eq("job_id", activeJob.id);
+      const { error: chunkInsertError } = await admin.from("plan_analysis_chunks").insert(
+        partition.map((chunk, index) => ({
+          job_id: activeJob.id,
+          organization_id: activeJob.organization_id,
+          chunk_index: index,
+          document_ids: chunk.document_ids,
+        })),
+      );
+      if (chunkInsertError) throw chunkInsertError;
+    } else {
+      for (const row of existingChunks || []) {
+        if (row.state !== "complete") {
+          await admin.from("plan_analysis_chunks").update({
+            state: "pending", provider_job_id: null, error_message: null,
+            updated_at: new Date().toISOString(),
+          }).eq("id", row.id);
+        }
       }
     }
-
-    const userContent: Array<Record<string, unknown>> = [
-      {
-        type: "input_text",
-        text: `Analyze this project document set. Database source register:\n${JSON.stringify(register, null, 2)}`,
-      },
-      ...signedDocuments.map(({ url }) => ({
-        type: "input_file",
-        file_url: url,
-      })),
-    ];
-    if (renderImages.length) {
-      userContent.push({
-        type: "input_text",
-        text: [
-          "High-resolution page renders accompany the PDFs, in this order:",
-          ...renderImages.map((image, index) => `${index + 1}. ${image.label}`),
-          "Tile names: p<page>-r<row>c<col> is one quadrant of that page at ~200 dpi; p<page>-full is the whole page. "
-          + "Read fine print — schedules, legends, keynotes, title blocks — from these tiles, and count drawn marks tile by tile, summing across a page without double-counting the overlap-free tile edges.",
-          renderTilesDropped > 0 ? `${renderTilesDropped} additional tiles were omitted to fit the request; the PDFs remain the complete source.` : "",
-        ].filter(Boolean).join("\n"),
-      });
-      for (const image of renderImages) {
-        userContent.push({ type: "input_image", image_url: image.url, detail: "high" });
-      }
-    }
-
-    const openAIResponse = await fetch(`${aiTransport.baseUrl}/responses`, {
-      method: "POST",
-      headers: aiTransport.headers,
-      body: JSON.stringify({
-        model,
-        background: true,
-        store: true,
-        input: [
-          { role: "system", content: [{ type: "input_text", text: PLAN_WORKFLOW_INSTRUCTIONS }] },
-          { role: "user", content: userContent },
-        ],
-        text: {
-          format: {
-            type: "json_schema",
-            name: "construction_plan_baseline",
-            strict: true,
-            schema,
-          },
-        },
-      }),
-    });
-    const openAIPayload = await openAIResponse.json();
-    if (!openAIResponse.ok) {
-      const message = openAIPayload?.error?.message || `OpenAI request failed (${openAIResponse.status})`;
-      throw new Error(message);
-    }
-    if (!openAIPayload?.id) throw new Error("OpenAI did not return a background response identifier");
-    const acceptedAt = new Date().toISOString();
+    const documentsById = new Map(orderedDocuments.map((row) => [row.id, row]));
+    await launchNextPendingChunk(admin, aiTransport, model, job, documentsById, registerText, partition.length);
+    const resumedComplete = partitionMatches
+      ? (existingChunks || []).filter((row) => row.state === "complete").length
+      : 0;
+    const percent = 20 + Math.floor(60 * (resumedComplete / partition.length));
     await admin.from("plan_analysis_jobs").update({
-      provider_job_id: openAIPayload.id,
-      progress_stage: openAIPayload.status === "queued" ? "provider_queued" : "reading_documents",
-      progress_percent: openAIPayload.status === "queued" ? 18 : 32,
-      last_heartbeat_at: acceptedAt,
+      progress_stage: "reading_documents",
+      progress_percent: percent,
+      last_heartbeat_at: new Date().toISOString(),
     }).eq("id", job.id);
     return json(request, {
       job_id: job.id,
       state: "processing",
-      progress_stage: openAIPayload.status === "queued" ? "provider_queued" : "reading_documents",
-      progress_percent: openAIPayload.status === "queued" ? 18 : 32,
+      progress_stage: "reading_documents",
+      progress_percent: percent,
+      chunks: partition.length,
+      chunks_complete: resumedComplete,
     }, 202);
   } catch (error) {
     console.error(error);

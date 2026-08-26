@@ -1460,4 +1460,48 @@ select pg_temp.check('another organisation never sees the reading',
   (select count(*) from public.project_documents where id = 'ddddddd0-0000-0000-0000-00000000000d') = 0);
 reset role;
 
+--
+-- A large set is read in chunks. The chunk rows are the analysis worker's
+-- checkpoints: written only through the service role, watched by the
+-- project's own people, invisible to another organisation, and shaped so a
+-- resumed run finds exactly the chunks it left — no duplicates, no
+-- invented states.
+
+insert into public.plan_analysis_jobs (id, organization_id, property_id, document_ids, state, requested_by)
+values ('facadefa-0000-0000-0000-000000000001', 'aaaaaaaa-0000-0000-0000-000000000001',
+        'bbbbbbbb-0000-0000-0000-000000000001', array['ddddddd0-0000-0000-0000-00000000000d']::uuid[],
+        'processing', '11111111-1111-1111-1111-111111111111');
+insert into public.plan_analysis_chunks (job_id, organization_id, chunk_index, document_ids, state, analysis)
+values ('facadefa-0000-0000-0000-000000000001', 'aaaaaaaa-0000-0000-0000-000000000001', 0,
+        array['ddddddd0-0000-0000-0000-00000000000d']::uuid[], 'complete', '{"project_summary":"chunk one"}'::jsonb),
+       ('facadefa-0000-0000-0000-000000000001', 'aaaaaaaa-0000-0000-0000-000000000001', 1,
+        array['ddddddd0-0000-0000-0000-00000000000d']::uuid[], 'pending', null);
+
+select pg_temp.refused('a chunk index cannot be claimed twice — resume finds exactly what was left',
+  $$insert into public.plan_analysis_chunks (job_id, organization_id, chunk_index, document_ids)
+    values ('facadefa-0000-0000-0000-000000000001', 'aaaaaaaa-0000-0000-0000-000000000001', 1,
+            array['ddddddd0-0000-0000-0000-00000000000d']::uuid[])$$);
+select pg_temp.refused('a chunk state the worker never uses is refused',
+  $$insert into public.plan_analysis_chunks (job_id, organization_id, chunk_index, document_ids, state)
+    values ('facadefa-0000-0000-0000-000000000001', 'aaaaaaaa-0000-0000-0000-000000000001', 2,
+            array['ddddddd0-0000-0000-0000-00000000000d']::uuid[], 'imagined')$$);
+
+set local role authenticated;
+set local test.uid = '33333333-3333-3333-3333-333333333333';
+select pg_temp.check('the project''s own people watch the checkpoints',
+  (select count(*) from public.plan_analysis_chunks where job_id = 'facadefa-0000-0000-0000-000000000001') = 2
+  and (select analysis->>'project_summary' from public.plan_analysis_chunks
+        where job_id = 'facadefa-0000-0000-0000-000000000001' and chunk_index = 0) = 'chunk one');
+select pg_temp.refused('but nobody writes a checkpoint from the browser — the worker owns them',
+  $$insert into public.plan_analysis_chunks (job_id, organization_id, chunk_index, document_ids)
+    values ('facadefa-0000-0000-0000-000000000001', 'aaaaaaaa-0000-0000-0000-000000000001', 3,
+            array['ddddddd0-0000-0000-0000-00000000000d']::uuid[])$$);
+reset role;
+
+set local role authenticated;
+set local test.uid = '44444444-4444-4444-4444-444444444444';
+select pg_temp.check('another organisation sees no checkpoints at all',
+  (select count(*) from public.plan_analysis_chunks) = 0);
+reset role;
+
 rollback;

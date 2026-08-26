@@ -403,14 +403,23 @@ function analyzeSelectionState() {
 
   const totalBytes = documents.reduce((sum, document) => sum + Number(document.byte_size || 0), 0);
   const oversized = documents.find((document) => Number(document.byte_size || 0) > AI_INPUT_LIMIT_BYTES);
-  if (oversized || totalBytes > AI_INPUT_LIMIT_BYTES) {
+  if (oversized) {
     return {
       disabled: true,
       label: "Select a smaller PDF set",
-      message: oversized
-        ? `${oversized.original_filename} exceeds the 49 MB analysis limit. Keep the original here and add an optimized PDF copy.`
-        : `${documents.length} selected PDFs total ${formatMegabytes(totalBytes)}. Select a set below 49 MB or add optimized PDF copies.`,
+      message: `${oversized.original_filename} exceeds the 49 MB analysis limit. Keep the original here and add an optimized PDF copy.`,
       kind: "warning",
+    };
+  }
+  /* A set larger than one AI reading no longer stops at a ceiling: the
+     analysis partitions it into chunks, checkpoints every finished chunk,
+     and a rerun resumes where it stopped. Said out loud, never a dead end. */
+  if (totalBytes > AI_INPUT_LIMIT_BYTES) {
+    return {
+      disabled: false,
+      label: "Analyze selected PDFs",
+      message: `${documents.length} PDF${documents.length === 1 ? "" : "s"} selected · ${formatMegabytes(totalBytes)}. Larger than one AI reading — the set is analyzed automatically in about ${Math.ceil(totalBytes / AI_INPUT_LIMIT_BYTES)} chunks; finished chunks are saved, and a rerun resumes where it stopped.`,
+      kind: "info",
     };
   }
 
