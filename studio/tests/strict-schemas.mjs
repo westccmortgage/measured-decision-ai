@@ -60,5 +60,19 @@ console.log("── the document-evidence schema ──");
     JSON.stringify(schema?.properties?.document_kind?.enum) === '["invoice","delivery_ticket","receipt","other"]');
 }
 
+console.log("\n── the evidence inspector's component counts ──");
+{
+  const source = fs.readFileSync("supabase/functions/spatial-analyze/index.ts", "utf8")
+    .replace(/\/\*[\s\S]*?\*\//g, "").replace(/^\s*\/\/.*$/gm, "");
+  const schema = extractObjectLiteral(source, "const componentCountsSchema =");
+  check("the counts schema literal parses", Boolean(schema));
+  const violations = strictViolations(schema, "$counts");
+  check("counts are strict: every property required, nothing extra",
+    violations.length === 0, violations.join(" | "));
+  check("a count is an integer with a closed confidence set",
+    schema?.items?.properties?.count_visible?.type === "integer"
+    && JSON.stringify(schema?.items?.properties?.confidence?.enum) === '["high","medium","low"]');
+}
+
 console.log(bad ? `\n${bad} FAILURES` : "\nALL OK");
 process.exit(bad ? 1 : 0);

@@ -167,6 +167,24 @@ function frameAnchorSchema(evidenceIdSchema: Record<string, unknown>) {
   };
 }
 
+/* Counting what the frames actually show, in the project's own component
+   vocabulary. Strict; a count the model cannot make is simply absent —
+   absence of evidence stays absent, it never becomes a zero claim. */
+const componentCountsSchema = {
+  type: "array",
+  items: {
+    type: "object",
+    additionalProperties: false,
+    required: ["component_key", "count_visible", "confidence", "note"],
+    properties: {
+      component_key: { type: "string" },
+      count_visible: { type: "integer" },
+      confidence: { type: "string", enum: ["high", "medium", "low"] },
+      note: { type: "string" },
+    },
+  },
+};
+
 function analysisSchema(evidenceIds: string[], anchorable: boolean) {
   const evidenceIdSchema = {
     type: "string",
@@ -255,6 +273,7 @@ function analysisSchema(evidenceIds: string[], anchorable: boolean) {
         type: "array",
         items: { type: "string" },
       },
+      component_counts: componentCountsSchema,
     },
     required: [
       "summary",
@@ -263,6 +282,7 @@ function analysisSchema(evidenceIds: string[], anchorable: boolean) {
       "not_established",
       "follow_up_captures",
       "limitations",
+      "component_counts",
     ],
     additionalProperties: false,
   };
@@ -442,6 +462,19 @@ Deno.serve(async (request) => {
       subject: item.source_metadata?.subject || null,
       context: item.source_metadata?.context || null,
     }));
+    /* The project's component vocabulary, if the technical channel has
+       written one. With it the inspector also counts what it can actually
+       SEE — installed components only, never delivery paperwork, never a
+       guess. Without it, component_counts simply stays empty. */
+    const { data: vocabularyRows } = await admin
+      .from("project_requirements")
+      .select("component_key, description")
+      .eq("property_id", job.property_id)
+      .eq("state", "active");
+    const componentVocabulary = (vocabularyRows || [])
+      .map((row) => `${row.component_key} — ${row.description}`.trim())
+      .slice(0, 40);
+
     content.push({
       type: "input_text",
       text: [
@@ -451,6 +484,9 @@ Deno.serve(async (request) => {
         `Processing profile: ${job.profile} v${job.profile_version}`,
         `Evidence manifest: ${JSON.stringify(evidenceManifest)}`,
         "Analyze only the visual material that follows. Every visible observation must cite one or more exact evidence IDs from the manifest.",
+        ...(componentVocabulary.length ? [
+          `Component counting. This project's technical documents require these components:\n${componentVocabulary.join("\n")}\nIn component_counts, report each of these components you can ACTUALLY SEE INSTALLED in the frames, with the count you can verify by looking. Count only what is visible: absence from view is not absence from the site, and you never report a zero. If you cannot identify or count a component with confidence, omit it entirely — the record treats a missing count as not-yet-evidenced, which is the honest state. Use note for what limited the count (angle, occlusion, distance).`,
+        ] : []),
         ...(sphericalFrames.length ? [SPHERICAL_ANCHOR_INSTRUCTIONS] : []),
       ].join("\n"),
     });
@@ -629,6 +665,24 @@ Deno.serve(async (request) => {
         status: 500,
         errorCode: "suggestion_write_failed",
       });
+    }
+
+    /* Counted components enter the record through record_vision_counts — the
+       one door that enforces replace-per-room, sum-across-rooms — as the
+       caller, so their project role gates the write. A failure here never
+       fails the analysis: the interpretation stands, the counts retry on the
+       next run. */
+    const componentCounts = Array.isArray((analysis as Record<string, unknown>).component_counts)
+      ? (analysis as Record<string, unknown>).component_counts
+      : [];
+    if ((componentCounts as unknown[]).length) {
+      const { error: countsError } = await userClient.rpc("record_vision_counts", {
+        p_property_id: job.property_id,
+        p_space_id: job.space_id,
+        p_evidence_ids: job.evidence_ids,
+        p_counts: componentCounts,
+      });
+      if (countsError) console.error("vision counts not recorded", countsError.message);
     }
 
     const finishedAt = new Date().toISOString();
