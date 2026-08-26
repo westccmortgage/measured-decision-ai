@@ -66,13 +66,17 @@
   const STYLES_XML = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>\n<styleSheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"><fonts count="2"><font><sz val="11"/><name val="Arial"/></font><font><b/><sz val="11"/><name val="Arial"/></font></fonts><fills count="2"><fill><patternFill patternType="none"/></fill><fill><patternFill patternType="gray125"/></fill></fills><borders count="1"><border/></borders><cellStyleXfs count="1"><xf/></cellStyleXfs><cellXfs count="2"><xf xfId="0"/><xf xfId="0" fontId="1" applyFont="1"/></cellXfs></styleSheet>`;
 
   function workbookParts(sheets) {
+    /* [Content_Types].xml must be the FIRST entry in the package — several
+       readers (LibreOffice among them) refuse the file otherwise. Sheets are
+       appended after the package skeleton. */
     const parts = [];
+    const sheetParts = [];
     const overrides = [];
     const sheetRefs = [];
     const rels = [];
     sheets.forEach((sheet, index) => {
       const id = index + 1;
-      parts.push({ path: `xl/worksheets/sheet${id}.xml`, content: sheetXml(sheet) });
+      sheetParts.push({ path: `xl/worksheets/sheet${id}.xml`, content: sheetXml(sheet) });
       overrides.push(`<Override PartName="/xl/worksheets/sheet${id}.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml"/>`);
       sheetRefs.push(`<sheet name="${xmlEscape(sheet.name).slice(0, 31)}" sheetId="${id}" r:id="rId${id}"/>`);
       rels.push(`<Relationship Id="rId${id}" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet" Target="worksheets/sheet${id}.xml"/>`);
@@ -96,6 +100,7 @@
       content: `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>\n<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">${rels.join("")}</Relationships>`,
     });
     parts.push({ path: "xl/styles.xml", content: STYLES_XML });
+    parts.push(...sheetParts);
     return parts;
   }
 

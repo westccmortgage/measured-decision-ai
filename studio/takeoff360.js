@@ -132,12 +132,15 @@
     }
 
     const studStock = height <= 97.125 ? "92 5/8\" precut" : `${stockLengthFor(height)}'`;
-    lines.push({ item: `${size} stud · ${studStock}`, quantity: studCount, unit: "pieces" });
+    /* Every wall quantity is arithmetic from printed dimensions — the
+       provenance rides on the line so no screen has to guess it. */
+    const wallMeta = { method: "DERIVED_FROM_PRINTED_DIMENSIONS", category: "lumber", status: "ready", source_refs: wall.source_refs || [] };
+    lines.push({ item: `${size} stud · ${studStock}`, quantity: studCount, unit: "pieces", ...wallMeta });
 
     const plateLengthIn = length * 3;
     const plateStockFt = stockLengthFor(Math.min(length, 16 * 12));
     const platePieces = Math.ceil(plateLengthIn / (plateStockFt * 12));
-    lines.push({ item: `${size} plate · ${plateStockFt}'`, quantity: platePieces, unit: "pieces" });
+    lines.push({ item: `${size} plate · ${plateStockFt}'`, quantity: platePieces, unit: "pieces", ...wallMeta });
     trace.push(`plates: 3 × ${length}" = ${plateLengthIn}" → ${platePieces} × ${plateStockFt}' stock`);
 
     const headers = new Map();
@@ -146,7 +149,7 @@
       const key = `${piece.depth} header · ${stock}'${piece.review ? " · REVIEW: span over 8'" : ""}`;
       headers.set(key, (headers.get(key) || 0) + 2);
     }
-    headers.forEach((quantity, item) => lines.push({ item, quantity, unit: "pieces" }));
+    headers.forEach((quantity, item) => lines.push({ item, quantity, unit: "pieces", ...wallMeta }));
 
     return { unmeasured: false, wall, lines, trace, gaps, lengthInches: length };
   }
@@ -154,10 +157,25 @@
   /* The whole set of walls the AI read, turned into one order draft. Walls
      without a readable length are returned as what they are — gaps that need a
      person — never silently dropped and never guessed at. */
+  /* Same item across walls or decks: quantities sum, provenance must agree
+     (it does — an item string encodes its method), sheet citations union. */
+  function mergeLine(lines, line) {
+    const key = line.item;
+    if (!lines.has(key)) {
+      lines.set(key, { ...line, quantity: 0, source_refs: [] });
+    }
+    const merged = lines.get(key);
+    merged.quantity += line.quantity;
+    merged.source_refs = [...new Set([...(merged.source_refs || []), ...(line.source_refs || [])])];
+    if (line.status === "hold") { merged.status = "hold"; merged.hold_reason = merged.hold_reason || line.hold_reason; }
+    return merged;
+  }
+
   function takeoff(walls, decks) {
     const lines = new Map();
     const traces = [];
     const gaps = [];
+    const proposals = [];
     const unmeasured = [];
     let measuredWalls = 0;
     for (const deck of Array.isArray(decks) ? decks : []) {
@@ -165,11 +183,8 @@
       if (result.lines.length) measuredWalls += 1;
       traces.push({ wall: deck.label || "deck", source_refs: deck.source_refs || [], steps: result.steps });
       gaps.push(...result.gaps);
-      for (const line of result.lines) {
-        const key = line.item;
-        if (!lines.has(key)) lines.set(key, { item: line.item, quantity: 0, unit: line.unit });
-        lines.get(key).quantity += line.quantity;
-      }
+      proposals.push(...result.proposals);
+      for (const line of result.lines) mergeLine(lines, line);
     }
     for (const wall of Array.isArray(walls) ? walls : []) {
       const result = takeoffWall(wall);
@@ -180,16 +195,13 @@
       measuredWalls += 1;
       traces.push({ wall: wall.label || "wall", source_refs: wall.source_refs || [], steps: result.trace });
       gaps.push(...result.gaps);
-      for (const line of result.lines) {
-        const key = line.item;
-        if (!lines.has(key)) lines.set(key, { item: line.item, quantity: 0, unit: line.unit });
-        lines.get(key).quantity += line.quantity;
-      }
+      for (const line of result.lines) mergeLine(lines, line);
     }
     return {
       lines: [...lines.values()].sort((a, b) => a.item.localeCompare(b.item)),
       traces,
       gaps,
+      proposals,
       unmeasured,
       measuredWalls,
     };
@@ -211,6 +223,12 @@
     const lines = [];
     const steps = [];
     const gaps = [];
+    /* A proposal is the AI's best reading where certainty was out of reach:
+       the count it made, where it counted, its confidence, and what blocked
+       certainty. It is never a line — a person accepts it as a working
+       baseline, corrects it, or keeps the question open. The person is not
+       asked to measure the plans themselves. */
+    const proposals = [];
     const label = deck.label || "deck";
 
     let areaSqft = parsePrintedNumber(deck.area_sqft);
@@ -242,6 +260,7 @@
     const boardsAreJoists = Boolean(joistSize && boardMatch && spacing
       && joistSize === `2x${boardMatch[1]}` && spacing <= boardFace + 1.5);
 
+    const deckMeta = { category: "lumber", status: "ready", source_refs: deck.source_refs || [] };
     if (areaSqft && spacing && joistSize) {
       const joistLf = Math.ceil((areaSqft * 12) / spacing);
       lines.push({
@@ -249,10 +268,25 @@
           ? `${joistSize} deck boards${deck.joist_treatment ? ` (${deck.joist_treatment})` : ""} — structure and walking surface in one — linear feet`
           : `${joistSize} joist${deck.joist_treatment ? ` (${deck.joist_treatment})` : ""} — linear feet`,
         quantity: joistLf, unit: "LF",
+        method: "DERIVED_FROM_PRINTED_DIMENSIONS", ...deckMeta,
       });
       steps.push(`joists: ${areaSqft.toFixed(0)} sq ft × 12 / ${spacing}" o.c. = ${joistLf} LF`);
       if (boardsAreJoists) {
         steps.push(`one member, two jobs: the ${joistSize} boards at ${spacing}" o.c. are both the joists and the walking surface ("${deckingText.trim()}") — ${(spacing - boardFace).toFixed(1)}" gap between ${boardFace}" faces, one order line, not two`);
+        /* The legend prints the stock length ("2\" x 6\" x 6'"), so net pieces
+           are arithmetic too. Purchase allowance is an estimator's decision,
+           not a printed fact, and is deliberately not computed here. */
+        const stockMatch = deckingText.match(/x\s*(\d+)\s*'/);
+        const stockFt = stockMatch ? Number(stockMatch[1]) : 0;
+        if (stockFt > 0) {
+          const pieces = Math.ceil(joistLf / stockFt);
+          lines.push({
+            item: `${joistSize}x${stockFt}' deck boards — net pieces (no purchase allowance)`,
+            quantity: pieces, unit: "pieces",
+            method: "DERIVED_FROM_PRINTED_DIMENSIONS", ...deckMeta,
+          });
+          steps.push(`pieces: ${joistLf} LF / ${stockFt}' printed stock length = ${pieces} net pieces — a purchase allowance is an estimator's assumption, not computed here`);
+        }
       }
     } else {
       if (!areaSqft) gaps.push(`${label}: no printed area or overall dimensions, so joist footage cannot be computed`);
@@ -270,23 +304,37 @@
          the same boards twice. */
     } else if (areaSqft && boardMatch) {
       const boardLf = Math.ceil((areaSqft * 12) / boardFace);
-      lines.push({ item: `decking 2x${boardMatch[1]} — linear feet (zero gap, upper bound)`, quantity: boardLf, unit: "LF" });
+      lines.push({ item: `decking 2x${boardMatch[1]} — linear feet (zero gap, upper bound)`, quantity: boardLf, unit: "LF", method: "DERIVED_FROM_PRINTED_DIMENSIONS", ...deckMeta });
       steps.push(`decking: ${areaSqft.toFixed(0)} sq ft × 12 / ${boardFace}" face = ${boardLf} LF at zero board gap`);
     } else if (areaSqft && sheetMatch) {
       const sheets = Math.ceil(areaSqft / 32);
-      lines.push({ item: `deck sheathing ${deckingText.trim()} — 4×8 sheets`, quantity: sheets, unit: "sheets" });
+      lines.push({ item: `deck sheathing ${deckingText.trim()} — 4×8 sheets`, quantity: sheets, unit: "sheets", method: "DERIVED_FROM_PRINTED_DIMENSIONS", ...deckMeta });
       steps.push(`sheathing: ${areaSqft.toFixed(0)} sq ft / 32 sq ft per sheet = ${sheets} sheets`);
     } else if (deckingText && areaSqft) {
       gaps.push(`${label}: decking "${deckingText.trim()}" — the area is ${areaSqft.toFixed(0)} sq ft, but this product's coverage is not something the sheets state`);
     }
 
     /* The diaphragm under the walking surface, when the framing notes print
-       one ("DECK DIAPHRAGM TO BE 19/32" PLYWOOD"). Exact per 4×8 sheet. */
+       one ("DECK DIAPHRAGM TO BE 19/32" PLYWOOD"). Exact per 4×8 sheet — and
+       when the same sheets draw a permeable board deck, the two printed facts
+       conflict: the sheet count stays computed, the line goes on HOLD, and
+       the conflict is an RFI the product raises itself. */
     const sheathing = String(deck.sheathing || "").trim();
     if (sheathing && areaSqft) {
       const sheets = Math.ceil(areaSqft / 32);
-      lines.push({ item: `deck sheathing ${sheathing} — 4×8 sheets`, quantity: sheets, unit: "sheets" });
-      steps.push(`sheathing: ${areaSqft.toFixed(0)} sq ft / 32 sq ft per sheet = ${sheets} sheets`);
+      const conflict = boardsAreJoists
+        ? "the printed diaphragm note conflicts with the permeable board deck the same sheets draw — engineer to confirm before procurement"
+        : "";
+      lines.push({
+        item: `deck sheathing ${sheathing} — 4×8 sheets (net)`,
+        quantity: sheets, unit: "sheets",
+        method: "DERIVED_FROM_PRINTED_DIMENSIONS", category: "lumber",
+        status: conflict ? "hold" : "ready",
+        hold_reason: conflict || undefined,
+        source_refs: deck.source_refs || [],
+      });
+      steps.push(`sheathing: ${areaSqft.toFixed(0)} sq ft / 32 sq ft per sheet = ${sheets} net sheets`);
+      if (conflict) gaps.push(`${label}: HOLD — ${conflict}`);
     } else if (sheathing) {
       gaps.push(`${label}: sheathing is specified (${sheathing}) but no readable area to cover`);
     }
@@ -302,38 +350,55 @@
        so the line says what it is out loud. */
     const notLumber = (text) => /\bconc(?:rete|\.)?\b|\bsteel\b|\bTS\b|stirrup|re-?bars?\b/i.test(String(text || ""));
     const materialTag = (description) => (notLumber(description) ? " · not lumber — verification count" : "");
+    const propose = (gapText, member, what) => {
+      const proposed = Number(member?.count_proposed) || 0;
+      if (proposed > 0) {
+        proposals.push({
+          question: gapText,
+          proposed: `${proposed} × ${what}`,
+          confidence: String(member.count_confidence || "low"),
+          basis: String(member.count_note || "").trim() || "counted on the plan",
+        });
+      }
+    };
     for (const beam of Array.isArray(deck.beams) ? deck.beams : []) {
       const count = Number(beam.count_drawn) || 0;
       if (count > 0) {
-        lines.push({ item: `beam ${beam.mark || ""}: ${String(beam.description || "").trim()}${materialTag(beam.description)}`.trim(), quantity: count, unit: "drawn on plan" });
+        lines.push({ item: `beam ${beam.mark || ""}: ${String(beam.description || "").trim()}${materialTag(beam.description)}`.trim(), quantity: count, unit: "drawn on plan", method: "AI_PLAN_COUNT", category: notLumber(beam.description) ? "not_lumber" : "lumber", status: "ready", source_refs: deck.source_refs || [] });
         steps.push(`${beam.mark || "beam"}: ${count} drawn on the framing plan`);
       } else {
-        gaps.push(`${label}: beam ${beam.mark || ""} (${String(beam.description || "").trim()}) is scheduled but its drawn count was not read`);
+        const gapText = `${label}: beam ${beam.mark || ""} (${String(beam.description || "").trim()}) is scheduled but its drawn count was not read with certainty`;
+        gaps.push(gapText);
+        propose(gapText, beam, `beam ${beam.mark || ""}`.trim());
       }
     }
     for (const column of Array.isArray(deck.columns) ? deck.columns : []) {
       const count = Number(column.count_drawn) || 0;
       if (count > 0) {
-        lines.push({ item: `column ${column.mark || ""}: ${String(column.description || "").trim()}${materialTag(column.description)}`.trim(), quantity: count, unit: "drawn on plan" });
+        lines.push({ item: `column ${column.mark || ""}: ${String(column.description || "").trim()}${materialTag(column.description)}`.trim(), quantity: count, unit: "drawn on plan", method: "AI_PLAN_COUNT", category: notLumber(column.description) ? "not_lumber" : "lumber", status: "ready", source_refs: deck.source_refs || [] });
       } else {
-        gaps.push(`${label}: column ${column.mark || ""} is scheduled but its drawn count was not read`);
+        const gapText = `${label}: column ${column.mark || ""} is scheduled but its drawn count was not read with certainty`;
+        gaps.push(gapText);
+        propose(gapText, column, `column ${column.mark || ""}`.trim());
       }
     }
     if (deck.piles && (Number(deck.piles.count_drawn) || 0) > 0) {
-      lines.push({ item: `pile: ${String(deck.piles.description || "").trim()}${materialTag(deck.piles.description)}`, quantity: Number(deck.piles.count_drawn), unit: "drawn on plan" });
+      lines.push({ item: `pile: ${String(deck.piles.description || "").trim()}${materialTag(deck.piles.description)}`, quantity: Number(deck.piles.count_drawn), unit: "drawn on plan", method: "AI_PLAN_COUNT", category: notLumber(deck.piles.description) ? "not_lumber" : "lumber", status: "ready", source_refs: deck.source_refs || [] });
     } else if (deck.piles?.description) {
-      gaps.push(`${label}: piles are scheduled (${String(deck.piles.description).trim()}) but their drawn count was not read`);
+      const gapText = `${label}: piles are scheduled (${String(deck.piles.description).trim()}) but their drawn count was not read with certainty`;
+      gaps.push(gapText);
+      propose(gapText, deck.piles, "pile");
     }
 
     const railLength = parseFeetInches(deck.guardrail_length);
     if (deck.guardrail && railLength != null) {
-      lines.push({ item: `guardrail: ${String(deck.guardrail).trim()}`, quantity: Math.ceil(railLength / 12), unit: "LF" });
+      lines.push({ item: `guardrail: ${String(deck.guardrail).trim()}${materialTag(deck.guardrail)}`, quantity: Math.ceil(railLength / 12), unit: "LF", method: "PRINTED_FACT", category: notLumber(deck.guardrail) ? "not_lumber" : "lumber", status: "ready", source_refs: deck.source_refs || [] });
       steps.push(`guardrail: ${Math.ceil(railLength / 12)} LF as printed`);
     } else if (deck.guardrail) {
       gaps.push(`${label}: a guardrail is specified (${String(deck.guardrail).trim()}) but no printed run length was read`);
     }
 
-    return { lines, steps, gaps };
+    return { lines, steps, gaps, proposals };
   }
 
   const api = { parseFeetInches, normalizeLumberSize, parsePrintedNumber, takeoffWall, takeoff, takeoffDeck, stockLengthFor, headerDepthFor };

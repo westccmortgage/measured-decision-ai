@@ -195,7 +195,22 @@ console.log("\n── the deck as the sheets actually spell it ──");
      51.25 → 52 sheets. */
   const sheathing = result.lines.find((line) => /sheathing/.test(line.item));
   check("the framing note's diaphragm is 52 sheets", sheathing?.quantity === 52 && /19\/32/.test(sheathing.item), JSON.stringify(sheathing));
-  check("no false gaps remain", result.gaps.length === 0, JSON.stringify(result.gaps));
+  /* One gap remains, and it is TRUE: the printed diaphragm note conflicts
+     with the permeable deck the same sheets draw. The product raises that
+     RFI itself — a person never has to spot the contradiction. */
+  check("the only remaining gap is the real printed conflict, raised automatically",
+    result.gaps.length === 1 && /HOLD — the printed diaphragm note conflicts/.test(result.gaps[0]),
+    JSON.stringify(result.gaps));
+  const sheathingLine = result.lines.find((line) => /sheathing/.test(line.item));
+  check("and the sheet count stays computed but on HOLD",
+    sheathingLine?.status === "hold" && /engineer to confirm/.test(sheathingLine.hold_reason || ""),
+    JSON.stringify(sheathingLine));
+  check("provenance rides on every line",
+    result.lines.every((line) => ["PRINTED_FACT", "AI_PLAN_COUNT", "DERIVED_FROM_PRINTED_DIMENSIONS", "AI_SCALED_ESTIMATE"].includes(line.method)),
+    JSON.stringify(result.lines.map((line) => [line.item.slice(0, 30), line.method])));
+  const pieces = result.lines.find((line) => /net pieces/.test(line.item));
+  check("the legend's printed 6' stock turns LF into 547 net pieces, allowance not computed",
+    pieces?.quantity === 547 && /no purchase allowance/.test(pieces.item), JSON.stringify(pieces));
 }
 
 console.log("\n── a deck the sheets did not dimension ──");

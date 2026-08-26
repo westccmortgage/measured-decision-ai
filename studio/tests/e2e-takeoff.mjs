@@ -52,201 +52,162 @@ async function openPlans(world) {
   return { context, page, errors };
 }
 
-console.log("\n── a plan set with printed dimensions ──");
+console.log("\n── the owner opens a finished takeoff — zero technical input ──");
+/* The product rule under test: the owner uploads plans and LOOKS at a result.
+   No count fields, no "write in what you can read", no approval gate before
+   viewing or downloading. RFIs are raised by the product itself. */
 {
   const { context, page, errors } = await openPlans(takeoffRows());
   check("the plans screen opens", errors.length === 0, errors[0] || "");
 
-  const view = await page.evaluate(() => {
-    const section = document.querySelector("#takeoff-section");
-    return {
-      shown: section && !section.hidden,
-      pill: document.querySelector("#takeoff-state")?.textContent.trim(),
-      intro: document.querySelector("#takeoff-intro")?.textContent || "",
-      rows: [...document.querySelectorAll("#takeoff-table tbody tr")].map((row) => row.innerText.replace(/\s+/g, " ").trim()),
-      gaps: document.querySelector("#takeoff-gaps")?.innerText.replace(/\s+/g, " ") || "",
-      note: document.querySelector("#takeoff-section .governance-note")?.textContent || "",
-      approveShown: document.querySelector("#approve-takeoff")?.hidden === false,
-    };
-  });
-  check("the section is on the page", view.shown === true);
-  check("and wears the product's own state", /read by ai · not approved/i.test(view.pill || ""), view.pill);
-  /* The numbers are the calculator's, worked by hand:
-     Wall A1 (12', 2 corners): ceil(144/16)+1 = 10, +4 = 14 studs.
-     Wall A2 (20', 2 corners, one 3' door): ceil(240/16)+1 = 16, +4 corners,
-     +4 for the door (2 kings + 2 trimmers) = 24. Total 38.
-     Plates: A1 432"→3×12'; A2 720"→4×16'. Header: 2 × 2x6 @ 8'.
-     My first pass wrote 42 here, reusing the two-opening wall from
-     takeoff.mjs — the screen was right and the expectation was not. */
-  check("the stud line is the hand-worked total",
-    view.rows.some((row) => /2x4 stud · 92 5\/8" precut 38 pieces/.test(row)), JSON.stringify(view.rows));
-  check("the door's header is on the order",
-    view.rows.some((row) => /2x6 header · 8' 2 pieces/.test(row)), JSON.stringify(view.rows));
-  /* The wall the drawings did not dimension. */
-  check("the undimensioned wall is a named gap",
-    /Wall B1 has no printed length \(A-202\)/.test(view.gaps), view.gaps.slice(0, 200));
-  check("the intro says where the numbers may and may not come from",
-    /printed on the sheets/i.test(view.intro) && /nothing is measured by scale/i.test(view.intro), view.intro.slice(0, 200));
-  check("and the note refuses to be an estimate",
-    /not a contractor's estimate/i.test(view.note), view.note.slice(0, 160));
-  check("an owner is offered the approval", view.approveShown === true);
-
-  console.log("\n── the arithmetic is inspectable ──");
-  const trace = await page.evaluate(() => {
-    document.querySelector(".takeoff-trace summary")?.click();
-    return document.querySelector("#takeoff-trace")?.innerText.replace(/\s+/g, " ") || "";
-  });
-  check("each wall shows its steps and its sheet",
-    /Wall A1 · A-201/.test(trace) && /ceil\(144" \/ 16"\) \+ 1 = 10/.test(trace), trace.slice(0, 200));
-
-  console.log("\n── signing it, answering what the sheets did not ──");
-  const signed = await page.evaluate(async () => {
-    const input = document.querySelector("#takeoff-gaps .gap-answer");
-    if (input) input.value = "  9'-6\" — read on A-202 myself  ";
-    const noteField = document.querySelector("#takeoff-note");
-    if (noteField) noteField.value = " Ledger run to be field-verified. ";
-    let asked = "";
-    window.confirm = (message) => { asked = message; return true; };
-    document.querySelector("#approve-takeoff")?.click();
-    await new Promise((r) => setTimeout(r, 700));
-    const call = window.__rpcCalls.find((c) => c.name === "approve_material_takeoff");
-    return { hadInput: Boolean(input), asked, args: call?.args || null };
-  });
-  check("each gap offers a place to write the person's own reading", signed.hadInput === true);
-  check("approving asks first, and names the open gaps",
-    /1 open gap/.test(signed.asked) && /not an estimate/i.test(signed.asked), signed.asked.slice(0, 240));
-  check("and says the person's answers go on the record",
-    /You answered 1 of them/.test(signed.asked), signed.asked.slice(0, 300));
-  check("the answer rides with the signature, trimmed and tied to its question",
-    (signed.args?.p_answers || []).length === 1
-    && signed.args.p_answers[0].answer === "9'-6\" — read on A-202 myself"
-    && /Wall B1/.test(signed.args.p_answers[0].question),
-    JSON.stringify(signed.args?.p_answers));
-  check("the draft goes to the record verbatim",
-    signed.args?.p_kind === "wood_framing"
-    && signed.args?.p_measured_walls === 2
-    && (signed.args?.p_lines || []).some((line) => line.quantity === 38),
-    JSON.stringify(signed.args?.p_lines?.slice(0, 2)));
-  check("with the gap that stays open",
-    (signed.args?.p_gaps || []).some((gap) => /Wall B1/.test(gap)), JSON.stringify(signed.args?.p_gaps));
-  check("and the calculator names its version",
-    signed.args?.p_calculator_version === "takeoff360-1", signed.args?.p_calculator_version);
-  check("the signer's note goes on the record, trimmed",
-    signed.args?.p_note === "Ledger run to be field-verified.", JSON.stringify(signed.args?.p_note));
-  check("nothing threw", errors.length === 0, errors.join(" | "));
-  await context.close();
-}
-
-console.log("\n── a deck set with no framed walls at all ──");
-/* The Sarita report, reproduced: nine sheets of wood deck, schedules printed,
-   and the section said "no framing dimensions the AI could read". */
-{
-  const { context, page, errors } = await openPlans(deckTakeoffRows());
-  const deck = await page.evaluate(() => ({
+  const view = await page.evaluate(() => ({
+    shown: document.querySelector("#takeoff-section")?.hidden === false,
+    heading: document.querySelector("#takeoff-section .section-heading p")?.textContent || "",
     pill: document.querySelector("#takeoff-state")?.textContent.trim(),
+    intro: document.querySelector("#takeoff-intro")?.textContent || "",
     rows: [...document.querySelectorAll("#takeoff-table tbody tr")].map((row) => row.innerText.replace(/\s+/g, " ").trim()),
     gaps: document.querySelector("#takeoff-gaps")?.innerText.replace(/\s+/g, " ") || "",
-    emptyShown: document.querySelector("#takeoff-empty")?.hidden === false,
+    inputsInOwnerView: document.querySelectorAll("#takeoff-gaps input, #takeoff-gaps textarea").length,
+    requiredFields: document.querySelectorAll("#takeoff-section [required]").length,
+    aiDownloadShown: document.querySelector("#download-ai-takeoff")?.hidden === false,
+    verifiedDownloadShown: document.querySelector("#download-takeoff")?.hidden === false,
+    note: document.querySelector("#takeoff-section .governance-note")?.textContent || "",
   }));
-  check("a deck is lumber the section can read", deck.emptyShown === false, JSON.stringify(deck.pill));
-  check("joist footage is on the order: 1230 LF",
-    deck.rows.some((row) => /2x6 joist \(F\.R\.T\.\).*1230 LF/.test(row)), JSON.stringify(deck.rows));
-  check("decking is there as a stated upper bound",
-    deck.rows.some((row) => /decking 2x6.*3579 LF/.test(row)), JSON.stringify(deck.rows));
-  check("the pile count is on it, counted as drawn",
-    deck.rows.some((row) => /pile.*14 drawn on plan/.test(row)), JSON.stringify(deck.rows));
-  check("and the guardrail without a printed run is a gap",
-    /guardrail/.test(deck.gaps) && /no printed run length/.test(deck.gaps), deck.gaps.slice(0, 200));
-  check("nothing threw on the deck set", errors.length === 0, errors[0] || "");
-  await context.close();
-}
+  check("the section is the AI Takeoff Review", view.shown && /AI Takeoff Review/.test(view.heading), view.heading);
+  check("and wears the honest state", /read by ai · not confirmed/i.test(view.pill || ""), view.pill);
+  check("the intro promises no manual measurement",
+    /No manual plan measurement is required/.test(view.intro), view.intro.slice(0, 160));
+  check("the owner view holds NO technical input fields",
+    view.inputsInOwnerView === 0 && view.requiredFields === 0,
+    `inputs=${view.inputsInOwnerView} required=${view.requiredFields}`);
+  check("quantities render themselves, provenance on the line",
+    view.rows.some((row) => /2x4 stud · 92 5\/8" precut/.test(row) && /Derived from printed dimensions/.test(row)),
+    JSON.stringify(view.rows.slice(0, 2)));
+  check("the undimensioned wall is an automatic RFI, not homework",
+    /Wall B1 has no printed length/.test(view.gaps) && /OPEN_RFI/.test(view.gaps)
+    && /Nothing above needs your measurement/.test(view.gaps), view.gaps.slice(0, 260));
+  check("no 'write in what you can read' language survives anywhere",
+    !/write in what you can read/i.test(await page.content()), "");
+  check("the AI workbook is offered with no signature",
+    view.aiDownloadShown === true && view.verifiedDownloadShown === false, JSON.stringify(view));
+  check("the governance note says what accepting is and is not",
+    /working baseline/i.test(view.note) && /line-by-line expert review/i.test(view.note), view.note.slice(0, 200));
 
-console.log("\n── a signed takeoff leaves as a real file ──");
-/* The request behind this: "I need a real lumber takeoff list to be able
-   download". Only the signed copy leaves — a draft outside the studio would
-   circulate as fact — and the file carries its own governance line, the
-   person's answers, and the questions still open. */
-{
-  const world = deckTakeoffRows();
-  const pileGap = 'Deck: piles are scheduled (P1: 18" CONC. PILE) but their drawn count was not read';
-  world.material_takeoffs = [{
-    id: "tk-1", organization_id: world.document_baselines[0].organization_id,
-    property_id: world.document_baselines[0].property_id, baseline_id: "bl-1",
-    kind: "wood_framing", state: "approved",
-    approved_at: "2026-08-26T01:00:00Z", calculator_version: "takeoff360-1", measured_walls: 1,
-    lines: [
-      { item: "2x6 deck boards (F.R.T.) — structure and walking surface in one — linear feet", quantity: 3280, unit: "LF" },
-      { item: 'pile: 18" dia concrete pile · not lumber — verification count', quantity: 14, unit: "drawn on plan" },
-    ],
-    traces: [{ wall: "Wood Deck", source_refs: ["S-2.0", "A-210"], steps: ["area: 1640 sq ft as printed", 'joists: 1640 sq ft × 12 / 6" o.c. = 3280 LF'] }],
-    gaps: [pileGap, "Deck: beam BM.1 is scheduled but its drawn count was not read"],
-    answers: [{ question: pileGap, answer: "14 — counted on S-2.0 foundation plan" }],
-    note: "Plywood diaphragm on hold — conflicts with the permeable 2x6 deck; engineer to confirm.",
-  }];
-  const { context, page, errors } = await openPlans(world);
-  const view = await page.evaluate(() => ({
-    pill: document.querySelector("#takeoff-state")?.textContent.trim(),
-    downloadShown: document.querySelector("#download-takeoff")?.hidden === false,
-    approveHidden: document.querySelector("#approve-takeoff")?.hidden,
-    gapsText: document.querySelector("#takeoff-gaps")?.innerText.replace(/\s+/g, " ") || "",
-    inputs: document.querySelectorAll("#takeoff-gaps .gap-answer").length,
-  }));
-  check("the signed state offers the download", /approved/i.test(view.pill || "") && view.downloadShown === true, view.pill);
-  check("nothing is re-offered for signature", view.approveHidden === true);
-  check("the person's answer is shown as theirs, and its question is no longer open",
-    /Answered at signing/.test(view.gapsText)
-    && /14 — counted on S-2\.0/.test(view.gapsText)
-    && /1 thing the sheets did not answer/.test(view.gapsText),
-    view.gapsText.slice(0, 300));
-  check("a signed record takes no more answers", view.inputs === 0, String(view.inputs));
-
+  console.log("\n── the AI workbook downloads without any approval ──");
   const download = await page.evaluate(async () => {
     let blob = null; let filename = ""; let clicked = false;
     URL.createObjectURL = (b) => { blob = b; return "blob:captured"; };
     HTMLAnchorElement.prototype.click = function () { clicked = true; filename = this.download; };
-    document.querySelector("#download-takeoff")?.click();
-    await new Promise((r) => setTimeout(r, 200));
+    document.querySelector("#download-ai-takeoff")?.click();
+    await new Promise((r) => setTimeout(r, 150));
     const head = blob ? [...new Uint8Array((await blob.arrayBuffer()).slice(0, 2))] : [];
-    const sheets = window.__takeoffSheets(
-      window.__seed.rows.material_takeoffs[0], "3001 Hutton",
-    );
-    return { clicked, filename, head, type: blob?.type || "", sheets };
+    const sheets = window.__aiTakeoffSheets();
+    return { clicked, filename, head, sheets: sheets.map((sheet) => sheet.name), summary: sheets[0].rows, detail: sheets[1].rows };
   });
-  check("the button downloads a workbook, named for the project and the signing date",
-    download.clicked === true && /^takeoff-.+-2026-08-26\.xlsx$/.test(download.filename), download.filename);
-  check("and the bytes are a real ZIP with the spreadsheet mime type",
-    download.head.join(",") === "80,75" && /spreadsheetml/.test(download.type),
-    `${download.head.join(",")} · ${download.type}`);
+  check("it downloads as a real workbook, no signature asked",
+    download.clicked === true && /^ai-takeoff-.+\.xlsx$/.test(download.filename) && download.head.join(",") === "80,75",
+    download.filename);
+  check("with the four AI sheets",
+    JSON.stringify(download.sheets) === JSON.stringify(["AI Takeoff Summary", "Detailed Quantities & Basis", "Sources & Arithmetic", "RFIs & Holds"]),
+    JSON.stringify(download.sheets));
+  check("the summary counts RFIs and confirms nothing",
+    download.summary.some((row) => row[0] === "Open RFIs raised automatically" && row[1] >= 1)
+    && download.summary.some((row) => row[0] === "Human-confirmed lines" && row[1] === 0),
+    JSON.stringify(download.summary.slice(5)));
+  check("every detail row carries method and status columns",
+    download.detail[0].join("|") === "Item|Qty|Unit|Method|Confidence|Category|Status|Sources|Unresolved issue"
+    && download.detail.slice(1).every((row) => row[3] && row[6]),
+    JSON.stringify(download.detail[0]));
 
-  const [order, proposed, sources, holds] = download.sheets;
-  const orderBody = order.rows.slice(6);
-  check("sheet 1 is the Human-Verified Order, every row Human Confirmed",
-    order.name === "Human-Verified Order"
-    && orderBody.filter((row) => row.length >= 4).every((row) => row[3] === "Human Confirmed"),
+  console.log("\n── accepting is a baseline, never a confirmation ──");
+  const accepted = await page.evaluate(async () => {
+    let asked = "";
+    window.confirm = (message) => { asked = message; return true; };
+    document.querySelector("#approve-takeoff")?.click();
+    await new Promise((r) => setTimeout(r, 500));
+    return {
+      asked,
+      acceptCall: window.__rpcCalls.find((c) => c.name === "approve_material_takeoff") || null,
+      reviewCalls: window.__rpcCalls.filter((c) => c.name === "review_takeoff_line").length,
+    };
+  });
+  check("the dialog names OWNER_ACCEPTED_BASELINE and disclaims technical confirmation",
+    /OWNER_ACCEPTED_BASELINE/.test(accepted.asked) && /does not confirm any technical value/.test(accepted.asked),
+    accepted.asked.slice(0, 220));
+  check("acceptance sends no answers and triggers no line review",
+    Array.isArray(accepted.acceptCall?.args?.p_answers) && accepted.acceptCall.args.p_answers.length === 0
+    && accepted.reviewCalls === 0,
+    JSON.stringify({ answers: accepted.acceptCall?.args?.p_answers, reviews: accepted.reviewCalls }));
+
+  console.log("\n── only the expert line action creates HUMAN_CONFIRMED ──");
+  const reviewed = await page.evaluate(async () => {
+    const line = document.querySelector("#takeoff-expert-lines .expert-line");
+    line?.querySelector('button[data-verdict="confirmed"]')?.click();
+    await new Promise((r) => setTimeout(r, 500));
+    const call = window.__rpcCalls.find((c) => c.name === "review_takeoff_line");
+    return { key: line?.dataset.lineKey || "", args: call?.args || null };
+  });
+  check("the expert Confirm goes line-by-line through its own RPC",
+    reviewed.args?.p_verdict === "confirmed" && reviewed.args?.p_line_key === reviewed.key
+    && Boolean(reviewed.args?.p_value),
+    JSON.stringify(reviewed.args));
+  check("nothing threw", errors.length === 0, errors.join(" | "));
+  await context.close();
+}
+
+console.log("\n── the deck reads itself: proposals, HOLD and the verified gate ──");
+/* Sarita as regression: the pipeline output renders with zero input — counts
+   as AI_PLAN_COUNT proposals, the plywood conflict on automatic HOLD, and
+   the Human-Verified workbook gated on a real line review. */
+{
+  const world = deckTakeoffRows();
+  const deckRecord = world.document_baselines[0].analysis.framing_decks[0];
+  deckRecord.sheathing = 'DECK DIAPHRAGM TO BE 19/32" PLYWOOD';
+  deckRecord.decking = "WD-1: 2\" x 6\" x 6' DECKING";
+  deckRecord.joist_spacing = '@6" O.C.';
+  deckRecord.beams = [
+    { mark: "DECK BM", description: "6x12 #1 @36\" O.C.", count_drawn: 0, count_proposed: 27, count_confidence: "medium", count_note: "counted on S-2.0 framing plan" },
+  ];
+  deckRecord.columns = [];
+  deckRecord.piles = { description: '18" CONC. PILE w/ RE-BARS', count_drawn: 0, count_proposed: 14, count_confidence: "high", count_note: "counted on S-2.0 foundation plan" };
+  world.takeoff_line_reviews = [{
+    id: "rev-1", baseline_id: "bl-1", kind: "wood_framing", state: "active",
+    line_key: "2x6x6' deck boards — net pieces (no purchase allowance)",
+    verdict: "confirmed", value: "547 pieces", reviewer_role: "reviewer", reviewed_at: "2026-08-26T05:00:00Z",
+  }];
+  const { context, page, errors } = await openPlans(world);
+  const deck = await page.evaluate(() => ({
+    pill: document.querySelector("#takeoff-state")?.textContent.trim(),
+    rows: [...document.querySelectorAll("#takeoff-table tbody tr")].map((row) => row.innerText.replace(/\s+/g, " ").trim()),
+    inputs: document.querySelectorAll("#takeoff-gaps input, #takeoff-gaps textarea").length,
+    verifiedShown: document.querySelector("#download-takeoff")?.hidden === false,
+    verified: window.__verifiedSheets(),
+  }));
+  check("proposals render themselves with confidence — no owner counting",
+    deck.rows.some((row) => /27 × beam DECK BM/.test(row) && /medium confidence/.test(row))
+    && deck.rows.some((row) => /14 × pile/.test(row) && /high confidence/.test(row))
+    && deck.inputs === 0,
+    JSON.stringify(deck.rows.filter((row) => /×/.test(row))));
+  check("the plywood conflict is an automatic HOLD on the row",
+    deck.rows.some((row) => /sheathing/.test(row) && /HOLD/.test(row) && /engineer to confirm/.test(row)),
+    JSON.stringify(deck.rows.filter((row) => /sheathing/.test(row))));
+  check("a real line review shows as human-confirmed and opens the verified download",
+    /1 line human-confirmed/i.test(deck.pill || "") && deck.verifiedShown === true, deck.pill);
+  const orderSheet = deck.verified[0];
+  const orderBody = orderSheet.rows.slice(5);
+  check("the Human-Verified Order carries ONLY the reviewed line",
+    orderBody.length === 1 && orderBody[0][0] === "2x6x6' deck boards — net pieces (no purchase allowance)"
+    && orderBody[0][2] === "HUMAN_CONFIRMED" && orderBody[0][3] === "reviewer",
     JSON.stringify(orderBody));
-  check("printed dimensions and plan counts each carry their basis",
-    orderBody.some((row) => row[4] === "Printed Dimension" && row[1] === 3280)
-    && orderBody.some((row) => /Plan Count · not a lumber item/.test(row[4] || "") && row[1] === 14),
-    JSON.stringify(orderBody.map((row) => [row[1], row[4]])));
-  check("the signer's answer and note are on the order sheet as theirs",
-    orderBody.some((row) => row[4] === "Signer's reading at approval" && /counted on S-2\.0/.test(row[1]))
-    && order.rows.some((row) => /Note from the signer/.test(row[0] || "") && /engineer to confirm/.test(row[1] || "")),
-    JSON.stringify(order.rows.slice(-2)));
-  check("sheet 2 refuses scaled estimates by name",
-    proposed.name === "AI Proposed · Not Confirmed"
-    && proposed.rows.some((row) => /does not measure drawings by scale/.test(row[0] || "")),
-    JSON.stringify(proposed.rows));
-  check("sheet 3 carries the arithmetic with its citations",
-    sources.name === "Sources & Arithmetic"
-    && sources.rows.some((row) => row[0] === "Wood Deck" && /S-2\.0/.test(row[1] || ""))
-    && sources.rows.some((row) => /3280 LF/.test(row[2] || "")),
-    JSON.stringify(sources.rows));
-  check("sheet 4 holds the open question, marked do-not-order",
-    holds.name === "RFIs & Holds"
-    && holds.rows.some((row) => /beam BM\.1/.test(row[0] || "") && /do not order/.test(row[1] || ""))
-    && !holds.rows.some((row) => /piles are scheduled/.test(row[0] || "")),
-    JSON.stringify(holds.rows));
-  check("nothing threw on the signed set", errors.length === 0, errors[0] || "");
+  check("AI-only rows sit on the not-confirmed sheet, holds never on the order",
+    deck.verified[1].rows.some((row) => /deck boards.*structure and walking surface/.test(String(row[0])))
+    && !orderSheet.rows.some((row) => /sheathing/.test(String(row[0]))),
+    JSON.stringify(deck.verified[1].rows.slice(1, 3)));
+  check("nothing threw on the deck set", errors.length === 0, errors[0] || "");
+
+  await page.screenshot({ path: "studio/tests/fixtures/ai-takeoff-review.png", clip: undefined, fullPage: false }).catch(() => {});
+  const section = await page.$("#takeoff-section");
+  if (section) await section.screenshot({ path: "studio/tests/fixtures/ai-takeoff-review.png" }).catch(() => {});
   await context.close();
 }
 

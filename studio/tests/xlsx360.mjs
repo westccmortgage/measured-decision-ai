@@ -54,6 +54,63 @@ check("markup in an item name is escaped, not injected", parsed.has_escaped === 
 check("both sheets are declared by name",
   /Human-Verified Order/.test(parsed.workbook) && /RFIs &amp; Holds/.test(parsed.workbook), parsed.workbook.slice(0, 300));
 
+console.log("\n── determinism, structure, and a real spreadsheet app ──");
+{
+  const again = buildXlsx(sheets);
+  check("identical input produces byte-for-byte identical workbooks",
+    Buffer.compare(Buffer.from(bytes), Buffer.from(again)) === 0, `${bytes.length} vs ${again.length}`);
+
+  /* OOXML structure, not just zip integrity: every sheet the workbook names
+     must have a relationship, a part, and a content-type override. */
+  fs.writeFileSync(out, bytes);
+  const structure = JSON.parse(execFileSync("python3", ["-c", `
+import zipfile, json, re
+z = zipfile.ZipFile("${out}")
+wb = z.read("xl/workbook.xml").decode()
+rels = z.read("xl/_rels/workbook.xml.rels").decode()
+types = z.read("[Content_Types].xml").decode()
+sheet_rids = re.findall(r'r:id="(rId\\d+)"', wb)
+rel_map = dict(re.findall(r'Id="(rId\\d+)" [^>]*Target="([^"]+)"', rels))
+result = {
+  "every_sheet_has_rel": all(rid in rel_map for rid in sheet_rids),
+  "every_target_exists": all(("xl/" + t) in z.namelist() for t in rel_map.values()),
+  "every_part_typed": all(("<Override PartName=\\"/xl/worksheets/sheet%d.xml\\"" % (i+1)) in types for i in range(len(sheet_rids))),
+  "styles_rel": any(t == "styles.xml" for t in rel_map.values()),
+}
+print(json.dumps(result))
+`]).toString());
+  check("every declared sheet has a relationship, a real part, and a content type",
+    structure.every_sheet_has_rel && structure.every_target_exists && structure.every_part_typed && structure.styles_rel,
+    JSON.stringify(structure));
+
+  /* The independent referee: a real spreadsheet reader opens the file
+     read-only, without our writer in the loop. LibreOffice Calc when this
+     environment has it; the structural checks above are mandatory either way,
+     and a skipped smoke test says so out loud instead of passing silently. */
+  const smokeDir = path.join("studio", "tests", "fixtures", "soffice-smoke");
+  fs.mkdirSync(smokeDir, { recursive: true });
+  let smoke = "";
+  let readerAvailable = true;
+  try {
+    execFileSync("soffice", ["--headless", "--convert-to", "csv", "--outdir", smokeDir, out], { timeout: 90000, stdio: "pipe" });
+  } catch (error) {
+    const said = `${error.stdout || ""}${error.stderr || ""}`;
+    if (/could not be loaded|command not found|ENOENT/.test(said) && !fs.readdirSync(smokeDir).some((name) => name.endsWith(".csv"))) {
+      readerAvailable = false;
+    }
+  }
+  const produced = fs.readdirSync(smokeDir).find((name) => name.endsWith(".csv"));
+  smoke = produced ? fs.readFileSync(path.join(smokeDir, produced), "utf8") : "";
+  fs.rmSync(smokeDir, { recursive: true, force: true });
+  if (readerAvailable || smoke) {
+    check("LibreOffice opens the workbook and reads the cells back",
+      /2x6 deck boards — F\.R\.T\./.test(smoke) && /3280/.test(smoke), smoke.slice(0, 160));
+  } else {
+    console.log("  ok   (skipped) no spreadsheet reader in this environment — structural OOXML checks above still hold");
+  }
+  fs.unlinkSync(out);
+}
+
 console.log("\n── the four sheets carry only what the record supports ──");
 /* The mapping lives in plans.js next to the button; loading the whole plans
    screen in node is not possible, so the mapping is asserted through the
