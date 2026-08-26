@@ -1546,6 +1546,28 @@ async function analyzePlans() {
   const activeDocuments = selectedDocuments();
   startAnalysisProgress();
   setBusy(true, "AI is reading the plan set…");
+
+  /* Drawing-desk resolution first. The provider's own rasteriser draws an
+     E-size sheet too small to read a finish legend, so the browser renders
+     every page into high-resolution tiles the model can actually read.
+     If this phone or this network cannot afford it, analysis still runs on
+     the PDFs alone — said out loud, never a dead end. */
+  if (window.MDAIPageRenders) {
+    for (const planDocument of activeDocuments) {
+      const rendered = await window.MDAIPageRenders.ensure({
+        client,
+        document: planDocument,
+        organizationId: state.organizationId,
+        propertyId: state.property.id,
+        onProgress: (progressMessage) => setMessage(progressMessage),
+      });
+      if (!rendered.ok) {
+        setMessage(`High-resolution pages are unavailable here (${rendered.reason}). The AI will read the PDF at reduced sharpness — fine print may land in gaps.`, "info");
+        break;
+      }
+    }
+  }
+
   setMessage("Creating a governed analysis job. Large drawing sets may take several minutes.");
   try {
     const { data: job, error: jobError } = await client.from("plan_analysis_jobs").insert({

@@ -172,7 +172,7 @@ const schema = {
         additionalProperties: false,
         required: [
           "label", "building", "level", "length", "width", "area_sqft",
-          "joist_size", "joist_spacing", "joist_treatment", "decking",
+          "joist_size", "joist_spacing", "joist_treatment", "decking", "sheathing",
           "beams", "columns", "piles", "guardrail", "guardrail_length", "source_refs",
         ],
         properties: {
@@ -186,6 +186,10 @@ const schema = {
           joist_spacing: { type: "string" },
           joist_treatment: { type: "string" },
           decking: { type: "string" },
+          /* A diaphragm or sheathing note is a printed spec: "DECK DIAPHRAGM
+             TO BE 19/32" PLYWOOD" in the framing notes belongs here verbatim.
+             Empty string when the sheets specify none. */
+          sheathing: { type: "string" },
           beams: {
             type: "array",
             items: {
@@ -871,6 +875,37 @@ Deno.serve(async (request) => {
       revision: row.revision_label,
       issued_at: row.issued_at,
     }));
+
+    /* Drawing-desk resolution. The Studio renders each plan page into
+       high-resolution tiles before analysis, because the provider's own PDF
+       rasteriser draws an E-size sheet too small to read a schedule or count
+       a pile mark. When tiles exist they ride along as images; when they do
+       not, the PDFs still go alone — reduced sharpness, never a dead end. */
+    const MAX_RENDER_IMAGES = 80;
+    const renderImages: Array<{ label: string; url: string }> = [];
+    let renderTilesDropped = 0;
+    for (const { row } of signedDocuments) {
+      const { data: renderRecord } = await admin.from("plan_page_renders")
+        .select("document_id, pages, target_dpi").eq("document_id", row.id).maybeSingle();
+      if (!renderRecord) continue;
+      const prefix = `${row.organization_id}/page-renders/${row.id}`;
+      const { data: objects } = await admin.storage.from("project-documents")
+        .list(prefix, { limit: 1000 });
+      const tiles = (objects || [])
+        .filter((object) => object.name.endsWith(".jpg"))
+        .sort((a, b) => {
+          const pageOf = (name: string) => Number((name.match(/^p(\d+)-/) || [])[1] || 0);
+          const partOf = (name: string) => (/-full\.jpg$/.test(name) ? 0 : 1);
+          return pageOf(a.name) - pageOf(b.name) || partOf(a.name) - partOf(b.name) || a.name.localeCompare(b.name);
+        });
+      for (const tile of tiles) {
+        if (renderImages.length >= MAX_RENDER_IMAGES) { renderTilesDropped += 1; continue; }
+        const { data: signedTile } = await admin.storage.from("project-documents")
+          .createSignedUrl(`${prefix}/${tile.name}`, 3600);
+        if (signedTile?.signedUrl) renderImages.push({ label: `${row.original_filename} · ${tile.name}`, url: signedTile.signedUrl });
+      }
+    }
+
     const userContent: Array<Record<string, unknown>> = [
       {
         type: "input_text",
@@ -881,6 +916,21 @@ Deno.serve(async (request) => {
         file_url: url,
       })),
     ];
+    if (renderImages.length) {
+      userContent.push({
+        type: "input_text",
+        text: [
+          "High-resolution page renders accompany the PDFs, in this order:",
+          ...renderImages.map((image, index) => `${index + 1}. ${image.label}`),
+          "Tile names: p<page>-r<row>c<col> is one quadrant of that page at ~200 dpi; p<page>-full is the whole page. "
+          + "Read fine print — schedules, legends, keynotes, title blocks — from these tiles, and count drawn marks tile by tile, summing across a page without double-counting the overlap-free tile edges.",
+          renderTilesDropped > 0 ? `${renderTilesDropped} additional tiles were omitted to fit the request; the PDFs remain the complete source.` : "",
+        ].filter(Boolean).join("\n"),
+      });
+      for (const image of renderImages) {
+        userContent.push({ type: "input_image", image_url: image.url, detail: "high" });
+      }
+    }
 
     const openAIResponse = await fetch(`${aiTransport.baseUrl}/responses`, {
       method: "POST",
