@@ -293,11 +293,19 @@
 
     /* Members that are drawn and labelled are counted, not measured: counting
        the P1 marks on a foundation plan is reading the drawing, the same way
-       counting corners is. A mark with no count stays a question. */
+       counting corners is. A mark with no count stays a question.
+
+       Not everything scheduled on a deck is lumber: concrete piles, a
+       reinforced grade beam, steel guard posts. They are counted for
+       verification — the invoice for them is real — but a lumber order that
+       lists concrete as a line item reads as a bigger wood buy than it is,
+       so the line says what it is out loud. */
+    const notLumber = (text) => /\bconc(?:rete|\.)?\b|\bsteel\b|\bTS\b|stirrup|re-?bars?\b/i.test(String(text || ""));
+    const materialTag = (description) => (notLumber(description) ? " · not lumber — verification count" : "");
     for (const beam of Array.isArray(deck.beams) ? deck.beams : []) {
       const count = Number(beam.count_drawn) || 0;
       if (count > 0) {
-        lines.push({ item: `beam ${beam.mark || ""}: ${String(beam.description || "").trim()}`.trim(), quantity: count, unit: "drawn on plan" });
+        lines.push({ item: `beam ${beam.mark || ""}: ${String(beam.description || "").trim()}${materialTag(beam.description)}`.trim(), quantity: count, unit: "drawn on plan" });
         steps.push(`${beam.mark || "beam"}: ${count} drawn on the framing plan`);
       } else {
         gaps.push(`${label}: beam ${beam.mark || ""} (${String(beam.description || "").trim()}) is scheduled but its drawn count was not read`);
@@ -306,13 +314,13 @@
     for (const column of Array.isArray(deck.columns) ? deck.columns : []) {
       const count = Number(column.count_drawn) || 0;
       if (count > 0) {
-        lines.push({ item: `column ${column.mark || ""}: ${String(column.description || "").trim()}`.trim(), quantity: count, unit: "drawn on plan" });
+        lines.push({ item: `column ${column.mark || ""}: ${String(column.description || "").trim()}${materialTag(column.description)}`.trim(), quantity: count, unit: "drawn on plan" });
       } else {
         gaps.push(`${label}: column ${column.mark || ""} is scheduled but its drawn count was not read`);
       }
     }
     if (deck.piles && (Number(deck.piles.count_drawn) || 0) > 0) {
-      lines.push({ item: `pile: ${String(deck.piles.description || "").trim()}`, quantity: Number(deck.piles.count_drawn), unit: "drawn on plan" });
+      lines.push({ item: `pile: ${String(deck.piles.description || "").trim()}${materialTag(deck.piles.description)}`, quantity: Number(deck.piles.count_drawn), unit: "drawn on plan" });
     } else if (deck.piles?.description) {
       gaps.push(`${label}: piles are scheduled (${String(deck.piles.description).trim()}) but their drawn count was not read`);
     }

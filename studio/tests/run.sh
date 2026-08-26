@@ -43,6 +43,7 @@ run "finding things in the record"    studio/tests/e2e-search.mjs
 run "how the rooms connect"           studio/tests/e2e-routes.mjs
 run "the lumber a plan implies"       studio/tests/takeoff.mjs
 run "the AI's glasses"                studio/tests/page-renders.mjs
+run "the workbook that leaves"        studio/tests/xlsx360.mjs
 run "signing the takeoff draft"       studio/tests/e2e-takeoff.mjs
 run "a page open for three hours"     studio/tests/aged-session.mjs
 run "the headset probe"               studio/tests/vr-check.mjs
