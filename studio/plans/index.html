@@ -9,7 +9,7 @@
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
-    <link rel="stylesheet" href="plans.css?v=d08afd9f3c">
+    <link rel="stylesheet" href="plans.css?v=8c5186e5b7">
   </head>
   <body>
     <div class="boot-screen" id="boot-screen">
@@ -42,6 +42,39 @@
             <label for="property-select">Active project</label>
             <select id="property-select"></select>
             <span id="workflow-badge" class="state-pill intake">Intake</span>
+          </div>
+        </section>
+
+        <!-- Level 1: the owner summary. The default landing once an analysis
+             exists — a decision, five numbers, eight rows, three issues,
+             three actions. Everything else is one click deeper and none of
+             it asks the owner for anything technical. -->
+        <section class="owner-summary" id="owner-summary" hidden>
+          <div class="summary-head">
+            <div class="summary-lead">
+              <p class="eyebrow" id="summary-eyebrow">Analysis complete</p>
+              <h2 id="summary-title"></h2>
+              <p class="summary-decision" id="summary-decision"></p>
+              <p class="summary-why" id="summary-why"></p>
+            </div>
+            <div class="summary-actions">
+              <button class="button primary" id="summary-download" type="button">Download AI Takeoff</button>
+              <button class="button" id="summary-full" type="button">View full analysis</button>
+              <button class="button" id="summary-rfis" type="button">View RFIs</button>
+            </div>
+          </div>
+          <div class="summary-numbers" id="summary-numbers"></div>
+          <div class="summary-grid">
+            <div class="summary-panel">
+              <h3>Results preview</h3>
+              <table class="summary-table" id="summary-table"><thead><tr><th>Item</th><th>Qty</th><th>Basis</th><th>Status</th></tr></thead><tbody></tbody></table>
+              <p class="summary-more"><a href="#" id="summary-view-takeoff">View full takeoff →</a></p>
+            </div>
+            <div class="summary-panel">
+              <h3>Top issues</h3>
+              <div id="summary-issues"></div>
+              <p class="summary-more"><a href="#" id="summary-all-rfis">View all RFIs →</a></p>
+            </div>
           </div>
         </section>
 
@@ -337,6 +370,6 @@
     <script src="../takeoff360.js?v=3785526cee"></script>
     <script src="../xlsx360.js?v=afdbd4dd11"></script>
     <script src="../page-renders.js?v=ebb42cee89"></script>
-    <script src="plans.js?v=25deef57af"></script>
+    <script src="plans.js?v=244c4f4c69"></script>
   </body>
 </html>
