@@ -1123,6 +1123,104 @@ select pg_temp.refused('nor can it record a render against this project''s docum
 reset role;
 
 --
+-- Project Intelligence Core: what the documents require meets what the
+-- evidence shows. The doctrines under test: absence of evidence is not
+-- evidence of absence; delivery is not installation; the owner writes
+-- nothing — channels and workers do.
+
+insert into public.document_baselines(id, organization_id, property_id, version, state,
+  source_document_ids, analysis, created_by)
+values ('eeeeeeee-0000-0000-0000-000000000002','aaaaaaaa-0000-0000-0000-000000000001',
+  'bbbbbbbb-0000-0000-0000-000000000001', 2, 'approved', '{}'::uuid[],
+  '{"framing_decks":[{"label":"Deck","source_refs":["S-2.0"],
+     "beams":[{"mark":"DECK BM","description":"6x12 #1","count_drawn":0,"count_proposed":27,"count_confidence":"medium","count_note":"counted on S-2.0"},
+              {"mark":"BM.1","description":"PSL 7x14","count_drawn":0,"count_proposed":0,"count_confidence":"none","count_note":"marks illegible"}],
+     "columns":[],
+     "piles":{"description":"18in conc pile","count_drawn":0,"count_proposed":14,"count_confidence":"high","count_note":"counted on foundation plan"}}]}'::jsonb,
+  '11111111-1111-1111-1111-111111111111');
+
+set local role authenticated;
+set local test.uid = '33333333-3333-3333-3333-333333333333';
+select public.extract_project_requirements('eeeeeeee-0000-0000-0000-000000000002');
+select pg_temp.check('the technical channel distills components with provenance',
+  (select count(*) from public.project_requirements where baseline_id = 'eeeeeeee-0000-0000-0000-000000000002' and state = 'active') = 3
+  and exists (select 1 from public.project_requirements where component_key = 'P1' and quantity = 14 and method = 'AI_PLAN_COUNT' and state = 'active')
+  and exists (select 1 from public.project_requirements where component_key = 'BM.1' and quantity is null and method = 'OPEN_RFI' and state = 'active'));
+select public.extract_project_requirements('eeeeeeee-0000-0000-0000-000000000002');
+select pg_temp.check('extraction is idempotent: rerun supersedes, never duplicates',
+  (select count(*) from public.project_requirements where baseline_id = 'eeeeeeee-0000-0000-0000-000000000002' and state = 'active') = 3
+  and (select count(*) from public.project_requirements where baseline_id = 'eeeeeeee-0000-0000-0000-000000000002' and state = 'superseded') = 3);
+select pg_temp.check('and every run is a checkpointed job that admits its RFIs',
+  exists (select 1 from public.intelligence_jobs where channel = 'technical' and state = 'complete_with_rfis')
+  and exists (select 1 from public.processing_checkpoints c join public.intelligence_jobs j on j.id = c.job_id where c.stage = 'piles'));
+reset role;
+
+set local role authenticated;
+set local test.uid = '22222222-2222-2222-2222-222222222222';
+select public.record_observation('bbbbbbbb-0000-0000-0000-000000000001', 'P1', 'delivered_documented', 14, null, '{}'::uuid[], null, 'DOCUMENT', 'high', 'supplier invoice 4471');
+select public.record_observation('bbbbbbbb-0000-0000-0000-000000000001', 'P1', 'installed_seen', 12, 'cccccccc-0000-0000-0000-000000000001',
+  array['dddddddd-0000-0000-0000-000000000001']::uuid[], null, 'AI_VISION', 'medium', null);
+select public.record_observation('bbbbbbbb-0000-0000-0000-000000000001', 'P1', 'capture_coverage', null, null, '{}'::uuid[], 'partial', 'AI_VISION', 'medium', null);
+select public.record_observation('bbbbbbbb-0000-0000-0000-000000000001', 'DECK BM', 'delivered_documented', 27, null, '{}'::uuid[], null, 'DOCUMENT', 'high', null);
+select public.record_observation('bbbbbbbb-0000-0000-0000-000000000001', 'DECK BM', 'capture_coverage', null, null, '{}'::uuid[], 'none', 'AI_VISION', 'low', null);
+select pg_temp.check('a contributor (or a worker) records observations; kinds keep delivery apart',
+  (select count(*) from public.project_observations where property_id = 'bbbbbbbb-0000-0000-0000-000000000001') = 5);
+select pg_temp.refused('a coverage observation without coverage is refused',
+  $$select public.record_observation('bbbbbbbb-0000-0000-0000-000000000001', 'P1', 'capture_coverage')$$);
+reset role;
+
+set local role authenticated;
+set local test.uid = '33333333-3333-3333-3333-333333333333';
+select public.reconcile_project('bbbbbbbb-0000-0000-0000-000000000001');
+select pg_temp.check('a shortfall under partial coverage is PARTIALLY_SUPPORTED, never MISSING',
+  (select verdict from public.project_reconciliations where component_key = 'P1' and state = 'active') = 'PARTIALLY_SUPPORTED');
+select pg_temp.check('and the narrative keeps delivery, installation and the open remainder apart',
+  (select narrative from public.project_reconciliations where component_key = 'P1' and state = 'active')
+    = '14 required · 14 documented as delivered · 12 visually evidenced as installed · 2 installation records not yet evidenced');
+select pg_temp.check('an invoice alone is never installation: delivered 27, seen 0, no coverage → NOT_EVIDENCED',
+  (select verdict from public.project_reconciliations where component_key = 'DECK BM' and state = 'active') = 'NOT_EVIDENCED');
+select pg_temp.check('a component without a printed quantity is UNKNOWN, not guessed',
+  (select verdict from public.project_reconciliations where component_key = 'BM.1' and state = 'active') = 'UNKNOWN');
+
+select public.record_observation('bbbbbbbb-0000-0000-0000-000000000001', 'P1', 'capture_coverage', null, null, '{}'::uuid[], 'full', 'HUMAN', 'high', 'walked the full pile grid');
+select public.reconcile_project('bbbbbbbb-0000-0000-0000-000000000001');
+select pg_temp.check('the same shortfall under FULL coverage becomes a CONFLICT',
+  (select verdict from public.project_reconciliations where component_key = 'P1' and state = 'active') = 'CONFLICTING'
+  and (select narrative from public.project_reconciliations where component_key = 'P1' and state = 'active') like '%missing under full capture coverage%');
+
+select public.record_observation('bbbbbbbb-0000-0000-0000-000000000001', 'P1', 'installed_seen', 2, null, '{}'::uuid[], null, 'AI_VISION', 'medium', null);
+select public.reconcile_project('bbbbbbbb-0000-0000-0000-000000000001');
+select pg_temp.check('once the evidence covers the requirement the verdict is SUPPORTED',
+  (select verdict from public.project_reconciliations where component_key = 'P1' and state = 'active') = 'SUPPORTED');
+select pg_temp.check('reconciliation history supersedes, never disappears',
+  (select count(*) from public.project_reconciliations where component_key = 'P1') = 3);
+reset role;
+
+set local role authenticated;
+set local test.uid = '22222222-2222-2222-2222-222222222222';
+select pg_temp.refused('a contributor does not run extraction',
+  $$select public.extract_project_requirements('eeeeeeee-0000-0000-0000-000000000002')$$);
+select pg_temp.refused('nor reconciliation',
+  $$select public.reconcile_project('bbbbbbbb-0000-0000-0000-000000000001')$$);
+reset role;
+
+set local role authenticated;
+set local test.uid = '44444444-4444-4444-4444-444444444444';
+select pg_temp.check('another organisation sees no requirements, observations or reconciliations',
+  (select count(*) from public.project_requirements) = 0
+  and (select count(*) from public.project_observations) = 0
+  and (select count(*) from public.project_reconciliations) = 0);
+select pg_temp.refused('and cannot record into this project',
+  $$select public.record_observation('bbbbbbbb-0000-0000-0000-000000000001', 'P1', 'installed_seen', 1)$$);
+reset role;
+
+set local role anon;
+set local test.uid = '';
+select pg_temp.refused('nobody signed out reconciles',
+  $$select public.reconcile_project('bbbbbbbb-0000-0000-0000-000000000001')$$);
+reset role;
+
+--
 -- Human Confirmed means a human confirmed it. The expert layer is the only
 -- door: one line at a time, by a qualified role, with the reviewer's role and
 -- history kept. An owner's general acceptance touches none of this.

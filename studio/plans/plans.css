@@ -492,3 +492,20 @@ body.summary-mode .takeoff-section { display: none; }
   .summary-actions { width: 100%; }
   .summary-actions .button { flex: 1 1 auto; }
 }
+
+
+/* ── Level 2, visual channel ─────────────────────────────────────────────── */
+.channel-nav { display: flex; gap: 8px; margin: 18px 0 0; }
+.channel-nav .button { min-height: 32px; font-size: 11px; }
+body.view-visual .channel-nav #nav-visual,
+body:not(.view-visual):not(.summary-mode) .channel-nav #nav-technical { border-color: var(--cyan); color: var(--cyan); }
+.visual-panel { border: 1px solid var(--line); background: rgba(8, 22, 35, .72); margin-top: 18px; }
+.visual-grid { display: grid; grid-template-columns: minmax(0, 2fr) minmax(0, 3fr); gap: 22px; padding: 18px; align-items: start; }
+body.view-visual .metrics,
+body.view-visual .roadmap-divergence,
+body.view-visual .workflow-grid,
+body.view-visual .baseline-section,
+body.view-visual .roadmap-section,
+body.view-visual .routes-section,
+body.view-visual .takeoff-section { display: none; }
+@media (max-width: 760px) { .visual-grid { grid-template-columns: 1fr; } }
