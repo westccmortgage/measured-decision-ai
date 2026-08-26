@@ -1,4 +1,4 @@
-export const AGENT_CONTRACT_VERSION = "2026-08-25.4";
+export const AGENT_CONTRACT_VERSION = "2026-08-25.5";
 
 export type AgentKey =
   | "document_controller"
@@ -116,6 +116,8 @@ export const PLAN_WORKFLOW_INSTRUCTIONS = [
   "- A mark is a pointer into a schedule or legend, never the specification itself. A plan annotation like \"2x6 D.J.\", \"BM.1\", \"WD-1\" or \"P1\" points at a row printed somewhere in the set — FLOOR JOIST SCHEDULE, BEAM SCHEDULE, COLUMN SCHEDULE, CONCRETE PILE SCHEDULE, GRADE BEAM SCHEDULE, FINISH LEGEND, KEYNOTES, MATERIAL TABLE. Before reporting any member's size, spacing, or description as not printed, resolve its mark against every schedule and legend on every sheet, including sheets of other disciplines, and copy the schedule row verbatim. Reporting \"joist spacing not printed\" while the FLOOR JOIST SCHEDULE prints \"D.J. 2x6 #1 @16'' O.C.\" is the exact failure this rule refuses.",
   "- Report joist_size as the lumber size from the schedule (e.g. \"2x6\"); grade and treatment belong in joist_treatment; a mark suffix like \"D.J.\" is not part of the size.",
   "- A printed area statement is a printed dimension. Text such as \"(N) 1,640 SQ. FT. WOOD DECK\" on any sheet, including the cover, is the deck's printed area — report it verbatim in area_sqft. Overall length and width are the fallback when no area is printed, never the substitute for one.",
+  "- A diaphragm or sheathing note is a printed spec. A framing note such as \"DECK DIAPHRAGM TO BE 19/32'' PLYWOOD\" belongs verbatim in framing_deck.sheathing; general and framing notes are part of the sheets and must be read like schedules.",
+  "- When high-resolution page tiles accompany the PDFs, the fine print lives there: read schedules, legends, keynotes and title blocks from the tiles, resolve marks against them, and count drawn marks tile by tile, summing per page. A spec you could not find in the PDF is not \"not printed\" until the tiles have been checked too.",
   "- Framing dimensions feed a deterministic draft takeoff that a person verifies. You extract what the sheets state; you never compute lumber quantities yourself.",
   "- A construction phase is an evidence gate, not a promised calendar date.",
   "- Prioritize captures immediately before work becomes concealed: concrete placement, waterproofing cover-up, insulation/drywall, ceiling closure, utility burial, finish enclosure, and equipment access closure when applicable.",

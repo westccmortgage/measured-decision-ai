@@ -261,6 +261,17 @@
       gaps.push(`${label}: decking "${decking.trim()}" — the area is ${areaSqft.toFixed(0)} sq ft, but this product's coverage is not something the sheets state`);
     }
 
+    /* The diaphragm under the walking surface, when the framing notes print
+       one ("DECK DIAPHRAGM TO BE 19/32" PLYWOOD"). Exact per 4×8 sheet. */
+    const sheathing = String(deck.sheathing || "").trim();
+    if (sheathing && areaSqft) {
+      const sheets = Math.ceil(areaSqft / 32);
+      lines.push({ item: `deck sheathing ${sheathing} — 4×8 sheets`, quantity: sheets, unit: "sheets" });
+      steps.push(`sheathing: ${areaSqft.toFixed(0)} sq ft / 32 sq ft per sheet = ${sheets} sheets`);
+    } else if (sheathing) {
+      gaps.push(`${label}: sheathing is specified (${sheathing}) but no readable area to cover`);
+    }
+
     /* Members that are drawn and labelled are counted, not measured: counting
        the P1 marks on a foundation plan is reading the drawing, the same way
        counting corners is. A mark with no count stays a question. */

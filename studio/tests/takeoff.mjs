@@ -172,6 +172,7 @@ console.log("\n── the deck as the sheets actually spell it ──");
     length: "82'-0\"", width: "25'-4\"",
     joist_size: "2×6 D.J.", joist_spacing: '@6" O.C.', joist_treatment: "F.R.T.",
     decking: "WD-1: 2\" x 6\" x 6' DECKING",
+    sheathing: 'DECK DIAPHRAGM TO BE 19/32" PLYWOOD (PANEL INDEX 40/20)',
     beams: [], columns: [], piles: null, guardrail: "", guardrail_length: "",
     source_refs: ["S-2.0", "A-210"],
   });
@@ -182,6 +183,10 @@ console.log("\n── the deck as the sheets actually spell it ──");
     JSON.stringify(result.steps));
   check("joists at the schedule's 6\" o.c.: 3280 LF", joists?.quantity === 3280, JSON.stringify(joists));
   check("the legend's decking parses: 3579 LF", boards?.quantity === 3579, JSON.stringify(boards));
+  /* Framing note 3 prints the diaphragm: 1640 / 32 sq ft per 4×8 sheet =
+     51.25 → 52 sheets. */
+  const sheathing = result.lines.find((line) => /sheathing/.test(line.item));
+  check("the framing note's diaphragm is 52 sheets", sheathing?.quantity === 52 && /19\/32/.test(sheathing.item), JSON.stringify(sheathing));
   check("no false gaps remain", result.gaps.length === 0, JSON.stringify(result.gaps));
 }
 

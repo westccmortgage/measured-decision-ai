@@ -1086,4 +1086,49 @@ select pg_temp.check('and the takeoffs are invisible signed out',
   (select count(*) from public.material_takeoffs) = 0);
 reset role;
 
+--
+-- The AI's glasses: high-resolution page renders, derived from a plan PDF in
+-- the browser before analysis. The record keeps analysis honest — it says
+-- which document was rendered, at what resolution, by whom — and the rules
+-- keep it scoped: only the project's own people may record one, the record
+-- must point at a real document of the same organisation and property, and
+-- the governed bucket accepts the JPEG tiles beside the PDFs it already holds.
+
+insert into public.project_documents (id, organization_id, property_id, storage_path, original_filename, created_by)
+values ('ddddddd0-0000-0000-0000-00000000000d', 'aaaaaaaa-0000-0000-0000-000000000001', 'bbbbbbbb-0000-0000-0000-000000000001',
+        'aaaaaaaa-0000-0000-0000-000000000001/plans/set-1.pdf', 'set-1.pdf', '11111111-1111-1111-1111-111111111111');
+
+select pg_temp.check('the plan bucket accepts jpeg tiles beside the pdfs',
+  (select allowed_mime_types @> array['image/jpeg', 'application/pdf']
+     from storage.buckets where id = 'project-documents'));
+
+set local role authenticated;
+set local test.uid = '22222222-2222-2222-2222-222222222222';
+insert into public.plan_page_renders (document_id, organization_id, property_id, pages, target_dpi)
+values ('ddddddd0-0000-0000-0000-00000000000d', 'aaaaaaaa-0000-0000-0000-000000000001', 'bbbbbbbb-0000-0000-0000-000000000001', 9, 200);
+select pg_temp.check('a contributor records a render for their own project',
+  (select count(*) from public.plan_page_renders where document_id = 'ddddddd0-0000-0000-0000-00000000000d') = 1);
+select pg_temp.refused('but a record cannot point a document at somebody else''s property',
+  $$insert into public.plan_page_renders (document_id, organization_id, property_id, pages, target_dpi)
+    values ('ddddddd0-0000-0000-0000-00000000000d', 'aaaaaaaa-0000-0000-0000-000000000001', 'bbbbbbbb-0000-0000-0000-000000000002', 9, 200)$$);
+reset role;
+
+set local role authenticated;
+set local test.uid = '44444444-4444-4444-4444-444444444444';
+select pg_temp.check('another organisation does not see the render record',
+  (select count(*) from public.plan_page_renders) = 0);
+select pg_temp.refused('nor can it record a render against this project''s document',
+  $$insert into public.plan_page_renders (document_id, organization_id, property_id, pages, target_dpi)
+    values ('ddddddd0-0000-0000-0000-00000000000d', 'aaaaaaaa-0000-0000-0000-000000000001', 'bbbbbbbb-0000-0000-0000-000000000001', 9, 200)$$);
+reset role;
+
+set local role anon;
+set local test.uid = '';
+select pg_temp.refused('nobody signed out records renders',
+  $$insert into public.plan_page_renders (document_id, organization_id, property_id, pages, target_dpi)
+    values ('ddddddd0-0000-0000-0000-00000000000d', 'aaaaaaaa-0000-0000-0000-000000000001', 'bbbbbbbb-0000-0000-0000-000000000001', 9, 200)$$);
+select pg_temp.check('and render records are invisible signed out',
+  (select count(*) from public.plan_page_renders) = 0);
+reset role;
+
 rollback;

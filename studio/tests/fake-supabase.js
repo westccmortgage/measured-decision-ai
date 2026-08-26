@@ -108,7 +108,21 @@
             return result({});
           },
         },
-        storage: { from: () => ({ createSignedUrl: () => result({ signedUrl: "" }), remove: () => result([]) }) },
+        storage: {
+          from: (bucket) => ({
+            /* Signed URLs resolve to the test server so a fixture file really
+               downloads; uploads are recorded, not sent anywhere. */
+            createSignedUrl: (path) => result({ signedUrl: `/${path}` }),
+            upload: (path, blob) => {
+              (window.__storageUploads ||= []).push({ bucket, path, size: blob?.size ?? 0, type: blob?.type || "" });
+              return result({ path });
+            },
+            list: (prefix) => result((window.__storageUploads || [])
+              .filter((entry) => entry.bucket === bucket && entry.path.startsWith(`${prefix}/`))
+              .map((entry) => ({ name: entry.path.slice(prefix.length + 1) }))),
+            remove: () => result([]),
+          }),
+        },
         channel: () => ({ on: () => ({ subscribe: () => ({}) }), subscribe: () => ({}) }),
         removeChannel: () => {},
       };
