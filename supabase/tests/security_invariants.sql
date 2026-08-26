@@ -1271,6 +1271,53 @@ select pg_temp.check('reconciliation self-derives and component coverage outrank
 reset role;
 
 --
+-- The camera learns to count. record_vision_counts is the one door for
+-- AI-counted installed components: a newer reading of a room replaces that
+-- room's previous AI reading; different rooms sum; zero is not an
+-- observation. Human and document rows are never touched by it.
+
+set local role authenticated;
+set local test.uid = '22222222-2222-2222-2222-222222222222';
+select public.record_vision_counts('bbbbbbbb-0000-0000-0000-000000000001', 'cccccccc-0000-0000-0000-000000000001',
+  array['dddddddd-0000-0000-0000-000000000001']::uuid[],
+  '[{"component_key":"COL.2","count_visible":5,"confidence":"medium","note":"west row visible"},
+    {"component_key":"COL.2","count_visible":0,"confidence":"low","note":"zero must be skipped"},
+    {"component_key":"","count_visible":3,"confidence":"low","note":"nameless must be skipped"}]'::jsonb);
+select pg_temp.check('a vision count lands once; zeros and nameless entries never do',
+  (select count(*) from public.project_observations
+    where component_key = 'COL.2' and kind = 'installed_seen' and method = 'AI_VISION' and state = 'active') = 1
+  and (select quantity from public.project_observations
+    where component_key = 'COL.2' and kind = 'installed_seen' and method = 'AI_VISION' and state = 'active') = 5);
+select public.record_vision_counts('bbbbbbbb-0000-0000-0000-000000000001', 'cccccccc-0000-0000-0000-000000000001',
+  array['dddddddd-0000-0000-0000-000000000001']::uuid[],
+  '[{"component_key":"COL.2","count_visible":6,"confidence":"high","note":"full west row now visible"}]'::jsonb);
+select pg_temp.check('a newer reading of the same room replaces, never sums',
+  (select quantity from public.project_observations
+    where component_key = 'COL.2' and kind = 'installed_seen' and method = 'AI_VISION' and state = 'active'
+      and space_id = 'cccccccc-0000-0000-0000-000000000001') = 6
+  and exists (select 1 from public.project_observations
+    where component_key = 'COL.2' and kind = 'installed_seen' and state = 'superseded' and quantity = 5));
+-- A second room's reading is additional reality, not a rerun.
+insert into public.spaces(id, organization_id, property_id, name, created_by)
+values ('cccccccc-0000-0000-0000-00000000ea57','aaaaaaaa-0000-0000-0000-000000000001','bbbbbbbb-0000-0000-0000-000000000001','East Deck','11111111-1111-1111-1111-111111111111');
+select public.record_vision_counts('bbbbbbbb-0000-0000-0000-000000000001', 'cccccccc-0000-0000-0000-00000000ea57',
+  '{}'::uuid[], '[{"component_key":"COL.2","count_visible":2,"confidence":"medium","note":"east row"}]'::jsonb);
+select pg_temp.check('rooms sum across the project',
+  (select sum(quantity) from public.project_observations
+    where component_key = 'COL.2' and kind = 'installed_seen' and method = 'AI_VISION' and state = 'active') = 8);
+select pg_temp.refused('a room from nowhere is refused',
+  $$select public.record_vision_counts('bbbbbbbb-0000-0000-0000-000000000001', 'cccccccc-0000-0000-0000-00000000dead',
+      '{}'::uuid[], '[{"component_key":"X","count_visible":1,"confidence":"low","note":""}]'::jsonb)$$);
+reset role;
+
+set local role authenticated;
+set local test.uid = '44444444-4444-4444-4444-444444444444';
+select pg_temp.refused('another organisation cannot record vision counts here',
+  $$select public.record_vision_counts('bbbbbbbb-0000-0000-0000-000000000001', null, '{}'::uuid[],
+      '[{"component_key":"X","count_visible":1,"confidence":"low","note":""}]'::jsonb)$$);
+reset role;
+
+--
 -- Human Confirmed means a human confirmed it. The expert layer is the only
 -- door: one line at a time, by a qualified role, with the reviewer's role and
 -- history kept. An owner's general acceptance touches none of this.
