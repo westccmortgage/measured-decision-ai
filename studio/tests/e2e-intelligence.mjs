@@ -125,6 +125,21 @@ console.log("\n── one project, two channels ──");
     visual.doctrine.slice(0, 120));
   check("and the visual view asks for nothing", visual.inputs === 0, String(visual.inputs));
 
+  const filled = await page.evaluate(async () => {
+    const options = [...document.querySelectorAll("#document-type option")].map((option) => option.value);
+    document.querySelector("#visual-refresh")?.click();
+    await new Promise((r) => setTimeout(r, 500));
+    return {
+      options,
+      reconcileCall: window.__rpcCalls.find((c) => c.name === "reconcile_project") || null,
+    };
+  });
+  check("delivery paperwork is a declared upload discipline",
+    filled.options.includes("invoice") && filled.options.includes("delivery_ticket") && filled.options.includes("receipt"),
+    JSON.stringify(filled.options));
+  check("Refresh reconciliation runs the reconcile RPC — a view action, not an input",
+    filled.reconcileCall?.args?.p_property_id === "prop-1", JSON.stringify(filled.reconcileCall));
+
   const back = await page.evaluate(() => {
     document.querySelector("#nav-technical")?.click();
     const technicalVisible = getComputedStyle(document.querySelector("#takeoff-section")).display !== "none";

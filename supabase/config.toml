@@ -23,3 +23,6 @@ verify_jwt = false
 
 [functions.vision-release]
 verify_jwt = true
+
+[functions.document-evidence]
+verify_jwt = true
