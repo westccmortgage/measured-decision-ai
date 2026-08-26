@@ -1030,6 +1030,30 @@ select pg_temp.check('a second approval supersedes the first',
         where baseline_id = 'eeeeeeee-0000-0000-0000-000000000001' and state = 'approved') = 1);
 select pg_temp.check('and the first, superseded, still says what was signed',
   (select lines->0->>'quantity' from public.material_takeoffs where state = 'superseded') = '14');
+
+-- A person answers what the sheets did not. Counting the P1 marks on the
+-- foundation plan is reading the drawing; when the AI could not do it with
+-- confidence, the signer can — and the answer rides with the signature,
+-- verbatim, attributed by approved_by. Malformed answers never reach the record.
+select public.approve_material_takeoff('eeeeeeee-0000-0000-0000-000000000001', 'wood_framing',
+  '[{"item":"pile: 18\" conc. pile","quantity":14,"unit":"counted by the signer"}]'::jsonb,
+  '[]'::jsonb,
+  '["piles are scheduled but their drawn count was not read"]'::jsonb,
+  1, 'takeoff360-1', null,
+  '[{"question":"piles are scheduled but their drawn count was not read","answer":"14 — counted on S-2.0"}]'::jsonb);
+select pg_temp.check('the signer''s answers are stored verbatim with the signature',
+  (select answers->0->>'answer' from public.material_takeoffs
+    where baseline_id = 'eeeeeeee-0000-0000-0000-000000000001' and state = 'approved') = '14 — counted on S-2.0');
+select pg_temp.check('an approval that answered nothing recorded an empty list, not a null',
+  (select answers from public.material_takeoffs where note = 'Draft for verification') = '[]'::jsonb);
+select pg_temp.refused('an answer without its question is refused',
+  $$select public.approve_material_takeoff('eeeeeeee-0000-0000-0000-000000000001', 'wood_framing',
+      '[{"item":"x","quantity":1,"unit":"pieces"}]'::jsonb, '[]'::jsonb, '[]'::jsonb, 1, 'test-1', null,
+      '[{"answer":"14"}]'::jsonb)$$);
+select pg_temp.refused('and answers that are not a list are refused',
+  $$select public.approve_material_takeoff('eeeeeeee-0000-0000-0000-000000000001', 'wood_framing',
+      '[{"item":"x","quantity":1,"unit":"pieces"}]'::jsonb, '[]'::jsonb, '[]'::jsonb, 1, 'test-1', null,
+      '{"question":"q","answer":"a"}'::jsonb)$$);
 reset role;
 
 set local role authenticated;
@@ -1039,6 +1063,9 @@ select pg_temp.check('the approval is on the record, naming who signed',
           where action = 'takeoff.approved'
             and actor_id = '33333333-3333-3333-3333-333333333333'
             and detail->>'kind' = 'wood_framing'));
+select pg_temp.check('and the record counts the signer''s answers',
+  exists(select 1 from public.audit_events
+          where action = 'takeoff.approved' and detail->>'answer_count' = '1'));
 reset role;
 
 set local role authenticated;

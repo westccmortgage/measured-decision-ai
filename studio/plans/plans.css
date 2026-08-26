@@ -427,6 +427,7 @@ dialog form { padding: 0; }
 #takeoff-table tr.review td { color: var(--amber); }
 .takeoff-gaps p { margin: 0 0 8px; color: var(--amber); font-size: 11px; }
 .takeoff-gaps p.clear { color: var(--green); }
+.takeoff-gaps .gap-answer { display: block; width: 100%; min-height: 34px; margin: 0 0 12px; font-size: 11px; }
 .takeoff-trace summary { cursor: pointer; color: #8fa2b5; font-size: 11px; margin-top: 10px; }
 .takeoff-trace div { margin-top: 8px; }
 .takeoff-trace article { margin-bottom: 10px; }

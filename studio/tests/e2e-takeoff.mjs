@@ -99,17 +99,27 @@ console.log("\n── a plan set with printed dimensions ──");
   check("each wall shows its steps and its sheet",
     /Wall A1 · A-201/.test(trace) && /ceil\(144" \/ 16"\) \+ 1 = 10/.test(trace), trace.slice(0, 200));
 
-  console.log("\n── signing it ──");
+  console.log("\n── signing it, answering what the sheets did not ──");
   const signed = await page.evaluate(async () => {
+    const input = document.querySelector("#takeoff-gaps .gap-answer");
+    if (input) input.value = "  9'-6\" — read on A-202 myself  ";
     let asked = "";
     window.confirm = (message) => { asked = message; return true; };
     document.querySelector("#approve-takeoff")?.click();
     await new Promise((r) => setTimeout(r, 700));
     const call = window.__rpcCalls.find((c) => c.name === "approve_material_takeoff");
-    return { asked, args: call?.args || null };
+    return { hadInput: Boolean(input), asked, args: call?.args || null };
   });
+  check("each gap offers a place to write the person's own reading", signed.hadInput === true);
   check("approving asks first, and names the open gaps",
     /1 open gap/.test(signed.asked) && /not an estimate/i.test(signed.asked), signed.asked.slice(0, 240));
+  check("and says the person's answers go on the record",
+    /You answered 1 of them/.test(signed.asked), signed.asked.slice(0, 300));
+  check("the answer rides with the signature, trimmed and tied to its question",
+    (signed.args?.p_answers || []).length === 1
+    && signed.args.p_answers[0].answer === "9'-6\" — read on A-202 myself"
+    && /Wall B1/.test(signed.args.p_answers[0].question),
+    JSON.stringify(signed.args?.p_answers));
   check("the draft goes to the record verbatim",
     signed.args?.p_kind === "wood_framing"
     && signed.args?.p_measured_walls === 2
@@ -144,6 +154,70 @@ console.log("\n── a deck set with no framed walls at all ──");
   check("and the guardrail without a printed run is a gap",
     /guardrail/.test(deck.gaps) && /no printed run length/.test(deck.gaps), deck.gaps.slice(0, 200));
   check("nothing threw on the deck set", errors.length === 0, errors[0] || "");
+  await context.close();
+}
+
+console.log("\n── a signed takeoff leaves as a real file ──");
+/* The request behind this: "I need a real lumber takeoff list to be able
+   download". Only the signed copy leaves — a draft outside the studio would
+   circulate as fact — and the file carries its own governance line, the
+   person's answers, and the questions still open. */
+{
+  const world = deckTakeoffRows();
+  const pileGap = 'Deck: piles are scheduled (P1: 18" CONC. PILE) but their drawn count was not read';
+  world.material_takeoffs = [{
+    id: "tk-1", organization_id: world.document_baselines[0].organization_id,
+    property_id: world.document_baselines[0].property_id, baseline_id: "bl-1",
+    kind: "wood_framing", state: "approved",
+    approved_at: "2026-08-26T01:00:00Z", calculator_version: "takeoff360-1", measured_walls: 1,
+    lines: [{ item: "2x6 joist (F.R.T.) — linear feet", quantity: 3280, unit: "LF" }],
+    gaps: [pileGap, "Deck: beam BM.1 is scheduled but its drawn count was not read"],
+    answers: [{ question: pileGap, answer: "14 — counted on S-2.0 foundation plan" }],
+  }];
+  const { context, page, errors } = await openPlans(world);
+  const view = await page.evaluate(() => ({
+    pill: document.querySelector("#takeoff-state")?.textContent.trim(),
+    downloadShown: document.querySelector("#download-takeoff")?.hidden === false,
+    approveHidden: document.querySelector("#approve-takeoff")?.hidden,
+    gapsText: document.querySelector("#takeoff-gaps")?.innerText.replace(/\s+/g, " ") || "",
+    inputs: document.querySelectorAll("#takeoff-gaps .gap-answer").length,
+  }));
+  check("the signed state offers the download", /approved/i.test(view.pill || "") && view.downloadShown === true, view.pill);
+  check("nothing is re-offered for signature", view.approveHidden === true);
+  check("the person's answer is shown as theirs, and its question is no longer open",
+    /Answered at signing/.test(view.gapsText)
+    && /14 — counted on S-2\.0/.test(view.gapsText)
+    && /1 thing the sheets did not answer/.test(view.gapsText),
+    view.gapsText.slice(0, 300));
+  check("a signed record takes no more answers", view.inputs === 0, String(view.inputs));
+
+  const download = await page.evaluate(async () => {
+    let blob = null; let filename = ""; let clicked = false;
+    URL.createObjectURL = (b) => { blob = b; return "blob:captured"; };
+    HTMLAnchorElement.prototype.click = function () { clicked = true; filename = this.download; };
+    document.querySelector("#download-takeoff")?.click();
+    await new Promise((r) => setTimeout(r, 200));
+    /* blob.text() decodes UTF-8 and swallows the byte-order mark by design,
+       so the BOM is asserted on the raw bytes. */
+    const head = blob ? [...new Uint8Array((await blob.arrayBuffer()).slice(0, 3))] : [];
+    return { clicked, filename, head, text: blob ? await blob.text() : "" };
+  });
+  check("the button downloads a file, named for the project and the signing date",
+    download.clicked === true && /^takeoff-.+-2026-08-26\.csv$/.test(download.filename), download.filename);
+  check("the CSV opens as UTF-8 and says what it is",
+    download.head.join(",") === "239,187,191" && /Measured Decision · wood takeoff/.test(download.text)
+    && /Not a contractor's estimate/.test(download.text),
+    `bytes ${download.head.join(",")} · ${download.text.slice(0, 120)}`);
+  check("the quantities are in it, as columns",
+    /Item,Quantity,Unit/.test(download.text) && /2x6 joist \(F\.R\.T\.\) — linear feet,3280,LF/.test(download.text),
+    download.text.slice(0, 400));
+  check("the person's answer travels with it, quotes doubled the CSV way",
+    /18"" CONC\. PILE/.test(download.text) && /14 — counted on S-2\.0/.test(download.text),
+    download.text.split("\n").filter((line) => /counted|PILE/.test(line)).join(" | "));
+  check("what stays open leaves with the file too",
+    /Still open — the sheets did not answer/.test(download.text) && /beam BM\.1/.test(download.text),
+    download.text.slice(-300));
+  check("nothing threw on the signed set", errors.length === 0, errors[0] || "");
   await context.close();
 }
 
