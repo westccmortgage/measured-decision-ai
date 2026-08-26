@@ -26,3 +26,6 @@ verify_jwt = true
 
 [functions.document-evidence]
 verify_jwt = true
+
+[functions.document-classify]
+verify_jwt = true

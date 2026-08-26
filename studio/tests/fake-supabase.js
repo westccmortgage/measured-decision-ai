@@ -88,6 +88,12 @@
         functions: {
           invoke(name, opts) {
             window.__rpcCalls.push({ name, args: opts?.body });
+            /* A seeded worker answer, shaped like the real function's answer —
+               so a test can walk the classify→read chain the way production
+               walks it, instead of asserting against a stub's silence. */
+            if (seed.functions && Object.prototype.hasOwnProperty.call(seed.functions, name)) {
+              return result(seed.functions[name]);
+            }
             /* A capture with no playable URL is not spatial, so without this the
                whole 360 half of the product looks absent and the test reports a
                fault that only exists in the harness. */
