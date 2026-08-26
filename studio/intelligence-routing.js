@@ -9,7 +9,9 @@
  *                                    worker for 360, exactly as today)
  *   invoices / tickets / receipts → the document-evidence worker, inside the
  *                                    visual/reality contour
- *   a mixed PDF                   → per-page classification downstream
+ *   a mixed PDF                   → the document-classify worker reads it
+ *                                    page by page; each page then routes
+ *                                    itself to the door that owns it
  *
  * One source may feed both channels; the router names the primary door.
  */

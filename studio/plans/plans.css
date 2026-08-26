@@ -112,6 +112,7 @@ select:focus, input:focus { border-color: var(--cyan); box-shadow: 0 0 0 2px rgb
 .document-name { min-width: 0; }
 .document-name strong { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .document-name small, .document-cell span { color: #698195; font-size: 10px; }
+.document-classified { display: block; color: #698195; font-size: 10px; }
 .document-cell { display: grid; gap: 2px; }
 .document-cell strong { font-size: 11px; font-weight: 500; }
 .document-status { justify-self: end; font-size: 9px; text-transform: uppercase; letter-spacing: .07em; color: #9eb1c0; }

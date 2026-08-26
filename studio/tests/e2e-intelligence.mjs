@@ -12,7 +12,7 @@
 import { createRequire } from "module";
 import { chromium } from "/opt/node22/lib/node_modules/playwright/index.mjs";
 import http from "http"; import fs from "fs"; import path from "path";
-import { deckTakeoffRows } from "./seed.mjs";
+import { deckTakeoffRows, planDocument } from "./seed.mjs";
 
 const require = createRequire(import.meta.url);
 
@@ -78,9 +78,42 @@ console.log("\n── one project, two channels ──");
       verdict: "SUPPORTED", narrative: "3280 required · 3280 visually evidenced as installed." },
   ];
 
+  /* A mixed close-out set: two plan pages and an invoice page in one PDF,
+     already read by the classifier. Its provenance line must say so — and
+     the chain from classify to the page-scoped document reader must run
+     exactly as production runs it. */
+  world.project_documents = [...(world.project_documents || []), planDocument({
+    id: "doc-mixed", original_filename: "closeout-set.pdf", document_type: "other",
+    page_classification: {
+      contract: "test", classified_at: "2026-08-26T12:00:00Z", summary: "mixed close-out set",
+      pages: [
+        { page_number: 1, kind: "technical_drawing", note: "S-2.0" },
+        { page_number: 2, kind: "technical_drawing", note: "S-2.1" },
+        { page_number: 3, kind: "invoice", note: "ABC Lumber" },
+      ],
+    },
+  })];
+  const workerAnswers = {
+    "document-classify": {
+      job_id: "job-classify-1", document_type: "other",
+      pages: [
+        { page_number: 1, kind: "technical_drawing", note: "S-2.0" },
+        { page_number: 2, kind: "technical_drawing", note: "S-2.1" },
+        { page_number: 3, kind: "invoice", note: "ABC Lumber" },
+      ],
+      routes: [
+        { channel: "technical", worker: "plan-analyze", pages: [1, 2] },
+        { channel: "documents", worker: "document-evidence", pages: [3] },
+      ],
+      unrouted: [],
+      note: "Pages read by AI · not confirmed.",
+    },
+    "document-evidence": { job_id: "job-read-1", lines_recorded: 2, unreadable: 0, reconciled: true, note: "" },
+  };
+
   const context = await browser.newContext({ viewport: { width: 1280, height: 900 } });
   await context.route("**://*/**", (r) => (r.request().url().startsWith(base) ? r.continue() : r.abort()));
-  await context.addInitScript(`window.__seed = ${JSON.stringify({ rows: world })};`);
+  await context.addInitScript(`window.__seed = ${JSON.stringify({ rows: world, functions: workerAnswers })};`);
   await context.addInitScript({ path: "studio/tests/fake-supabase.js" });
   const page = await context.newPage();
   const errors = [];
@@ -149,6 +182,27 @@ console.log("\n── one project, two channels ──");
   });
   check("Technical Intelligence switches back and the nav returns to the summary",
     back.technicalVisible && back.visualHidden && back.summaryBack, JSON.stringify(back));
+
+  const classified = await page.evaluate(async () => {
+    document.querySelector("#nav-technical")?.click();
+    const row = [...document.querySelectorAll(".document-row")].find((item) => /closeout-set/.test(item.innerText));
+    const provenance = row?.querySelector(".document-classified")?.textContent || "";
+    await window.__classifyUploadedDocument("doc-mixed");
+    await new Promise((resolve) => setTimeout(resolve, 400));
+    return {
+      provenance,
+      calls: window.__rpcCalls.filter((call) => ["document-classify", "document-evidence"].includes(call.name)),
+    };
+  });
+  check("a classified PDF wears its AI reading as provenance, never as fact",
+    /Pages read by AI · not confirmed/.test(classified.provenance)
+    && /2 plan pages/.test(classified.provenance) && /1 invoice page/.test(classified.provenance),
+    classified.provenance);
+  check("the mixed file chains itself: classify, then the reader receives ONLY the paperwork pages",
+    classified.calls.some((call) => call.name === "document-classify" && call.args?.document_id === "doc-mixed")
+    && classified.calls.some((call) => call.name === "document-evidence"
+      && call.args?.document_id === "doc-mixed" && JSON.stringify(call.args?.pages) === "[3]"),
+    JSON.stringify(classified.calls));
 
   const section = await page.$("#visual-panel");
   await page.evaluate(() => document.querySelector("#summary-visual")?.click());

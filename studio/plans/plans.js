@@ -522,7 +522,7 @@ async function openProperty(propertyId) {
   setMessage("");
   const [documentsResult, baselinesResult, activeJobResult] = await Promise.all([
     client.from("project_documents")
-      .select("id, storage_path, storage_provider, storage_bucket, object_version_id, original_filename, mime_type, byte_size, document_type, revision_label, issued_at, status, processing_error, created_at")
+      .select("id, storage_path, storage_provider, storage_bucket, object_version_id, original_filename, mime_type, byte_size, document_type, revision_label, issued_at, status, processing_error, created_at, page_classification")
       .eq("organization_id", state.organizationId)
       .eq("property_id", propertyId)
       .order("created_at", { ascending: false }),
@@ -684,10 +684,28 @@ function renderDocuments() {
     const deleteTitle = baselineVersion
       ? `Included in baseline v${baselineVersion}; create a replacement baseline before deleting`
       : `Delete ${document.original_filename}`;
+    /* A classified PDF wears its reading out loud — and wears its provenance
+       with it. Page kinds are an AI reading, never a confirmed fact. */
+    const PAGE_KIND_LABELS = {
+      technical_drawing: "plan", specification: "spec", schedule: "schedule",
+      invoice: "invoice", delivery_ticket: "delivery-ticket", receipt: "receipt",
+      site_photo: "site-photo", correspondence: "correspondence", other: "other",
+    };
+    const classifiedPages = document.page_classification?.pages || [];
+    const kindCounts = classifiedPages.reduce((counts, page) => {
+      counts[page.kind] = (counts[page.kind] || 0) + 1;
+      return counts;
+    }, {});
+    const classifiedLine = classifiedPages.length
+      ? `<small class="document-classified">Pages read by AI · not confirmed: ${escapeHtml(
+          Object.entries(kindCounts)
+            .map(([kind, count]) => `${count} ${PAGE_KIND_LABELS[kind] || kind} page${count === 1 ? "" : "s"}`)
+            .join(" · "))}</small>`
+      : "";
     return `
     <article class="document-row">
       <label class="document-choice" title="${escapeHtml(choiceTitle)}"><input type="checkbox" data-document-select="${document.id}" ${state.selectedDocumentIds.has(document.id) ? "checked" : ""} ${selectable ? "" : "disabled"}><span class="document-icon">PDF</span></label>
-      <div class="document-name"><strong title="${escapeHtml(document.original_filename)}">${escapeHtml(document.original_filename)}</strong><small>${document.byte_size ? `${(document.byte_size / 1048576).toFixed(1)} MB` : "Private source"}</small></div>
+      <div class="document-name"><strong title="${escapeHtml(document.original_filename)}">${escapeHtml(document.original_filename)}</strong><small>${document.byte_size ? `${(document.byte_size / 1048576).toFixed(1)} MB` : "Private source"}</small>${classifiedLine}</div>
       <div class="document-cell"><span>Discipline</span><strong>${escapeHtml(label(document.document_type))}</strong></div>
       <div class="document-cell"><span>Revision</span><strong>${escapeHtml(display(document.revision_label, "Not stated"))}</strong></div>
       <span class="document-status ${document.status}" title="${escapeHtml(document.processing_error || "")}">${escapeHtml(label(document.status))}</span>
@@ -1844,6 +1862,7 @@ async function savePendingFiles() {
   const revision = $("#document-revision").value.trim() || null;
   const issuedAt = $("#document-issued").value || null;
   const uploadedDocumentIds = [];
+  const uploadedDocuments = [];
   try {
     if (!window.MDAIObjectStorage) throw new Error("The secure S3 uploader did not load. Reload the page and retry.");
     for (const file of state.pendingFiles) {
@@ -1869,7 +1888,10 @@ async function savePendingFiles() {
             : `${resumeLabel}Uploading ${file.name} · ${progress.percent}% · ${progress.label}`;
         },
       });
-      if (uploadResult?.record?.id) uploadedDocumentIds.push(uploadResult.record.id);
+      if (uploadResult?.record?.id) {
+        uploadedDocumentIds.push(uploadResult.record.id);
+        uploadedDocuments.push({ id: uploadResult.record.id, filename: file.name, mime: file.type });
+      }
     }
     notify(`${state.pendingFiles.length} plan document${state.pendingFiles.length === 1 ? "" : "s"} saved`);
     state.pendingFiles = [];
@@ -1894,6 +1916,21 @@ async function savePendingFiles() {
           });
       }
     }
+    /* An undeclared PDF does not make the owner declare it. The router sends
+       it to page-by-page classification; each page then routes itself to the
+       door that owns it — paperwork pages to the document reader, plan pages
+       stay selected for plan analysis. The owner uploaded; that was the job. */
+    if (documentType === "other" && window.MDAIIntelligenceRouting) {
+      for (const saved of uploadedDocuments) {
+        const route = window.MDAIIntelligenceRouting.routeSource({
+          filename: saved.filename, mime: saved.mime, document_type: documentType,
+        });
+        if (route.worker === "per-page-classification") {
+          setMessage("An undeclared PDF is being read page by page — each page routes itself. Nothing to declare.");
+          void classifyUploadedDocument(saved.id);
+        }
+      }
+    }
     if (uploadedDocumentIds.length) {
       state.selectedDocumentIds = new Set(uploadedDocumentIds);
       render();
@@ -1907,6 +1944,47 @@ async function savePendingFiles() {
     render();
   }
 }
+
+/* One undeclared PDF, classified page by page, then chained onward. The
+   classifier's answer is a reading — "Read by AI · not confirmed" — and the
+   only thing it moves is routing: which worker reads which pages next. */
+async function classifyUploadedDocument(documentId) {
+  const { data, error } = await client.functions.invoke("document-classify", { body: { document_id: documentId } });
+  if (error || data?.error) {
+    notify(data?.error || "The PDF could not be classified — it stays preserved in the record, selected for plan analysis", "error");
+    return;
+  }
+  const routes = Array.isArray(data?.routes) ? data.routes : [];
+  const totalPages = Array.isArray(data?.pages) ? data.pages.length : 0;
+  const CHANNEL_LABELS = { technical: "plan", documents: "paperwork", visual: "site-photo" };
+  const summary = routes
+    .map((route) => `${route.pages.length} ${CHANNEL_LABELS[route.channel] || route.channel} page${route.pages.length === 1 ? "" : "s"}`)
+    .join(" · ");
+  notify(`Pages read by AI · not confirmed: ${summary || "nothing routable"}.`);
+
+  const documentsRoute = routes.find((route) => route.channel === "documents");
+  if (documentsRoute) {
+    const body = { document_id: documentId };
+    /* A mixed file hands the reader only its paperwork pages; a file that is
+       paperwork end to end reads whole, exactly as a declared invoice does. */
+    if (documentsRoute.pages.length < totalPages) body.pages = documentsRoute.pages;
+    client.functions.invoke("document-evidence", { body })
+      .then(({ data: readerData, error: readerError }) => {
+        if (readerError || readerData?.error) {
+          notify(readerData?.error || "The delivery pages could not be read — the file stays preserved in the record", "error");
+        } else {
+          notify(`Delivery recorded from the classified pages: ${readerData.lines_recorded} line${readerData.lines_recorded === 1 ? "" : "s"}. Installation stays not-yet-evidenced until capture shows it.`);
+          void openProperty(state.property.id);
+        }
+      });
+  }
+  const technicalRoute = routes.find((route) => route.channel === "technical");
+  if (technicalRoute) {
+    setMessage(`${technicalRoute.pages.length} page${technicalRoute.pages.length === 1 ? "" : "s"} read as plans — the document is selected and ready for plan analysis.`, "success");
+  }
+  void openProperty(state.property.id);
+}
+window.__classifyUploadedDocument = classifyUploadedDocument;
 
 async function monitorAnalysisJob(jobId, options = {}) {
   if (!jobId || state.analysisPolling) return;

@@ -1426,4 +1426,38 @@ select pg_temp.check('and render records are invisible signed out',
   (select count(*) from public.plan_page_renders) = 0);
 reset role;
 
+--
+-- The routing channel: an undeclared PDF classifies itself page by page, the
+-- run is a governed job, and the reading lives beside the document as
+-- provenance — readable by the project's own people, invisible to another
+-- organisation, and never a construction fact anywhere downstream.
+
+insert into public.intelligence_jobs (organization_id, property_id, channel, source_kind, source_id, state)
+values ('aaaaaaaa-0000-0000-0000-000000000001', 'bbbbbbbb-0000-0000-0000-000000000001', 'routing',
+        'project_document', 'ddddddd0-0000-0000-0000-00000000000d', 'complete');
+select pg_temp.check('a classification run is a governed job in the routing channel',
+  exists (select 1 from public.intelligence_jobs
+          where channel = 'routing' and source_id = 'ddddddd0-0000-0000-0000-00000000000d'));
+select pg_temp.refused('a channel the model invents is refused',
+  $$insert into public.intelligence_jobs (organization_id, property_id, channel, source_kind, source_id, state)
+    values ('aaaaaaaa-0000-0000-0000-000000000001', 'bbbbbbbb-0000-0000-0000-000000000001', 'oracle',
+            'project_document', 'ddddddd0-0000-0000-0000-00000000000d', 'complete')$$);
+
+update public.project_documents
+set page_classification = '{"contract":"test","pages":[{"page_number":1,"kind":"technical_drawing","note":"S-2.0"},{"page_number":2,"kind":"invoice","note":"ABC Lumber"}]}'::jsonb
+where id = 'ddddddd0-0000-0000-0000-00000000000d';
+
+set local role authenticated;
+set local test.uid = '22222222-2222-2222-2222-222222222222';
+select pg_temp.check('the page reading is provenance the project''s own people can read',
+  (select page_classification->'pages'->1->>'kind' from public.project_documents
+    where id = 'ddddddd0-0000-0000-0000-00000000000d') = 'invoice');
+reset role;
+
+set local role authenticated;
+set local test.uid = '44444444-4444-4444-4444-444444444444';
+select pg_temp.check('another organisation never sees the reading',
+  (select count(*) from public.project_documents where id = 'ddddddd0-0000-0000-0000-00000000000d') = 0);
+reset role;
+
 rollback;

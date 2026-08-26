@@ -95,16 +95,32 @@ Deno.serve(async (request) => {
     const body = await request.json();
     const documentId = String(body?.document_id || "");
     if (!documentId) return json(request, { error: "document_id is required" }, 400);
+    const requestedPages = Array.isArray(body?.pages)
+      ? body.pages.filter((page: unknown) => Number.isInteger(page) && (page as number) > 0)
+      : [];
 
     /* RLS scopes this read to the caller's own organisation. */
     const { data: documentRow, error: documentError } = await userClient
       .from("project_documents")
-      .select("id, organization_id, property_id, storage_path, storage_provider, storage_bucket, original_filename, document_type")
+      .select("id, organization_id, property_id, storage_path, storage_provider, storage_bucket, original_filename, document_type, page_classification")
       .eq("id", documentId)
       .single();
     if (documentError || !documentRow) return json(request, { error: "That document is not in your record" }, 404);
+    /* Three ways through: a declared documentary type, a filename that says
+       what it is, or specific pages the classifier has already read as
+       delivery paperwork inside a mixed file. A page scope is honoured only
+       when the stored classification backs every requested page — the
+       caller cannot point this reader at plan pages. */
+    const classifiedDocumentaryPages = new Set(
+      (documentRow.page_classification?.pages || [])
+        .filter((page: { kind?: string }) => ["invoice", "delivery_ticket", "receipt"].includes(String(page?.kind)))
+        .map((page: { page_number?: number }) => page.page_number),
+    );
+    const pagesAreClassifiedDocumentary = requestedPages.length > 0
+      && requestedPages.every((page: number) => classifiedDocumentaryPages.has(page));
     const documentary = ["invoice", "delivery_ticket", "receipt"].includes(documentRow.document_type)
-      || /invoice|receipt|delivery|ticket|packing/i.test(documentRow.original_filename || "");
+      || /invoice|receipt|delivery|ticket|packing/i.test(documentRow.original_filename || "")
+      || pagesAreClassifiedDocumentary;
     if (!documentary) {
       return json(request, { error: "This worker reads delivery paperwork. Plans go to plan analysis." }, 422);
     }
@@ -151,7 +167,10 @@ Deno.serve(async (request) => {
         ? `This project's known component keys:\n${vocabulary.join("\n")}\nWhen a line clearly refers to one of these components, use that component_key verbatim. Otherwise use a short product name as the key.`
         : "Use a short product name as each line's component_key.",
       "A quantity you cannot read goes to unreadable, never to a guessed number.",
-    ].join("\n");
+      requestedPages.length
+        ? `Read ONLY page${requestedPages.length === 1 ? "" : "s"} ${requestedPages.join(", ")} of this file. The other pages are not delivery paperwork and are outside your reading.`
+        : "",
+    ].filter(Boolean).join("\n");
 
     const aiTransport = openAITransport({ zeroDataRetention: true });
     const response = await fetch(`${aiTransport.baseUrl}/responses`, {

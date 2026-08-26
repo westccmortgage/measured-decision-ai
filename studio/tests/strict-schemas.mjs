@@ -60,6 +60,22 @@ console.log("── the document-evidence schema ──");
     JSON.stringify(schema?.properties?.document_kind?.enum) === '["invoice","delivery_ticket","receipt","other"]');
 }
 
+console.log("\n── the page classifier ──");
+{
+  const source = fs.readFileSync("supabase/functions/document-classify/index.ts", "utf8")
+    .replace(/\/\*[\s\S]*?\*\//g, "").replace(/^\s*\/\/.*$/gm, "");
+  const schema = extractObjectLiteral(source, "const classificationSchema =");
+  check("the classification schema literal parses", Boolean(schema));
+  const violations = strictViolations(schema, "$classify");
+  check("classification is strict: every property required, nothing extra",
+    violations.length === 0, violations.join(" | "));
+  check("page kinds are a closed set — a creative answer cannot invent a channel",
+    JSON.stringify(schema?.properties?.pages?.items?.properties?.kind?.enum)
+    === '["technical_drawing","specification","schedule","invoice","delivery_ticket","receipt","site_photo","correspondence","other"]');
+  check("pages are numbered with integers",
+    schema?.properties?.pages?.items?.properties?.page_number?.type === "integer");
+}
+
 console.log("\n── the evidence inspector's component counts ──");
 {
   const source = fs.readFileSync("supabase/functions/spatial-analyze/index.ts", "utf8")
