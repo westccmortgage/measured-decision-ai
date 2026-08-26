@@ -589,7 +589,7 @@ async function openProperty(propertyId) {
     state.spaceLinks = routeResult.data || [];
     const takeoffResult = await client
       .from("material_takeoffs")
-      .select("id, kind, lines, gaps, answers, measured_walls, state, approved_at, calculator_version")
+      .select("id, kind, lines, traces, gaps, answers, note, measured_walls, state, approved_at, calculator_version")
       .eq("baseline_id", state.baseline.id)
       .eq("kind", "wood_framing")
       .eq("state", "approved")
@@ -898,7 +898,9 @@ function renderTakeoff() {
       ? `<p><strong>Answered at signing by the person who signed:</strong></p>` +
         signedAnswers.map((entry) => `<p>· ${escapeHtml(entry.question)} — <strong>${escapeHtml(entry.answer)}</strong></p>`).join("")
       : "",
+    approved?.note ? `<p><strong>Note from the signer:</strong> ${escapeHtml(approved.note)}</p>` : "",
   ].join("");
+  $("#takeoff-note-field").hidden = !answerable;
 
   $("#takeoff-trace").innerHTML = showing.traces.length
     ? showing.traces.map((trace) => `
@@ -934,7 +936,7 @@ async function approveTakeoff() {
       p_gaps: gaps,
       p_measured_walls: draft.result.measuredWalls,
       p_calculator_version: TAKEOFF_CALCULATOR_VERSION,
-      p_note: null,
+      p_note: (document.querySelector("#takeoff-note")?.value || "").trim() || null,
       p_answers: answers,
     });
     if (error) throw error;
@@ -956,54 +958,105 @@ $("#approve-takeoff")?.addEventListener("click", approveTakeoff);
    CSV carries its own provenance — who signed is on the record, the governance
    line is in the file, and open questions travel with the quantities instead
    of disappearing at the door. */
-function csvField(value) {
-  const text = String(value ?? "");
-  return /[",\n]/.test(text) ? `"${text.replace(/"/g, '""')}"` : text;
+/* The signed takeoff leaves the building as a four-sheet workbook, and only
+   what a person confirmed reaches the order sheet. The statuses come from the
+   provenance the record already carries — no invented confidence:
+     - Human-Verified Order: the signed lines and the signer's own answers,
+       each with its basis (Printed Dimension or Plan Count).
+     - AI Proposed · Not Confirmed: reserved. This platform does not measure
+       drawings by scale, so today the sheet states that fact instead of
+       carrying numbers nobody signed.
+     - Sources & Arithmetic: every trace step with its sheet citations.
+     - RFIs & Holds: the questions still open, which travel with the
+       quantities instead of disappearing at the door. */
+function takeoffLineBasis(line) {
+  if (/not lumber/.test(line.item)) return "Plan Count · not a lumber item";
+  if ((line.unit || "") === "drawn on plan") return "Plan Count";
+  return "Printed Dimension";
 }
 
-function takeoffCsv(approved, propertyName) {
-  const rows = [
-    ["Measured Decision · wood takeoff — verification baseline"],
-    [`Project: ${propertyName}`],
-    [`Approved ${new Date(approved.approved_at).toISOString().slice(0, 10)} · calculator ${approved.calculator_version}`],
-    ["Not a contractor's estimate: no waste, no cut optimisation. Quantities follow the dimensions printed on the plan sheets."],
-    [],
-    ["Item", "Quantity", "Unit"],
-    ...(approved.lines || []).map((line) => [line.item, line.quantity, line.unit || ""]),
-  ];
+function takeoffWorkbookSheets(approved, propertyName) {
+  const approvedDate = new Date(approved.approved_at).toISOString().slice(0, 10);
   const answers = Array.isArray(approved.answers) ? approved.answers : [];
-  if (answers.length) {
-    rows.push([], ["Answered at signing by the person who signed", "Answer"]);
-    for (const entry of answers) rows.push([entry.question, entry.answer]);
-  }
   const answered = new Set(answers.map((entry) => entry.question));
   const openGaps = (approved.gaps || []).filter((gap) => !answered.has(gap));
-  if (openGaps.length) {
-    rows.push([], ["Still open — the sheets did not answer"]);
-    for (const gap of openGaps) rows.push([gap]);
-  }
-  /* The byte-order mark makes Excel read UTF-8 as UTF-8. */
-  return "\uFEFF" + rows.map((row) => row.map(csvField).join(",")).join("\r\n") + "\r\n";
+  const traces = Array.isArray(approved.traces) ? approved.traces : [];
+
+  const order = {
+    name: "Human-Verified Order",
+    widths: [70, 16, 16, 20, 30],
+    bold: [0, 5],
+    rows: [
+      ["Measured Decision · wood takeoff — verification baseline"],
+      [`Project: ${propertyName}`],
+      [`Approved ${approvedDate} · calculator ${approved.calculator_version}`],
+      ["Only human-confirmed rows appear on this sheet. Not a contractor's estimate: no waste, no cut optimisation."],
+      [],
+      ["Item", "Quantity", "Unit", "Status", "Basis"],
+      ...(approved.lines || []).map((line) => [line.item, line.quantity, line.unit || "", "Human Confirmed", takeoffLineBasis(line)]),
+      ...answers.map((entry) => [entry.question, entry.answer, "", "Human Confirmed", "Signer's reading at approval"]),
+    ],
+  };
+  if (approved.note) order.rows.push([], ["Note from the signer:", approved.note]);
+
+  const proposed = {
+    name: "AI Proposed · Not Confirmed",
+    widths: [100],
+    bold: [0],
+    rows: [
+      ["AI Proposed · Not Confirmed"],
+      ["This platform does not measure drawings by scale, so this record holds no scaled estimates."],
+      ["Cut-list and stock-length proposals will land on this sheet when the proposal layer ships — always marked Read by AI · not confirmed, never mixed into the order sheet."],
+    ],
+  };
+
+  const sources = {
+    name: "Sources & Arithmetic",
+    widths: [28, 24, 90],
+    bold: [0],
+    rows: [
+      ["Element", "Sheets cited", "Step"],
+      ...traces.flatMap((trace) => (trace.steps || []).map((step, index) => [
+        index === 0 ? trace.wall : "",
+        index === 0 ? (trace.source_refs || []).join(", ") : "",
+        step,
+      ])),
+    ],
+  };
+  if (sources.rows.length === 1) sources.rows.push(["The signed record stored no arithmetic trace."]);
+
+  const holds = {
+    name: "RFIs & Holds",
+    widths: [100, 26],
+    bold: [0],
+    rows: [
+      ["Question / hold", "Status"],
+      ...openGaps.map((gap) => [gap, "RFI / Hold — do not order"]),
+    ],
+  };
+  if (!openGaps.length) holds.rows.push(["Nothing open — every question was answered at signing."]);
+
+  return [order, proposed, sources, holds];
 }
 
 function downloadTakeoff() {
   const approved = state.approvedTakeoff;
   if (!approved) return;
   const name = state.property?.name || "project";
-  const csv = takeoffCsv(approved, name);
+  const bytes = window.MDAIXlsx360.buildXlsx(takeoffWorkbookSheets(approved, name));
   const slug = name.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "") || "project";
   const link = document.createElement("a");
-  link.href = URL.createObjectURL(new Blob([csv], { type: "text/csv;charset=utf-8" }));
-  link.download = `takeoff-${slug}-${new Date(approved.approved_at).toISOString().slice(0, 10)}.csv`;
+  link.href = URL.createObjectURL(new Blob([bytes], { type: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" }));
+  link.download = `takeoff-${slug}-${new Date(approved.approved_at).toISOString().slice(0, 10)}.xlsx`;
   document.body.appendChild(link);
   link.click();
   link.remove();
   setTimeout(() => URL.revokeObjectURL(link.href), 4000);
-  notify("The signed takeoff is downloading — a CSV any spreadsheet opens.");
+  notify("The signed takeoff is downloading — a workbook any spreadsheet opens.");
 }
 
 $("#download-takeoff")?.addEventListener("click", downloadTakeoff);
-if (typeof window !== "undefined") window.__takeoffCsv = takeoffCsv;
+if (typeof window !== "undefined") window.__takeoffSheets = takeoffWorkbookSheets;
 
 /* The roadmap shown here and the roadmap the field is running can be different
    versions. Saying so is the difference between "nothing works" and "approve

@@ -103,6 +103,8 @@ console.log("\n── a plan set with printed dimensions ──");
   const signed = await page.evaluate(async () => {
     const input = document.querySelector("#takeoff-gaps .gap-answer");
     if (input) input.value = "  9'-6\" — read on A-202 myself  ";
+    const noteField = document.querySelector("#takeoff-note");
+    if (noteField) noteField.value = " Ledger run to be field-verified. ";
     let asked = "";
     window.confirm = (message) => { asked = message; return true; };
     document.querySelector("#approve-takeoff")?.click();
@@ -129,6 +131,8 @@ console.log("\n── a plan set with printed dimensions ──");
     (signed.args?.p_gaps || []).some((gap) => /Wall B1/.test(gap)), JSON.stringify(signed.args?.p_gaps));
   check("and the calculator names its version",
     signed.args?.p_calculator_version === "takeoff360-1", signed.args?.p_calculator_version);
+  check("the signer's note goes on the record, trimmed",
+    signed.args?.p_note === "Ledger run to be field-verified.", JSON.stringify(signed.args?.p_note));
   check("nothing threw", errors.length === 0, errors.join(" | "));
   await context.close();
 }
@@ -170,9 +174,14 @@ console.log("\n── a signed takeoff leaves as a real file ──");
     property_id: world.document_baselines[0].property_id, baseline_id: "bl-1",
     kind: "wood_framing", state: "approved",
     approved_at: "2026-08-26T01:00:00Z", calculator_version: "takeoff360-1", measured_walls: 1,
-    lines: [{ item: "2x6 joist (F.R.T.) — linear feet", quantity: 3280, unit: "LF" }],
+    lines: [
+      { item: "2x6 deck boards (F.R.T.) — structure and walking surface in one — linear feet", quantity: 3280, unit: "LF" },
+      { item: 'pile: 18" dia concrete pile · not lumber — verification count', quantity: 14, unit: "drawn on plan" },
+    ],
+    traces: [{ wall: "Wood Deck", source_refs: ["S-2.0", "A-210"], steps: ["area: 1640 sq ft as printed", 'joists: 1640 sq ft × 12 / 6" o.c. = 3280 LF'] }],
     gaps: [pileGap, "Deck: beam BM.1 is scheduled but its drawn count was not read"],
     answers: [{ question: pileGap, answer: "14 — counted on S-2.0 foundation plan" }],
+    note: "Plywood diaphragm on hold — conflicts with the permeable 2x6 deck; engineer to confirm.",
   }];
   const { context, page, errors } = await openPlans(world);
   const view = await page.evaluate(() => ({
@@ -197,26 +206,46 @@ console.log("\n── a signed takeoff leaves as a real file ──");
     HTMLAnchorElement.prototype.click = function () { clicked = true; filename = this.download; };
     document.querySelector("#download-takeoff")?.click();
     await new Promise((r) => setTimeout(r, 200));
-    /* blob.text() decodes UTF-8 and swallows the byte-order mark by design,
-       so the BOM is asserted on the raw bytes. */
-    const head = blob ? [...new Uint8Array((await blob.arrayBuffer()).slice(0, 3))] : [];
-    return { clicked, filename, head, text: blob ? await blob.text() : "" };
+    const head = blob ? [...new Uint8Array((await blob.arrayBuffer()).slice(0, 2))] : [];
+    const sheets = window.__takeoffSheets(
+      window.__seed.rows.material_takeoffs[0], "3001 Hutton",
+    );
+    return { clicked, filename, head, type: blob?.type || "", sheets };
   });
-  check("the button downloads a file, named for the project and the signing date",
-    download.clicked === true && /^takeoff-.+-2026-08-26\.csv$/.test(download.filename), download.filename);
-  check("the CSV opens as UTF-8 and says what it is",
-    download.head.join(",") === "239,187,191" && /Measured Decision · wood takeoff/.test(download.text)
-    && /Not a contractor's estimate/.test(download.text),
-    `bytes ${download.head.join(",")} · ${download.text.slice(0, 120)}`);
-  check("the quantities are in it, as columns",
-    /Item,Quantity,Unit/.test(download.text) && /2x6 joist \(F\.R\.T\.\) — linear feet,3280,LF/.test(download.text),
-    download.text.slice(0, 400));
-  check("the person's answer travels with it, quotes doubled the CSV way",
-    /18"" CONC\. PILE/.test(download.text) && /14 — counted on S-2\.0/.test(download.text),
-    download.text.split("\n").filter((line) => /counted|PILE/.test(line)).join(" | "));
-  check("what stays open leaves with the file too",
-    /Still open — the sheets did not answer/.test(download.text) && /beam BM\.1/.test(download.text),
-    download.text.slice(-300));
+  check("the button downloads a workbook, named for the project and the signing date",
+    download.clicked === true && /^takeoff-.+-2026-08-26\.xlsx$/.test(download.filename), download.filename);
+  check("and the bytes are a real ZIP with the spreadsheet mime type",
+    download.head.join(",") === "80,75" && /spreadsheetml/.test(download.type),
+    `${download.head.join(",")} · ${download.type}`);
+
+  const [order, proposed, sources, holds] = download.sheets;
+  const orderBody = order.rows.slice(6);
+  check("sheet 1 is the Human-Verified Order, every row Human Confirmed",
+    order.name === "Human-Verified Order"
+    && orderBody.filter((row) => row.length >= 4).every((row) => row[3] === "Human Confirmed"),
+    JSON.stringify(orderBody));
+  check("printed dimensions and plan counts each carry their basis",
+    orderBody.some((row) => row[4] === "Printed Dimension" && row[1] === 3280)
+    && orderBody.some((row) => /Plan Count · not a lumber item/.test(row[4] || "") && row[1] === 14),
+    JSON.stringify(orderBody.map((row) => [row[1], row[4]])));
+  check("the signer's answer and note are on the order sheet as theirs",
+    orderBody.some((row) => row[4] === "Signer's reading at approval" && /counted on S-2\.0/.test(row[1]))
+    && order.rows.some((row) => /Note from the signer/.test(row[0] || "") && /engineer to confirm/.test(row[1] || "")),
+    JSON.stringify(order.rows.slice(-2)));
+  check("sheet 2 refuses scaled estimates by name",
+    proposed.name === "AI Proposed · Not Confirmed"
+    && proposed.rows.some((row) => /does not measure drawings by scale/.test(row[0] || "")),
+    JSON.stringify(proposed.rows));
+  check("sheet 3 carries the arithmetic with its citations",
+    sources.name === "Sources & Arithmetic"
+    && sources.rows.some((row) => row[0] === "Wood Deck" && /S-2\.0/.test(row[1] || ""))
+    && sources.rows.some((row) => /3280 LF/.test(row[2] || "")),
+    JSON.stringify(sources.rows));
+  check("sheet 4 holds the open question, marked do-not-order",
+    holds.name === "RFIs & Holds"
+    && holds.rows.some((row) => /beam BM\.1/.test(row[0] || "") && /do not order/.test(row[1] || ""))
+    && !holds.rows.some((row) => /piles are scheduled/.test(row[0] || "")),
+    JSON.stringify(holds.rows));
   check("nothing threw on the signed set", errors.length === 0, errors[0] || "");
   await context.close();
 }

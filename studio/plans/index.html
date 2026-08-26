@@ -9,7 +9,7 @@
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
-    <link rel="stylesheet" href="plans.css?v=e743fdd165">
+    <link rel="stylesheet" href="plans.css?v=f9b14f78af">
   </head>
   <body>
     <div class="boot-screen" id="boot-screen">
@@ -212,6 +212,9 @@
             <div class="takeoff-lines"><h3>Order draft</h3><table id="takeoff-table"><thead><tr><th>Item</th><th>Qty</th></tr></thead><tbody></tbody></table></div>
             <div class="takeoff-side">
               <div class="takeoff-gaps" id="takeoff-gaps"></div>
+              <label class="takeoff-note" id="takeoff-note-field" hidden>Note for the record (optional)
+                <textarea id="takeoff-note" rows="2" maxlength="2000" placeholder="e.g. plywood diaphragm on hold — conflicts with the permeable 2x6 deck; engineer to confirm"></textarea>
+              </label>
               <details class="takeoff-trace"><summary>The arithmetic, wall by wall</summary><div id="takeoff-trace"></div></details>
             </div>
           </div>
@@ -326,8 +329,9 @@
     <script src="../config.js?v=0772f5f463"></script>
     <script src="../s3-upload.js?v=49e7eb1bcf"></script>
     <script src="../recent-projects.js?v=529636c5de"></script>
-    <script src="../takeoff360.js?v=e449383364"></script>
+    <script src="../takeoff360.js?v=5f77a8199b"></script>
+    <script src="../xlsx360.js?v=ed6cb655c2"></script>
     <script src="../page-renders.js?v=ebb42cee89"></script>
-    <script src="plans.js?v=9aff9bde1b"></script>
+    <script src="plans.js?v=a52d4ab47a"></script>
   </body>
 </html>
