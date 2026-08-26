@@ -21,6 +21,7 @@ const state = {
   planSpaces: [],
   spaceLinks: [],
   approvedTakeoff: null,
+  takeoffReviews: [],
   requirements: [],
   tasks: [],
   assignments: [],
@@ -596,6 +597,16 @@ async function openProperty(propertyId) {
       .limit(1);
     if (takeoffResult.error) console.error("takeoff", takeoffResult.error);
     state.approvedTakeoff = takeoffResult.data?.[0] || null;
+    /* The expert layer: line-level reviews are the only door to a
+       human-confirmed value. Active rows only; history stays in the table. */
+    const reviewResult = await client
+      .from("takeoff_line_reviews")
+      .select("line_key, verdict, value, note, reviewer_role, reviewed_at")
+      .eq("baseline_id", state.baseline.id)
+      .eq("kind", "wood_framing")
+      .eq("state", "active");
+    if (reviewResult.error) console.error("line reviews", reviewResult.error);
+    state.takeoffReviews = reviewResult.data || [];
   }
   render();
   elements.sync.textContent = state.activeAnalysisJob
@@ -816,6 +827,26 @@ async function reviewRoute(linkId, verdict) {
  * an order that silently omits a wall reads as a smaller house. */
 const TAKEOFF_CALCULATOR_VERSION = "takeoff360-1";
 
+/* The AI Takeoff Review.
+ *
+ * The owner uploads plans and looks at a finished result. They are never
+ * asked to count members, measure sheets, or fill a technical field: the AI
+ * proposes everything it can with its provenance and confidence, the product
+ * raises its own RFIs where the plans do not answer, and the workbook
+ * downloads without any signature.
+ *
+ * Provenance is a fact of each row, not a mood:
+ *   PRINTED_FACT · AI_PLAN_COUNT · DERIVED_FROM_PRINTED_DIMENSIONS ·
+ *   AI_SCALED_ESTIMATE (field verify) · OPEN_RFI.
+ * An owner's acceptance records OWNER_ACCEPTED_BASELINE and nothing more.
+ * HUMAN_CONFIRMED exists only through line-by-line expert review. */
+const TAKEOFF_METHOD_LABELS = {
+  PRINTED_FACT: "Printed fact",
+  AI_PLAN_COUNT: "AI plan count",
+  DERIVED_FROM_PRINTED_DIMENSIONS: "Derived from printed dimensions",
+  AI_SCALED_ESTIMATE: "AI scaled estimate — field verify",
+};
+
 function takeoffDraft() {
   const walls = Array.isArray(state.baseline?.analysis?.framing_walls)
     ? state.baseline.analysis.framing_walls
@@ -827,106 +858,195 @@ function takeoffDraft() {
   return { walls, decks, result: window.MDAITakeoff360.takeoff(walls, decks) };
 }
 
+function takeoffOpenGaps(draft) {
+  return [
+    ...draft.result.gaps,
+    ...draft.result.unmeasured.map((wall) => `${wall.label || "a wall"} has no printed length (${(wall.source_refs || []).join(", ") || "no sheet cited"})`),
+  ];
+}
+
+function activeReviews() {
+  const map = new Map();
+  for (const review of state.takeoffReviews || []) map.set(review.line_key, review);
+  return map;
+}
+
+function takeoffLineMeta(line, review) {
+  const parts = [TAKEOFF_METHOD_LABELS[line.method] || "Derived from printed dimensions"];
+  const refs = (line.source_refs || []).join(", ");
+  if (refs) parts.push(refs);
+  if (line.category === "not_lumber") parts.push("Not lumber");
+  parts.push(line.status === "hold" ? "HOLD" : "ready");
+  let text = parts.join(" · ");
+  if (review?.verdict === "confirmed" || review?.verdict === "corrected") {
+    text += ` · HUMAN_CONFIRMED by ${review.reviewer_role}, ${new Date(review.reviewed_at).toLocaleDateString("en-US", { month: "short", day: "numeric" })}`;
+  }
+  return text;
+}
+
 function renderTakeoff() {
   const section = $("#takeoff-section");
   if (!section) return;
   section.hidden = !state.baseline;
   if (section.hidden) return;
 
-  const approved = state.approvedTakeoff;
+  const accepted = state.approvedTakeoff;
   const draft = takeoffDraft();
+  const reviews = activeReviews();
+  const confirmedCount = [...reviews.values()].filter((review) => review.verdict !== "kept_open").length;
   const pill = $("#takeoff-state");
   const approve = $("#approve-takeoff");
   const grid = $("#takeoff-grid");
   const empty = $("#takeoff-empty");
   const intro = $("#takeoff-intro");
 
-  /* Nothing extracted: the honest empty state, with the reason and the way
-     forward, not a bare table. */
-  if (!draft && !approved) {
-    pill.textContent = "No dimensions read";
+  if (!draft) {
+    pill.textContent = accepted ? "Accepted earlier · re-analyse to review" : "No dimensions read";
     pill.className = "state-pill intake";
     approve.hidden = true;
+    $("#download-ai-takeoff").hidden = true;
+    $("#download-takeoff").hidden = true;
+    $("#takeoff-expert").hidden = true;
+    $("#takeoff-expert-offer").hidden = true;
     grid.hidden = true;
     empty.hidden = false;
     intro.textContent = "";
     return;
   }
 
-  const showing = approved
-    ? { lines: approved.lines, gaps: approved.gaps || [], measuredWalls: approved.measured_walls, traces: [] }
-    : { lines: draft.result.lines, gaps: [
-        ...draft.result.gaps,
-        ...draft.result.unmeasured.map((wall) => `${wall.label || "a wall"} has no printed length (${(wall.source_refs || []).join(", ") || "no sheet cited"})`),
-      ], measuredWalls: draft.result.measuredWalls, traces: draft.result.traces };
-
+  const openGaps = takeoffOpenGaps(draft);
+  const proposals = draft.result.proposals || [];
   empty.hidden = true;
   grid.hidden = false;
-  pill.textContent = approved
-    ? `Approved ${new Date(approved.approved_at).toLocaleDateString("en-US", { month: "short", day: "numeric" })}`
-    : "Read by AI · not approved";
-  pill.className = `state-pill ${approved ? "approved" : "baseline_review"}`;
-  /* The same authority that approves the roadmap, plus the project manager. */
-  const mayApprove = canApproveBaseline() || state.role === "project_manager";
-  approve.hidden = Boolean(approved) || !mayApprove;
-  intro.textContent = approved
-    ? `Signed as a verification baseline: material the plans imply across ${showing.measuredWalls} dimensioned framed element${showing.measuredWalls === 1 ? "" : "s"}. Compare it against invoices and captures — a large gap between the three is the question worth asking.`
-    : `Computed from ${showing.measuredWalls} framed element${showing.measuredWalls === 1 ? "" : "s"} — walls and decks — whose dimensions are printed on the sheets. Every line is traceable; nothing is measured by scale. Check it, then approve it as the verification baseline.`;
+  pill.textContent = confirmedCount
+    ? `${confirmedCount} line${confirmedCount === 1 ? "" : "s"} human-confirmed`
+    : accepted
+      ? `Accepted as working baseline ${new Date(accepted.approved_at).toLocaleDateString("en-US", { month: "short", day: "numeric" })}`
+      : "Read by AI · not confirmed";
+  pill.className = `state-pill ${confirmedCount ? "approved" : accepted ? "approved" : "baseline_review"}`;
 
-  $("#download-takeoff").hidden = !approved;
+  const mayReview = canApproveBaseline() || state.role === "project_manager";
+  approve.hidden = Boolean(accepted) || !mayReview;
+  $("#download-ai-takeoff").hidden = false;
+  $("#download-takeoff").hidden = confirmedCount === 0;
+  $("#takeoff-expert").hidden = !mayReview;
+  $("#takeoff-expert-offer").hidden = false;
+  intro.textContent = "Measured Decision analyzed the submitted plans and prepared the quantities below. Review the result, assumptions, and open RFIs. No manual plan measurement is required.";
 
+  /* The quantities, each wearing its provenance. Proposals sit in the same
+     table, marked as proposals — the AI's best reading where certainty was
+     out of reach, never silently blank. */
   const body = $("#takeoff-table tbody");
-  body.innerHTML = (showing.lines || []).map((line) => `
-    <tr${/REVIEW/.test(line.item) ? ` class="review"` : ""}><td>${escapeHtml(line.item)}</td><td>${escapeHtml(String(line.quantity))} ${escapeHtml(line.unit || "")}</td></tr>`).join("");
-
-  /* A gap the AI could not close is a question a person can often answer by
-     looking at the very sheet — counting the P1 circles is reading the
-     drawing. The input turns a dead end into a signed answer; leaving it
-     blank leaves the question honestly open. */
-  const signedAnswers = Array.isArray(approved?.answers) ? approved.answers : [];
-  const answeredQuestions = new Set(signedAnswers.map((entry) => entry.question));
-  const openGaps = showing.gaps.filter((gap) => !answeredQuestions.has(gap));
-  const answerable = !approved && mayApprove;
-  $("#takeoff-gaps").innerHTML = [
-    openGaps.length
-      ? `<p><strong>${openGaps.length} thing${openGaps.length === 1 ? "" : "s"} the sheets did not answer${answerable ? " — write in what you can read on them yourself" : ""}:</strong></p>` +
-        openGaps.map((gap) => `<p>· ${escapeHtml(gap)}</p>${answerable
-          ? `<input class="gap-answer" data-question="${escapeHtml(gap)}" placeholder="Your reading from the sheets — a count, a length — or leave open" />`
-          : ""}`).join("")
-      : `<p class="clear">Every wall the AI read carries a printed dimension.</p>`,
-    signedAnswers.length
-      ? `<p><strong>Answered at signing by the person who signed:</strong></p>` +
-        signedAnswers.map((entry) => `<p>· ${escapeHtml(entry.question)} — <strong>${escapeHtml(entry.answer)}</strong></p>`).join("")
-      : "",
-    approved?.note ? `<p><strong>Note from the signer:</strong> ${escapeHtml(approved.note)}</p>` : "",
+  body.innerHTML = [
+    ...(draft.result.lines || []).map((line) => {
+      const review = reviews.get(line.item);
+      const shownValue = review?.verdict === "corrected" ? review.value : `${line.quantity} ${line.unit || ""}`;
+      return `<tr${line.status === "hold" ? ` class="review"` : ""}><td>${escapeHtml(line.item)}
+        <small class="line-meta">${escapeHtml(takeoffLineMeta(line, review))}${line.hold_reason ? ` — ${escapeHtml(line.hold_reason)}` : ""}</small></td>
+        <td>${escapeHtml(String(shownValue))}</td></tr>`;
+    }),
+    ...proposals.map((proposal) => {
+      const review = reviews.get(proposal.question);
+      const shownValue = review && review.verdict !== "kept_open" ? review.value : proposal.proposed;
+      return `<tr><td>${escapeHtml(proposal.question)}
+        <small class="line-meta">AI plan count · ${escapeHtml(proposal.confidence)} confidence · ${escapeHtml(proposal.basis)}${review && review.verdict !== "kept_open" ? ` · HUMAN_CONFIRMED by ${escapeHtml(review.reviewer_role)}` : " · proposed, not confirmed"}</small></td>
+        <td>${escapeHtml(String(shownValue))}</td></tr>`;
+    }),
   ].join("");
-  $("#takeoff-note-field").hidden = !answerable;
 
-  $("#takeoff-trace").innerHTML = showing.traces.length
-    ? showing.traces.map((trace) => `
-        <article><strong>${escapeHtml(trace.wall)} · ${escapeHtml((trace.source_refs || []).join(", ") || "no sheet cited")}</strong>
-        ${(trace.steps || []).map((step) => `<small>${escapeHtml(step)}</small>`).join("")}</article>`).join("")
-    : `<small>The arithmetic is shown while the draft is unapproved; the signed copy stores it verbatim in the record.</small>`;
+  /* RFIs the product raised itself. Nothing here asks the owner to measure
+     anything; the analysis continued without these answers. */
+  const proposalQuestions = new Set(proposals.map((proposal) => proposal.question));
+  const pureRfis = openGaps.filter((gap) => !proposalQuestions.has(gap));
+  $("#takeoff-gaps").innerHTML = pureRfis.length
+    ? `<p><strong>RFIs &amp; Holds — raised automatically (${pureRfis.length}):</strong></p>` +
+      pureRfis.map((gap) => `<p>· ${escapeHtml(gap)} <em>OPEN_RFI</em></p>`).join("") +
+      `<p class="clear">The analysis continues without these answers. Nothing above needs your measurement.</p>`
+    : `<p class="clear">The plans answered everything the takeoff asked of them.</p>`;
+
+  /* The expert layer. Only a qualified reviewer sees it, and only a
+     line-by-line action here creates a human-confirmed value. */
+  const expertRows = [
+    ...(draft.result.lines || []).map((line) => ({ key: line.item, current: `${line.quantity} ${line.unit || ""}` })),
+    ...proposals.map((proposal) => ({ key: proposal.question, current: proposal.proposed })),
+  ];
+  $("#takeoff-expert-lines").innerHTML = expertRows.map((row, index) => {
+    const review = reviews.get(row.key);
+    return `<div class="expert-line" data-line-key="${escapeHtml(row.key)}">
+      <p>${escapeHtml(row.key)} — <strong>${escapeHtml(row.current)}</strong>${review ? ` <em>(${escapeHtml(review.verdict)} by ${escapeHtml(review.reviewer_role)})</em>` : ""}</p>
+      <div class="expert-actions">
+        <button class="button" type="button" data-verdict="confirmed">Confirm</button>
+        <button class="button" type="button" data-verdict="corrected">Correct</button>
+        <button class="button" type="button" data-verdict="kept_open">Keep open</button>
+        <input class="expert-value" placeholder="Value you verified yourself" hidden />
+      </div>
+    </div>`;
+  }).join("");
 }
 
+/* One expert action on one line. Confirm sends the shown value; Correct opens
+   the input for the reviewer's own value; Keep open records the question. */
+async function reviewTakeoffLine(lineKey, verdict, value) {
+  if (state.busy) return;
+  setBusy(true, "Recording the line review…");
+  try {
+    const { error } = await client.rpc("review_takeoff_line", {
+      p_baseline_id: state.baseline.id,
+      p_line_key: lineKey,
+      p_verdict: verdict,
+      p_value: value || null,
+      p_note: null,
+    });
+    if (error) throw error;
+    notify(verdict === "kept_open" ? "The line stays open, on the record." : "The line is human-confirmed, under your name and role.");
+    await openProperty(state.property.id);
+  } catch (error) {
+    console.error(error);
+    notify(error.message || "The review could not be recorded", "error");
+  } finally {
+    setBusy(false, `Cloud connected · ${state.role}`);
+  }
+}
+
+$("#takeoff-expert-lines")?.addEventListener("click", (event) => {
+  const button = event.target.closest("button[data-verdict]");
+  if (!button) return;
+  const row = button.closest(".expert-line");
+  const key = row?.dataset.lineKey;
+  if (!key) return;
+  const verdict = button.dataset.verdict;
+  const input = row.querySelector(".expert-value");
+  if (verdict === "corrected") {
+    if (input.hidden) { input.hidden = false; input.focus(); return; }
+    const value = input.value.trim();
+    if (!value) { notify("Enter the value you verified before correcting", "error"); return; }
+    void reviewTakeoffLine(key, "corrected", value);
+    return;
+  }
+  if (verdict === "confirmed") {
+    const shown = row.querySelector("strong")?.textContent?.trim() || "";
+    void reviewTakeoffLine(key, "confirmed", input && !input.hidden && input.value.trim() ? input.value.trim() : shown);
+    return;
+  }
+  void reviewTakeoffLine(key, "kept_open", null);
+});
+
+$("#request-expert-review")?.addEventListener("click", (event) => {
+  event.preventDefault();
+  const url = `${window.location.origin}${window.location.pathname}?property=${state.property?.id || ""}`;
+  const subject = encodeURIComponent(`Expert review requested · ${state.property?.name || "project"} wood takeoff`);
+  const bodyText = encodeURIComponent(`Please review the AI takeoff line by line and confirm what you can verify:\n\n${url}\n\nOnly your line-level confirmation creates a human-confirmed value.`);
+  window.location.href = `mailto:?subject=${subject}&body=${bodyText}`;
+});
+
+/* Accepting is the owner saying "work from this". It is OWNER_ACCEPTED_BASELINE
+   on the record — never a technical confirmation of any line. */
 async function approveTakeoff() {
   const draft = takeoffDraft();
   if (!draft || state.busy) return;
-  const gaps = [
-    ...draft.result.gaps,
-    ...draft.result.unmeasured.map((wall) => `${wall.label || "a wall"} has no printed length (${(wall.source_refs || []).join(", ") || "no sheet cited"})`),
-  ];
-  const answers = [...document.querySelectorAll("#takeoff-gaps .gap-answer")]
-    .map((input) => ({ question: input.dataset.question || "", answer: input.value.trim() }))
-    .filter((entry) => entry.question && entry.answer);
-  const stillOpen = gaps.length - answers.length;
-  const warning = gaps.length
-    ? `\n\nIt carries ${gaps.length} open gap${gaps.length === 1 ? "" : "s"} — questions the sheets did not answer.${answers.length
-        ? ` You answered ${answers.length} of them yourself; your answers go on the record with your signature.${stillOpen > 0 ? ` ${stillOpen} stay${stillOpen === 1 ? "s" : ""} open.` : ""}`
-        : " Those stay open on the record."}`
-    : "";
-  if (!window.confirm(`Approve this draft as the verification baseline?\n\nIt is not an estimate: no waste, no cut optimisation, only walls with printed dimensions.${warning}`)) return;
-  setBusy(true, "Recording the approval…");
+  const gaps = takeoffOpenGaps(draft);
+  if (!window.confirm(`Accept this AI takeoff as the project's working baseline?\n\nThis records YOUR acceptance (OWNER_ACCEPTED_BASELINE) — it does not confirm any technical value, and you are not expected to check the plans yourself. ${gaps.length} open RFI${gaps.length === 1 ? "" : "s"} stay on the record; expert review can confirm lines later.`)) return;
+  setBusy(true, "Recording the acceptance…");
   try {
     const { error } = await client.rpc("approve_material_takeoff", {
       p_baseline_id: state.baseline.id,
@@ -936,15 +1056,15 @@ async function approveTakeoff() {
       p_gaps: gaps,
       p_measured_walls: draft.result.measuredWalls,
       p_calculator_version: TAKEOFF_CALCULATOR_VERSION,
-      p_note: (document.querySelector("#takeoff-note")?.value || "").trim() || null,
-      p_answers: answers,
+      p_note: null,
+      p_answers: [],
     });
     if (error) throw error;
-    notify("The takeoff is signed as this baseline's verification draft.");
+    notify("Accepted as the working baseline. No line was marked human-confirmed.");
     await openProperty(state.property.id);
   } catch (error) {
     console.error(error);
-    notify(error.message || "The takeoff could not be approved", "error");
+    notify(error.message || "The acceptance could not be recorded", "error");
   } finally {
     setBusy(false, `Cloud connected · ${state.role}`);
   }
@@ -952,111 +1072,166 @@ async function approveTakeoff() {
 
 $("#approve-takeoff")?.addEventListener("click", approveTakeoff);
 
-/* The signed list leaves the building as a file a supplier can open. Only the
-   signed one: a draft that walked out of the studio without a signature would
-   circulate as fact, which is the one thing an AI reading must never do. The
-   CSV carries its own provenance — who signed is on the record, the governance
-   line is in the file, and open questions travel with the quantities instead
-   of disappearing at the door. */
-/* The signed takeoff leaves the building as a four-sheet workbook, and only
-   what a person confirmed reaches the order sheet. The statuses come from the
-   provenance the record already carries — no invented confidence:
-     - Human-Verified Order: the signed lines and the signer's own answers,
-       each with its basis (Printed Dimension or Plan Count).
-     - AI Proposed · Not Confirmed: reserved. This platform does not measure
-       drawings by scale, so today the sheet states that fact instead of
-       carrying numbers nobody signed.
-     - Sources & Arithmetic: every trace step with its sheet citations.
-     - RFIs & Holds: the questions still open, which travel with the
-       quantities instead of disappearing at the door. */
-function takeoffLineBasis(line) {
-  if (/not lumber/.test(line.item)) return "Plan Count · not a lumber item";
-  if ((line.unit || "") === "drawn on plan") return "Plan Count";
-  return "Printed Dimension";
+/* Two workbooks, two meanings.
+   Download AI Takeoff: available the moment analysis finishes, no signature —
+   the AI's complete result with provenance, confidence and status on every
+   row. Download Human-Verified Order: exists only once a qualified reviewer
+   has confirmed at least one line, and its first sheet carries only those. */
+function takeoffStamp() {
+  return String(state.baseline?.created_at || "").slice(0, 10) || "draft";
 }
 
-function takeoffWorkbookSheets(approved, propertyName) {
-  const approvedDate = new Date(approved.approved_at).toISOString().slice(0, 10);
-  const answers = Array.isArray(approved.answers) ? approved.answers : [];
-  const answered = new Set(answers.map((entry) => entry.question));
-  const openGaps = (approved.gaps || []).filter((gap) => !answered.has(gap));
-  const traces = Array.isArray(approved.traces) ? approved.traces : [];
-
-  const order = {
-    name: "Human-Verified Order",
-    widths: [70, 16, 16, 20, 30],
-    bold: [0, 5],
-    rows: [
-      ["Measured Decision · wood takeoff — verification baseline"],
-      [`Project: ${propertyName}`],
-      [`Approved ${approvedDate} · calculator ${approved.calculator_version}`],
-      ["Only human-confirmed rows appear on this sheet. Not a contractor's estimate: no waste, no cut optimisation."],
-      [],
-      ["Item", "Quantity", "Unit", "Status", "Basis"],
-      ...(approved.lines || []).map((line) => [line.item, line.quantity, line.unit || "", "Human Confirmed", takeoffLineBasis(line)]),
-      ...answers.map((entry) => [entry.question, entry.answer, "", "Human Confirmed", "Signer's reading at approval"]),
-    ],
-  };
-  if (approved.note) order.rows.push([], ["Note from the signer:", approved.note]);
-
-  const proposed = {
-    name: "AI Proposed · Not Confirmed",
-    widths: [100],
-    bold: [0],
-    rows: [
-      ["AI Proposed · Not Confirmed"],
-      ["This platform does not measure drawings by scale, so this record holds no scaled estimates."],
-      ["Cut-list and stock-length proposals will land on this sheet when the proposal layer ships — always marked Read by AI · not confirmed, never mixed into the order sheet."],
-    ],
-  };
-
-  const sources = {
-    name: "Sources & Arithmetic",
-    widths: [28, 24, 90],
-    bold: [0],
-    rows: [
-      ["Element", "Sheets cited", "Step"],
-      ...traces.flatMap((trace) => (trace.steps || []).map((step, index) => [
-        index === 0 ? trace.wall : "",
-        index === 0 ? (trace.source_refs || []).join(", ") : "",
-        step,
-      ])),
-    ],
-  };
-  if (sources.rows.length === 1) sources.rows.push(["The signed record stored no arithmetic trace."]);
-
-  const holds = {
-    name: "RFIs & Holds",
-    widths: [100, 26],
-    bold: [0],
-    rows: [
-      ["Question / hold", "Status"],
-      ...openGaps.map((gap) => [gap, "RFI / Hold — do not order"]),
-    ],
-  };
-  if (!openGaps.length) holds.rows.push(["Nothing open — every question was answered at signing."]);
-
-  return [order, proposed, sources, holds];
+function aiTakeoffSheets(draft, propertyName) {
+  const lines = draft.result.lines || [];
+  const proposals = draft.result.proposals || [];
+  const openGaps = takeoffOpenGaps(draft);
+  const holds = lines.filter((line) => line.status === "hold");
+  return [
+    {
+      name: "AI Takeoff Summary",
+      widths: [64, 18],
+      bold: [0, 5],
+      rows: [
+        ["Measured Decision · AI Takeoff — Read by AI · not confirmed"],
+        [`Project: ${propertyName}`],
+        [`Baseline analyzed ${takeoffStamp()} · calculator ${TAKEOFF_CALCULATOR_VERSION}`],
+        ["Not a contractor's estimate: no waste, no cut optimisation, no scale measuring. Every row carries its provenance."],
+        [],
+        ["What the analysis holds", "Count"],
+        ["Quantities computed", lines.length],
+        ["— of them on HOLD", holds.length],
+        ["AI proposals awaiting review", proposals.length],
+        ["Open RFIs raised automatically", openGaps.length],
+        ["Human-confirmed lines", [...activeReviews().values()].filter((review) => review.verdict !== "kept_open").length],
+      ],
+    },
+    {
+      name: "Detailed Quantities & Basis",
+      widths: [58, 12, 12, 34, 12, 12, 12, 24, 48],
+      bold: [0],
+      rows: [
+        ["Item", "Qty", "Unit", "Method", "Confidence", "Category", "Status", "Sources", "Unresolved issue"],
+        ...lines.map((line) => [
+          line.item, line.quantity, line.unit || "",
+          line.method || "DERIVED_FROM_PRINTED_DIMENSIONS", "",
+          line.category === "not_lumber" ? "Not lumber" : "Lumber",
+          line.status === "hold" ? "HOLD — do not procure" : "Ready",
+          (line.source_refs || []).join(", "), line.hold_reason || "",
+        ]),
+        ...proposals.map((proposal) => [
+          proposal.question, proposal.proposed, "",
+          "AI_PLAN_COUNT — proposed, not confirmed", proposal.confidence, "", "Awaiting review",
+          "", proposal.basis,
+        ]),
+      ],
+    },
+    {
+      name: "Sources & Arithmetic",
+      widths: [28, 24, 90],
+      bold: [0],
+      rows: [
+        ["Element", "Sheets cited", "Step"],
+        ...(draft.result.traces || []).flatMap((trace) => (trace.steps || []).map((step, index) => [
+          index === 0 ? trace.wall : "", index === 0 ? (trace.source_refs || []).join(", ") : "", step,
+        ])),
+      ],
+    },
+    {
+      name: "RFIs & Holds",
+      widths: [100, 26],
+      bold: [0],
+      rows: [
+        ["Question / hold", "Status"],
+        ...openGaps.map((gap) => [gap, "OPEN_RFI — do not order"]),
+      ],
+    },
+  ];
 }
 
-function downloadTakeoff() {
-  const approved = state.approvedTakeoff;
-  if (!approved) return;
+function verifiedOrderSheets(draft, propertyName) {
+  const reviews = activeReviews();
+  const confirmed = [...reviews.entries()].filter(([, review]) => review.verdict !== "kept_open");
+  const accepted = state.approvedTakeoff;
+  const openGaps = takeoffOpenGaps(draft);
+  return [
+    {
+      name: "Human-Verified Order",
+      widths: [64, 20, 18, 22, 14],
+      bold: [0, 4],
+      rows: [
+        ["Measured Decision · Human-Verified Order"],
+        [`Project: ${propertyName}`],
+        ["Every row below was confirmed line-by-line by a qualified reviewer. Nothing else qualifies."],
+        [],
+        ["Line", "Confirmed value", "Status", "Reviewer role", "Date"],
+        ...confirmed.map(([key, review]) => [
+          key, review.value || "", "HUMAN_CONFIRMED", review.reviewer_role,
+          String(review.reviewed_at || "").slice(0, 10),
+        ]),
+      ],
+    },
+    {
+      name: "AI Proposed · Not Confirmed",
+      widths: [64, 16, 34, 26],
+      bold: [0],
+      rows: [
+        ["Item", "Qty", "Method", "Standing"],
+        ...(draft.result.lines || []).filter((line) => !reviews.has(line.item) || reviews.get(line.item).verdict === "kept_open").map((line) => [
+          line.item, `${line.quantity} ${line.unit || ""}`,
+          line.method || "DERIVED_FROM_PRINTED_DIMENSIONS",
+          accepted ? "OWNER_ACCEPTED_BASELINE — not a technical confirmation" : "Read by AI · not confirmed",
+        ]),
+        ...(draft.result.proposals || []).filter((proposal) => !reviews.has(proposal.question) || reviews.get(proposal.question).verdict === "kept_open").map((proposal) => [
+          proposal.question, proposal.proposed, `AI_PLAN_COUNT · ${proposal.confidence} confidence`, "Proposed, not confirmed",
+        ]),
+      ],
+    },
+    aiTakeoffSheets(draft, propertyName)[2],
+    {
+      name: "RFIs & Holds",
+      widths: [100, 26],
+      bold: [0],
+      rows: [
+        ["Question / hold", "Status"],
+        ...openGaps.map((gap) => [gap, "OPEN_RFI — do not order"]),
+      ],
+    },
+  ];
+}
+
+function downloadWorkbook(sheets, suffix) {
   const name = state.property?.name || "project";
-  const bytes = window.MDAIXlsx360.buildXlsx(takeoffWorkbookSheets(approved, name));
   const slug = name.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "") || "project";
+  const bytes = window.MDAIXlsx360.buildXlsx(sheets);
   const link = document.createElement("a");
   link.href = URL.createObjectURL(new Blob([bytes], { type: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" }));
-  link.download = `takeoff-${slug}-${new Date(approved.approved_at).toISOString().slice(0, 10)}.xlsx`;
+  link.download = `${suffix}-${slug}-${takeoffStamp()}.xlsx`;
   document.body.appendChild(link);
   link.click();
   link.remove();
   setTimeout(() => URL.revokeObjectURL(link.href), 4000);
-  notify("The signed takeoff is downloading — a workbook any spreadsheet opens.");
 }
 
-$("#download-takeoff")?.addEventListener("click", downloadTakeoff);
-if (typeof window !== "undefined") window.__takeoffSheets = takeoffWorkbookSheets;
+$("#download-ai-takeoff")?.addEventListener("click", () => {
+  const draft = takeoffDraft();
+  if (!draft) return;
+  downloadWorkbook(aiTakeoffSheets(draft, state.property?.name || "project"), "ai-takeoff");
+  notify("The AI takeoff is downloading — no signature needed; every row carries its provenance.");
+});
+
+$("#download-takeoff")?.addEventListener("click", () => {
+  const draft = takeoffDraft();
+  if (!draft) return;
+  const confirmed = [...activeReviews().values()].filter((review) => review.verdict !== "kept_open");
+  if (!confirmed.length) { notify("Nothing is human-confirmed yet — that takes line-by-line expert review", "error"); return; }
+  downloadWorkbook(verifiedOrderSheets(draft, state.property?.name || "project"), "verified-order");
+  notify("The human-verified order is downloading.");
+});
+
+if (typeof window !== "undefined") {
+  window.__aiTakeoffSheets = () => { const draft = takeoffDraft(); return draft ? aiTakeoffSheets(draft, state.property?.name || "project") : null; };
+  window.__verifiedSheets = () => { const draft = takeoffDraft(); return draft ? verifiedOrderSheets(draft, state.property?.name || "project") : null; };
+}
 
 /* The roadmap shown here and the roadmap the field is running can be different
    versions. Saying so is the difference between "nothing works" and "approve

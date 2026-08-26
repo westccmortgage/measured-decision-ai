@@ -9,7 +9,7 @@
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
-    <link rel="stylesheet" href="plans.css?v=f9b14f78af">
+    <link rel="stylesheet" href="plans.css?v=d08afd9f3c">
   </head>
   <body>
     <div class="boot-screen" id="boot-screen">
@@ -200,29 +200,34 @@
              signs. Nothing here is an estimate, and the screen says so. -->
         <section class="takeoff-section" id="takeoff-section" hidden>
           <div class="section-heading">
-            <div><p>06 · Wood takeoff draft</p><h2>What the plans imply in lumber</h2></div>
+            <div><p>06 · AI Takeoff Review</p><h2>What the plans imply in lumber</h2></div>
             <div class="heading-actions">
               <span class="state-pill" id="takeoff-state">Not computed</span>
-              <button class="button" id="download-takeoff" type="button" hidden>Download the signed list</button>
-              <button class="button primary" id="approve-takeoff" type="button" hidden>Approve this draft</button>
+              <button class="button" id="download-ai-takeoff" type="button" hidden>Download AI Takeoff</button>
+              <button class="button" id="download-takeoff" type="button" hidden>Download Human-Verified Order</button>
+              <button class="button primary" id="approve-takeoff" type="button" hidden>Accept as working baseline</button>
             </div>
           </div>
           <p class="routes-intro" id="takeoff-intro"></p>
           <div class="takeoff-grid" id="takeoff-grid" hidden>
-            <div class="takeoff-lines"><h3>Order draft</h3><table id="takeoff-table"><thead><tr><th>Item</th><th>Qty</th></tr></thead><tbody></tbody></table></div>
+            <div class="takeoff-lines"><h3>Quantities the plans support</h3><table id="takeoff-table"><thead><tr><th>Item</th><th>Qty</th></tr></thead><tbody></tbody></table></div>
             <div class="takeoff-side">
               <div class="takeoff-gaps" id="takeoff-gaps"></div>
-              <label class="takeoff-note" id="takeoff-note-field" hidden>Note for the record (optional)
-                <textarea id="takeoff-note" rows="2" maxlength="2000" placeholder="e.g. plywood diaphragm on hold — conflicts with the permeable 2x6 deck; engineer to confirm"></textarea>
-              </label>
-              <details class="takeoff-trace"><summary>The arithmetic, wall by wall</summary><div id="takeoff-trace"></div></details>
+              <p class="takeoff-expert-offer" id="takeoff-expert-offer" hidden>
+                <a href="#" id="request-expert-review">Request expert review</a> — send this takeoff to a qualified reviewer.
+              </p>
+              <details class="takeoff-trace" id="takeoff-expert" hidden><summary>Expert review — for a qualified reviewer only</summary>
+                <p class="takeoff-expert-note">Confirm only a value you have verified yourself, line by line. Confirming here is what creates a human-confirmed value — nothing else does.</p>
+                <div id="takeoff-expert-lines"></div>
+              </details>
+              <details class="takeoff-trace"><summary>Sources &amp; arithmetic</summary><div id="takeoff-trace"></div></details>
             </div>
           </div>
           <div class="empty-state" id="takeoff-empty" hidden>
             <strong>The plan set printed no framing dimensions the AI could read</strong>
             <p id="takeoff-empty-copy">A takeoff needs dimensioned floor plans. Re-analysing a set that includes them is what would produce one.</p>
           </div>
-          <p class="governance-note"><i></i>A draft for verification, not a contractor's estimate. It excludes waste, cut optimisation, and regional practice, and it only counts walls whose dimensions are printed on the sheets. Approval records that a person accepted it as a verification baseline.</p>
+          <p class="governance-note"><i></i>Not a contractor's estimate: no waste, no cut optimisation, no scale measuring. Every quantity carries its provenance — printed fact, plan count, or derived arithmetic — and open questions are RFIs the product raises itself. Accepting records a working baseline; only line-by-line expert review creates a human-confirmed value.</p>
         </section>
       </main>
     </div>
@@ -329,9 +334,9 @@
     <script src="../config.js?v=0772f5f463"></script>
     <script src="../s3-upload.js?v=49e7eb1bcf"></script>
     <script src="../recent-projects.js?v=529636c5de"></script>
-    <script src="../takeoff360.js?v=5f77a8199b"></script>
-    <script src="../xlsx360.js?v=ed6cb655c2"></script>
+    <script src="../takeoff360.js?v=3785526cee"></script>
+    <script src="../xlsx360.js?v=afdbd4dd11"></script>
     <script src="../page-renders.js?v=ebb42cee89"></script>
-    <script src="plans.js?v=a52d4ab47a"></script>
+    <script src="plans.js?v=25deef57af"></script>
   </body>
 </html>

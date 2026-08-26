@@ -1123,6 +1123,60 @@ select pg_temp.refused('nor can it record a render against this project''s docum
 reset role;
 
 --
+-- Human Confirmed means a human confirmed it. The expert layer is the only
+-- door: one line at a time, by a qualified role, with the reviewer's role and
+-- history kept. An owner's general acceptance touches none of this.
+
+set local role authenticated;
+set local test.uid = '33333333-3333-3333-3333-333333333333';
+select public.review_takeoff_line('eeeeeeee-0000-0000-0000-000000000001',
+  '2x6x6'' deck boards — net pieces (no purchase allowance)', 'confirmed', '547 pieces', 'Recomputed by hand from the printed module');
+select pg_temp.check('a reviewer confirms one line, and the record names their role',
+  exists (select 1 from public.takeoff_line_reviews
+           where line_key like '2x6x6%' and verdict = 'confirmed'
+             and value = '547 pieces' and reviewer_role = 'reviewer' and state = 'active'));
+select public.review_takeoff_line('eeeeeeee-0000-0000-0000-000000000001',
+  '2x6x6'' deck boards — net pieces (no purchase allowance)', 'corrected', '540 pieces', null);
+select pg_temp.check('a second review supersedes the first, never erases it',
+  (select count(*) from public.takeoff_line_reviews where line_key like '2x6x6%') = 2
+  and (select verdict from public.takeoff_line_reviews where line_key like '2x6x6%' and state = 'active') = 'corrected'
+  and exists (select 1 from public.takeoff_line_reviews where line_key like '2x6x6%' and state = 'superseded' and value = '547 pieces'));
+select pg_temp.refused('a confirmation without a value is refused',
+  $$select public.review_takeoff_line('eeeeeeee-0000-0000-0000-000000000001', 'some line', 'confirmed', '', null)$$);
+select pg_temp.refused('and an unknown verdict is refused',
+  $$select public.review_takeoff_line('eeeeeeee-0000-0000-0000-000000000001', 'some line', 'blessed', 'x', null)$$);
+reset role;
+
+set local role authenticated;
+set local test.uid = '22222222-2222-2222-2222-222222222222';
+select pg_temp.refused('a contributor is not a qualified reviewer',
+  $$select public.review_takeoff_line('eeeeeeee-0000-0000-0000-000000000001', 'some line', 'confirmed', '1', null)$$);
+reset role;
+
+set local role authenticated;
+set local test.uid = '44444444-4444-4444-4444-444444444444';
+select pg_temp.refused('another organisation cannot review this project''s lines',
+  $$select public.review_takeoff_line('eeeeeeee-0000-0000-0000-000000000001', 'some line', 'confirmed', '1', null)$$);
+select pg_temp.check('nor see its reviews',
+  (select count(*) from public.takeoff_line_reviews) = 0);
+reset role;
+
+set local role authenticated;
+set local test.uid = '11111111-1111-1111-1111-111111111111';
+select pg_temp.check('the line review is on the audit record with its verdict',
+  exists (select 1 from public.audit_events
+           where action = 'takeoff_line.reviewed'
+             and detail->>'verdict' = 'corrected'
+             and detail->>'reviewer_role' = 'reviewer'));
+reset role;
+
+set local role anon;
+set local test.uid = '';
+select pg_temp.refused('nobody signed out reviews a line',
+  $$select public.review_takeoff_line('eeeeeeee-0000-0000-0000-000000000001', 'some line', 'confirmed', '1', null)$$);
+reset role;
+
+--
 -- The owner report: the decision log and the product-counted metrics, for the
 -- roles that run the project. AI actions are not decisions; other projects'
 -- decisions never leak in; a contributor, an outsider and a signed-out visitor

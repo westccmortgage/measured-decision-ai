@@ -190,16 +190,25 @@ const schema = {
              TO BE 19/32" PLYWOOD" in the framing notes belongs here verbatim.
              Empty string when the sheets specify none. */
           sheathing: { type: "string" },
+          /* count_drawn is a count the AI is certain of — certain enough to
+             stand as a line. When certainty is out of reach, the AI still
+             proposes its best count with the confidence and what blocked
+             certainty, so a person reviews a proposal instead of being asked
+             to measure the plans themselves. count_proposed 0 means the AI
+             could not even propose. */
           beams: {
             type: "array",
             items: {
               type: "object",
               additionalProperties: false,
-              required: ["mark", "description", "count_drawn"],
+              required: ["mark", "description", "count_drawn", "count_proposed", "count_confidence", "count_note"],
               properties: {
                 mark: { type: "string" },
                 description: { type: "string" },
                 count_drawn: { type: "integer" },
+                count_proposed: { type: "integer" },
+                count_confidence: { type: "string", enum: ["high", "medium", "low", "none"] },
+                count_note: { type: "string" },
               },
             },
           },
@@ -208,21 +217,27 @@ const schema = {
             items: {
               type: "object",
               additionalProperties: false,
-              required: ["mark", "description", "count_drawn"],
+              required: ["mark", "description", "count_drawn", "count_proposed", "count_confidence", "count_note"],
               properties: {
                 mark: { type: "string" },
                 description: { type: "string" },
                 count_drawn: { type: "integer" },
+                count_proposed: { type: "integer" },
+                count_confidence: { type: "string", enum: ["high", "medium", "low", "none"] },
+                count_note: { type: "string" },
               },
             },
           },
           piles: {
             type: "object",
             additionalProperties: false,
-            required: ["description", "count_drawn"],
+            required: ["description", "count_drawn", "count_proposed", "count_confidence", "count_note"],
             properties: {
               description: { type: "string" },
               count_drawn: { type: "integer" },
+              count_proposed: { type: "integer" },
+              count_confidence: { type: "string", enum: ["high", "medium", "low", "none"] },
+              count_note: { type: "string" },
             },
           },
           guardrail: { type: "string" },
