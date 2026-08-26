@@ -1122,6 +1122,52 @@ select pg_temp.refused('nor can it record a render against this project''s docum
     values ('ddddddd0-0000-0000-0000-00000000000d', 'aaaaaaaa-0000-0000-0000-000000000001', 'bbbbbbbb-0000-0000-0000-000000000001', 9, 200)$$);
 reset role;
 
+--
+-- The owner report: the decision log and the product-counted metrics, for the
+-- roles that run the project. AI actions are not decisions; other projects'
+-- decisions never leak in; a contributor, an outsider and a signed-out visitor
+-- get nothing.
+
+set local role authenticated;
+set local test.uid = '33333333-3333-3333-3333-333333333333';
+select pg_temp.check('a reviewer receives the owner report data',
+  (public.owner_report_data('bbbbbbbb-0000-0000-0000-000000000001')) is not null);
+select pg_temp.check('the decision log lists the signed takeoff, naming who signed',
+  exists (
+    select 1 from jsonb_array_elements(
+      public.owner_report_data('bbbbbbbb-0000-0000-0000-000000000001')->'decisions') entry
+    where entry->>'action' = 'takeoff.approved'
+      and entry->>'actor' = 'reviewer@example.com'));
+select pg_temp.check('the metrics are counted from the record: one live takeoff, one room with evidence',
+  (public.owner_report_data('bbbbbbbb-0000-0000-0000-000000000001')->'metrics'->>'takeoffs_signed')::int = 1
+  and (public.owner_report_data('bbbbbbbb-0000-0000-0000-000000000001')->'metrics'->>'rooms_with_evidence')::int >= 1);
+select pg_temp.check('a room without evidence is named as missing, not hidden',
+  (public.owner_report_data('bbbbbbbb-0000-0000-0000-000000000001')->'rooms_without_evidence') is not null);
+reset role;
+
+set local role authenticated;
+set local test.uid = '22222222-2222-2222-2222-222222222222';
+select pg_temp.refused('a contributor does not hold the decision log',
+  $$select public.owner_report_data('bbbbbbbb-0000-0000-0000-000000000001')$$);
+reset role;
+
+set local role authenticated;
+set local test.uid = '44444444-4444-4444-4444-444444444444';
+select pg_temp.refused('another organisation cannot read this project''s owner report',
+  $$select public.owner_report_data('bbbbbbbb-0000-0000-0000-000000000001')$$);
+select pg_temp.check('and their own report never carries this project''s decisions',
+  not exists (
+    select 1 from jsonb_array_elements(
+      public.owner_report_data('bbbbbbbb-0000-0000-0000-000000000002')->'decisions') entry
+    where entry->>'action' = 'takeoff.approved'));
+reset role;
+
+set local role anon;
+set local test.uid = '';
+select pg_temp.refused('nobody signed out reads an owner report',
+  $$select public.owner_report_data('bbbbbbbb-0000-0000-0000-000000000001')$$);
+reset role;
+
 set local role anon;
 set local test.uid = '';
 select pg_temp.refused('nobody signed out records renders',

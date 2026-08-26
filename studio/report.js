@@ -145,6 +145,63 @@
       </article>`;
   }
 
+  /* The decision log: people deciding things, on the record, by name. AI
+     actions are not decisions and never appear here — the database query
+     behind this list is filtered the same way. */
+  const DECISION_PHRASES = {
+    "plan_baseline.approved": "Plan baseline approved",
+    "plan_baseline.governing_set_attested": "Governing plan set attested",
+    "takeoff.approved": "Wood takeoff signed as verification baseline",
+    "capture_task.waived": "Capture requirement waived",
+    "capture_task.waiver_lifted": "Capture waiver lifted",
+    "vision_release.approved": "Owner view release approved",
+    "space_link.confirmed": "Route between rooms confirmed",
+    "space_link.rejected": "Route removed from the record",
+    "space_link.added_by_person": "Route added by a person",
+    "evidence.moved": "Evidence moved to its correct room",
+    "evidence.deleted": "Evidence removed (recoverable)",
+    "evidence.restored": "Evidence restored",
+    "decision.made": "AI suggestion decided by a person",
+    "decision.changed": "A recorded decision was revised",
+  };
+
+  function decisionLog(owner) {
+    /* A room-scoped report carries no owner block at all; a project report
+       that could not reach the log says who can. */
+    if (owner === undefined) return "";
+    if (!owner) {
+      return `<h2>Decisions on record</h2>
+        <p class="muted">The decision log is available to the people who run the project — owner, administrator, reviewer, or project manager. This copy was produced without that access.</p>`;
+    }
+    const rows = (owner.decisions || []).map((entry) => {
+      const when = new Date(entry.at).toLocaleDateString("en-US", { month: "short", day: "numeric" });
+      const what = DECISION_PHRASES[entry.action] || entry.action;
+      return `<tr><td class="num">${escapeText(when)}</td><td>${escapeText(what)}</td><td>${escapeText(entry.actor || "")}</td></tr>`;
+    });
+    return `<h2>Decisions on record</h2>
+      ${rows.length
+        ? `<table class="ledger"><tbody>${rows.join("")}</tbody></table>
+           <p class="muted">Each line is a person deciding something, written by the database when it happened. AI actions are not decisions and are not listed.</p>`
+        : `<p class="muted">No decision has been recorded in this period. That is a statement about the record, not a judgement.</p>`}`;
+  }
+
+  function pilotMetrics(owner) {
+    if (!owner?.metrics) return "";
+    const m = owner.metrics;
+    const coverage = m.rooms_total ? `${m.rooms_with_evidence}/${m.rooms_total}` : "—";
+    const cells = [
+      { value: m.decisions_period, label: "Decisions on record · this period" },
+      { value: m.evidence_added_period, label: "Evidence files added · this period" },
+      { value: coverage, label: "Rooms holding evidence" },
+      { value: m.gaps_open, label: "Open gaps, named" },
+      { value: m.takeoffs_signed, label: "Takeoffs signed" },
+      { value: m.releases_approved, label: "Owner views released" },
+    ];
+    return `<h2>Pilot metrics — counted by the product</h2>
+      <div class="metrics">${cells.map((cell) => `<article><strong>${escapeText(String(cell.value ?? 0))}</strong><small>${escapeText(cell.label)}</small></article>`).join("")}</div>
+      <p class="muted">Every number above is counted from this project's own record — never estimated, never a survey answer. Time from finding to decision is not yet counted; when it is, it will be measured from the audit record, not guessed.</p>`;
+  }
+
   function documentHtml(model) {
     const metrics = [
       { value: model.summary.originals, label: "Original files preserved" },
@@ -193,6 +250,18 @@
     ? model.changed.map((entry) => `<article class="entry"><h3>${escapeText(entry.title)}</h3><p>${escapeText(entry.copy)}</p></article>`).join("")
     : `<p class="muted">Nothing has changed since the previous round.</p>`}
 
+  <h2>Missing evidence</h2>
+  ${model.owner?.rooms_without_evidence?.length
+    ? `<div class="group"><h4>Rooms with no evidence at all</h4>${list(model.owner.rooms_without_evidence, "")}</div>`
+    : `<p class="muted">Every room in the record holds at least one piece of evidence${model.owner ? "" : " — as far as this report can see"}.</p>`}
+  <div class="group"><h4>Captures requested</h4>
+    ${list(model.capture_requests, "No further capture has been requested.")}</div>
+  <div class="group"><h4>Documents requested</h4>
+    ${list(
+      model.document_requests || [],
+      "Every marked installation is either covered by a document or has not been checked against one yet.",
+    )}</div>
+
   ${model.money?.trades?.length
     ? `<h2>Work and money</h2>
        <p>${escapeText(model.money.headline)}</p>
@@ -227,13 +296,9 @@
   </div>
   <div class="group"><h4>Open questions the evidence does not answer</h4>
     ${list(model.open_questions, "The record leaves no question open.")}</div>
-  <div class="group"><h4>Captures requested</h4>
-    ${list(model.capture_requests, "No further capture has been requested.")}</div>
-  <div class="group"><h4>Documents requested</h4>
-    ${list(
-      model.document_requests || [],
-      "Every marked installation is either covered by a document or has not been checked against one yet.",
-    )}</div>
+
+  ${decisionLog(model.owner)}
+  ${pilotMetrics(model.owner)}
 
   <footer class="doc">
     Every statement above is traceable to a file in this project. Links to individual files expire for security; the
@@ -243,14 +308,24 @@
 </body></html>`;
   }
 
-  function open(model) {
-    const page = window.open("", "_blank");
-    if (!page) return false;
+  /* Writing into an already-open window: the caller opens the tab inside the
+     click (a popup opened after an await is a popup a browser blocks), fetches
+     what it needs, then hands the finished document here. */
+  function openInto(page, model) {
+    page.document.open();
     page.document.write(documentHtml(model));
     page.document.close();
     page.document.title = `${model.project.name} · evidence report`;
+  }
+
+  function open(model) {
+    const page = window.open("", "_blank");
+    if (!page) return false;
+    openInto(page, model);
     return true;
   }
 
-  window.MDAIReport = { open, documentHtml };
+  const api = { open, openInto, documentHtml };
+  if (typeof window !== "undefined") window.MDAIReport = api;
+  if (typeof module !== "undefined" && module.exports) module.exports = api;
 })();

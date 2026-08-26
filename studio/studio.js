@@ -4855,17 +4855,39 @@ function openRoomReport(room) {
   recordClientEvent("report.generated", { scope: "space", space_id: room.id, space_name: room.name });
 }
 
-function openProjectReport() {
+/* The decision log and the pilot metrics live behind the audit table, which
+   the browser cannot read directly — the RPC hands them to the roles that run
+   the project. A viewer still gets the report; its decision section says who
+   holds the log instead of pretending there is none. */
+async function fetchOwnerReportData() {
+  try {
+    const { data, error } = await cloud.client.rpc("owner_report_data", { p_property_id: cloud.propertyId });
+    if (error) throw error;
+    return data || null;
+  } catch (error) {
+    console.warn("owner report data unavailable", error);
+    return null;
+  }
+}
+
+async function openProjectReport() {
   const stats = focusEvidenceStats();
   if (!stats.rawFiles) {
     notify("The report needs evidence first");
     showFocusStage("upload");
     return;
   }
-  if (!window.MDAIReport?.open(buildReportModel())) {
+  /* The tab opens inside the click — a popup opened after an await is a popup
+     the browser blocks — and fills in once the decision log arrives. */
+  const page = window.open("", "_blank");
+  if (!page) {
     notify("Allow pop-ups for this site to open the report");
     return;
   }
+  page.document.write('<p style="font:15px/1.5 -apple-system,Arial,sans-serif;padding:32px;color:#4a6076">Preparing the report — gathering the decision log…</p>');
+  const model = buildReportModel();
+  model.owner = await fetchOwnerReportData();
+  window.MDAIReport.openInto(page, model);
   /* A report is the document that leaves the building, so who produced one and
      when is exactly the sort of thing a customer will one day ask us. */
   recordClientEvent("report.generated", {
