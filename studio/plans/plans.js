@@ -589,7 +589,7 @@ async function openProperty(propertyId) {
     state.spaceLinks = routeResult.data || [];
     const takeoffResult = await client
       .from("material_takeoffs")
-      .select("id, kind, lines, gaps, measured_walls, state, approved_at, calculator_version")
+      .select("id, kind, lines, gaps, answers, measured_walls, state, approved_at, calculator_version")
       .eq("baseline_id", state.baseline.id)
       .eq("kind", "wood_framing")
       .eq("state", "approved")
@@ -873,14 +873,32 @@ function renderTakeoff() {
     ? `Signed as a verification baseline: material the plans imply across ${showing.measuredWalls} dimensioned framed element${showing.measuredWalls === 1 ? "" : "s"}. Compare it against invoices and captures — a large gap between the three is the question worth asking.`
     : `Computed from ${showing.measuredWalls} framed element${showing.measuredWalls === 1 ? "" : "s"} — walls and decks — whose dimensions are printed on the sheets. Every line is traceable; nothing is measured by scale. Check it, then approve it as the verification baseline.`;
 
+  $("#download-takeoff").hidden = !approved;
+
   const body = $("#takeoff-table tbody");
   body.innerHTML = (showing.lines || []).map((line) => `
     <tr${/REVIEW/.test(line.item) ? ` class="review"` : ""}><td>${escapeHtml(line.item)}</td><td>${escapeHtml(String(line.quantity))} ${escapeHtml(line.unit || "")}</td></tr>`).join("");
 
-  $("#takeoff-gaps").innerHTML = showing.gaps.length
-    ? `<p><strong>${showing.gaps.length} thing${showing.gaps.length === 1 ? "" : "s"} the sheets did not answer:</strong></p>` +
-      showing.gaps.map((gap) => `<p>· ${escapeHtml(gap)}</p>`).join("")
-    : `<p class="clear">Every wall the AI read carries a printed dimension.</p>`;
+  /* A gap the AI could not close is a question a person can often answer by
+     looking at the very sheet — counting the P1 circles is reading the
+     drawing. The input turns a dead end into a signed answer; leaving it
+     blank leaves the question honestly open. */
+  const signedAnswers = Array.isArray(approved?.answers) ? approved.answers : [];
+  const answeredQuestions = new Set(signedAnswers.map((entry) => entry.question));
+  const openGaps = showing.gaps.filter((gap) => !answeredQuestions.has(gap));
+  const answerable = !approved && mayApprove;
+  $("#takeoff-gaps").innerHTML = [
+    openGaps.length
+      ? `<p><strong>${openGaps.length} thing${openGaps.length === 1 ? "" : "s"} the sheets did not answer${answerable ? " — write in what you can read on them yourself" : ""}:</strong></p>` +
+        openGaps.map((gap) => `<p>· ${escapeHtml(gap)}</p>${answerable
+          ? `<input class="gap-answer" data-question="${escapeHtml(gap)}" placeholder="Your reading from the sheets — a count, a length — or leave open" />`
+          : ""}`).join("")
+      : `<p class="clear">Every wall the AI read carries a printed dimension.</p>`,
+    signedAnswers.length
+      ? `<p><strong>Answered at signing by the person who signed:</strong></p>` +
+        signedAnswers.map((entry) => `<p>· ${escapeHtml(entry.question)} — <strong>${escapeHtml(entry.answer)}</strong></p>`).join("")
+      : "",
+  ].join("");
 
   $("#takeoff-trace").innerHTML = showing.traces.length
     ? showing.traces.map((trace) => `
@@ -896,8 +914,14 @@ async function approveTakeoff() {
     ...draft.result.gaps,
     ...draft.result.unmeasured.map((wall) => `${wall.label || "a wall"} has no printed length (${(wall.source_refs || []).join(", ") || "no sheet cited"})`),
   ];
+  const answers = [...document.querySelectorAll("#takeoff-gaps .gap-answer")]
+    .map((input) => ({ question: input.dataset.question || "", answer: input.value.trim() }))
+    .filter((entry) => entry.question && entry.answer);
+  const stillOpen = gaps.length - answers.length;
   const warning = gaps.length
-    ? `\n\nIt carries ${gaps.length} open gap${gaps.length === 1 ? "" : "s"} — walls or openings the sheets did not dimension. Those stay open on the record.`
+    ? `\n\nIt carries ${gaps.length} open gap${gaps.length === 1 ? "" : "s"} — questions the sheets did not answer.${answers.length
+        ? ` You answered ${answers.length} of them yourself; your answers go on the record with your signature.${stillOpen > 0 ? ` ${stillOpen} stay${stillOpen === 1 ? "s" : ""} open.` : ""}`
+        : " Those stay open on the record."}`
     : "";
   if (!window.confirm(`Approve this draft as the verification baseline?\n\nIt is not an estimate: no waste, no cut optimisation, only walls with printed dimensions.${warning}`)) return;
   setBusy(true, "Recording the approval…");
@@ -911,6 +935,7 @@ async function approveTakeoff() {
       p_measured_walls: draft.result.measuredWalls,
       p_calculator_version: TAKEOFF_CALCULATOR_VERSION,
       p_note: null,
+      p_answers: answers,
     });
     if (error) throw error;
     notify("The takeoff is signed as this baseline's verification draft.");
@@ -924,6 +949,61 @@ async function approveTakeoff() {
 }
 
 $("#approve-takeoff")?.addEventListener("click", approveTakeoff);
+
+/* The signed list leaves the building as a file a supplier can open. Only the
+   signed one: a draft that walked out of the studio without a signature would
+   circulate as fact, which is the one thing an AI reading must never do. The
+   CSV carries its own provenance — who signed is on the record, the governance
+   line is in the file, and open questions travel with the quantities instead
+   of disappearing at the door. */
+function csvField(value) {
+  const text = String(value ?? "");
+  return /[",\n]/.test(text) ? `"${text.replace(/"/g, '""')}"` : text;
+}
+
+function takeoffCsv(approved, propertyName) {
+  const rows = [
+    ["Measured Decision · wood takeoff — verification baseline"],
+    [`Project: ${propertyName}`],
+    [`Approved ${new Date(approved.approved_at).toISOString().slice(0, 10)} · calculator ${approved.calculator_version}`],
+    ["Not a contractor's estimate: no waste, no cut optimisation. Quantities follow the dimensions printed on the plan sheets."],
+    [],
+    ["Item", "Quantity", "Unit"],
+    ...(approved.lines || []).map((line) => [line.item, line.quantity, line.unit || ""]),
+  ];
+  const answers = Array.isArray(approved.answers) ? approved.answers : [];
+  if (answers.length) {
+    rows.push([], ["Answered at signing by the person who signed", "Answer"]);
+    for (const entry of answers) rows.push([entry.question, entry.answer]);
+  }
+  const answered = new Set(answers.map((entry) => entry.question));
+  const openGaps = (approved.gaps || []).filter((gap) => !answered.has(gap));
+  if (openGaps.length) {
+    rows.push([], ["Still open — the sheets did not answer"]);
+    for (const gap of openGaps) rows.push([gap]);
+  }
+  /* The byte-order mark makes Excel read UTF-8 as UTF-8. */
+  return "\uFEFF" + rows.map((row) => row.map(csvField).join(",")).join("\r\n") + "\r\n";
+}
+
+function downloadTakeoff() {
+  const approved = state.approvedTakeoff;
+  if (!approved) return;
+  const name = state.property?.name || "project";
+  const csv = takeoffCsv(approved, name);
+  const slug = name.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "") || "project";
+  const link = document.createElement("a");
+  link.href = URL.createObjectURL(new Blob([csv], { type: "text/csv;charset=utf-8" }));
+  link.download = `takeoff-${slug}-${new Date(approved.approved_at).toISOString().slice(0, 10)}.csv`;
+  document.body.appendChild(link);
+  link.click();
+  link.remove();
+  setTimeout(() => URL.revokeObjectURL(link.href), 4000);
+  notify("The signed takeoff is downloading — a CSV any spreadsheet opens.");
+}
+
+$("#download-takeoff")?.addEventListener("click", downloadTakeoff);
+if (typeof window !== "undefined") window.__takeoffCsv = takeoffCsv;
 
 /* The roadmap shown here and the roadmap the field is running can be different
    versions. Saying so is the difference between "nothing works" and "approve
