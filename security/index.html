@@ -1,0 +1,101 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Security | Measured Decision AI</title>
+    <meta name="description" content="How Measured Decision protects a construction project's evidence record: row-level security, project-scoped access, unaltered originals, short-lived media links, and a continuously tested boundary — described plainly, with no certification claims.">
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="../styles.css">
+    <style>
+      /* Page-local layout on top of the site's tokens. */
+      .security { max-width: 1080px; margin: 0 auto; padding: 48px 24px 96px; color: var(--ink); }
+      .security header.top { display: flex; justify-content: space-between; align-items: center; gap: 20px; margin-bottom: 64px; }
+      .security .crumb { color: var(--muted); font-size: 14px; text-decoration: none; }
+      .security .crumb b { color: var(--ink); }
+      .security h1 { font-size: clamp(34px, 5vw, 52px); line-height: 1.08; letter-spacing: -0.03em; margin: 0 0 18px; max-width: 18ch; }
+      .security .lede { font-size: 18px; color: var(--muted); max-width: 60ch; margin: 0 0 72px; }
+      .security h2 { font-size: 22px; letter-spacing: -0.02em; margin: 0 0 18px; }
+      .security .rules { display: grid; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); gap: 18px; margin-bottom: 72px; }
+      .security .rules article { border: 1px solid var(--line); border-radius: 10px; padding: 22px; background: var(--bg-soft); }
+      .security .rules h3 { margin: 0 0 8px; font-size: 16px; }
+      .security .rules p { margin: 0; color: var(--muted); font-size: 14.5px; line-height: 1.55; }
+      .security ol.flow { list-style: none; counter-reset: step; padding: 0; margin: 0 0 72px; display: grid; gap: 0; border: 1px solid var(--line); border-radius: 10px; background: var(--bg-soft); }
+      .security ol.flow li { counter-increment: step; display: flex; gap: 18px; padding: 20px 22px; border-bottom: 1px solid var(--line); }
+      .security ol.flow li:last-child { border-bottom: 0; }
+      .security ol.flow li::before { content: counter(step, decimal-leading-zero); color: var(--accent); font-weight: 700; font-size: 13px; padding-top: 3px; }
+      .security ol.flow b { display: block; margin-bottom: 3px; }
+      .security ol.flow span { color: var(--muted); font-size: 14.5px; }
+      .security .honest { border-left: 3px solid var(--accent); padding: 4px 0 4px 20px; margin: 0 0 72px; }
+      .security .honest p { margin: 0 0 10px; color: var(--muted); font-size: 15px; max-width: 72ch; }
+      .security .honest p:last-child { margin-bottom: 0; }
+      .security .contact { border: 1px solid var(--line-strong); border-radius: 12px; padding: 34px; background: var(--bg-soft); }
+      .security .contact p { color: var(--muted); max-width: 62ch; }
+      .security footer { margin-top: 56px; color: var(--muted); font-size: 13px; }
+    </style>
+  </head>
+  <body>
+    <main class="security">
+      <header class="top">
+        <a class="crumb" href="../"><b>Measured Decision AI</b> · Security</a>
+        <a class="button button-primary" href="mailto:hello@measureddecision.com?subject=Security">Report a concern <span>→</span></a>
+      </header>
+
+      <h1>Security you can read, not a badge you have to trust.</h1>
+      <p class="lede">Measured Decision holds other people's construction records: plans, site captures, delivery paperwork, decisions. This page describes plainly how that record is protected — what is enforced in the database, what leaves the platform and when, and what we deliberately do not claim.</p>
+
+      <h2>Four boundaries, enforced in the database</h2>
+      <div class="rules">
+        <article>
+          <h3>Every row knows its owner.</h3>
+          <p>Row-level security is enabled on every table. An organization reads only its own projects; a query from anyone else returns nothing — not an error page, an empty answer. These rules live in the database itself, beneath the application, so no interface bug can widen them.</p>
+        </article>
+        <article>
+          <h3>An external owner gets one door.</h3>
+          <p>A project owner is invited by email and signs in with an emailed link — no password, no access token in a URL. The grant is read-only, scoped to that one project, expirable, and revocable by the project team at any moment. It opens the published record only: approved releases and published technical results, never drafts or working state.</p>
+        </article>
+        <article>
+          <h3>Originals are never altered.</h3>
+          <p>Uploaded evidence is preserved as captured, with its checksum recorded. Analysis, annotation and review happen beside the original, never inside it. Deletions are soft and audited; the decision log is append-only — who did what, and when, cannot be quietly rewritten.</p>
+        </article>
+        <article>
+          <h3>AI output is labeled, not laundered.</h3>
+          <p>Every machine reading in the product carries "Read by AI · not confirmed" until a named person signs it, line by line. Integrity of meaning is a security property here: nothing the software computed can silently become something a human attested.</p>
+        </article>
+      </div>
+
+      <h2>How data moves</h2>
+      <ol class="flow">
+        <li><b>Sign-in.</b><span>Accounts are held by Supabase Auth over TLS. Project teams use passwords, magic links, or Google sign-in; invited owners use emailed magic links only. Sessions are stored by the browser client — never in page URLs.</span></li>
+        <li><b>Every read and write passes row-level security.</b><span>The application never trusts itself: the database checks organization membership or a project-scoped grant on each query. Signed-out callers cannot execute any function that acts on the record at all — permission is denied at the gate, not merely refused inside.</span></li>
+        <li><b>Files live in private storage.</b><span>Evidence and plans are stored in private buckets (AWS S3 and Supabase Storage), encrypted at rest by those platforms and reached only through URLs signed for a single hour. There are no public file links; an expired link is a dead link.</span></li>
+        <li><b>AI processing is server-side and scoped.</b><span>Plan and document readings run in server-side workers holding server-side keys — no AI provider credentials ever reach the browser. Content sent for analysis goes to the provider's API, whose terms exclude training on API inputs; where the processing mode allows it, we disable storage on the request itself.</span></li>
+        <li><b>Everything consequential is audited.</b><span>Approvals, releases, invitations, revocations, deletions — each writes an append-only audit event naming the actor, the object and the time.</span></li>
+      </ol>
+
+      <h2>Tested like a claim, not like a hope</h2>
+      <div class="honest">
+        <p>The access rules above are asserted by an automated suite of over two hundred database invariants, run against a real PostgreSQL on every change: that another organization reads nothing, that a signed-out caller executes nothing, that an invited owner sees one project and cannot touch a second, that a revoked or expired key stops working, that the audit log cannot be edited. A rule that is not tested is a rule that can be removed by accident; these cannot be removed silently.</p>
+      </div>
+
+      <h2>What we do not claim</h2>
+      <div class="honest">
+        <p>We hold no SOC 2, ISO 27001, or other security certification, and we will not imply one with a badge. What you see on this page is what exists — practices we can demonstrate, enforced where they can be verified.</p>
+        <p>We do not claim your data never leaves the platform: plan and document content is processed by a third-party AI provider as described above, and files are stored on AWS and Supabase infrastructure.</p>
+        <p>We do not claim perfection. If you believe you have found a vulnerability, write to us and we will respond, take it seriously, and tell you what we did.</p>
+      </div>
+
+      <div class="contact">
+        <h2>Questions, disclosures, diligence</h2>
+        <p>Security questions from a project team, a lender, or an owner's representative — or a responsible disclosure — all go to the same place, and a person answers.</p>
+        <a class="button button-primary" href="mailto:hello@measureddecision.com?subject=Security">hello@measureddecision.com <span>→</span></a>
+      </div>
+
+      <footer>
+        <p>Measured Decision AI · This page is the current, plain description of our security practices; it changes when the practices change.</p>
+      </footer>
+    </main>
+  </body>
+</html>
