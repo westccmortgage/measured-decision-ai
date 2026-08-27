@@ -950,6 +950,7 @@ function renderTakeoff() {
     pill.className = "state-pill intake";
     approve.hidden = true;
     $("#download-ai-takeoff").hidden = true;
+    $("#export-record").hidden = true;
     $("#download-takeoff").hidden = true;
     $("#takeoff-expert").hidden = true;
     $("#takeoff-expert-offer").hidden = true;
@@ -973,6 +974,7 @@ function renderTakeoff() {
   const mayReview = canApproveBaseline() || state.role === "project_manager";
   approve.hidden = Boolean(accepted) || !mayReview;
   $("#download-ai-takeoff").hidden = false;
+  $("#export-record").hidden = false;
   $("#download-takeoff").hidden = confirmedCount === 0;
   $("#takeoff-expert").hidden = !mayReview;
   $("#takeoff-expert-offer").hidden = false;
@@ -1272,6 +1274,208 @@ $("#download-takeoff")?.addEventListener("click", () => {
   downloadWorkbook(verifiedOrderSheets(draft, state.property?.name || "project"), "verified-order");
   notify("The human-verified order is downloading.");
 });
+
+/* The record leaves with its owner.
+ *
+ * One archive holds what this project knows and exactly how it knows it:
+ * a provenance manifest (every document, room, reading and verdict, each
+ * wearing its method and its confirmation state), the owner report as a
+ * PDF anyone can open, and both takeoff workbooks. Everything is derived
+ * from the record's own timestamps, so the same record exports the same
+ * bytes — and nothing in the archive upgrades an AI reading into a fact. */
+const RECORD_DOCTRINE =
+  "Every AI reading in this record is Read by AI - not confirmed until a named person signs it. "
+  + "Acceptance as a working baseline is an owner decision, never a technical confirmation. "
+  + "A delivery document is never proof of installation. Absence of evidence is not evidence of absence.";
+
+function recordStamp() {
+  const stamps = [
+    state.baseline?.created_at || "",
+    ...state.documents.map((document) => document.created_at || ""),
+    ...(state.takeoffReviews || []).map((review) => review.reviewed_at || ""),
+    ...(state.reconciliations || []).map((row) => row.created_at || ""),
+    state.approvedTakeoff?.approved_at || "",
+  ].filter(Boolean).sort();
+  return stamps[stamps.length - 1] || state.baseline?.created_at || "";
+}
+
+function recordManifest(draft, decisions) {
+  const reviews = [...activeReviews().entries()];
+  const evidenceByRoom = new Map();
+  for (const item of state.projectEvidence || []) {
+    const key = item.space_id || "";
+    evidenceByRoom.set(key, (evidenceByRoom.get(key) || 0) + 1);
+  }
+  return {
+    format: "measured-decision-project-record/1",
+    doctrine: RECORD_DOCTRINE,
+    project: { id: state.property?.id || "", name: state.property?.name || "" },
+    record_as_of: recordStamp(),
+    baseline: state.baseline ? {
+      id: state.baseline.id,
+      version: state.baseline.version,
+      state: state.baseline.state,
+      created_at: state.baseline.created_at,
+      source_document_ids: state.baseline.source_document_ids || [],
+    } : null,
+    documents: state.documents.map((document) => ({
+      id: document.id,
+      filename: document.original_filename,
+      discipline: document.document_type,
+      revision: document.revision_label,
+      bytes: document.byte_size,
+      status: document.status,
+      pages_read_by_ai: document.page_classification?.pages
+        ? { provenance: "Read by AI - not confirmed", pages: document.page_classification.pages }
+        : null,
+    })),
+    rooms: (state.projectRooms || []).map((room) => ({
+      id: room.id,
+      name: room.name,
+      evidence_files: evidenceByRoom.get(room.id) || 0,
+    })),
+    takeoff: draft ? {
+      calculator: TAKEOFF_CALCULATOR_VERSION,
+      lines: (draft.result.lines || []).map((line) => ({
+        item: line.item,
+        quantity: line.quantity,
+        unit: line.unit || "",
+        method: line.method || "DERIVED_FROM_PRINTED_DIMENSIONS",
+        category: line.category === "not_lumber" ? "not_lumber" : "lumber",
+        status: line.status === "hold" ? "HOLD" : "ready",
+        hold_reason: line.hold_reason || "",
+        source_refs: line.source_refs || [],
+      })),
+      proposals: (draft.result.proposals || []).map((proposal) => ({
+        question: proposal.question,
+        proposed: proposal.proposed,
+        confidence: proposal.confidence,
+        basis: proposal.basis,
+        provenance: "AI_PLAN_COUNT - proposed, not confirmed",
+      })),
+      open_rfis: takeoffOpenGaps(draft),
+      human_reviews: reviews.map(([line, review]) => ({
+        line,
+        verdict: review.verdict,
+        value: review.value || "",
+        reviewer_role: review.reviewer_role,
+        reviewed_at: review.reviewed_at,
+        provenance: review.verdict === "kept_open" ? "kept open" : "HUMAN_CONFIRMED",
+      })),
+      owner_acceptance: state.approvedTakeoff ? {
+        approved_at: state.approvedTakeoff.approved_at,
+        provenance: "OWNER_ACCEPTED_BASELINE - not a technical confirmation",
+      } : null,
+    } : null,
+    reconciliations: (state.reconciliations || []).map((row) => ({
+      component: row.component_key,
+      verdict: row.verdict,
+      coverage: row.coverage,
+      required: row.required_quantity,
+      delivered_documented: row.delivered_quantity,
+      visually_evidenced: row.evidenced_quantity,
+      narrative: row.narrative,
+    })),
+    decisions: decisions || null,
+  };
+}
+
+function ownerReportLines(manifest) {
+  const lines = [
+    { text: "Measured Decision - Project Record", size: 16, bold: true },
+    { text: `Project: ${manifest.project.name}`, size: 11 },
+    { text: `Record as of ${String(manifest.record_as_of).slice(0, 10)}`, size: 10 },
+    { rule: true },
+    { text: manifest.doctrine, size: 9 },
+  ];
+  if (manifest.decisions?.decisions?.length) {
+    lines.push({ text: "Decision log", size: 12, bold: true, gap: 10 });
+    for (const decision of manifest.decisions.decisions) {
+      lines.push({ text: `${String(decision.at || "").slice(0, 10)} - ${decision.action} - ${decision.actor || ""}`, indent: 10 });
+    }
+  }
+  if (manifest.takeoff) {
+    const confirmed = manifest.takeoff.human_reviews.filter((review) => review.provenance === "HUMAN_CONFIRMED");
+    lines.push({ text: "Takeoff", size: 12, bold: true, gap: 10 });
+    lines.push({ text: `${manifest.takeoff.lines.length} quantities computed - ${manifest.takeoff.lines.filter((line) => line.status === "HOLD").length} on HOLD - ${manifest.takeoff.proposals.length} AI proposals awaiting review - ${manifest.takeoff.open_rfis.length} open RFIs - ${confirmed.length} human-confirmed lines`, indent: 10 });
+    for (const line of manifest.takeoff.lines) {
+      lines.push({ text: `${line.item}: ${line.quantity} ${line.unit} [${line.method}${line.status === "HOLD" ? " - HOLD" : ""}]`, indent: 10, size: 9 });
+    }
+    for (const rfi of manifest.takeoff.open_rfis) {
+      lines.push({ text: `OPEN RFI: ${rfi}`, indent: 10, size: 9 });
+    }
+  }
+  if (manifest.reconciliations.length) {
+    lines.push({ text: "Reality vs documents", size: 12, bold: true, gap: 10 });
+    for (const row of manifest.reconciliations) {
+      lines.push({ text: `${row.component}: ${row.verdict} - ${row.narrative}`, indent: 10, size: 9 });
+    }
+  }
+  lines.push({ text: "Rooms and evidence", size: 12, bold: true, gap: 10 });
+  for (const room of manifest.rooms) {
+    lines.push({ text: `${room.name}: ${room.evidence_files} evidence file${room.evidence_files === 1 ? "" : "s"}`, indent: 10, size: 9 });
+  }
+  lines.push({ rule: true });
+  lines.push({ text: "Generated by Measured Decision. The manifest.json beside this report carries the same record in full, machine-readable, with provenance on every value.", size: 8 });
+  return lines;
+}
+
+async function buildRecordParts() {
+  const draft = takeoffDraft();
+  /* The decision log requires a role that holds it; export never fails on
+     that — it says so in the manifest instead. */
+  let decisions = null;
+  try {
+    const { data, error } = await client.rpc("owner_report_data", { p_property_id: state.property.id });
+    if (!error && data) decisions = data;
+  } catch { /* stays null, named below */ }
+  const manifest = recordManifest(draft, decisions);
+  if (!decisions) {
+    manifest.decisions = { note: "The decision log is available to owner, admin, reviewer and project manager roles; this export was made without it." };
+  }
+  const parts = [
+    { path: "README.txt", content: [
+      "Measured Decision - Project Record",
+      `Project: ${manifest.project.name}`,
+      `Record as of: ${manifest.record_as_of}`,
+      "",
+      RECORD_DOCTRINE,
+      "",
+      "owner-report.pdf - the record, readable",
+      "manifest.json - the record, machine-readable, provenance on every value",
+      draft ? "ai-takeoff.xlsx - the AI takeoff (Read by AI - not confirmed)" : "",
+      draft && manifest.takeoff.human_reviews.some((review) => review.provenance === "HUMAN_CONFIRMED")
+        ? "human-verified-order.xlsx - only line-by-line confirmed rows" : "",
+    ].filter(Boolean).join("\n") },
+    { path: "manifest.json", content: JSON.stringify(manifest, null, 2) },
+    { path: "owner-report.pdf", content: window.MDAIPdf360.buildPdf(ownerReportLines(manifest), { title: `Project Record - ${manifest.project.name}` }) },
+  ];
+  if (draft) {
+    parts.push({ path: "ai-takeoff.xlsx", content: window.MDAIXlsx360.buildXlsx(aiTakeoffSheets(draft, state.property?.name || "project")) });
+    if (manifest.takeoff.human_reviews.some((review) => review.provenance === "HUMAN_CONFIRMED")) {
+      parts.push({ path: "human-verified-order.xlsx", content: window.MDAIXlsx360.buildXlsx(verifiedOrderSheets(draft, state.property?.name || "project")) });
+    }
+  }
+  return parts;
+}
+
+async function exportProjectRecord() {
+  if (!state.property) return;
+  const parts = await buildRecordParts();
+  const bytes = window.MDAIXlsx360.buildZip(parts);
+  const slug = (state.property?.name || "project").toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "") || "project";
+  const link = document.createElement("a");
+  link.href = URL.createObjectURL(new Blob([bytes], { type: "application/zip" }));
+  link.download = `project-record-${slug}-${String(recordStamp()).slice(0, 10) || "draft"}.zip`;
+  document.body.appendChild(link);
+  link.click();
+  link.remove();
+  setTimeout(() => URL.revokeObjectURL(link.href), 4000);
+  notify("The project record is downloading — the manifest carries provenance on every value.");
+}
+window.__recordParts = buildRecordParts;
+
+$("#export-record")?.addEventListener("click", () => { void exportProjectRecord(); });
 
 /* Level 1: the owner summary.
  *
