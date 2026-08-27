@@ -204,10 +204,41 @@ console.log("\n── one project, two channels ──");
       && call.args?.document_id === "doc-mixed" && JSON.stringify(call.args?.pages) === "[3]"),
     JSON.stringify(classified.calls));
 
+  /* The chain runs itself: a baseline whose requirements were never
+     distilled (this world seeds no project_requirements) triggers the
+     distillation and a reconciliation on open — the owner does nothing. */
+  const chain = await page.evaluate(() => ({
+    extract: window.__rpcCalls.find((call) => call.name === "extract_project_requirements") || null,
+    reconcile: window.__rpcCalls.some((call) => call.name === "reconcile_project"),
+  }));
+  check("an undistilled baseline distils itself on open, then reconciles",
+    Boolean(chain.extract?.args?.p_baseline_id) && chain.reconcile,
+    JSON.stringify(chain.extract));
+
   const section = await page.$("#visual-panel");
   await page.evaluate(() => document.querySelector("#summary-visual")?.click());
   if (section) await section.screenshot({ path: "studio/tests/fixtures/visual-evidence.png" }).catch(() => {});
   check("nothing threw", errors.length === 0, errors.join(" | "));
+  await context.close();
+}
+
+console.log("\n── a distilled baseline is not distilled twice ──");
+{
+  const world = deckTakeoffRows();
+  world.project_requirements = [{
+    id: "req-1", baseline_id: world.document_baselines[0].id, property_id: "prop-1",
+    component_key: "P1", quantity: 14, method: "AI_PLAN_COUNT", state: "active",
+  }];
+  const context = await browser.newContext({ viewport: { width: 1280, height: 900 } });
+  await context.route("**://*/**", (r) => (r.request().url().startsWith(base) ? r.continue() : r.abort()));
+  await context.addInitScript(`window.__seed = ${JSON.stringify({ rows: world })};`);
+  await context.addInitScript({ path: "studio/tests/fake-supabase.js" });
+  const page = await context.newPage();
+  await page.goto(`${base}/studio/plans/?property=prop-1`, { waitUntil: "networkidle" });
+  await page.waitForTimeout(1300);
+  const calls = await page.evaluate(() =>
+    window.__rpcCalls.filter((call) => call.name === "extract_project_requirements").length);
+  check("active requirements already in the record — the chain stays quiet", calls === 0, String(calls));
   await context.close();
 }
 

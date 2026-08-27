@@ -638,6 +638,60 @@ async function openProperty(propertyId) {
   elements.sync.textContent = state.activeAnalysisJob
     ? "Plan analysis continues in the background"
     : `Cloud connected · ${state.role}`;
+  void ensureIntelligenceChain("open");
+}
+
+/* The chain runs itself.
+ *
+ * Analysis produced a baseline; the intelligence core compares what the
+ * plans require against what the record shows — but that comparison only
+ * exists once the baseline's components are distilled into requirements,
+ * and until now nothing in the product ever did that. The owner uploaded,
+ * analyzed, looked at Visual Evidence… and the comparison was silently
+ * empty, forever.
+ *
+ * Now, whenever a baseline with framing intelligence is open and its
+ * requirements have not been distilled yet — a fresh analysis or a project
+ * analyzed before the core existed — the distillation and a reconciliation
+ * run by themselves. Idempotent on the server (re-runs supersede, never
+ * duplicate), gated to the roles that hold the technical channel, and
+ * silent when there is nothing to do. The owner still enters nothing. */
+const chainRuns = new Set();
+async function ensureIntelligenceChain(trigger) {
+  const baseline = state.baseline;
+  if (!baseline || !state.property || !takeoffDraft()) return;
+  const mayRun = canApproveBaseline() || state.role === "project_manager";
+  if (!mayRun) return;
+  const runKey = `${baseline.id}:${trigger}`;
+  if (chainRuns.has(runKey)) return;
+
+  const { data: existing, error: existingError } = await client
+    .from("project_requirements")
+    .select("id")
+    .eq("baseline_id", baseline.id)
+    .eq("state", "active")
+    .limit(1);
+  if (existingError) return;
+  if ((existing || []).length && trigger !== "approved") return;
+  chainRuns.add(runKey);
+
+  const { error: extractError } = await client.rpc("extract_project_requirements", {
+    p_baseline_id: baseline.id,
+  });
+  if (extractError) { console.error("requirements", extractError); return; }
+  const { error: reconcileError } = await client.rpc("reconcile_project", {
+    p_property_id: state.property.id,
+  });
+  if (reconcileError) console.error("reconcile", reconcileError);
+
+  const reconResult = await client.from("project_reconciliations")
+    .select("component_key, required_quantity, delivered_quantity, evidenced_quantity, coverage, verdict, narrative")
+    .eq("property_id", state.property.id).eq("state", "active");
+  if (!reconResult.error) state.reconciliations = reconResult.data || [];
+  render();
+  if ((existing || []).length === 0) {
+    notify("The plans' requirements are distilled — Visual Evidence now compares required, delivered and installed.");
+  }
 }
 
 function render() {
@@ -2365,6 +2419,7 @@ async function approveBaseline() {
     if (error) throw error;
     notify("Baseline approved. Capture roadmap is active.");
     await openProperty(state.property.id);
+    void ensureIntelligenceChain("approved");
     elements.roadmapSection.scrollIntoView({ behavior: "smooth", block: "start" });
   } catch (error) {
     console.error(error);
@@ -2389,6 +2444,7 @@ async function attestAndApproveBaseline() {
     $("#attestation-dialog").close();
     notify("Governing set confirmed. Field capture roadmap is active.");
     await openProperty(state.property.id);
+    void ensureIntelligenceChain("approved");
     elements.roadmapSection.scrollIntoView({ behavior: "smooth", block: "start" });
   } catch (error) {
     console.error(error);
