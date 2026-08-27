@@ -1504,4 +1504,30 @@ select pg_temp.check('another organisation sees no checkpoints at all',
   (select count(*) from public.plan_analysis_chunks) = 0);
 reset role;
 
+--
+-- The anonymous door. Every action RPC refuses a signed-out caller
+-- internally, and after migration 039 it is also unreachable: the refusal
+-- happens at the gate. The RLS membership predicates stay callable on
+-- purpose — a signed-out SELECT must answer with emptiness, not an error.
+
+set local role anon;
+set local test.uid = '';
+select pg_temp.refused('a signed-out caller cannot even reach reconciliation',
+  $$select public.reconcile_project('bbbbbbbb-0000-0000-0000-000000000001')$$);
+select pg_temp.refused('nor the vision-count door',
+  $$select public.record_vision_counts('bbbbbbbb-0000-0000-0000-000000000001', null, '{}'::uuid[], '[]'::jsonb)$$);
+select pg_temp.refused('nor the coverage deriver',
+  $$select public.derive_capture_coverage('bbbbbbbb-0000-0000-0000-000000000001')$$);
+select pg_temp.refused('nor the intake rate-limiter, which belongs to the worker alone',
+  $$select public.consume_project_intake_create_slot('a-hash', 10)$$);
+select pg_temp.check('while a signed-out SELECT still answers with emptiness, not a refusal',
+  (select count(*) from public.properties) = 0);
+reset role;
+
+set local role authenticated;
+set local test.uid = '33333333-3333-3333-3333-333333333333';
+select pg_temp.refused('no browser role holds the intake rate-limiter either',
+  $$select public.consume_project_intake_create_slot('a-hash', 10)$$);
+reset role;
+
 rollback;
