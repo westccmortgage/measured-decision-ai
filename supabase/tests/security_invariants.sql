@@ -1530,4 +1530,129 @@ select pg_temp.refused('no browser role holds the intake rate-limiter either',
   $$select public.consume_project_intake_create_slot('a-hash', 10)$$);
 reset role;
 
+--
+-- The owner gets a key to one door. An external owner is invited by email,
+-- signs in, and holds a read-only owner_viewer grant to exactly one
+-- project: not the organization's other projects, not the tables, not one
+-- action RPC, and never the Studio. The key is revocable and expirable at
+-- both stages.
+
+insert into auth.users(id, email) values
+  ('55555555-5555-5555-5555-555555555555', 'client@example.com'),
+  ('66666666-6666-6666-6666-666666666666', 'other-client@example.com');
+insert into public.properties (id, organization_id, name, created_by) values
+  ('bbbbbbbb-0000-0000-0000-0000000000aa', 'aaaaaaaa-0000-0000-0000-000000000001',
+   'Second Org-A Project', '11111111-1111-1111-1111-111111111111');
+insert into public.vision_releases (organization_id, property_id, version, state, manifest, created_by) values
+  ('aaaaaaaa-0000-0000-0000-000000000001', 'bbbbbbbb-0000-0000-0000-000000000001', 99, 'approved',
+   '{"spaces": []}'::jsonb, '11111111-1111-1111-1111-111111111111');
+
+set local role authenticated;
+set local test.uid = '11111111-1111-1111-1111-111111111111';
+select public.invite_owner_viewer('bbbbbbbb-0000-0000-0000-000000000001', 'Client@Example.com');
+select pg_temp.check('a project owner invites an owner viewer by email',
+  exists (select 1 from public.property_invitations
+          where property_id = 'bbbbbbbb-0000-0000-0000-000000000001'
+            and invited_email = 'client@example.com' and state = 'invited' and role = 'owner_viewer'));
+reset role;
+
+set local role authenticated;
+set local test.uid = '22222222-2222-2222-2222-222222222222';
+select pg_temp.refused('a contributor does not hand out the key',
+  $$select public.invite_owner_viewer('bbbbbbbb-0000-0000-0000-000000000001', 'someone@example.com')$$);
+reset role;
+
+set local role authenticated;
+set local test.uid = '44444444-4444-4444-4444-444444444444';
+select pg_temp.refused('another organisation cannot invite into this project',
+  $$select public.invite_owner_viewer('bbbbbbbb-0000-0000-0000-000000000001', 'spy@example.com')$$);
+reset role;
+
+set local role authenticated;
+set local test.uid = '55555555-5555-5555-5555-555555555555';
+select pg_temp.check('the invitee sees their own invitation and nothing else',
+  (select count(*) from public.property_invitations) = 1);
+select pg_temp.check('signing in turns the invitation into a grant',
+  public.accept_property_invitations() = 1);
+select pg_temp.check('and the grant is the read-only owner_viewer key',
+  public.can_access_property('bbbbbbbb-0000-0000-0000-000000000001')
+  and public.property_role('bbbbbbbb-0000-0000-0000-000000000001') = 'owner_viewer');
+select pg_temp.check('the key opens ONE door: the organisation''s other project stays shut',
+  not public.can_access_property('bbbbbbbb-0000-0000-0000-0000000000aa'));
+select pg_temp.check('and no table opens directly — properties, releases, documents all answer empty',
+  (select count(*) from public.properties) = 0
+  and (select count(*) from public.vision_releases) = 0
+  and (select count(*) from public.project_documents) = 0);
+select pg_temp.refused('an owner viewer cannot reconcile',
+  $$select public.reconcile_project('bbbbbbbb-0000-0000-0000-000000000001')$$);
+select pg_temp.refused('nor confirm a takeoff line',
+  $$select public.review_takeoff_line('eeeeeeee-0000-0000-0000-000000000001', 'a line', 'confirmed', '1', null)$$);
+select pg_temp.refused('nor invite anyone else',
+  $$select public.invite_owner_viewer('bbbbbbbb-0000-0000-0000-000000000001', 'friend@example.com')$$);
+reset role;
+
+set local role authenticated;
+set local test.uid = '66666666-6666-6666-6666-666666666666';
+select pg_temp.check('an uninvited outsider sees no invitations',
+  (select count(*) from public.property_invitations) = 0);
+select pg_temp.check('has nothing to accept',
+  public.accept_property_invitations() = 0);
+select pg_temp.check('and holds no access',
+  not public.can_access_property('bbbbbbbb-0000-0000-0000-000000000001'));
+reset role;
+
+-- The key expires: a grant with a past expiry answers nothing.
+update public.property_members set expires_at = now() - interval '1 hour'
+  where user_id = '55555555-5555-5555-5555-555555555555';
+set local role authenticated;
+set local test.uid = '55555555-5555-5555-5555-555555555555';
+select pg_temp.check('an expired grant stops working',
+  not public.can_access_property('bbbbbbbb-0000-0000-0000-000000000001')
+  and public.property_role('bbbbbbbb-0000-0000-0000-000000000001') is null);
+reset role;
+
+-- And the key is revocable: re-granted, then taken back by the team.
+set local role authenticated;
+set local test.uid = '11111111-1111-1111-1111-111111111111';
+select public.invite_owner_viewer('bbbbbbbb-0000-0000-0000-000000000001', 'client@example.com');
+reset role;
+set local role authenticated;
+set local test.uid = '55555555-5555-5555-5555-555555555555';
+select public.accept_property_invitations();
+reset role;
+set local role authenticated;
+set local test.uid = '11111111-1111-1111-1111-111111111111';
+select public.revoke_owner_view('bbbbbbbb-0000-0000-0000-000000000001', 'client@example.com');
+reset role;
+set local role authenticated;
+set local test.uid = '55555555-5555-5555-5555-555555555555';
+select pg_temp.check('a revoked key opens nothing',
+  not public.can_access_property('bbbbbbbb-0000-0000-0000-000000000001'));
+select pg_temp.check('and cannot be re-accepted',
+  public.accept_property_invitations() = 0);
+reset role;
+
+-- Revocation never deletes a builder's grant: only the viewer key is taken.
+insert into public.property_members (property_id, user_id, organization_id, role, granted_by)
+values ('bbbbbbbb-0000-0000-0000-000000000001', '22222222-2222-2222-2222-222222222222',
+        'aaaaaaaa-0000-0000-0000-000000000001', 'contributor', '11111111-1111-1111-1111-111111111111');
+set local role authenticated;
+set local test.uid = '11111111-1111-1111-1111-111111111111';
+select public.revoke_owner_view('bbbbbbbb-0000-0000-0000-000000000001', 'contributor@example.com');
+reset role;
+select pg_temp.check('the contributor''s own project grant survives an owner-view revocation',
+  exists (select 1 from public.property_members
+          where user_id = '22222222-2222-2222-2222-222222222222'
+            and property_id = 'bbbbbbbb-0000-0000-0000-000000000001' and role = 'contributor'));
+
+set local role anon;
+set local test.uid = '';
+select pg_temp.refused('nobody signed out invites',
+  $$select public.invite_owner_viewer('bbbbbbbb-0000-0000-0000-000000000001', 'x@example.com')$$);
+select pg_temp.refused('nobody signed out accepts',
+  $$select public.accept_property_invitations()$$);
+select pg_temp.check('and invitations are invisible signed out',
+  (select count(*) from public.property_invitations) = 0);
+reset role;
+
 rollback;

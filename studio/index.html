@@ -12,7 +12,7 @@
       href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap"
       rel="stylesheet"
     >
-    <link rel="stylesheet" href="studio.css?v=792a6db684">
+    <link rel="stylesheet" href="studio.css?v=bcfaae46ca">
   </head>
   <body>
     <section class="simple-intake" id="simple-intake">
@@ -802,6 +802,18 @@
             <a class="text-button" id="open-owner-view" href="owner-view/" title="The published record: only what a person approved for release">
               Open Owner View →
             </a>
+            <!-- The owner's key to this one door: an emailed, revocable,
+                 read-only grant to this project's published record. Never a
+                 Studio account, never the organization's other projects. -->
+            <div class="owner-view-access" id="owner-view-access" hidden>
+              <p class="eyebrow">Owner access · this project only</p>
+              <form id="owner-invite-form">
+                <input id="owner-invite-email" type="email" placeholder="owner@example.com" autocomplete="off" required>
+                <button class="secondary-button" id="owner-invite-send" type="submit">Invite owner</button>
+              </form>
+              <div id="owner-view-grants"></div>
+              <small>The invited address signs in with an emailed link and sees only this project's approved releases — read-only, revocable here at any time.</small>
+            </div>
           </div>
         </section>
         <section class="vision-grid">
@@ -1251,7 +1263,7 @@
     <script src="trades360.js?v=6111550f8e"></script>
     <script src="money360.js?v=55e421da52"></script>
     <script src="report.js?v=1281d5516b"></script>
-    <script src="studio.js?v=f01ca72712"></script>
+    <script src="studio.js?v=f21a658666"></script>
     <script src="pano360.js?v=77da06d9fe"></script>
     <script src="capture-task-bridge.js?v=715b200611"></script>
   </body>
