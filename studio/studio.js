@@ -987,6 +987,10 @@ function renderVisionReleaseStatus() {
   const approve = $("#approve-vision-release");
   const build = $("#build-vision-release");
   const canGovern = ["owner", "admin", "reviewer"].includes(cloud.role);
+  /* The published side of the same release: the Owner View renders only
+     what a person approved, for the people who watch rather than build. */
+  const ownerView = $("#open-owner-view");
+  if (ownerView && cloud.propertyId) ownerView.href = `owner-view/?property=${encodeURIComponent(cloud.propertyId)}`;
   build.disabled = !canGovern;
   approve.hidden = true;
   status.className = "vision-release-status";

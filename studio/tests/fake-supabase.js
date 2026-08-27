@@ -90,9 +90,15 @@
             window.__rpcCalls.push({ name, args: opts?.body });
             /* A seeded worker answer, shaped like the real function's answer —
                so a test can walk the classify→read chain the way production
-               walks it, instead of asserting against a stub's silence. */
+               walks it, instead of asserting against a stub's silence. A
+               function whose answer depends on the requested action (like
+               vision-release) seeds { byAction: { status: …, get: … } }. */
             if (seed.functions && Object.prototype.hasOwnProperty.call(seed.functions, name)) {
-              return result(seed.functions[name]);
+              const seeded = seed.functions[name];
+              if (seeded && typeof seeded === "object" && seeded.byAction) {
+                return result(seeded.byAction[opts?.body?.action] ?? seeded.default ?? {});
+              }
+              return result(seeded);
             }
             /* A capture with no playable URL is not spatial, so without this the
                whole 360 half of the product looks absent and the test reports a
