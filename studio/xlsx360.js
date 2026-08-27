@@ -105,7 +105,9 @@
   }
 
   /* A stored ZIP: local headers, central directory, end record. No
-     compression — the parts are small and stored bytes are reproducible. */
+     compression — the parts are small and stored bytes are reproducible.
+     A part's content may be a string (encoded as UTF-8) or raw bytes, so
+     the same writer packs XML worksheets and finished binary files alike. */
   function zipStored(parts) {
     const chunks = [];
     const central = [];
@@ -114,7 +116,7 @@
     const u32 = (v) => [v & 0xFF, (v >>> 8) & 0xFF, (v >>> 16) & 0xFF, (v >>> 24) & 0xFF];
     for (const part of parts) {
       const name = textEncoder.encode(part.path);
-      const data = textEncoder.encode(part.content);
+      const data = part.content instanceof Uint8Array ? part.content : textEncoder.encode(part.content);
       const crc = crc32(data);
       const header = new Uint8Array([
         0x50, 0x4B, 0x03, 0x04, ...u16(20), ...u16(0x0800), ...u16(0), ...u16(0), ...u16(0),
@@ -146,7 +148,14 @@
     return zipStored(workbookParts(sheets));
   }
 
-  const api = { buildXlsx, crc32, columnRef };
+  /* parts: [{ path, content: string | Uint8Array }] → zip bytes. The door
+     the project-record export walks through: one deterministic archive of
+     finished files. */
+  function buildZip(parts) {
+    return zipStored(parts);
+  }
+
+  const api = { buildXlsx, buildZip, crc32, columnRef };
   if (typeof window !== "undefined") window.MDAIXlsx360 = api;
   if (typeof module !== "undefined" && module.exports) module.exports = api;
 })();

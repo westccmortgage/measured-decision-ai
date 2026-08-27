@@ -50,6 +50,8 @@ run "the owner summary"               studio/tests/e2e-summary.mjs
 run "two channels, one project"       studio/tests/e2e-intelligence.mjs
 run "strict schemas stay strict"      studio/tests/strict-schemas.mjs
 run "a 200-sheet set, in chunks"      studio/tests/plan-chunking.mjs
+run "the PDF that leaves"             studio/tests/pdf360.mjs
+run "the record leaves with its owner" studio/tests/e2e-export.mjs
 run "a page open for three hours"     studio/tests/aged-session.mjs
 run "the headset probe"               studio/tests/vr-check.mjs
 run "standing in a real capture"      studio/tests/pano-vr.mjs
