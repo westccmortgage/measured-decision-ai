@@ -17,6 +17,7 @@ import crypto from "crypto";
 export const PAGES = [
   "studio/index.html",
   "studio/plans/index.html",
+  "studio/owner-view/index.html",
   "studio/operations/index.html",
   "field/index.html",
   "capture/index.html",

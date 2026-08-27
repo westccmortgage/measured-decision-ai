@@ -1,0 +1,60 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta name="robots" content="noindex,nofollow,noarchive">
+    <meta name="theme-color" content="#07101d">
+    <title>Owner View · Measured Decision Studio</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="owner-view.css?v=2fb524fe94">
+  </head>
+  <body>
+    <div class="boot-screen" id="boot-screen">
+      <div class="brand-mark" aria-hidden="true"><i></i><i></i><i></i></div>
+      <p>Opening the Owner View…</p>
+    </div>
+
+    <div class="app" id="app" hidden>
+      <header class="topbar">
+        <a class="brand" href="../">
+          <span class="brand-mark" aria-hidden="true"><i></i><i></i><i></i></span>
+          <span>Measured Decision <strong>Owner View</strong></span>
+        </a>
+        <div class="topbar-actions">
+          <label class="picker"><span>Project</span><select id="property-select"></select></label>
+          <a class="button secondary" href="../">Open Studio</a>
+        </div>
+      </header>
+
+      <main class="workspace">
+        <!-- Only a human-approved release renders here. AI drafts, unverified
+             captures and open reviews never reach this page: the release is
+             the publication boundary, and this view holds no inputs at all. -->
+        <section class="release-head" id="release-head" hidden>
+          <div>
+            <p class="eyebrow">Human-approved release</p>
+            <h1 id="release-title"></h1>
+            <p class="release-meta" id="release-meta"></p>
+          </div>
+          <div class="governance" id="release-governance"></div>
+        </section>
+
+        <section class="release-empty" id="release-empty" hidden>
+          <h1 id="empty-title"></h1>
+          <p id="empty-copy"></p>
+          <p><a class="button" href="../" id="empty-action">Open Studio</a></p>
+        </section>
+
+        <section class="rooms" id="rooms"></section>
+      </main>
+    </div>
+
+    <script src="../config.js?v=0772f5f463"></script>
+    <script>window.supabase||document.write('<script src="../vendor/supabase-js-2.106.2.min.js?v=ea40068925"><\/script>');</script>
+    <script src="../pano360.js?v=77da06d9fe"></script>
+    <script src="owner-view.js?v=2f7d8edc15"></script>
+  </body>
+</html>

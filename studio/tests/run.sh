@@ -52,6 +52,7 @@ run "strict schemas stay strict"      studio/tests/strict-schemas.mjs
 run "a 200-sheet set, in chunks"      studio/tests/plan-chunking.mjs
 run "the PDF that leaves"             studio/tests/pdf360.mjs
 run "the record leaves with its owner" studio/tests/e2e-export.mjs
+run "only what a person approved"     studio/tests/e2e-owner-view.mjs
 run "a page open for three hours"     studio/tests/aged-session.mjs
 run "the headset probe"               studio/tests/vr-check.mjs
 run "standing in a real capture"      studio/tests/pano-vr.mjs
