@@ -991,6 +991,7 @@ function renderVisionReleaseStatus() {
      what a person approved, for the people who watch rather than build. */
   const ownerView = $("#open-owner-view");
   if (ownerView && cloud.propertyId) ownerView.href = `owner-view/?property=${encodeURIComponent(cloud.propertyId)}`;
+  void renderOwnerViewAccess();
   build.disabled = !canGovern;
   approve.hidden = true;
   status.className = "vision-release-status";
@@ -1032,6 +1033,39 @@ async function invokeVisionRelease(body) {
   if (error) throw await functionInvocationError(error);
   if (data?.error) throw new Error(data.error);
   return data;
+}
+
+/* The owner's key to this one door. Only a project owner or admin hands it
+   out or takes it back; the list below is the live truth from the record —
+   who was invited, whether they have signed in yet, when the key expires. */
+async function renderOwnerViewAccess() {
+  const panel = $("#owner-view-access");
+  if (!panel || !cloud.client || !cloud.propertyId) return;
+  const mayManage = ["owner", "admin"].includes(cloud.role);
+  panel.hidden = !mayManage;
+  if (!mayManage) return;
+  const { data: invitations } = await cloud.client
+    .from("property_invitations")
+    .select("id, invited_email, state, expires_at, accepted_at")
+    .eq("property_id", cloud.propertyId)
+    .neq("state", "revoked")
+    .order("created_at", { ascending: false });
+  $("#owner-view-grants").innerHTML = (invitations || []).map((invitation) => `
+    <div class="owner-grant-row">
+      <span>${escapeText(invitation.invited_email)}</span>
+      <small>${invitation.state === "accepted" ? "signed in" : "invited"}${invitation.expires_at ? ` · until ${String(invitation.expires_at).slice(0, 10)}` : ""}</small>
+      <button class="text-button" type="button" data-revoke-owner="${escapeText(invitation.invited_email)}">Revoke</button>
+    </div>`).join("");
+  $("#owner-view-grants").querySelectorAll("[data-revoke-owner]").forEach((button) => {
+    button.addEventListener("click", async () => {
+      const { error } = await cloud.client.rpc("revoke_owner_view", {
+        p_property_id: cloud.propertyId, p_email: button.dataset.revokeOwner,
+      });
+      if (error) { notify(error.message || "The access could not be revoked"); return; }
+      notify(`Owner access revoked for ${button.dataset.revokeOwner}.`);
+      void renderOwnerViewAccess();
+    });
+  });
 }
 
 async function refreshVisionReleaseStatus() {
@@ -6354,6 +6388,19 @@ $("#export-record").addEventListener("click", () => {
   link.click();
   URL.revokeObjectURL(url);
   notify("Property record exported");
+});
+
+$("#owner-invite-form")?.addEventListener("submit", async (event) => {
+  event.preventDefault();
+  const email = $("#owner-invite-email").value.trim();
+  if (!email || !cloud.client || !cloud.propertyId) return;
+  const { error } = await cloud.client.rpc("invite_owner_viewer", {
+    p_property_id: cloud.propertyId, p_email: email,
+  });
+  if (error) { notify(error.message || "The invitation could not be created"); return; }
+  $("#owner-invite-email").value = "";
+  notify(`${email} invited. They sign in at /studio/owner-view/ with a link emailed to that address.`);
+  void renderOwnerViewAccess();
 });
 
 $("#build-vision-release").addEventListener("click", async () => {

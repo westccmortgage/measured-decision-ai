@@ -3142,3 +3142,13 @@ dialog textarea { min-height:78px; resize:vertical; }
 /* The finding being worked on: the panel is this and the way back, so pressing
    a remedy visibly changed the screen. */
 .focus-finding.working { background: rgba(56, 44, 21, .32); }
+
+/* Owner access: the emailed, revocable key to one project's published record. */
+.owner-view-access { margin-top: 14px; border-top: 1px solid rgba(255,255,255,.08); padding-top: 14px; display: grid; gap: 10px; }
+.owner-view-access .eyebrow { margin: 0; }
+#owner-invite-form { display: flex; gap: 8px; flex-wrap: wrap; }
+#owner-invite-form input { flex: 1 1 180px; min-width: 0; background: rgba(255,255,255,.04); border: 1px solid rgba(255,255,255,.14); border-radius: 8px; padding: 9px 12px; color: inherit; }
+.owner-grant-row { display: flex; align-items: baseline; gap: 10px; font-size: 12px; }
+.owner-grant-row small { color: rgba(255,255,255,.5); }
+.owner-grant-row .text-button { margin-left: auto; }
+.owner-view-access > small { color: rgba(255,255,255,.45); line-height: 1.5; }

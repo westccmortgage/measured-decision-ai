@@ -5,11 +5,11 @@
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <meta name="robots" content="noindex,nofollow,noarchive">
     <meta name="theme-color" content="#07101d">
-    <title>Owner View · Measured Decision Studio</title>
+    <title>Owner View · Measured Decision</title>
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
-    <link rel="stylesheet" href="owner-view.css?v=2fb524fe94">
+    <link rel="stylesheet" href="owner-view.css?v=680e9f2bfd">
   </head>
   <body>
     <div class="boot-screen" id="boot-screen">
@@ -17,44 +17,119 @@
       <p>Opening the Owner View…</p>
     </div>
 
+    <!-- An emailed key, not a bearer token in a URL: the invited owner signs
+         in with a magic link to their own address, and the invitation
+         becomes a revocable, expirable grant on first sight. -->
+    <section class="sign-in" id="sign-in" hidden>
+      <div class="sign-in-card">
+        <div class="brand-mark" aria-hidden="true"><i></i><i></i><i></i></div>
+        <p class="eyebrow">Owner View</p>
+        <h1>See what your project team has released.</h1>
+        <p class="sign-in-copy">Enter the email address your invitation was sent to. A sign-in link arrives by email — no password, nothing to install.</p>
+        <form id="sign-in-form">
+          <label>Email<input id="sign-in-email" type="email" autocomplete="email" required placeholder="you@example.com"></label>
+          <button class="button primary" id="sign-in-send" type="submit">Email me a sign-in link</button>
+          <p class="sign-in-message" id="sign-in-message" role="status" aria-live="polite"></p>
+        </form>
+      </div>
+    </section>
+
     <div class="app" id="app" hidden>
       <header class="topbar">
-        <a class="brand" href="../">
+        <span class="brand">
           <span class="brand-mark" aria-hidden="true"><i></i><i></i><i></i></span>
           <span>Measured Decision <strong>Owner View</strong></span>
-        </a>
+        </span>
         <div class="topbar-actions">
+          <span class="preview-badge" id="preview-badge" hidden>Internal preview</span>
           <label class="picker"><span>Project</span><select id="property-select"></select></label>
-          <a class="button secondary" href="../">Open Studio</a>
+          <a class="button secondary" href="../" id="open-studio-link" hidden>Open Studio</a>
+          <button class="button secondary" id="sign-out" type="button">Sign out</button>
         </div>
       </header>
 
       <main class="workspace">
-        <!-- Only a human-approved release renders here. AI drafts, unverified
-             captures and open reviews never reach this page: the release is
-             the publication boundary, and this view holds no inputs at all. -->
-        <section class="release-head" id="release-head" hidden>
-          <div>
-            <p class="eyebrow">Human-approved release</p>
-            <h1 id="release-title"></h1>
-            <p class="release-meta" id="release-meta"></p>
+        <!-- Two channels, one shell. Everything below the release boundary:
+             only human-approved releases and published technical results
+             render here, and nothing on this page asks for input. -->
+        <nav class="channel-tabs" id="channel-tabs">
+          <button class="tab active" id="tab-summary" type="button">Owner Summary</button>
+          <button class="tab" id="tab-visual" type="button">Visual Evidence</button>
+          <button class="tab" id="tab-technical" type="button">Technical Intelligence</button>
+        </nav>
+
+        <section id="summary-panel" class="channel-panel">
+          <div class="release-empty" id="summary-empty" hidden>
+            <h1 id="summary-empty-title"></h1>
+            <p id="summary-empty-copy"></p>
           </div>
-          <div class="governance" id="release-governance"></div>
+          <div id="summary-content" hidden>
+            <section class="release-head">
+              <div>
+                <p class="eyebrow" id="summary-status-eyebrow">Project status</p>
+                <h1 id="summary-project"></h1>
+                <p class="release-meta" id="summary-status"></p>
+              </div>
+              <div class="governance" id="summary-next"></div>
+            </section>
+            <div class="summary-numbers" id="summary-numbers"></div>
+            <div class="summary-panelbox" id="summary-questions-box" hidden>
+              <h3>Open questions your team is resolving</h3>
+              <div id="summary-questions"></div>
+            </div>
+          </div>
         </section>
 
-        <section class="release-empty" id="release-empty" hidden>
-          <h1 id="empty-title"></h1>
-          <p id="empty-copy"></p>
-          <p><a class="button" href="../" id="empty-action">Open Studio</a></p>
+        <section id="visual-panel-ov" class="channel-panel" hidden>
+          <section class="release-head" id="release-head" hidden>
+            <div>
+              <p class="eyebrow">Human-approved release</p>
+              <h1 id="release-title"></h1>
+              <p class="release-meta" id="release-meta"></p>
+            </div>
+            <div class="governance" id="release-governance"></div>
+          </section>
+          <section class="release-empty" id="release-empty" hidden>
+            <h1 id="empty-title"></h1>
+            <p id="empty-copy"></p>
+          </section>
+          <section class="rooms" id="rooms"></section>
         </section>
 
-        <section class="rooms" id="rooms"></section>
+        <section id="technical-panel" class="channel-panel" hidden>
+          <section class="release-empty" id="technical-empty" hidden>
+            <h1>No published technical results yet</h1>
+            <p id="technical-empty-copy">The Technical Intelligence channel shows only what a person has approved — a plan baseline, an accepted takeoff, expert-confirmed lines. Nothing here yet: your project team has not published a technical baseline.</p>
+          </section>
+          <div id="technical-content" hidden>
+            <section class="release-head">
+              <div>
+                <p class="eyebrow">Published technical results</p>
+                <h1 id="technical-title"></h1>
+                <p class="release-meta" id="technical-meta"></p>
+              </div>
+              <div class="governance" id="technical-chips"></div>
+            </section>
+            <div class="summary-panelbox">
+              <h3>What the plans state, as approved</h3>
+              <p class="interpretation" id="technical-summary"></p>
+            </div>
+            <div class="summary-panelbox" id="confirmed-box" hidden>
+              <h3>Human-confirmed lines</h3>
+              <table class="lines-table" id="confirmed-lines"><thead><tr><th>Line</th><th>Confirmed value</th><th>Reviewer</th><th>Date</th></tr></thead><tbody></tbody></table>
+            </div>
+            <div class="summary-panelbox" id="questions-box" hidden>
+              <h3>Open questions</h3>
+              <div id="technical-questions"></div>
+            </div>
+          </div>
+        </section>
       </main>
     </div>
 
     <script src="../config.js?v=0772f5f463"></script>
     <script>window.supabase||document.write('<script src="../vendor/supabase-js-2.106.2.min.js?v=ea40068925"><\/script>');</script>
     <script src="../pano360.js?v=77da06d9fe"></script>
-    <script src="owner-view.js?v=2f7d8edc15"></script>
+    <script src="owner-view.js?v=5a47eefb6f"></script>
   </body>
 </html>

@@ -21,17 +21,71 @@ Deno.serve(async(request)=>{
     const {data:userData,error:userError}=await userClient.auth.getUser(); if(userError||!userData.user)fail("Authentication required",401); const user=userData.user;
     const body=await request.json(); const action=String(body?.action||""); const propertyId=String(body?.property_id||"");
 
+    /* Two ways in. An organization member holds their org role, as always.
+       An external owner holds a property_members grant with the read-only
+       owner_viewer role — one project, expirable, revocable, and refused by
+       every action gate in the product. Nothing else passes. */
     async function projectAccess(id:string){
       if(!isUuid(id))fail("A valid project is required");
       const {data:property}=await admin.from("properties").select("*").eq("id",id).maybeSingle(); if(!property)fail("Project not found",404);
       const {data:membership}=await admin.from("organization_members").select("role").eq("organization_id",property.organization_id).eq("user_id",user.id).maybeSingle();
-      if(!membership)fail("Project access is required",403); return {property,role:membership.role as string};
+      if(membership)return {property,role:membership.role as string};
+      const {data:grant}=await admin.from("property_members").select("role,expires_at").eq("property_id",id).eq("user_id",user.id).maybeSingle();
+      if(grant&&grant.role==="owner_viewer"&&(!grant.expires_at||new Date(grant.expires_at).valueOf()>Date.now())){
+        return {property,role:"owner_viewer"};
+      }
+      fail("Project access is required",403);
+    }
+
+    /* The projects an external owner was given, and nothing else. Pending
+       invitations for this signed-in email become grants first (idempotent,
+       user-scoped, expiry honoured), so the emailed key works on first use. */
+    if(action==="projects"){
+      await userClient.rpc("accept_property_invitations").then(()=>{},()=>{});
+      const {data:grants}=await admin.from("property_members").select("property_id,role,expires_at").eq("user_id",user.id).eq("role","owner_viewer");
+      const live=(grants||[]).filter(grant=>!grant.expires_at||new Date(grant.expires_at).valueOf()>Date.now());
+      const ids=live.map(grant=>grant.property_id);
+      const {data:properties}=ids.length?await admin.from("properties").select("id,name,address").in("id",ids):{data:[]};
+      return json(request,{projects:(properties||[]).map(item=>({id:item.id,name:item.name,address:item.address}))});
     }
 
     if(action==="status"){
-      const {property}=await projectAccess(propertyId);
+      const {property,role}=await projectAccess(propertyId);
       const {data:releases}=await admin.from("vision_releases").select("id,version,state,manifest,created_at,approved_at").eq("organization_id",property.organization_id).eq("property_id",property.id).order("version",{ascending:false}).limit(10);
+      if(role==="owner_viewer"){
+        /* An external owner learns that a release is being prepared and how
+           many governance checks stand — never the checks themselves, which
+           are internal working state naming rooms, tasks and reviews. */
+        return json(request,{releases:(releases||[]).map(release=>({
+          version:release.version,state:release.state,approved_at:release.approved_at,
+          open_checks:Array.isArray(release.manifest?.blockers)?release.manifest.blockers.length:0,
+        }))});
+      }
       return json(request,{releases:releases||[]});
+    }
+
+    /* The technical channel, published side only: the human-approved plan
+       baseline, the accepted takeoff, and line-by-line expert confirmations.
+       Working drafts, AI processing traces and unapproved analyses have no
+       door here — an empty answer is the honest answer. */
+    if(action==="technical"){
+      const {property}=await projectAccess(propertyId);
+      const {data:baseline}=await admin.from("document_baselines")
+        .select("id,version,state,project_summary,gaps,approved_at,agent_contract_version")
+        .eq("property_id",property.id).eq("state","approved")
+        .order("version",{ascending:false}).limit(1).maybeSingle();
+      if(!baseline)return json(request,{baseline:null,takeoff:null,confirmed_lines:[],note:"No approved technical baseline has been published yet."});
+      const [{data:takeoff},{data:reviews}]=await Promise.all([
+        admin.from("material_takeoffs").select("kind,state,approved_at,calculator_version").eq("baseline_id",baseline.id).eq("state","approved").order("approved_at",{ascending:false}).limit(1).maybeSingle(),
+        admin.from("takeoff_line_reviews").select("line_key,verdict,value,reviewer_role,reviewed_at").eq("baseline_id",baseline.id).eq("state","active").in("verdict",["confirmed","corrected"]),
+      ]);
+      const gaps=(Array.isArray(baseline.gaps)?baseline.gaps:[]).filter((gap:Record<string,unknown>)=>["critical","important"].includes(String(gap?.severity)));
+      return json(request,{
+        baseline:{version:baseline.version,approved_at:baseline.approved_at,summary:baseline.project_summary,contract:baseline.agent_contract_version},
+        takeoff:takeoff?{kind:takeoff.kind,accepted_at:takeoff.approved_at,provenance:"OWNER_ACCEPTED_BASELINE - not a technical confirmation"}:null,
+        confirmed_lines:(reviews||[]).map(review=>({line:review.line_key,value:review.value,reviewer_role:review.reviewer_role,reviewed_at:review.reviewed_at,provenance:"HUMAN_CONFIRMED"})),
+        open_questions:gaps.map((gap:Record<string,unknown>)=>({severity:gap.severity,question:gap.question})).slice(0,10),
+      });
     }
 
     if(action==="build"){
@@ -76,10 +130,22 @@ Deno.serve(async(request)=>{
     }
 
     if(action==="get"){
-      const {property}=await projectAccess(propertyId); const releaseId=body?.release_id?String(body.release_id):null;
+      const {property,role}=await projectAccess(propertyId); const releaseId=body?.release_id?String(body.release_id):null;
       let query=admin.from("vision_releases").select("*").eq("organization_id",property.organization_id).eq("property_id",property.id).eq("state","approved"); if(releaseId)query=query.eq("id",releaseId); const {data:release}=await query.order("version",{ascending:false}).limit(1).maybeSingle(); if(!release)fail("No approved Vision release is available",404);
       const media=[] as Array<Record<string,unknown>>; for(const space of release.manifest?.spaces||[])for(const item of space.evidence||[]){let url="";if(item.storageProvider==="aws-s3")url=await signedObjectReadUrl(item.storagePath,3600);else{const {data}=await admin.storage.from(item.storageBucket||"property-evidence").createSignedUrl(item.storagePath,3600);url=data?.signedUrl||""}media.push({evidenceId:item.id,url,expiresAt:new Date(Date.now()+3600000).toISOString()})}
-      return json(request,{release:{id:release.id,version:release.version,state:release.state,approvedAt:release.approved_at},manifest:release.manifest,media});
+      /* An external owner receives the released content and its short-lived
+         media links — never the storage internals (paths, buckets, capture
+         metadata) that belong to the workshop. The headset and the Studio
+         keep the full manifest they always had. */
+      const manifest=role==="owner_viewer"
+        ?{...release.manifest,spaces:(release.manifest?.spaces||[]).map((space:Record<string,any>)=>({
+            ...space,
+            evidence:(space.evidence||[]).map((item:Record<string,any>)=>({
+              id:item.id,filename:item.filename,mediaType:item.mediaType,mimeType:item.mimeType,capturedAt:item.capturedAt,
+            })),
+          }))}
+        :release.manifest;
+      return json(request,{release:{id:release.id,version:release.version,state:release.state,approvedAt:release.approved_at},manifest,media});
     }
     return json(request,{error:"Unsupported action"},400);
   }catch(error){console.error("vision-release",error);return json(request,{error:error instanceof Error?error.message:"Vision release failed"},Number((error as {status?:number})?.status)||500)}
