@@ -241,6 +241,27 @@ console.log("\n── one project, two channels ──");
       && call.args?.document_id === "doc-mixed" && JSON.stringify(call.args?.pages) === "[3]"),
     JSON.stringify(classified.calls));
 
+  /* A site photo at the plans door: the right file at the wrong door gets
+     the other door, never an instruction to become a PDF. */
+  const wrongDoor = await page.evaluate(async () => {
+    const input = document.querySelector("#plan-files");
+    const transfer = new DataTransfer();
+    transfer.items.add(new File(["fake bytes"], "IMG_4712.jpeg", { type: "image/jpeg" }));
+    input.files = transfer.files;
+    input.dispatchEvent(new Event("change", { bubbles: true }));
+    document.querySelector("#confirm-upload")?.click();
+    await new Promise((resolve) => setTimeout(resolve, 300));
+    const message = document.querySelector("#action-message");
+    return {
+      text: message?.textContent || "",
+      link: message?.querySelector("a")?.getAttribute("href") || "",
+    };
+  });
+  check("a site photo at the plans door is pointed at Studio, not told to become a PDF",
+    /photo or video/.test(wrongDoor.text) && !/Convert drawings/.test(wrongDoor.text)
+    && /Add it in Studio/.test(wrongDoor.text) && wrongDoor.link === "../?property=prop-1",
+    JSON.stringify(wrongDoor));
+
   /* On a phone, the five-column comparison scrolls inside its own container —
      the page itself never scrolls sideways. */
   const phone = await context.newPage();

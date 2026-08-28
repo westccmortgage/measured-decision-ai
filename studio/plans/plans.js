@@ -2163,6 +2163,16 @@ async function copyFieldLink() {
 
 async function savePendingFiles() {
   if (!state.pendingFiles.length || state.busy) return;
+  /* A site photo at the plans door is the right file at the wrong door —
+     the answer is the other door, never "convert it to a PDF". */
+  const media = state.pendingFiles.find((file) =>
+    /^(image|video)\//.test(file.type || "") || /\.(jpe?g|png|heic|heif|gif|webp|mp4|mov|insv|insp|lrv)$/i.test(file.name || ""));
+  if (media) {
+    notify(`${media.name} is a site capture, not a plan document.`, "error");
+    elements.message.innerHTML = `${escapeHtml(media.name)} is a photo or video — site captures are evidence and belong to a room. <a href="../?property=${encodeURIComponent(state.property?.id || "")}">Add it in Studio →</a>`;
+    elements.message.className = "action-message error";
+    return;
+  }
   const invalid = state.pendingFiles.find((file) => file.type !== "application/pdf" && !file.name.toLowerCase().endsWith(".pdf"));
   if (invalid) return notify(`${invalid.name} is not a PDF. Convert drawings to PDF before upload.`, "error");
   setBusy(true, "Preparing document upload…");
