@@ -160,6 +160,20 @@ check("the page fits a 430px screen", overflow <= 1, `overflows by ${overflow}px
 
 check("still no script errors after the walk", pageErrors.length === 0, pageErrors.slice(0, 2).join(" | "));
 
+console.log("\n── 7. a finished reading points at the comparison ──");
+const loop = await page.evaluate(() => {
+  const before = document.querySelector("#focus-open-comparison")?.hidden === true;
+  window.__finishFocusProcessing(2);
+  const button = document.querySelector("#focus-open-comparison");
+  return { before, after: button?.hidden === false, label: button?.textContent.trim() || "" };
+});
+check("the comparison door stays hidden until a reading finishes", loop.before);
+check("and appears the moment readings are done", loop.after && /comparison/i.test(loop.label), JSON.stringify(loop));
+await page.evaluate(() => document.querySelector("#focus-open-comparison")?.click());
+await page.waitForTimeout(800);
+check("pressing it lands on Plan Intelligence for this same project",
+  /\/studio\/plans\/\?property=/.test(page.url()), page.url());
+
 await browser.close();
 server.close();
 
