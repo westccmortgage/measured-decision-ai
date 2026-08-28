@@ -5199,6 +5199,14 @@ function uploadGateQuestions(files) {
   for (const file of files) {
     const name = String(file.name || "").toLowerCase();
     const chosen = rooms.find((room) => room.id === uploadRoomId) || null;
+    /* A PDF with a room already chosen used to file itself silently: an
+       invoice or a plan set became a room document the AI's room reading
+       cannot use, and the comparison starved without anyone being told.
+       With no room chosen the destination check below already redirects;
+       this is the same answer for the door that would otherwise stay quiet. */
+    if (chosen && focusIsPlanDocument(file)) {
+      questions.push(`${file.name} is a PDF. Plan sets and delivery paperwork are read on the Project plans screen — that reading is what fills the comparison. Uploaded here it becomes a room document in ${chosen.name} that the AI's room reading cannot use.`);
+    }
     const holders = [];
     for (const room of rooms) {
       const holds = (room.evidence || []).some((item) =>
@@ -5232,6 +5240,15 @@ async function uploadFocusEvidence(fileList) {
     );
     if (!proceed) {
       notify("Nothing was uploaded. The files already in the record are untouched.", 6000);
+      /* Saying no to a misfiled PDF must not end in nothing: the door the
+         file actually belongs to is offered, not described. */
+      if (files.some((file) => focusIsPlanDocument(file))) {
+        $("#focus-upload-progress").hidden = false;
+        $("#focus-upload-progress-title").textContent = "Nothing was uploaded";
+        $("#focus-upload-progress-detail").innerHTML =
+          `PDFs are read on the plans screen, where they fill the comparison. <button type="button" class="room-picker-link" id="upload-error-plans">Open Project plans &rarr;</button>`;
+        $("#upload-error-plans")?.addEventListener("click", openProjectPlans);
+      }
       return;
     }
   }

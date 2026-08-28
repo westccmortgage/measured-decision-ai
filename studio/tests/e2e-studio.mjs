@@ -214,6 +214,49 @@ console.log("\n── 8. the picker offers a readable room first ──");
   await ctx.close();
 }
 
+console.log("\n── 9. a PDF at the evidence door is asked about, and No opens the right door ──");
+/* An invoice dropped on the evidence screen with a room already chosen used
+   to file itself silently into that room — delivery never recorded, the
+   comparison starved. Now the gate asks, and refusing offers the plans door. */
+{
+  const ctx = await browser.newContext({ viewport: { width: 430, height: 900 } });
+  await ctx.route("**://*/**", (route) =>
+    route.request().url().startsWith(base) ? route.continue() : route.abort());
+  const page3 = await ctx.newPage();
+  await page3.addInitScript(`window.__seed = ${JSON.stringify(seed)};`);
+  await page3.addInitScript({ path: "studio/tests/fake-supabase.js" });
+  await page3.goto(`${base}/studio/`, { waitUntil: "networkidle" });
+  await page3.waitForTimeout(900);
+  await page3.evaluate(() => {
+    [...document.querySelectorAll("button")].find((x) => (x.textContent || "").includes("3001 Hutton"))?.click();
+  });
+  await page3.waitForTimeout(1200);
+  const gate = await page3.evaluate(async () => {
+    const asked = [];
+    window.confirm = (text) => { asked.push(text); return false; };
+    const writesBefore = (window.__writes || []).length;
+    const input = document.querySelector("#focus-evidence-files");
+    const transfer = new DataTransfer();
+    transfer.items.add(new File(["%PDF-1.4 fake"], "abc-lumber-invoice.pdf", { type: "application/pdf" }));
+    input.files = transfer.files;
+    input.dispatchEvent(new Event("change", { bubbles: true }));
+    await new Promise((resolve) => setTimeout(resolve, 500));
+    return {
+      asked,
+      title: document.querySelector("#focus-upload-progress-title")?.textContent || "",
+      door: document.querySelector("#upload-error-plans")?.textContent || "",
+      writesAdded: (window.__writes || []).length - writesBefore,
+    };
+  });
+  check("the gate asks before a PDF becomes unreadable room evidence",
+    gate.asked.length === 1 && /Project plans screen/.test(gate.asked[0]) && /fills the comparison/.test(gate.asked[0]),
+    JSON.stringify(gate.asked));
+  check("saying no uploads nothing and offers the plans door",
+    /Nothing was uploaded/.test(gate.title) && /Project plans/.test(gate.door) && gate.writesAdded === 0,
+    JSON.stringify({ title: gate.title, door: gate.door, writesAdded: gate.writesAdded }));
+  await ctx.close();
+}
+
 await browser.close();
 server.close();
 
