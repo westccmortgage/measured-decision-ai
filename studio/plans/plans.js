@@ -671,7 +671,14 @@ async function openProperty(propertyId) {
 const chainRuns = new Set();
 async function ensureIntelligenceChain(trigger) {
   const baseline = state.baseline;
-  if (!baseline || !state.property || !takeoffDraft()) return;
+  if (!baseline || !state.property) return;
+  /* The chain runs when the analysis holds something distillable: framing
+     members for a takeoff world, or printed architectural schedules. A
+     baseline with neither would distil zero rows and re-run on every open
+     — so it never starts. */
+  const schedules = Array.isArray(baseline.analysis?.component_schedules)
+    ? baseline.analysis.component_schedules : [];
+  if (!takeoffDraft() && !schedules.length) return;
   const mayRun = canApproveBaseline() || state.role === "project_manager";
   if (!mayRun) return;
   const runKey = `${baseline.id}:${trigger}`;

@@ -365,7 +365,10 @@ console.log("\n── an architectural set: the reality channel opens without a 
     visualShown: document.querySelector("#visual-panel")?.hidden === false,
     rooms: [...document.querySelectorAll("#visual-rooms tbody tr")].map((row) => row.innerText.replace(/\s+/g, " ")),
     reconEmpty: document.querySelector("#visual-recon tbody")?.innerText.replace(/\s+/g, " ") || "",
+    extractCalls: window.__rpcCalls.filter((call) => call.name === "extract_project_requirements").length,
   }));
+  check("with nothing distillable the chain never starts — no job spam on every open",
+    channel.extractCalls === 0, String(channel.extractCalls));
   check("the takeoff-shaped summary stays away — there is nothing to summarize",
     channel.summaryHidden, JSON.stringify(channel));
   check("but the channels are reachable and ?view=visual lands on the reality side",
@@ -376,6 +379,56 @@ console.log("\n── an architectural set: the reality channel opens without a 
   check("the empty comparison says why it is empty, honestly",
     /nothing countable has been distilled from this plan set/.test(channel.reconEmpty),
     channel.reconEmpty);
+  check("nothing threw", errors.length === 0, errors.join(" | "));
+  await context.close();
+}
+
+console.log("\n── the vocabulary grows: printed schedules distil into requirements ──");
+/* An architectural set whose reader recorded component_schedules — doors,
+   windows, fixtures from PRINTED schedules. The chain must treat that as
+   distillable and run extract + reconcile on open, exactly as it does for
+   framing members. */
+{
+  const world = deckTakeoffRows();
+  world.document_baselines[0].analysis = {
+    project_summary: "Single family remodel — architectural set with printed schedules.",
+    component_schedules: [
+      { mark: "D1", category: "door", description: "3'-0\" x 8'-0\" solid core, paint grade", unit: "count",
+        count_scheduled: 8, count_drawn: 8, count_proposed: 8, count_confidence: "high",
+        count_note: "counted on A-6.0 door schedule and floor plans", source_refs: ["A-6.0"] },
+      { mark: "W2", category: "window", description: "4'-0\" x 5'-0\" casement, dual glazed", unit: "count",
+        count_scheduled: 6, count_drawn: 0, count_proposed: 6, count_confidence: "medium",
+        count_note: "schedule QTY column; plan tags partially covered", source_refs: ["A-6.1"] },
+    ],
+  };
+  world.project_requirements = [];
+  world.project_reconciliations = [
+    { property_id: "prop-1", state: "active", component_key: "D1",
+      required_quantity: 8, delivered_quantity: null, evidenced_quantity: 3, coverage: "partial",
+      verdict: "PARTIALLY_SUPPORTED",
+      narrative: "8 required · 3 visually evidenced as installed · 5 installation records not yet evidenced" },
+  ];
+
+  const context = await browser.newContext({ viewport: { width: 1280, height: 900 } });
+  await context.route("**://*/**", (r) => (r.request().url().startsWith(base) ? r.continue() : r.abort()));
+  await context.addInitScript(`window.__seed = ${JSON.stringify({ rows: world })};`);
+  await context.addInitScript({ path: "studio/tests/fake-supabase.js" });
+  const page = await context.newPage();
+  const errors = [];
+  page.on("pageerror", (e) => errors.push(String(e).slice(0, 200)));
+  await page.goto(`${base}/studio/plans/?property=prop-1&view=visual`, { waitUntil: "networkidle" });
+  await page.waitForTimeout(1300);
+
+  const grown = await page.evaluate(() => ({
+    extract: window.__rpcCalls.find((call) => call.name === "extract_project_requirements") || null,
+    reconcile: window.__rpcCalls.some((call) => call.name === "reconcile_project"),
+    doorRow: [...document.querySelectorAll("#visual-recon tbody tr")]
+      .map((row) => row.innerText.replace(/\s+/g, " ")).find((row) => /^D1/.test(row)) || "",
+  }));
+  check("printed schedules count as distillable — the chain runs on open",
+    Boolean(grown.extract?.args?.p_baseline_id) && grown.reconcile, JSON.stringify(grown.extract));
+  check("and the door requirement stands in the comparison",
+    /D1/.test(grown.doorRow) && /8/.test(grown.doorRow), grown.doorRow);
   check("nothing threw", errors.length === 0, errors.join(" | "));
   await context.close();
 }

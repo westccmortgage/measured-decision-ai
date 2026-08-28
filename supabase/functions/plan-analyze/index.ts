@@ -40,8 +40,8 @@ const schema = {
   type: "object",
   additionalProperties: false,
   required: [
-    "project_summary", "source_register", "levels", "spaces", "space_links", "framing_walls", "framing_decks", "systems",
-    "phases", "capture_requirements", "gaps", "assumptions",
+    "project_summary", "source_register", "levels", "spaces", "space_links", "framing_walls", "framing_decks",
+    "component_schedules", "systems", "phases", "capture_requirements", "gaps", "assumptions",
   ],
   properties: {
     project_summary: { type: "string" },
@@ -243,6 +243,39 @@ const schema = {
           },
           guardrail: { type: "string" },
           guardrail_length: { type: "string" },
+          source_refs: { type: "array", items: { type: "string" } },
+        },
+      },
+    },
+    /* The countable scope an architectural set states in its printed
+       schedules — doors, windows, plumbing and electrical fixtures,
+       equipment, appliances — the way a framing set states it in beam and
+       pile schedules. A schedule row is the requirement; marks counted
+       drawn on the plans corroborate it. Nothing here is ever measured by
+       scale or derived from area: a count that is not printed or drawn
+       does not exist. */
+    component_schedules: {
+      type: "array",
+      items: {
+        type: "object",
+        additionalProperties: false,
+        required: [
+          "mark", "category", "description", "unit",
+          "count_scheduled", "count_drawn", "count_proposed", "count_confidence", "count_note", "source_refs",
+        ],
+        properties: {
+          mark: { type: "string" },
+          category: {
+            type: "string",
+            enum: ["door", "window", "plumbing_fixture", "electrical_fixture", "mechanical_equipment", "appliance", "other"],
+          },
+          description: { type: "string" },
+          unit: { type: "string" },
+          count_scheduled: { type: "integer" },
+          count_drawn: { type: "integer" },
+          count_proposed: { type: "integer" },
+          count_confidence: { type: "string", enum: ["high", "medium", "low", "none"] },
+          count_note: { type: "string" },
           source_refs: { type: "array", items: { type: "string" } },
         },
       },
