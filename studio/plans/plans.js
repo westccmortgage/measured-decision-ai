@@ -1720,10 +1720,14 @@ function renderVisualPanel() {
       ? `${unreadRooms.length} room${unreadRooms.length === 1 ? " holds" : "s hold"} captures nobody has read yet — reading them lets the AI count installed components into this comparison. <a class="button" href="../?property=${encodeURIComponent(state.property?.id || "")}">Read rooms in Studio →</a>`
       : "";
   }
+  /* The comparison is numbers, not a caption: required is what the plans
+     state, delivered is what paperwork documents, installed is what capture
+     shows. A dash is an honest empty — no record — never a zero. */
+  const quantity = (value) => (value === null || value === undefined ? "—" : Number(value).toLocaleString("en-US"));
   const recon = state.reconciliations || [];
   $("#visual-recon tbody").innerHTML = recon.length
-    ? recon.map((entry) => `<tr><td>${escapeHtml(entry.component_key)}<small class="line-meta">${escapeHtml(entry.narrative)}</small></td><td><span class="summary-chip ${entry.verdict === "SUPPORTED" ? "ready" : entry.verdict === "CONFLICTING" ? "hold" : "verify"}">${escapeHtml(entry.verdict)}</span></td></tr>`).join("")
-    : `<tr><td colspan="2">No reconciliation yet — it runs when both channels have written their side.</td></tr>`;
+    ? recon.map((entry) => `<tr><td>${escapeHtml(entry.component_key)}<small class="line-meta">${escapeHtml(entry.narrative)}</small></td><td class="qty">${quantity(entry.required_quantity)}</td><td class="qty">${quantity(entry.delivered_quantity)}</td><td class="qty">${quantity(entry.evidenced_quantity)}</td><td><span class="summary-chip ${entry.verdict === "SUPPORTED" ? "ready" : entry.verdict === "CONFLICTING" ? "hold" : "verify"}">${escapeHtml(entry.verdict)}</span></td></tr>`).join("")
+    : `<tr><td colspan="5">No reconciliation yet — it runs when both channels have written their side.</td></tr>`;
 }
 
 $("#summary-download")?.addEventListener("click", () => $("#download-ai-takeoff")?.click());
@@ -2214,7 +2218,7 @@ async function savePendingFiles() {
             if (error || data?.error) {
               notify(data?.error || "The delivery document could not be read — it stays preserved in the record", "error");
             } else {
-              notify(`Delivery recorded: ${data.lines_recorded} line${data.lines_recorded === 1 ? "" : "s"}. Installation stays not-yet-evidenced until capture shows it.`);
+              notify(`Delivery recorded: ${data.lines_recorded} line${data.lines_recorded === 1 ? "" : "s"} — the Delivered column of the comparison is updated. Installation stays not-yet-evidenced until capture shows it.`);
               void openProperty(state.property.id);
             }
           });
@@ -2277,7 +2281,7 @@ async function classifyUploadedDocument(documentId) {
         if (readerError || readerData?.error) {
           notify(readerData?.error || "The delivery pages could not be read — the file stays preserved in the record", "error");
         } else {
-          notify(`Delivery recorded from the classified pages: ${readerData.lines_recorded} line${readerData.lines_recorded === 1 ? "" : "s"}. Installation stays not-yet-evidenced until capture shows it.`);
+          notify(`Delivery recorded from the classified pages: ${readerData.lines_recorded} line${readerData.lines_recorded === 1 ? "" : "s"} — the Delivered column of the comparison is updated. Installation stays not-yet-evidenced until capture shows it.`);
           void openProperty(state.property.id);
         }
       });
