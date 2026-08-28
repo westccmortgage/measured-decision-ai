@@ -1155,6 +1155,38 @@ select pg_temp.check('and every run is a checkpointed job that admits its RFIs',
   and exists (select 1 from public.processing_checkpoints c join public.intelligence_jobs j on j.id = c.job_id where c.stage = 'piles'));
 reset role;
 
+-- The vocabulary grows (041): an architectural set states its countable
+-- scope in printed schedules — doors, windows, fixtures — and those rows
+-- distil into requirements exactly as framing members do. Printed and
+-- drawn counts only; a row nobody could count stays an open RFI.
+insert into public.document_baselines(id, organization_id, property_id, version, state,
+  source_document_ids, analysis, created_by)
+values ('eeeeeeee-0000-0000-0000-000000000003','aaaaaaaa-0000-0000-0000-000000000001',
+  'bbbbbbbb-0000-0000-0000-000000000001', 3, 'approved', '{}'::uuid[],
+  '{"component_schedules":[
+     {"mark":"D1","category":"door","description":"3-0 x 8-0 solid core","unit":"count","count_scheduled":8,"count_drawn":8,"count_proposed":8,"count_confidence":"high","count_note":"door schedule A-6.0","source_refs":["A-6.0"]},
+     {"mark":"W2","category":"window","description":"casement 4x5 dual glazed","unit":"count","count_scheduled":0,"count_drawn":0,"count_proposed":6,"count_confidence":"medium","count_note":"plan tags partially covered","source_refs":["A-6.1"]},
+     {"mark":"PF-1","category":"plumbing_fixture","description":"undermount lavatory","unit":"count","count_scheduled":0,"count_drawn":0,"count_proposed":0,"count_confidence":"none","count_note":"schedule prints no qty; tags unreadable","source_refs":["P-1.0"]}
+   ]}'::jsonb,
+  '11111111-1111-1111-1111-111111111111');
+
+set local role authenticated;
+set local test.uid = '33333333-3333-3333-3333-333333333333';
+select public.extract_project_requirements('eeeeeeee-0000-0000-0000-000000000003');
+select pg_temp.check('a printed door schedule distils into a requirement with its printed count',
+  exists (select 1 from public.project_requirements
+          where baseline_id = 'eeeeeeee-0000-0000-0000-000000000003' and component_key = 'D1'
+            and quantity = 8 and unit = 'count' and method = 'AI_PLAN_COUNT' and confidence = 'high' and state = 'active'));
+select pg_temp.check('a proposed-only window count keeps its stated confidence',
+  exists (select 1 from public.project_requirements
+          where baseline_id = 'eeeeeeee-0000-0000-0000-000000000003' and component_key = 'W2'
+            and quantity = 6 and confidence = 'medium' and state = 'active'));
+select pg_temp.check('a schedule row nobody could count stays an open RFI, never a guess',
+  exists (select 1 from public.project_requirements
+          where baseline_id = 'eeeeeeee-0000-0000-0000-000000000003' and component_key = 'PF-1'
+            and quantity is null and method = 'OPEN_RFI' and state = 'active'));
+reset role;
+
 set local role authenticated;
 set local test.uid = '22222222-2222-2222-2222-222222222222';
 select public.record_observation('bbbbbbbb-0000-0000-0000-000000000001', 'P1', 'delivered_documented', 14, null, '{}'::uuid[], null, 'DOCUMENT', 'high', 'supplier invoice 4471');

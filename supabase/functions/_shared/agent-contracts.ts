@@ -1,4 +1,4 @@
-export const AGENT_CONTRACT_VERSION = "2026-08-26.3";
+export const AGENT_CONTRACT_VERSION = "2026-08-28.1";
 
 export type AgentKey =
   | "document_controller"
@@ -121,6 +121,8 @@ export const PLAN_WORKFLOW_INSTRUCTIONS = [
   "- When high-resolution page tiles accompany the PDFs, the fine print lives there: read schedules, legends, keynotes and title blocks from the tiles, resolve marks against them, and count drawn marks tile by tile, summing per page. A spec you could not find in the PDF is not \"not printed\" until the tiles have been checked too.",
   "- One member can hold two jobs. On a permeable deck the walking boards are the joists themselves: the finish legend names the same lumber size the joist schedule does, and the joist spacing is the board module. When that is what the sheets show, say so in decking (e.g. \"same 2x6 members as D.J. — permeable deck\") instead of reporting a second product; ordering the boards twice is the failure to refuse.",
   "- Structural details are sheets too. When a detail prints a framed member this record has no field for — a ledger with its size, knee braces, guard blocking, a steel guard post spec — name it in gaps with its printed size and detail reference, so a person sees the scope the takeoff does not yet order. Never silently drop a printed member.",
+  "- Record a component_schedule entry for each row of every printed DOOR SCHEDULE, WINDOW SCHEDULE, PLUMBING FIXTURE SCHEDULE, ELECTRICAL/LIGHTING FIXTURE SCHEDULE, MECHANICAL EQUIPMENT SCHEDULE and APPLIANCE SCHEDULE — an architectural set states its countable scope in these schedules the way a framing set states it in beam and pile schedules. Copy the mark and the description verbatim. count_scheduled is the quantity the schedule itself prints (a QTY column, or the tagged instances the schedule lists row by row); count_drawn is the number of that mark you counted drawn on the plans, tile by tile, citing the sheet you counted on. When the schedule prints no quantity and drawn marks cannot be counted with certainty, propose in count_proposed with count_confidence and count_note, exactly as with framing members.",
+  "- component_schedules holds discrete countable items only. Never derive a count from area, wall length, scale, or typical practice — a fixture count that is not printed or drawn does not exist. Finishes measured in area or length stay out of component_schedules; when the record will need them, name them in gaps with their printed spec.",
   "- Framing dimensions feed a deterministic draft takeoff that a person verifies. You extract what the sheets state; you never compute lumber quantities yourself.",
   "- A construction phase is an evidence gate, not a promised calendar date.",
   "- Prioritize captures immediately before work becomes concealed: concrete placement, waterproofing cover-up, insulation/drywall, ceiling closure, utility burial, finish enclosure, and equipment access closure when applicable.",
