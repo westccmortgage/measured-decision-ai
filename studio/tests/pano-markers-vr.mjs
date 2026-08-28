@@ -292,6 +292,7 @@ console.log("\n── how large the room reads ──");
    screen has one right answer.
      100% →  2·tan(20.04°)·256 ≈ 187 px
       60% →  2·tan(12.02°)·256 ≈ 109 px   (a smaller room: less of it fills the view)
+      30% →  2·tan(6.012°)·256 ≈ 54 px    (the new floor: an outlet stops reading head-sized)
      160% →  2·tan(32.06°)·256 ≈ 321 px   (a larger room) */
 const scale = await page.evaluate(async () => {
   const control = document.querySelector("[data-pano-scale]");
@@ -323,10 +324,12 @@ const scale = await page.evaluate(async () => {
 
   const start = { hidden: control?.hidden, shown: value?.textContent, width: bandWidth() };
   const smaller = set(60);
+  const smallest = set(30);
   const larger = set(160);
   const back = set(100);
   return {
-    start, smaller, larger, back,
+    start, smaller, smallest, larger, back,
+    min: input?.min,
     stored: window.localStorage.getItem("mdai.pano360.roomSize"),
   };
 });
@@ -342,6 +345,12 @@ check("60% makes the room smaller, not larger",
   `60% drew ${scale.smaller.width} px against ${scale.start.width} px at 100%`);
 check("and by the amount the number promises",
   Math.abs(scale.smaller.width - 109) <= 14, `${scale.smaller.width} px — expected about 109`);
+/* The old floor. A person in a real room reported that even at 60% an outlet
+   still read the size of a head — the control has to keep going. */
+check("the slider reaches 30%", scale.min === "30", String(scale.min));
+check("30% shrinks the room to half of what 60% offered",
+  scale.smallest.shown === "30%" && Math.abs(scale.smallest.width - 54) <= 10,
+  `${scale.smallest.width} px — expected about 54`);
 check("160% makes it larger",
   scale.larger.width > scale.start.width,
   `160% drew ${scale.larger.width} px against ${scale.start.width} px at 100%`);
