@@ -64,6 +64,11 @@ console.log("\n── one project, two channels ──");
   world.evidence_items = [
     { id: "ev-1", property_id: "prop-1", space_id: "room-1", media_type: "360 capture", deleted_at: null },
     { id: "ev-2", property_id: "prop-1", space_id: "room-1", media_type: "photo", deleted_at: null },
+    { id: "ev-3", property_id: "prop-1", space_id: "room-2", media_type: "photo", deleted_at: null },
+  ];
+  /* The west half has been read by the AI; the east half's capture has not. */
+  world.project_observations = [
+    { property_id: "prop-1", space_id: "room-1", kind: "installed_seen", method: "AI_VISION", state: "active" },
   ];
   world.project_reconciliations = [
     { property_id: "prop-1", state: "active", component_key: "P1",
@@ -142,14 +147,29 @@ console.log("\n── one project, two channels ──");
       verdicts: [...document.querySelectorAll("#visual-recon .summary-chip")].map((chip) => chip.textContent),
       doctrine: document.querySelector("#visual-recon-note")?.textContent || "",
       inputs: document.querySelectorAll("#visual-panel input, #visual-panel textarea").length,
+      unread: document.querySelector("#visual-unread")?.innerText || "",
+      unreadLink: document.querySelector("#visual-unread a")?.getAttribute("href") || "",
+      summaryUnread: document.querySelector("#summary-unread")?.innerText || "",
     };
   });
   check("Visual Evidence is a view of the same project, not a second one",
     visual.visualShown && visual.technicalHidden, JSON.stringify(visual));
   check("rooms show their evidence and their missing 360 out loud",
     visual.rooms.some((row) => /west half/.test(row) && /2 files/.test(row) && /✓/.test(row))
-    && visual.rooms.some((row) => /east half/.test(row) && /0 files/.test(row) && /none/i.test(row)),
+    && visual.rooms.some((row) => /east half/.test(row) && /1 file\b/.test(row) && /none/i.test(row)),
     JSON.stringify(visual.rooms));
+  check("each room says whether the AI has read it",
+    visual.rooms.some((row) => /west half/.test(row) && !/not read/i.test(row))
+    && visual.rooms.some((row) => /east half/.test(row) && /not read/i.test(row)),
+    JSON.stringify(visual.rooms));
+  check("unread captures point at their door, carrying the project",
+    /1 room holds captures nobody has read yet/.test(visual.unread)
+    && visual.unreadLink === "../?property=prop-1",
+    JSON.stringify({ unread: visual.unread, link: visual.unreadLink }));
+  check("and the Owner Summary names it as the next action",
+    /1 room holds captures the AI has not read yet/.test(visual.summaryUnread)
+    && /read them in Studio/.test(visual.summaryUnread),
+    visual.summaryUnread);
   check("verdicts render as chips, supported through conflicting",
     visual.verdicts.includes("SUPPORTED") && visual.verdicts.includes("CONFLICTING") && visual.verdicts.includes("PARTIALLY_SUPPORTED"),
     JSON.stringify(visual.verdicts));
