@@ -174,6 +174,46 @@ await page.waitForTimeout(800);
 check("pressing it lands on Plan Intelligence for this same project",
   /\/studio\/plans\/\?property=/.test(page.url()), page.url());
 
+console.log("\n── 8. the picker offers a readable room first ──");
+/* The same world with the room order reversed, so the empty room sorts
+   first — the exact arrangement that used to open the AI stage on
+   "This room is empty". */
+{
+  const reversed = JSON.parse(JSON.stringify(seed));
+  reversed.rows.spaces = [...reversed.rows.spaces].reverse();
+  const ctx = await browser.newContext({ viewport: { width: 430, height: 900 } });
+  await ctx.route("**://*/**", (route) =>
+    route.request().url().startsWith(base) ? route.continue() : route.abort());
+  const page2 = await ctx.newPage();
+  await page2.addInitScript(`window.__seed = ${JSON.stringify(reversed)};`);
+  await page2.addInitScript({ path: "studio/tests/fake-supabase.js" });
+  await page2.goto(`${base}/studio/`, { waitUntil: "networkidle" });
+  await page2.waitForTimeout(900);
+  await page2.evaluate(() => {
+    [...document.querySelectorAll("button")].find((x) => (x.textContent || "").includes("3001 Hutton"))?.click();
+  });
+  await page2.waitForTimeout(1200);
+  await page2.evaluate(() => document.querySelector("#focus-process")?.click());
+  await page2.waitForTimeout(700);
+  const picker = await page2.evaluate(() => {
+    const select = document.querySelector("#analyze-room");
+    const selected = select?.selectedOptions?.[0];
+    return {
+      value: select?.value || "",
+      label: selected?.textContent || "",
+      runDisabled: document.querySelector("#analyze-room-run")?.disabled,
+      note: document.querySelector("#analyze-room-note")?.textContent || "",
+    };
+  });
+  check("with an empty room sorting first, the picker still opens on a readable one",
+    picker.value === "space-viewable" && picker.runDisabled === false,
+    JSON.stringify(picker));
+  check("the option says it is ready, and the note counts what the AI can read",
+    /ready to read/.test(picker.label) && /can read/.test(picker.note),
+    JSON.stringify({ label: picker.label, note: picker.note.slice(0, 80) }));
+  await ctx.close();
+}
+
 await browser.close();
 server.close();
 
