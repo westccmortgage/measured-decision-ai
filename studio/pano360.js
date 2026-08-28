@@ -321,7 +321,7 @@
              capture itself is never altered. -->
         <label class="pano-scale" data-pano-scale hidden>
           <span>Room size</span>
-          <input type="range" min="60" max="160" step="5" value="100" data-pano-scale-input
+          <input type="range" min="30" max="160" step="5" value="100" data-pano-scale-input
                  aria-label="How large the room reads in the headset, in percent">
           <em data-pano-scale-value>100%</em>
         </label>
@@ -356,7 +356,12 @@
      stored is the number on the slider — the thing a person chose — not the
      shader's factor, which is an implementation detail that may change. */
   const SIZE_KEY = "mdai.pano360.roomSize";
-  const SIZE_MIN = 60;
+  /* The floor was 60% until a person stood in a real room and reported that
+     even at 60% an outlet still read the size of a head — a monoscopic
+     sphere gives the eye no distance cues, and how inflated a room feels
+     varies by room and by person. 30% doubles the shrink the old floor
+     offered; the default stays 100%, the capture's own angular scale. */
+  const SIZE_MIN = 30;
   const SIZE_MAX = 160;
 
   /* Smaller room means more of the sphere in the same field of view, which is
@@ -727,11 +732,11 @@
     }
 
     /* Held between 0.6 and 1.7: far enough to change how a room reads, close
-       enough that nobody is asked to look through a fisheye. The upper end is
-       the inverse of the smallest room the control offers — a slider that says
-       60% and silently delivers 63% is a slider that lies. */
+       enough that nobody is asked to look through a fisheye. The bounds are
+       the inverse of the sizes the control offers — a slider that says
+       30% and silently delivers 34% is a slider that lies. */
     function setAngularScale(value) {
-      headsetAngularScale = Math.max(0.6, Math.min(1.7, Number(value) || 1));
+      headsetAngularScale = Math.max(100 / SIZE_MAX, Math.min(100 / SIZE_MIN, Number(value) || 1));
       if (xr) xr.angularScale = headsetAngularScale;
       return headsetAngularScale;
     }
