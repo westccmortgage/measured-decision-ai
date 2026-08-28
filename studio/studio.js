@@ -5463,10 +5463,24 @@ function finishFocusProcessing() {
   const resultsButton = $("#focus-view-results");
   resultsButton.disabled = false;
   resultsButton.textContent = done.length ? "View results" : "Open the record";
+  /* The loop closes. A finished reading just fed the installed side of the
+     required-vs-installed comparison; the screen that finished it points
+     there, instead of leaving the result stranded in this room. */
+  const comparisonButton = $("#focus-open-comparison");
+  if (comparisonButton) comparisonButton.hidden = done.length === 0;
   $("#focus-process").disabled = false;
   renderFocusStudio();
   document.querySelector('[data-focus-step="upload"]')?.classList.add("complete");
 }
+
+/* Test hook: drive the processing-complete state without a paid AI run, so
+   the suite can prove what the finished screen offers. */
+window.__finishFocusProcessing = (doneCount = 1) => {
+  focusProcessingRows = [...Array(doneCount)].map((_, index) => ({
+    roomId: `test-${index}`, name: `Room ${index + 1}`, state: "done", detail: "Interpretation ready",
+  }));
+  finishFocusProcessing();
+};
 
 async function processFocusEvidence() {
   const stats = focusEvidenceStats();
@@ -5534,6 +5548,7 @@ async function processFocusEvidence() {
 
 /* -------------------------------------------------------------------- Wiring */
 
+$("#focus-open-comparison")?.addEventListener("click", () => openProjectPlans());
 $("#focus-open-files")?.addEventListener("click", openFileList);
 $("#focus-files-close")?.addEventListener("click", closeFileList);
 $("#focus-files")?.addEventListener("click", (event) => {
@@ -6335,9 +6350,9 @@ $("#request-analysis").addEventListener("click", async () => {
     render();
     notify(
       warnings.length
-        ? `AI suggestion ready; ${warnings.length} video could not be sampled`
-        : `AI suggestion ready from ${data.analyzed_images || 0} images and ${data.analyzed_video_frames || 0} video frames`,
-      5000,
+        ? `AI suggestion ready; ${warnings.length} video could not be sampled — the comparison in Plan Intelligence has been updated`
+        : `AI suggestion ready from ${data.analyzed_images || 0} images and ${data.analyzed_video_frames || 0} video frames — the comparison in Plan Intelligence has been updated`,
+      6000,
     );
   } catch (error) {
     if (localJob) {
