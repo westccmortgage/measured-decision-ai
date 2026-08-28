@@ -512,4 +512,4 @@ body.view-visual .baseline-section,
 body.view-visual .roadmap-section,
 body.view-visual .routes-section,
 body.view-visual .takeoff-section { display: none; }
-@media (max-width: 760px) { .visual-grid { grid-template-columns: 1fr; } }
+@media (max-width: 760px) { .visual-grid { grid-template-columns: minmax(0, 1fr); } }
