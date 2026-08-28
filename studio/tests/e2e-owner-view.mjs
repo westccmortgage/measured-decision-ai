@@ -126,6 +126,26 @@ console.log("── an external owner: one project, nothing else ──");
     boundary.studioLinkHidden && boundary.previewBadgeHidden && /owner-view/.test(boundary.url));
   check("the page asks the owner for nothing — zero inputs in the record", boundary.mainInputs === 0, String(boundary.mainInputs));
 
+  /* Option C boundary: an external owner is never shown an action that
+     starts analysis, and opening the page never launches one. */
+  const passive = await page.evaluate(() => ({
+    actionText: [...document.querySelectorAll("a, button")]
+      .filter((el) => !el.closest("[hidden]") && !el.hidden)
+      .map((el) => el.textContent.trim())
+      .filter((text) => /read rooms|open studio|read this room|request ai/i.test(text)),
+    pendingHidden: document.querySelector("#summary-pending")?.hidden === true,
+    analysisCalls: window.__rpcCalls.filter((call) =>
+      /spatial-analyze|plan-analyze|field-quality-check/.test(call.name)).length,
+    analysisWrites: (window.__writes || []).filter((write) =>
+      /analysis_jobs|plan_analysis/.test(write.table || "")).length,
+  }));
+  check("no Studio door and no analysis-starting action is visible to the external owner",
+    passive.actionText.length === 0, JSON.stringify(passive.actionText));
+  check("with a release published, the passive pending line stays quiet", passive.pendingHidden);
+  check("opening the Owner View launches no paid analysis — no worker calls, no job rows",
+    passive.analysisCalls === 0 && passive.analysisWrites === 0,
+    JSON.stringify({ calls: passive.analysisCalls, writes: passive.analysisWrites }));
+
   const summary = await page.evaluate(() => ({
     status: document.querySelector("#summary-status")?.textContent || "",
     numbers: [...document.querySelectorAll("#summary-numbers article")].map((item) => item.innerText.replace(/\s+/g, " ")),
@@ -213,6 +233,9 @@ console.log("\n── an internal member: explicit preview, explicit way back �
   }));
   check("an organization member previews with the badge on and the Studio door visible",
     view.mode === "internal" && view.badge && view.studioLink, JSON.stringify(view));
+  const internalPending = await page.evaluate(() =>
+    document.querySelector("#summary-pending")?.hidden === true);
+  check("the passive pending line is for external owners only — internal preview never shows it", internalPending);
   check("and sees the same published release", /Release v2/.test(view.meta), view.meta);
   await page.screenshot({ path: "studio/tests/fixtures/owner-view-internal.png" }).catch(() => {});
   check("nothing threw", errors.length === 0, errors.join(" | "));
@@ -273,6 +296,21 @@ console.log("\n── honest states with nothing published ──");
       ? /2 governance check/.test(view.visual)
       : true,
     JSON.stringify(view));
+  const passivePending = await page.evaluate(() => ({
+    shown: document.querySelector("#summary-pending")?.hidden === false,
+    text: document.querySelector("#summary-pending")?.textContent || "",
+    actions: [...document.querySelectorAll("a, button")]
+      .filter((el) => !el.closest("[hidden]") && !el.hidden)
+      .map((el) => el.textContent.trim())
+      .filter((text) => /read rooms|open studio|read this room|request ai/i.test(text)),
+    analysisCalls: window.__rpcCalls.filter((call) =>
+      /spatial-analyze|plan-analyze/.test(call.name)).length,
+  }));
+  check("with nothing released, the external owner sees the passive status — verbatim, no lever",
+    passivePending.shown
+    && passivePending.text === "AI analysis pending — your project team is reviewing the available captures."
+    && passivePending.actions.length === 0 && passivePending.analysisCalls === 0,
+    JSON.stringify(passivePending));
   check("the visual channel names the draft and its open checks, nothing more",
     /Draft v1/.test(view.visual) && /2 governance checks/.test(view.visual), view.visual.slice(0, 120));
   check("the technical channel admits nothing is published yet", view.technicalEmpty);
