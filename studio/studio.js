@@ -2030,6 +2030,10 @@ async function openStudioDeepLink() {
   const propertyId = params.get("property");
   if (!propertyId || !cloud.organizationId) return;
   await openProperty(propertyId);
+  /* The unread-rooms pointer promised reading, so it lands on the reading
+     stage — the picker, already opened on a readable room — not one press
+     short of it. Nothing runs: reading stays a person's deliberate click. */
+  if (params.get("stage") === "read") showFocusStage("process");
   const evidenceId = params.get("evidence");
   if (!evidenceId) return;
   const { item, room } = tileFor(evidenceId);

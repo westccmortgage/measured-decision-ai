@@ -1610,7 +1610,7 @@ function renderOwnerSummary() {
   if (summaryUnread) {
     summaryUnread.hidden = unreadCount === 0;
     summaryUnread.innerHTML = unreadCount
-      ? `Next: ${unreadCount} room${unreadCount === 1 ? " holds" : "s hold"} captures the AI has not read yet — <a href="../?property=${encodeURIComponent(state.property?.id || "")}">read them in Studio →</a> and the installed side of the comparison fills itself.`
+      ? `Next: ${unreadCount} room${unreadCount === 1 ? " holds" : "s hold"} captures the AI has not read yet — <a href="../?property=${encodeURIComponent(state.property?.id || "")}&stage=read">read them in Studio →</a> and the installed side of the comparison fills itself.`
       : "";
   }
 
@@ -1717,7 +1717,7 @@ function renderVisualPanel() {
   if (unread) {
     unread.hidden = unreadRooms.length === 0;
     unread.innerHTML = unreadRooms.length
-      ? `${unreadRooms.length} room${unreadRooms.length === 1 ? " holds" : "s hold"} captures nobody has read yet — reading them lets the AI count installed components into this comparison. <a class="button" href="../?property=${encodeURIComponent(state.property?.id || "")}">Read rooms in Studio →</a>`
+      ? `${unreadRooms.length} room${unreadRooms.length === 1 ? " holds" : "s hold"} captures nobody has read yet — reading them lets the AI count installed components into this comparison. <a class="button" href="../?property=${encodeURIComponent(state.property?.id || "")}&stage=read">Read rooms in Studio →</a>`
       : "";
   }
   /* The comparison is numbers, not a caption: required is what the plans
