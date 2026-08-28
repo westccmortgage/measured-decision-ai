@@ -2417,6 +2417,7 @@ let focusProcessingComplete = false;
 let focusProcessingRows = [];
 let uploadRoomId = "";
 let analyzeRoomId = "";
+let analyzeRoomChosen = false;
 let focusSheetRoomId = null;
 let focusSheetReturnStage = "today";
 
@@ -2898,7 +2899,7 @@ function roomsInBuilding(building) {
     .sort((a, b) => `${a.level || ""}${a.name}`.localeCompare(`${b.level || ""}${b.name}`));
 }
 
-function fillRoomPicker(prefix, selectedRoomId, onChange) {
+function fillRoomPicker(prefix, selectedRoomId, onChange, labelFor) {
   const buildingSelect = $(`#${prefix}-building`);
   const roomSelect = $(`#${prefix}-room`);
   if (!buildingSelect || !roomSelect) return;
@@ -2911,11 +2912,13 @@ function fillRoomPicker(prefix, selectedRoomId, onChange) {
   const list = roomsInBuilding(buildingSelect.value || building);
   roomSelect.innerHTML = list.length
     ? list
-        .map(
-          (room) => `<option value="${escapeText(room.id)}"${room.id === selectedRoomId ? " selected" : ""}>${escapeText(
-            room.level ? `${room.name} · ${room.level}` : room.name,
-          )}</option>`,
-        )
+        .map((room) => {
+          const base = room.level ? `${room.name} · ${room.level}` : room.name;
+          const suffix = labelFor ? labelFor(room) : "";
+          return `<option value="${escapeText(room.id)}"${room.id === selectedRoomId ? " selected" : ""}>${escapeText(
+            suffix ? `${base} ${suffix}` : base,
+          )}</option>`;
+        })
         .join("")
     : `<option value="">No room in this building yet</option>`;
   if (!buildingSelect.dataset.wired) {
@@ -2941,11 +2944,36 @@ function renderUploadPicker() {
   renderUploadPickerNote();
 }
 
+/* The picker's default is a room the AI can actually read — unread captures
+   first. "Which room should the AI read?" answered with an empty room that
+   happens to sort first is a question answered with a dead end. */
+function analyzeReadableRoom(room) {
+  return (room.evidence || []).some((item) => isImage(item) || isVideo(item));
+}
+function analyzeDefaultRoomId() {
+  const uploadRoom = rooms.find((room) => room.id === uploadRoomId);
+  if (uploadRoom && analyzeReadableRoom(uploadRoom)) return uploadRoom.id;
+  return rooms.find((room) => analyzeReadableRoom(room) && !room.analysis)?.id
+    || rooms.find((room) => analyzeReadableRoom(room))?.id
+    || rooms[0]?.id || "";
+}
+
 function renderAnalyzePicker() {
-  fillRoomPicker("analyze", analyzeRoomId || uploadRoomId || rooms[0]?.id || "", () => {
+  /* A stale remembered room only wins if a person actually chose it — the
+     value auto-captured from an earlier render of a half-loaded select is
+     not a choice, and honouring it is how the stage opened on "This room
+     is empty" while a readable room sat two entries down. */
+  const remembered = rooms.find((room) => room.id === analyzeRoomId);
+  const defaultId = (analyzeRoomChosen && remembered) || (remembered && analyzeReadableRoom(remembered))
+    ? analyzeRoomId
+    : analyzeDefaultRoomId();
+  fillRoomPicker("analyze", defaultId, () => {
     analyzeRoomId = $("#analyze-room").value || "";
+    analyzeRoomChosen = true;
     renderAnalyzePickerNote();
-  });
+  }, (room) => (analyzeReadableRoom(room)
+    ? (room.analysis ? "· read" : "· ready to read")
+    : "· nothing to read yet"));
   analyzeRoomId = $("#analyze-room")?.value || analyzeRoomId;
   renderAnalyzePickerNote();
 }
