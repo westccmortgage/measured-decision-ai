@@ -262,6 +262,19 @@ console.log("\n── one project, two channels ──");
     && /Add it in Studio/.test(wrongDoor.text) && wrongDoor.link === "../?property=prop-1",
     JSON.stringify(wrongDoor));
 
+  /* The comparison door promises the comparison: arriving with ?view=visual
+     opens the visual channel itself, no further navigation. */
+  const doorPage = await context.newPage();
+  await doorPage.goto(`${base}/studio/plans/?property=prop-1&view=visual`, { waitUntil: "networkidle" });
+  await doorPage.waitForTimeout(1300);
+  const door = await doorPage.evaluate(() => ({
+    visualShown: document.querySelector("#visual-panel")?.hidden === false,
+    reconRows: document.querySelectorAll("#visual-recon tbody tr").length,
+  }));
+  check("?view=visual lands on the visual channel directly",
+    door.visualShown && door.reconRows > 0, JSON.stringify(door));
+  await doorPage.close();
+
   /* On a phone, the five-column comparison scrolls inside its own container —
      the page itself never scrolls sideways. */
   const phone = await context.newPage();
@@ -315,6 +328,55 @@ console.log("\n── a distilled baseline is not distilled twice ──");
   const calls = await page.evaluate(() =>
     window.__rpcCalls.filter((call) => call.name === "extract_project_requirements").length);
   check("active requirements already in the record — the chain stays quiet", calls === 0, String(calls));
+  await context.close();
+}
+
+console.log("\n── an architectural set: the reality channel opens without a takeoff ──");
+/* The exact arrangement found on the real Hutton project: an approved
+   baseline whose analysis names no framing members, so no takeoff can be
+   computed — and the whole Visual Evidence channel used to hide with it. */
+{
+  const world = deckTakeoffRows();
+  world.document_baselines[0].analysis = {
+    project_summary: "Single family remodel — architectural set, no framing schedules.",
+  };
+  world.spaces = [
+    { id: "room-1", organization_id: world.document_baselines[0].organization_id, property_id: "prop-1", name: "Living Room 103" },
+  ];
+  world.evidence_items = [
+    { id: "ev-1", property_id: "prop-1", space_id: "room-1", media_type: "360 capture", deleted_at: null },
+  ];
+  world.project_observations = [];
+  world.project_reconciliations = [];
+
+  const context = await browser.newContext({ viewport: { width: 1280, height: 900 } });
+  await context.route("**://*/**", (r) => (r.request().url().startsWith(base) ? r.continue() : r.abort()));
+  await context.addInitScript(`window.__seed = ${JSON.stringify({ rows: world })};`);
+  await context.addInitScript({ path: "studio/tests/fake-supabase.js" });
+  const page = await context.newPage();
+  const errors = [];
+  page.on("pageerror", (e) => errors.push(String(e).slice(0, 200)));
+  await page.goto(`${base}/studio/plans/?property=prop-1&view=visual`, { waitUntil: "networkidle" });
+  await page.waitForTimeout(1300);
+
+  const channel = await page.evaluate(() => ({
+    summaryHidden: document.querySelector("#owner-summary")?.hidden === true,
+    navShown: document.querySelector("#channel-nav")?.hidden === false,
+    visualShown: document.querySelector("#visual-panel")?.hidden === false,
+    rooms: [...document.querySelectorAll("#visual-rooms tbody tr")].map((row) => row.innerText.replace(/\s+/g, " ")),
+    reconEmpty: document.querySelector("#visual-recon tbody")?.innerText.replace(/\s+/g, " ") || "",
+  }));
+  check("the takeoff-shaped summary stays away — there is nothing to summarize",
+    channel.summaryHidden, JSON.stringify(channel));
+  check("but the channels are reachable and ?view=visual lands on the reality side",
+    channel.navShown && channel.visualShown, JSON.stringify(channel));
+  check("the rooms and their captures render",
+    channel.rooms.some((row) => /Living Room 103/.test(row) && /1 file/.test(row)),
+    JSON.stringify(channel.rooms));
+  check("the empty comparison says why it is empty, honestly",
+    /nothing countable has been distilled from this plan set/.test(channel.reconEmpty),
+    channel.reconEmpty);
+  check("nothing threw", errors.length === 0, errors.join(" | "));
   await context.close();
 }
 

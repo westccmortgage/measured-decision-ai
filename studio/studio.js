@@ -3603,12 +3603,15 @@ function renderFocusToday() {
 
 }
 
-function openProjectPlans() {
+function openProjectPlans(view) {
   if (!cloud.propertyId) {
     notify("Open a project before its plans can be reviewed");
     return;
   }
-  window.location.href = `plans/?property=${encodeURIComponent(cloud.propertyId)}`;
+  /* Only a literal view name opens a channel — this function also serves as
+     a bare click handler, where the argument is the event. */
+  const suffix = view === "visual" ? "&view=visual" : "";
+  window.location.href = `plans/?property=${encodeURIComponent(cloud.propertyId)}${suffix}`;
 }
 
 function openFieldOperations() {
@@ -5597,7 +5600,7 @@ async function processFocusEvidence() {
 
 /* -------------------------------------------------------------------- Wiring */
 
-$("#focus-open-comparison")?.addEventListener("click", () => openProjectPlans());
+$("#focus-open-comparison")?.addEventListener("click", () => openProjectPlans("visual"));
 $("#focus-open-files")?.addEventListener("click", openFileList);
 $("#focus-files-close")?.addEventListener("click", closeFileList);
 $("#focus-files")?.addEventListener("click", (event) => {
