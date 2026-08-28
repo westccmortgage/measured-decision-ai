@@ -467,6 +467,9 @@ dialog form { padding: 0; }
 .summary-table th { text-align: left; color: #60798d; font-size: 9px; text-transform: uppercase; letter-spacing: .08em; padding: 0 10px 7px 0; border-bottom: 1px solid var(--line); }
 .summary-table td { padding: 8px 10px 8px 0; border-bottom: 1px solid #12283a; vertical-align: top; }
 .summary-table td:nth-child(2) { white-space: nowrap; font-variant-numeric: tabular-nums; }
+.summary-table td.qty { white-space: nowrap; font-variant-numeric: tabular-nums; }
+.table-scroll { overflow-x: auto; }
+.table-scroll .summary-table td:first-child { min-width: 150px; }
 .summary-chip { display: inline-block; padding: 1px 8px; border-radius: 999px; border: 1px solid #36536a; font-size: 9px; font-weight: 700; text-transform: uppercase; letter-spacing: .06em; color: #a9bdcc; }
 .summary-chip.ready, .summary-chip.confirmed { color: #7ee1ad; border-color: rgba(84,211,154,.42); }
 .summary-chip.verify { color: #8ce8f3; border-color: rgba(72,211,232,.42); }

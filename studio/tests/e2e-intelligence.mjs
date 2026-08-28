@@ -145,6 +145,9 @@ console.log("\n── one project, two channels ──");
       technicalHidden: getComputedStyle(document.querySelector("#takeoff-section")).display === "none",
       rooms: [...document.querySelectorAll("#visual-rooms tbody tr")].map((row) => row.innerText.replace(/\s+/g, " ")),
       verdicts: [...document.querySelectorAll("#visual-recon .summary-chip")].map((chip) => chip.textContent),
+      reconHead: document.querySelector("#visual-recon thead")?.innerText.replace(/\s+/g, " ").trim() || "",
+      reconRows: [...document.querySelectorAll("#visual-recon tbody tr")].map((row) =>
+        [...row.querySelectorAll("td")].map((cell) => cell.innerText.replace(/\s+/g, " ").trim())),
       doctrine: document.querySelector("#visual-recon-note")?.textContent || "",
       inputs: document.querySelectorAll("#visual-panel input, #visual-panel textarea").length,
       unread: document.querySelector("#visual-unread")?.innerText || "",
@@ -173,6 +176,20 @@ console.log("\n── one project, two channels ──");
   check("verdicts render as chips, supported through conflicting",
     visual.verdicts.includes("SUPPORTED") && visual.verdicts.includes("CONFLICTING") && visual.verdicts.includes("PARTIALLY_SUPPORTED"),
     JSON.stringify(visual.verdicts));
+  /* The comparison is the product's central promise, and it is numbers:
+     what the plans require, what paperwork documents as delivered, what
+     capture shows installed — three columns, not a caption. */
+  check("the comparison table names its three quantities",
+    /required/i.test(visual.reconHead) && /delivered/i.test(visual.reconHead) && /installed/i.test(visual.reconHead),
+    visual.reconHead);
+  const pileRow = visual.reconRows.find((row) => /^P1\b/.test(row[0]));
+  check("the pile row carries 14 required · 14 delivered · 12 installed as numbers",
+    pileRow?.[1] === "14" && pileRow?.[2] === "14" && pileRow?.[3] === "12",
+    JSON.stringify(pileRow));
+  const columnRow = visual.reconRows.find((row) => /^COL\.1\b/.test(row[0]));
+  check("no delivery record shows as an honest dash, never a zero",
+    columnRow?.[1] === "6" && columnRow?.[2] === "—" && columnRow?.[3] === "4",
+    JSON.stringify(columnRow));
   check("the doctrine is printed where the owner reads it",
     /Absence of evidence is not evidence of absence/.test(visual.doctrine) && /invoice is never proof of installation/.test(visual.doctrine),
     visual.doctrine.slice(0, 120));
