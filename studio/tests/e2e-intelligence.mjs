@@ -241,6 +241,24 @@ console.log("\n── one project, two channels ──");
       && call.args?.document_id === "doc-mixed" && JSON.stringify(call.args?.pages) === "[3]"),
     JSON.stringify(classified.calls));
 
+  /* On a phone, the five-column comparison scrolls inside its own container —
+     the page itself never scrolls sideways. */
+  const phone = await context.newPage();
+  await phone.setViewportSize({ width: 430, height: 930 });
+  await phone.goto(`${base}/studio/plans/?property=prop-1`, { waitUntil: "networkidle" });
+  await phone.waitForTimeout(1300);
+  const mobile = await phone.evaluate(() => {
+    document.querySelector("#summary-visual")?.click();
+    const scroller = document.querySelector(".table-scroll");
+    return {
+      bodyOverflow: document.documentElement.scrollWidth - document.documentElement.clientWidth,
+      tableScrolls: scroller ? scroller.scrollWidth - scroller.clientWidth >= 0 : false,
+    };
+  });
+  check("the visual view fits a 430px screen — the comparison scrolls in its own container",
+    mobile.bodyOverflow <= 1 && mobile.tableScrolls, JSON.stringify(mobile));
+  await phone.close();
+
   /* The chain runs itself: a baseline whose requirements were never
      distilled (this world seeds no project_requirements) triggers the
      distillation and a reconciliation on open — the owner does nothing. */
