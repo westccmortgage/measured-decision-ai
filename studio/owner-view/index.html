@@ -59,6 +59,10 @@
         </nav>
 
         <section id="summary-panel" class="channel-panel">
+          <!-- Passive by design: an external owner is told the state of the
+               work, never handed a lever that starts it. Analysis is the
+               project team's decision and spend. -->
+          <p class="release-meta" id="summary-pending" hidden></p>
           <div class="release-empty" id="summary-empty" hidden>
             <h1 id="summary-empty-title"></h1>
             <p id="summary-empty-copy"></p>
@@ -130,6 +134,6 @@
     <script src="../config.js?v=0772f5f463"></script>
     <script>window.supabase||document.write('<script src="../vendor/supabase-js-2.106.2.min.js?v=ea40068925"><\/script>');</script>
     <script src="../pano360.js?v=77da06d9fe"></script>
-    <script src="owner-view.js?v=5a47eefb6f"></script>
+    <script src="owner-view.js?v=730c653595"></script>
   </body>
 </html>

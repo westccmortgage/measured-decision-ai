@@ -171,6 +171,17 @@ function renderSummary() {
   const release = state.release;
   const technical = state.technical;
   const prep = state.statusline;
+  /* An external owner never sees an action that starts analysis — that is
+     the team's decision and the team's spend. When nothing visual has been
+     released yet, the owner gets the state of the work as a statement. */
+  const pending = $("#summary-pending");
+  if (pending) {
+    const showPending = state.mode === "external" && !release;
+    pending.hidden = !showPending;
+    pending.textContent = showPending
+      ? "AI analysis pending — your project team is reviewing the available captures."
+      : "";
+  }
   const nothing = !release && !technical?.baseline && !prep?.preparing;
   $("#summary-empty").hidden = !nothing;
   $("#summary-content").hidden = nothing;
