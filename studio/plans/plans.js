@@ -633,6 +633,13 @@ async function openProperty(propertyId) {
       .select("component_key, required_quantity, delivered_quantity, evidenced_quantity, coverage, verdict, narrative")
       .eq("property_id", propertyId).eq("state", "active");
     state.reconciliations = reconResult.data || [];
+    /* Which rooms the AI has actually read. A capture that nobody has read
+       contributes nothing to the installed side of the comparison — and the
+       screen must say so, with the door, instead of starving quietly. */
+    const readResult = await client.from("project_observations")
+      .select("space_id")
+      .eq("property_id", propertyId).eq("state", "active").eq("kind", "installed_seen");
+    state.readSpaceIds = new Set((readResult.data || []).map((row) => row.space_id).filter(Boolean));
   }
   render();
   elements.sync.textContent = state.activeAnalysisJob
@@ -1592,6 +1599,21 @@ function renderOwnerSummary() {
   $("#summary-why").textContent = decision.why;
   $("#summary-eyebrow").textContent = `Analysis complete · plan set v${state.baseline.version || 1} · ${String(state.baseline.created_at || "").slice(0, 10)}`;
 
+  /* The one next action the comparison is actually waiting for: captured
+     rooms nobody has read contribute nothing to the installed side, and
+     the summary says so with the door instead of starving quietly. */
+  const readSpaceIds = state.readSpaceIds || new Set();
+  const unreadCount = (state.projectRooms || []).filter((room) =>
+    (state.projectEvidence || []).some((item) => item.space_id === room.id)
+    && !readSpaceIds.has(room.id)).length;
+  const summaryUnread = $("#summary-unread");
+  if (summaryUnread) {
+    summaryUnread.hidden = unreadCount === 0;
+    summaryUnread.innerHTML = unreadCount
+      ? `Next: ${unreadCount} room${unreadCount === 1 ? " holds" : "s hold"} captures the AI has not read yet — <a href="../?property=${encodeURIComponent(state.property?.id || "")}">read them in Studio →</a> and the installed side of the comparison fills itself.`
+      : "";
+  }
+
   /* Five numbers, no more. Counted from the record, like everything here. */
   const sheetCount = Array.isArray(state.baseline.source_document_ids) ? state.baseline.source_document_ids.length : 0;
   const deckArea = (state.baseline.analysis?.framing_decks || [])
@@ -1677,12 +1699,27 @@ function renderVisualPanel() {
     if (/360|insv|spatial/i.test(item.media_type || "")) bucket.spatial = true;
     byRoom.set(item.space_id, bucket);
   }
+  const readSpaceIds = state.readSpaceIds || new Set();
   $("#visual-rooms tbody").innerHTML = rooms.length
     ? rooms.map((room) => {
         const bucket = byRoom.get(room.id) || { count: 0, spatial: false };
-        return `<tr><td>${escapeHtml(room.name)}</td><td>${bucket.count} file${bucket.count === 1 ? "" : "s"}</td><td>${bucket.spatial ? "✓" : "<span class='summary-chip rfi'>none</span>"}</td></tr>`;
+        const readCell = bucket.count === 0
+          ? "—"
+          : readSpaceIds.has(room.id) ? "✓" : "<span class='summary-chip verify'>not read</span>";
+        return `<tr><td>${escapeHtml(room.name)}</td><td>${bucket.count} file${bucket.count === 1 ? "" : "s"}</td><td>${bucket.spatial ? "✓" : "<span class='summary-chip rfi'>none</span>"}</td><td>${readCell}</td></tr>`;
       }).join("")
-    : `<tr><td colspan="3">No rooms in the record yet — evidence uploads create them.</td></tr>`;
+    : `<tr><td colspan="4">No rooms in the record yet — evidence uploads create them.</td></tr>`;
+  /* The unread captures point at their door. Reading a room is a person's
+     click (a copilot run, never silent spending) — but the click has to be
+     findable from the screen that is starving without it. */
+  const unreadRooms = rooms.filter((room) => (byRoom.get(room.id)?.count || 0) > 0 && !readSpaceIds.has(room.id));
+  const unread = $("#visual-unread");
+  if (unread) {
+    unread.hidden = unreadRooms.length === 0;
+    unread.innerHTML = unreadRooms.length
+      ? `${unreadRooms.length} room${unreadRooms.length === 1 ? " holds" : "s hold"} captures nobody has read yet — reading them lets the AI count installed components into this comparison. <a class="button" href="../?property=${encodeURIComponent(state.property?.id || "")}">Read rooms in Studio →</a>`
+      : "";
+  }
   const recon = state.reconciliations || [];
   $("#visual-recon tbody").innerHTML = recon.length
     ? recon.map((entry) => `<tr><td>${escapeHtml(entry.component_key)}<small class="line-meta">${escapeHtml(entry.narrative)}</small></td><td><span class="summary-chip ${entry.verdict === "SUPPORTED" ? "ready" : entry.verdict === "CONFLICTING" ? "hold" : "verify"}">${escapeHtml(entry.verdict)}</span></td></tr>`).join("")
