@@ -170,9 +170,13 @@ const loop = await page.evaluate(() => {
 check("the comparison door stays hidden until a reading finishes", loop.before);
 check("and appears the moment readings are done", loop.after && /comparison/i.test(loop.label), JSON.stringify(loop));
 await page.evaluate(() => document.querySelector("#focus-open-comparison")?.click());
-await page.waitForTimeout(800);
+await page.waitForTimeout(1500);
 check("pressing it lands on Plan Intelligence for this same project",
   /\/studio\/plans\/\?property=/.test(page.url()), page.url());
+/* The URL's view=visual is consumed (and stripped) by the landing page —
+   what must be true is what is on screen: the visual channel itself. */
+const landedVisual = await page.evaluate(() => document.querySelector("#visual-panel")?.hidden === false);
+check("and the visual channel — the comparison — is on screen", landedVisual === true, page.url());
 
 console.log("\n── 8. the picker offers a readable room first ──");
 /* The same world with the room order reversed, so the empty room sorts

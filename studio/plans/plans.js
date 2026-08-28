@@ -498,7 +498,12 @@ async function initialize() {
   elements.propertySelect.value = initial.id;
   elements.boot.hidden = true;
   elements.app.hidden = false;
+  /* Read before openProperty rewrites the URL: the comparison door in
+     Studio promises the comparison, so it lands on the visual channel
+     itself — not one navigation short of it. */
+  const requestedView = new URLSearchParams(window.location.search).get("view");
   await openProperty(initial.id);
+  if (requestedView === "visual") exitSummaryMode("#visual-panel", "visual");
   if (state.activeAnalysisJob) void monitorAnalysisJob(state.activeAnalysisJob.id, { resumed: true });
 }
 
@@ -1574,9 +1579,20 @@ function renderOwnerSummary() {
   const hasAnalysis = Boolean(state.baseline) && Boolean(draft);
   section.hidden = !hasAnalysis;
   if (!hasAnalysis) {
-    document.body.classList.remove("summary-mode", "view-visual");
-    $("#channel-nav").hidden = true;
-    $("#visual-panel").hidden = true;
+    document.body.classList.remove("summary-mode");
+    /* A plan set that yields no takeoff still has a reality side — rooms,
+       capture coverage, what the AI has read, the comparison once
+       requirements exist. An architectural set used to hide the whole
+       channel because the takeoff-shaped summary could not render; only
+       the summary stays away now. */
+    if (!state.baseline) {
+      document.body.classList.remove("view-visual");
+      $("#channel-nav").hidden = true;
+      $("#visual-panel").hidden = true;
+      return;
+    }
+    applyChannelView();
+    if (state.channelView === "visual") renderVisualPanel();
     return;
   }
   applyChannelView();
@@ -1727,7 +1743,7 @@ function renderVisualPanel() {
   const recon = state.reconciliations || [];
   $("#visual-recon tbody").innerHTML = recon.length
     ? recon.map((entry) => `<tr><td>${escapeHtml(entry.component_key)}<small class="line-meta">${escapeHtml(entry.narrative)}</small></td><td class="qty">${quantity(entry.required_quantity)}</td><td class="qty">${quantity(entry.delivered_quantity)}</td><td class="qty">${quantity(entry.evidenced_quantity)}</td><td><span class="summary-chip ${entry.verdict === "SUPPORTED" ? "ready" : entry.verdict === "CONFLICTING" ? "hold" : "verify"}">${escapeHtml(entry.verdict)}</span></td></tr>`).join("")
-    : `<tr><td colspan="5">No reconciliation yet — it runs when both channels have written their side.</td></tr>`;
+    : `<tr><td colspan="5">No comparison yet — the required side comes from the plans, and nothing countable has been distilled from this plan set so far.</td></tr>`;
 }
 
 $("#summary-download")?.addEventListener("click", () => $("#download-ai-takeoff")?.click());
