@@ -165,9 +165,9 @@ console.log("\n── one project, two channels ──");
     visual.rooms.some((row) => /west half/.test(row) && !/not read/i.test(row))
     && visual.rooms.some((row) => /east half/.test(row) && /not read/i.test(row)),
     JSON.stringify(visual.rooms));
-  check("unread captures point at their door, carrying the project",
+  check("unread captures point at their door, carrying the project and the reading stage",
     /1 room holds captures nobody has read yet/.test(visual.unread)
-    && visual.unreadLink === "../?property=prop-1",
+    && visual.unreadLink === "../?property=prop-1&stage=read",
     JSON.stringify({ unread: visual.unread, link: visual.unreadLink }));
   check("and the Owner Summary names it as the next action",
     /1 room holds captures the AI has not read yet/.test(visual.summaryUnread)

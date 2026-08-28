@@ -257,6 +257,35 @@ console.log("\n── 9. a PDF at the evidence door is asked about, and No opens
   await ctx.close();
 }
 
+console.log("\n── 10. the unread pointer lands on the picker it promised ──");
+/* Following "read them in Studio" used to land on the upload stage — one
+   unexplained press short of the reading. The stage=read deep link opens the
+   picker directly, on a readable room, with nothing running. */
+{
+  const ctx = await browser.newContext({ viewport: { width: 430, height: 900 } });
+  await ctx.route("**://*/**", (route) =>
+    route.request().url().startsWith(base) ? route.continue() : route.abort());
+  const page4 = await ctx.newPage();
+  await page4.addInitScript(`window.__seed = ${JSON.stringify(seed)};`);
+  await page4.addInitScript({ path: "studio/tests/fake-supabase.js" });
+  await page4.goto(`${base}/studio/?property=prop-1&stage=read`, { waitUntil: "networkidle" });
+  await page4.waitForTimeout(1400);
+  const landing = await page4.evaluate(() => ({
+    readingStage: document.querySelector("#focus-processing-stage")?.hidden === false,
+    uploadStage: document.querySelector("#focus-upload-stage")?.hidden !== false,
+    pickerValue: document.querySelector("#analyze-room")?.value || "",
+    runDisabled: document.querySelector("#analyze-room-run")?.disabled,
+    analysisCalls: (window.__rpcCalls || []).filter((call) =>
+      /spatial-analyze|field-quality-check/.test(call.name)).length,
+  }));
+  check("stage=read opens the reading stage, not the upload stage",
+    landing.readingStage && landing.uploadStage, JSON.stringify(landing));
+  check("the picker is on a readable room with the run button live, and nothing ran",
+    landing.pickerValue === "space-viewable" && landing.runDisabled === false && landing.analysisCalls === 0,
+    JSON.stringify(landing));
+  await ctx.close();
+}
+
 await browser.close();
 server.close();
 
