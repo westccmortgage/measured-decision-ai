@@ -72,6 +72,15 @@ const technicalAnswer = {
     { severity: "critical", question: "BM.1 schedule row illegible on S-2.0 — beam count unconfirmed." },
     { severity: "important", question: "Guardrail length not printed; steel guard posts pending detail 7/S-5.1." },
   ],
+  comparison: [
+    { component: "P1", required: 14, delivered: 14, installed: 12, coverage: "partial",
+      verdict: "PARTIALLY_SUPPORTED",
+      narrative: "14 required · 14 documented as delivered · 12 visually evidenced as installed · 2 installation records not yet evidenced" },
+    { component: "COL.1", required: 6, delivered: null, installed: 4, coverage: "full",
+      verdict: "CONFLICTING",
+      narrative: "6 required · 4 visually evidenced as installed · 2 missing under full capture coverage — conflict" },
+  ],
+  comparison_provenance: "Compared by the system from the project record. AI-read values are not confirmed until a person signs them; a delivery document is never proof of installation.",
 };
 
 const browser = await chromium.launch({
@@ -195,6 +204,10 @@ console.log("── an external owner: one project, nothing else ──");
       summary: document.querySelector("#technical-summary")?.textContent || "",
       confirmed: [...document.querySelectorAll("#confirmed-lines tbody tr")].map((row) => row.innerText.replace(/\s+/g, " ")),
       chips: document.querySelector("#technical-chips")?.innerText || "",
+      comparisonShown: document.querySelector("#comparison-box")?.hidden === false,
+      comparisonRows: [...document.querySelectorAll("#comparison-lines tbody tr")].map((row) =>
+        [...row.querySelectorAll("td")].map((cell) => cell.innerText.replace(/\s+/g, " ").trim())),
+      comparisonProvenance: document.querySelector("#comparison-provenance")?.textContent || "",
     };
   });
   check("Technical Intelligence shows only published results: approved baseline, accepted takeoff, confirmed lines",
@@ -203,6 +216,19 @@ console.log("── an external owner: one project, nothing else ──");
     && technical.confirmed.length === 1 && /P1 concrete piles 14 reviewer/.test(technical.confirmed[0])
     && /Takeoff accepted 2026-08-25/.test(technical.chips),
     JSON.stringify(technical));
+  /* The comparison reaches the person the product is for — as numbers, with
+     an honest dash for a missing delivery record, wearing its provenance. */
+  const pileRow = technical.comparisonRows.find((row) => /^P1\b/.test(row[0]));
+  const columnRow = technical.comparisonRows.find((row) => /^COL\.1\b/.test(row[0]));
+  check("the external owner sees the comparison: required, delivered, installed as numbers",
+    technical.comparisonShown
+    && pileRow?.[1] === "14" && pileRow?.[2] === "14" && pileRow?.[3] === "12"
+    && columnRow?.[1] === "6" && columnRow?.[2] === "—" && columnRow?.[3] === "4",
+    JSON.stringify({ pileRow, columnRow }));
+  check("and the comparison wears its provenance, never presented as fact",
+    /AI-read values are not confirmed until a person signs them/.test(technical.comparisonProvenance)
+    && /never proof of installation/.test(technical.comparisonProvenance),
+    technical.comparisonProvenance);
 
   await page.screenshot({ path: "studio/tests/fixtures/owner-view-external.png" }).catch(() => {});
   check("nothing threw", errors.length === 0, errors.join(" | "));

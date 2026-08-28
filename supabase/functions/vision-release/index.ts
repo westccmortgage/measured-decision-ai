@@ -75,9 +75,14 @@ Deno.serve(async(request)=>{
         .eq("property_id",property.id).eq("state","approved")
         .order("version",{ascending:false}).limit(1).maybeSingle();
       if(!baseline)return json(request,{baseline:null,takeoff:null,confirmed_lines:[],note:"No approved technical baseline has been published yet."});
-      const [{data:takeoff},{data:reviews}]=await Promise.all([
+      const [{data:takeoff},{data:reviews},{data:recon}]=await Promise.all([
         admin.from("material_takeoffs").select("kind,state,approved_at,calculator_version").eq("baseline_id",baseline.id).eq("state","approved").order("approved_at",{ascending:false}).limit(1).maybeSingle(),
         admin.from("takeoff_line_reviews").select("line_key,verdict,value,reviewer_role,reviewed_at").eq("baseline_id",baseline.id).eq("state","active").in("verdict",["confirmed","corrected"]),
+        /* The comparison, behind the same gate as everything here: it only
+           exists because an approved baseline stated the requirements. Served
+           with its provenance said out loud — the AI-read sides are never
+           presented as fact. */
+        admin.from("project_reconciliations").select("component_key,required_quantity,delivered_quantity,evidenced_quantity,coverage,verdict,narrative").eq("property_id",property.id).eq("state","active").order("component_key"),
       ]);
       const gaps=(Array.isArray(baseline.gaps)?baseline.gaps:[]).filter((gap:Record<string,unknown>)=>["critical","important"].includes(String(gap?.severity)));
       return json(request,{
@@ -85,6 +90,8 @@ Deno.serve(async(request)=>{
         takeoff:takeoff?{kind:takeoff.kind,accepted_at:takeoff.approved_at,provenance:"OWNER_ACCEPTED_BASELINE - not a technical confirmation"}:null,
         confirmed_lines:(reviews||[]).map(review=>({line:review.line_key,value:review.value,reviewer_role:review.reviewer_role,reviewed_at:review.reviewed_at,provenance:"HUMAN_CONFIRMED"})),
         open_questions:gaps.map((gap:Record<string,unknown>)=>({severity:gap.severity,question:gap.question})).slice(0,10),
+        comparison:(recon||[]).map(row=>({component:row.component_key,required:row.required_quantity,delivered:row.delivered_quantity,installed:row.evidenced_quantity,coverage:row.coverage,verdict:row.verdict,narrative:row.narrative})),
+        comparison_provenance:"Compared by the system from the project record. AI-read values are not confirmed until a person signs them; a delivery document is never proof of installation.",
       });
     }
 

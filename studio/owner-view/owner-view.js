@@ -165,6 +165,18 @@ function renderTechnical() {
   $("#questions-box").hidden = questions.length === 0;
   $("#technical-questions").innerHTML = questions.map((gap) =>
     `<div class="question-row ${gap.severity === "critical" ? "critical" : ""}">${escapeHtml(gap.question)}</div>`).join("");
+  /* The comparison the product exists for, shown to the person it is for.
+     Numbers, not a caption; a dash is an honest empty, never a zero; and the
+     provenance line is part of the content, not a footnote. */
+  const comparison = technical.comparison || [];
+  const comparisonBox = $("#comparison-box");
+  if (comparisonBox) {
+    comparisonBox.hidden = comparison.length === 0;
+    const quantity = (value) => (value === null || value === undefined ? "—" : Number(value).toLocaleString("en-US"));
+    $("#comparison-lines tbody").innerHTML = comparison.map((row) => `
+      <tr><td>${escapeHtml(row.component)}<br><small>${escapeHtml(row.narrative || "")}</small></td><td>${quantity(row.required)}</td><td>${quantity(row.delivered)}</td><td>${quantity(row.installed)}</td><td>${escapeHtml(row.verdict || "")}</td></tr>`).join("");
+    $("#comparison-provenance").textContent = technical.comparison_provenance || "";
+  }
 }
 
 function renderSummary() {
@@ -207,6 +219,7 @@ function renderSummary() {
   if (technical?.baseline) {
     numbers.push(["Confirmed lines", (technical.confirmed_lines || []).length]);
     numbers.push(["Open questions", (technical.open_questions || []).length]);
+    if ((technical.comparison || []).length) numbers.push(["Components compared", technical.comparison.length]);
   }
   if (prep?.preparing) numbers.push(["Checks before release", prep.open_checks]);
   $("#summary-numbers").innerHTML = numbers.slice(0, 5).map(([label, value]) =>
