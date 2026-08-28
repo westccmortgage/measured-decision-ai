@@ -682,7 +682,19 @@ Deno.serve(async (request) => {
         p_evidence_ids: job.evidence_ids,
         p_counts: componentCounts,
       });
-      if (countsError) console.error("vision counts not recorded", countsError.message);
+      if (countsError) {
+        console.error("vision counts not recorded", countsError.message);
+      } else {
+        /* The documents channel refreshes reconciliation the moment it writes
+           its side; the visual channel does the same, so the comparison a
+           person returns to already carries what the reading just saw. As the
+           caller, so their role gates it — a role that records counts without
+           holding reconciliation leaves them for the next run to sum. */
+        const { error: reconcileError } = await userClient.rpc("reconcile_project", {
+          p_property_id: job.property_id,
+        });
+        if (reconcileError) console.error("reconciliation not refreshed", reconcileError.message);
+      }
     }
 
     const finishedAt = new Date().toISOString();
