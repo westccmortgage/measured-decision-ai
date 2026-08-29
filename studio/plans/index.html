@@ -1,6 +1,8 @@
 <!doctype html>
 <html lang="en">
   <head>
+    <script>/* Theme before first paint: shared with the landing site. */
+try{var t=localStorage.getItem("mdai-theme");document.documentElement.dataset.theme=t==="light"?"light":"dark"}catch(e){document.documentElement.dataset.theme="dark"}</script>
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <meta name="robots" content="noindex,nofollow,noarchive">
@@ -9,7 +11,7 @@
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
-    <link rel="stylesheet" href="plans.css?v=df990f2ffa">
+    <link rel="stylesheet" href="plans.css?v=03461539ac">
   </head>
   <body>
     <div class="boot-screen" id="boot-screen">
@@ -25,6 +27,7 @@
         </a>
         <div class="topbar-center"><span class="secure-pill"><i></i> Private plan workspace</span></div>
         <div class="topbar-actions">
+          <button class="button secondary" id="theme-toggle" type="button" aria-label="Switch between day and night theme">☼ Day</button>
           <span class="sync-status" id="sync-status">Cloud connected</span>
           <a class="button secondary" href="../">Return to evidence</a>
           <button class="button secondary" id="sign-out" type="button">Sign out</button>
@@ -408,6 +411,6 @@
     <script src="../pdf360.js?v=9b2e0c005e"></script>
     <script src="../intelligence-routing.js?v=fb2b0e5dc2"></script>
     <script src="../page-renders.js?v=ebb42cee89"></script>
-    <script src="plans.js?v=f6bea045e8"></script>
+    <script src="plans.js?v=412d14b06d"></script>
   </body>
 </html>

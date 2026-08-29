@@ -2583,3 +2583,21 @@ initialize().catch((error) => {
   console.error(error);
   elements.boot.innerHTML = `<p>${escapeHtml(error.message || "Plan Intelligence could not start.")}</p>`;
 });
+
+
+/* Day and night are one studio: the palette swaps, the record does not.
+   The choice is shared with the landing site through the same storage key,
+   and the pre-paint script in <head> applies it before the first frame. */
+{
+  const themeToggle = document.querySelector("#theme-toggle");
+  const reflectTheme = () => {
+    if (themeToggle) themeToggle.textContent = document.documentElement.dataset.theme === "light" ? "\u2600 Day" : "\u263e Night";
+  };
+  themeToggle?.addEventListener("click", () => {
+    const next = document.documentElement.dataset.theme === "light" ? "dark" : "light";
+    document.documentElement.dataset.theme = next;
+    try { window.localStorage.setItem("mdai-theme", next); } catch (_) { /* private browsing: the choice lasts the visit */ }
+    reflectTheme();
+  });
+  reflectTheme();
+}

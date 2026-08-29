@@ -1,6 +1,8 @@
 <!doctype html>
 <html lang="en">
   <head>
+    <script>/* Theme before first paint: shared with the landing site. */
+try{var t=localStorage.getItem("mdai-theme");document.documentElement.dataset.theme=t==="light"?"light":"dark"}catch(e){document.documentElement.dataset.theme="dark"}</script>
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <meta name="robots" content="noindex,nofollow,noarchive">
@@ -9,7 +11,7 @@
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
-    <link rel="stylesheet" href="owner-view.css?v=1fb1d98207">
+    <link rel="stylesheet" href="owner-view.css?v=7065bc1e6b">
   </head>
   <body>
     <div class="boot-screen" id="boot-screen">
@@ -41,6 +43,7 @@
           <span>Measured Decision <strong>Owner View</strong></span>
         </span>
         <div class="topbar-actions">
+          <button class="button secondary" id="theme-toggle" type="button" aria-label="Switch between day and night theme">☼ Day</button>
           <span class="preview-badge" id="preview-badge" hidden>Internal preview</span>
           <label class="picker"><span>Project</span><select id="property-select"></select></label>
           <a class="button secondary" href="../" id="open-studio-link" hidden>Open Studio</a>
@@ -142,6 +145,6 @@
     <script src="../config.js?v=0772f5f463"></script>
     <script>window.supabase||document.write('<script src="../vendor/supabase-js-2.106.2.min.js?v=ea40068925"><\/script>');</script>
     <script src="../pano360.js?v=c532393f38"></script>
-    <script src="owner-view.js?v=2494a4bd5b"></script>
+    <script src="owner-view.js?v=2953764c3f"></script>
   </body>
 </html>
