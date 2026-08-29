@@ -1585,6 +1585,10 @@ function renderOwnerSummary() {
   const draft = takeoffDraft();
   const hasAnalysis = Boolean(state.baseline) && Boolean(draft);
   section.hidden = !hasAnalysis;
+  /* A door to a summary that cannot exist is a dead control: the back
+     button only stands when there is a summary to go back to. */
+  const navSummary = $("#nav-summary");
+  if (navSummary) navSummary.hidden = !hasAnalysis;
   if (!hasAnalysis) {
     document.body.classList.remove("summary-mode");
     /* A plan set that yields no takeoff still has a reality side — rooms,

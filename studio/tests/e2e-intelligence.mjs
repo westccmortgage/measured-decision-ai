@@ -361,6 +361,7 @@ console.log("\n── an architectural set: the reality channel opens without a 
 
   const channel = await page.evaluate(() => ({
     summaryHidden: document.querySelector("#owner-summary")?.hidden === true,
+    summaryButtonHidden: document.querySelector("#nav-summary")?.hidden === true,
     navShown: document.querySelector("#channel-nav")?.hidden === false,
     visualShown: document.querySelector("#visual-panel")?.hidden === false,
     rooms: [...document.querySelectorAll("#visual-rooms tbody tr")].map((row) => row.innerText.replace(/\s+/g, " ")),
@@ -371,6 +372,8 @@ console.log("\n── an architectural set: the reality channel opens without a 
     channel.extractCalls === 0, String(channel.extractCalls));
   check("the takeoff-shaped summary stays away — there is nothing to summarize",
     channel.summaryHidden, JSON.stringify(channel));
+  check("and its back button goes with it — no door to a summary that cannot exist",
+    channel.summaryButtonHidden, JSON.stringify(channel));
   check("but the channels are reachable and ?view=visual lands on the reality side",
     channel.navShown && channel.visualShown, JSON.stringify(channel));
   check("the rooms and their captures render",
