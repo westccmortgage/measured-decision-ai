@@ -1003,6 +1003,21 @@ function activeReviews() {
   return map;
 }
 
+/* What a corrected line was corrected FROM.
+
+   The record has always kept the AI's reading beside the reviewer's, but
+   this screen replaced one with the other: the moment a person corrected a
+   number, the fact that the machine had been wrong vanished from view. That
+   is the provenance this product exists to keep — an auditor asking "what
+   did the AI say before a human touched it" could read the row and never
+   learn that anything had been touched at all. Now the row says both. */
+function correctedFrom(review, aiValue) {
+  if (review?.verdict !== "corrected") return "";
+  const was = String(aiValue || "").trim();
+  if (!was || was === String(review.value || "").trim()) return "";
+  return `<small class="corrected-from">AI read ${escapeHtml(was)} · corrected by ${escapeHtml(review.reviewer_role)}</small>`;
+}
+
 function takeoffLineMeta(line, review) {
   const parts = [TAKEOFF_METHOD_LABELS[line.method] || "Derived from printed dimensions"];
   const refs = (line.source_refs || []).join(", ");
@@ -1074,17 +1089,18 @@ function renderTakeoff() {
   body.innerHTML = [
     ...(draft.result.lines || []).map((line) => {
       const review = reviews.get(line.item);
-      const shownValue = review?.verdict === "corrected" ? review.value : `${line.quantity} ${line.unit || ""}`;
+      const aiValue = `${line.quantity} ${line.unit || ""}`.trim();
+      const shownValue = review?.verdict === "corrected" ? review.value : aiValue;
       return `<tr${line.status === "hold" ? ` class="review"` : ""}><td>${escapeHtml(line.item)}
         <small class="line-meta">${escapeHtml(takeoffLineMeta(line, review))}${line.hold_reason ? ` — ${escapeHtml(line.hold_reason)}` : ""}</small></td>
-        <td>${escapeHtml(String(shownValue))}</td></tr>`;
+        <td>${escapeHtml(String(shownValue))}${correctedFrom(review, aiValue)}</td></tr>`;
     }),
     ...proposals.map((proposal) => {
       const review = reviews.get(proposal.question);
       const shownValue = review && review.verdict !== "kept_open" ? review.value : proposal.proposed;
       return `<tr><td>${escapeHtml(proposal.question)}
         <small class="line-meta">AI plan count · ${escapeHtml(proposal.confidence)} confidence · ${escapeHtml(proposal.basis)}${review && review.verdict !== "kept_open" ? ` · HUMAN_CONFIRMED by ${escapeHtml(review.reviewer_role)}` : " · proposed, not confirmed"}</small></td>
-        <td>${escapeHtml(String(shownValue))}</td></tr>`;
+        <td>${escapeHtml(String(shownValue))}${correctedFrom(review, String(proposal.proposed))}</td></tr>`;
     }),
   ].join("");
 
