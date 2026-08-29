@@ -38,7 +38,11 @@
       vec3 dir = vec3(tilted.x * cy + tilted.z * sy, tilted.y, -tilted.x * sy + tilted.z * cy);
       float u = atan(dir.x, -dir.z) / (2.0 * PI) + 0.5;
       float v = acos(clamp(dir.y, -1.0, 1.0)) / PI;
-      gl_FragColor = texture2D(source, vec2(u, v));
+      /* Half a mip level sharper than the hardware would pick on its own:
+         trilinear filtering trades a little sharpness for a still image, and
+         the headset reported the trade as slightly soft. Biasing towards the
+         finer level restores the detail while keeping the shimmer gone. */
+      gl_FragColor = texture2D(source, vec2(u, v), -0.5);
     }`;
 
   /* The immersive path needs its own pair of shaders, and not because somebody
@@ -89,7 +93,11 @@
       }
       float u = atan(dir.x, -dir.z) / (2.0 * PI) + 0.5;
       float v = acos(clamp(dir.y, -1.0, 1.0)) / PI;
-      gl_FragColor = texture2D(source, vec2(u, v));
+      /* Half a mip level sharper than the hardware would pick on its own:
+         trilinear filtering trades a little sharpness for a still image, and
+         the headset reported the trade as slightly soft. Biasing towards the
+         finer level restores the detail while keeping the shimmer gone. */
+      gl_FragColor = texture2D(source, vec2(u, v), -0.5);
     }`;
 
   /* Where a marker is, as a direction, derived from the shader rather than
@@ -405,6 +413,19 @@
      sphere gives the eye no distance cues, and how inflated a room feels
      varies by room and by person. 30% doubles the shrink the old floor
      offered; the default stays 100%, the capture's own angular scale. */
+  /* Where the room menu lives, in one place. The chip sits 22 degrees below
+     the eye line — low enough not to cover the room, high enough to reach
+     with a glance rather than a craned neck; the open list sits 8 degrees
+     below, straight in comfortable view. Turning more than 50 degrees away
+     from the chip brings it round to where the person now faces. */
+  const MENU_CHIP_PITCH = 0.38;
+  const MENU_ITEM_PITCH = 0.14;
+  const MENU_HOLD_ANGLE = 0.87;
+  const MENU_CHIP_COS = Math.cos(MENU_CHIP_PITCH);
+  const MENU_CHIP_SIN = Math.sin(MENU_CHIP_PITCH);
+  const MENU_ITEM_COS = Math.cos(MENU_ITEM_PITCH);
+  const MENU_ITEM_SIN = Math.sin(MENU_ITEM_PITCH);
+
   const SIZE_MIN = 30;
   const SIZE_MAX = 100;
 
@@ -792,7 +813,7 @@
              positive radius is somebody's preference about how far the
              walls should feel. */
           sphereRadius: headsetRadius,
-          menu: { open: false, items: [], chipTexture: null, chipDir: [0, -1, 0], lookingChip: false, lookingItem: null },
+          menu: { open: false, items: [], chipTexture: null, chipDir: [0, -1, 0], heading: null, lookingChip: false, lookingItem: null },
         };
         rebuildRoomMenu();
         /* Test hooks: the lazy remap centre, the pin list, and the room menu —
@@ -803,6 +824,7 @@
         window.__xrMenu = () => (xr ? {
           open: xr.menu.open,
           chipDir: xr.menu.chipDir.slice(),
+          heading: xr.menu.heading ? xr.menu.heading.slice() : null,
           items: xr.menu.items.map((item) => ({ id: item.id, dir: item.dir.slice(), current: item.current, exit: Boolean(item.exit) })),
           lookingChip: xr.menu.lookingChip,
           lookingItem: xr.menu.lookingItem?.id || null,
@@ -879,28 +901,42 @@
           const anchorLength = Math.hypot(blended[0], blended[1], blended[2]) || 1;
           xr.anchor = [blended[0] / anchorLength, blended[1] / anchorLength, blended[2] / anchorLength];
 
-          /* The chip waits below the horizon wherever the person has settled
-             facing; opened, an arc of room names sits above it. */
+          /* The chip waits a little below the eye line, in the direction the
+             person is facing — and STOPS following the moment they turn
+             towards it. Carried on the gaze it ran away from the eye reaching
+             for it: chase it down far enough and the heading it was built
+             from collapsed, so it flipped behind and overhead. Reported from
+             the headset as "the word Rooms is on the ceiling and pinching
+             does nothing". Frozen while looked at, and while the list is
+             open, it is a thing in the room that can be aimed at. */
           const menu = xr.menu;
           if (menu.items.length) {
-            const headingLength = Math.hypot(xr.anchor[0], xr.anchor[2]);
-            const heading = headingLength > 0.2
-              ? [xr.anchor[0] / headingLength, xr.anchor[2] / headingLength]
-              : [0, -1];
-            const chipPitch = 0.96;
-            menu.chipDir = [heading[0] * Math.cos(chipPitch), -Math.sin(chipPitch), heading[1] * Math.cos(chipPitch)];
-            const itemPitch = 0.5;
-            const spread = 0.34;
+            const flat = Math.hypot(forward[0], forward[2]);
+            /* Looking straight up or down says nothing about which way the
+               person is facing; the last good heading does. */
+            if (flat > 0.35) {
+              const gazeHeading = [forward[0] / flat, forward[2] / flat];
+              const settled = menu.heading || gazeHeading;
+              const turnedAway = settled[0] * gazeHeading[0] + settled[1] * gazeHeading[1] < Math.cos(MENU_HOLD_ANGLE);
+              /* Reaching for the menu holds it still; turning well away from
+                 it brings it back around to where the person now faces. */
+              if (!menu.heading || (!menu.open && !menu.lookingChip && turnedAway)) menu.heading = gazeHeading;
+            } else if (!menu.heading) {
+              menu.heading = [0, -1];
+            }
+            const heading = menu.heading;
+            menu.chipDir = [heading[0] * MENU_CHIP_COS, -MENU_CHIP_SIN, heading[1] * MENU_CHIP_COS];
+            const spread = 0.30;
             menu.items.forEach((item, index) => {
               const yaw = (index - (menu.items.length - 1) / 2) * spread;
               const turned = [
                 heading[0] * Math.cos(yaw) + heading[1] * Math.sin(yaw),
                 heading[1] * Math.cos(yaw) - heading[0] * Math.sin(yaw),
               ];
-              item.dir = [turned[0] * Math.cos(itemPitch), -Math.sin(itemPitch), turned[1] * Math.cos(itemPitch)];
+              item.dir = [turned[0] * MENU_ITEM_COS, -MENU_ITEM_SIN, turned[1] * MENU_ITEM_COS];
             });
             let lookedItem = null;
-            let bestItem = Math.cos(0.16);
+            let bestItem = Math.cos(0.19);
             if (menu.open) {
               for (const item of menu.items) {
                 const dot = item.dir[0] * forward[0] + item.dir[1] * forward[1] + item.dir[2] * forward[2];
@@ -909,7 +945,7 @@
             }
             menu.lookingItem = lookedItem;
             const chipDot = menu.chipDir[0] * forward[0] + menu.chipDir[1] * forward[1] + menu.chipDir[2] * forward[2];
-            menu.lookingChip = !lookedItem && chipDot > Math.cos(0.14);
+            menu.lookingChip = !lookedItem && chipDot > Math.cos(0.22);
           } else {
             menu.lookingChip = false;
             menu.lookingItem = null;

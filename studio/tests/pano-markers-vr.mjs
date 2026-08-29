@@ -432,6 +432,78 @@ check("one quick turn leaves the room's centre where it was",
 check("and a settled gaze re-centres it within moments",
   anchored.settled > 0.99, `dot with the new gaze: ${anchored.settled.toFixed(5)}`);
 
+console.log("\n── the menu stays where it can be reached ──");
+/* Reported from the headset: "the word Rooms is on the ceiling, and pinching
+   does nothing". The chip was carried on the lazily-followed gaze, so looking
+   towards it pushed it further away, and chasing it down collapsed the
+   heading it was built from — it flipped overhead and could never be aimed
+   at. It must sit in front, a glance below the eye line, and hold still the
+   moment somebody turns towards it. */
+const parked = await page.evaluate(() => {
+  const dot = (a, b) => a[0] * b[0] + a[1] * b[1] + a[2] * b[2];
+  const ahead = [0, 0, -1];
+  for (let i = 0; i < 40; i += 1) window.__xrFrame(ahead);
+  const rest = window.__xrMenu();
+  /* Look at the chip and keep looking: it must not drift away. */
+  const aim = rest.chipDir.slice();
+  for (let i = 0; i < 90; i += 1) window.__xrFrame(aim);
+  const held = window.__xrMenu();
+  /* Chase downwards, where the old code's heading collapsed. */
+  for (let i = 0; i < 90; i += 1) window.__xrFrame([0, -0.97, -0.24]);
+  const chased = window.__xrMenu();
+  /* Turn right round: the menu should come back to where the person faces. */
+  const behind = [0, 0, 1];
+  for (let i = 0; i < 90; i += 1) window.__xrFrame(behind);
+  const followed = window.__xrMenu();
+  return {
+    aheadDot: dot(rest.chipDir, ahead),
+    restY: rest.chipDir[1],
+    drift: dot(rest.chipDir, held.chipDir),
+    lookingChip: held.lookingChip,
+    chasedDot: dot(chased.chipDir, held.chipDir),
+    behindDot: dot(followed.chipDir, behind),
+  };
+});
+check("the chip sits in front of the person, a glance below the eye line",
+  parked.aheadDot > 0.9 && parked.restY < -0.2 && parked.restY > -0.6,
+  `dot with gaze ${parked.aheadDot.toFixed(3)}, height ${parked.restY.toFixed(3)}`);
+check("looking straight at it lights it up",
+  parked.lookingChip === true);
+check("and it holds still instead of running from the eye",
+  parked.drift > 0.999, `moved by ${(Math.acos(Math.min(1, parked.drift)) * 57.3).toFixed(2)}°`);
+check("chasing it downwards never flips it overhead",
+  parked.chasedDot > 0.999, `moved by ${(Math.acos(Math.min(1, parked.chasedDot)) * 57.3).toFixed(2)}°`);
+check("but turning right round brings it back to where the person now faces",
+  parked.behindDot > 0.9, `dot with the new facing ${parked.behindDot.toFixed(3)}`);
+
+/* Direction maths agreeing with itself is not the same as a chip a person can
+   see. This looks at the drawn frame: the chip's dark panel must be on screen,
+   below the eye line and above the floor of the view. Before the fix this
+   found nothing at all — the chip was outside the field entirely. */
+const chipOnScreen = await page.evaluate(() => {
+  const surface = document.querySelector(".pano-overlay canvas");
+  const gl = surface.getContext("webgl2") || surface.getContext("webgl");
+  for (let i = 0; i < 40; i += 1) window.__xrFrame([0, 0, -1]);
+  const px = new Uint8Array(512 * 512 * 4);
+  gl.readPixels(0, 0, 512, 512, gl.RGBA, gl.UNSIGNED_BYTE, px);
+  let lowest = 1e9; let highest = -1; let count = 0;
+  for (let row = 0; row < 512; row += 1) {
+    for (let col = 0; col < 512; col += 1) {
+      const i = (row * 512 + col) * 4;
+      /* the chip's panel: dark navy, unlike the grey sphere or its red band */
+      if (px[i] < 60 && px[i + 1] < 70 && px[i + 2] < 90) {
+        count += 1;
+        if (row < lowest) lowest = row;
+        if (row > highest) highest = row;
+      }
+    }
+  }
+  return { count, lowest, highest };
+});
+check("and a person looking straight ahead can actually see it",
+  chipOnScreen.count > 300 && chipOnScreen.highest < 256 && chipOnScreen.lowest > 40,
+  `${chipOnScreen.count} px, rows ${chipOnScreen.lowest}-${chipOnScreen.highest} (256 is the eye line, 0 the floor of the view)`);
+
 console.log("\n── walking to another room without leaving the headset ──");
 /* The ask, verbatim: a menu inside the goggles, so moving to any other
    captured room never requires taking them off. A chip waits below the
@@ -468,9 +540,10 @@ const walked = await page.evaluate(async () => {
   out.sessionAlive = window.__xrLive();
   return out;
 });
-check("the Rooms chip waits below the horizon with the list closed",
-  walked.closed?.items.length === 3 && walked.closed.open === false && walked.closed.chipDir[1] < -0.5,
-  `${walked.closed?.items.length} items (two rooms and the way back)`);
+check("the Rooms chip waits just below the eye line, not on the floor or the ceiling",
+  walked.closed?.items.length === 3 && walked.closed.open === false
+    && walked.closed.chipDir[1] < -0.2 && walked.closed.chipDir[1] > -0.6,
+  `${walked.closed?.items.length} items, chip y ${walked.closed?.chipDir[1].toFixed(3)} (want between -0.2 and -0.6)`);
 check("looking at it and pinching opens the list",
   walked.opened?.open === true, JSON.stringify(walked.opened));
 check("looking at a room lights that room and no other",
