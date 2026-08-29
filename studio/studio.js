@@ -4216,27 +4216,51 @@ async function openEvidenceViewer(item, room, focusMarkerId = null) {
     });
   }
 
-  const markers = spatial ? roomMarkers(room, item) : [];
-  markers.forEach((marker) => {
-    marker.source_name = item.subject || item.name || "this capture";
-    /* "Since the previous capture" stops being a promise the moment a
-       comparison exists: the marker carries what the difference actually said
-       about the thing it points at. */
-    marker.change = markerChangeLine(room, marker);
-    /* Cost is quoted at the level it exists at. "$12,400 for rough electrical
-       across the project" is true; a price for this one outlet is not. */
-    const guess = window.MDAITrades360?.classify(marker.detail || marker.label);
-    const trade = guess && projectCoverage()?.trades.find((entry) => entry.key === guess.trade);
-    marker.cost = trade?.has_amount
-      ? `${trade.amount_label} recorded for ${trade.label.toLowerCase()} across this project`
-      : trade
-        ? `No cost recorded for ${trade.label.toLowerCase()} yet`
-        : "";
-    marker.document = trade?.invoices.length ? `Invoice ${trade.invoices.join(", ")}` : "";
-    marker.requested = Boolean(
-      (room.requests || []).some((entry) => entry.trade === guess?.trade && entry.state === "open"),
-    );
-  });
+  const markers = spatial ? decorateRoomMarkers(room, item, roomMarkers(room, item)) : [];
+
+  /* Every room of this project with a viewable 360 capture, offered inside
+     the headset: a person standing in one room can walk the whole project
+     without taking the headset off — a menu in the sphere, not a dead end. */
+  const roomChoices = [];
+  if (spatial) {
+    for (const other of rooms) {
+      const capture = (other.evidence || []).find((entry) => focusIsSpatial(entry));
+      if (capture) {
+        roomChoices.push({ id: other.id, title: other.name || "Room", item: capture, roomRef: other });
+      }
+    }
+  }
+  const roomList = (currentId) =>
+    roomChoices.map((entry) => ({ id: entry.id, title: entry.title, current: entry.id === currentId }));
+  const chooseRoom = async (roomId) => {
+    const choice = roomChoices.find((entry) => entry.id === roomId);
+    if (!choice) return;
+    /* A swap is a person opening evidence, exactly as the first open was. */
+    recordClientEvent("evidence.opened", {
+      evidence_id: choice.item.id,
+      filename: choice.item.name || null,
+      space_id: choice.id,
+    });
+    const nextSource = await freshEvidenceSrc(choice.item);
+    if (!nextSource) return;
+    window.MDAIPano360.swapRoom({
+      src: nextSource,
+      mediaType: choice.item.mimeType || "",
+      trim: evidenceTrimWindow(choice.item, choice.item.sourceMetadata?.duration_seconds),
+      title: choice.item.subject || choice.item.name || "Evidence",
+      subtitle: [choice.title, focusEvidenceLabel(choice.item), choice.item.date || "date unavailable", focusEvidenceTrimNote(choice.item)]
+        .filter(Boolean)
+        .join(" · "),
+      markers: decorateRoomMarkers(choice.roomRef, choice.item, roomMarkers(choice.roomRef, choice.item)),
+      evidenceId: choice.item.id,
+      canReviewMarkers: canManageSpaces(),
+      onMarkerReview: (marker, reviewState) => reviewMarker(choice.roomRef, marker, reviewState),
+      onMarkerPlace: canManageSpaces() ? (marker) => placeMarker(choice.roomRef, marker) : null,
+      onMarkerRequest: (marker) => requestMarkerDocument(choice.roomRef, marker),
+      rooms: roomList(choice.id),
+      onRoomChosen: chooseRoom,
+    });
+  };
 
   window.MDAIPano360.open({
     src: source,
@@ -4258,7 +4282,36 @@ async function openEvidenceViewer(item, room, focusMarkerId = null) {
     onMarkerPlace: room && canManageSpaces() ? (marker) => placeMarker(room, marker) : null,
     onMarkerRequest: room ? (marker) => requestMarkerDocument(room, marker) : null,
     focusMarkerId,
+    rooms: roomChoices.length > 1 ? roomList(room?.id || null) : [],
+    onRoomChosen: chooseRoom,
   });
+}
+
+/* What a marker carries beyond its position: provenance, change since the
+   previous capture, cost at the level cost exists at. Shared between the
+   first open of a room and every in-headset room change after it. */
+function decorateRoomMarkers(targetRoom, targetItem, list) {
+  list.forEach((marker) => {
+    marker.source_name = targetItem.subject || targetItem.name || "this capture";
+    /* "Since the previous capture" stops being a promise the moment a
+       comparison exists: the marker carries what the difference actually said
+       about the thing it points at. */
+    marker.change = markerChangeLine(targetRoom, marker);
+    /* Cost is quoted at the level it exists at. "$12,400 for rough electrical
+       across the project" is true; a price for this one outlet is not. */
+    const guess = window.MDAITrades360?.classify(marker.detail || marker.label);
+    const trade = guess && projectCoverage()?.trades.find((entry) => entry.key === guess.trade);
+    marker.cost = trade?.has_amount
+      ? `${trade.amount_label} recorded for ${trade.label.toLowerCase()} across this project`
+      : trade
+        ? `No cost recorded for ${trade.label.toLowerCase()} yet`
+        : "";
+    marker.document = trade?.invoices.length ? `Invoice ${trade.invoices.join(", ")}` : "";
+    marker.requested = Boolean(
+      (targetRoom.requests || []).some((entry) => entry.trade === guess?.trade && entry.state === "open"),
+    );
+  });
+  return list;
 }
 
 /* --------------------------------------------------------------- Space detail */

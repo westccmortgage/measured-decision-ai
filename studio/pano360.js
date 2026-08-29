@@ -168,6 +168,40 @@
       gl_FragColor = vec4(markerColour.rgb, markerColour.a * alpha);
     }`;
 
+  /* The room menu: text baked to a canvas, carried into the scene as a quad
+     that faces the viewer exactly the way a pin does. WebGL has no words of
+     its own, and a person inside a headset must not have to take it off to
+     read which room is which. */
+  const LABEL_VERTEX_SHADER = `
+    attribute vec2 corner;
+    varying vec2 vUv;
+    uniform mat4 projection;
+    uniform mat3 viewRotationInverse;
+    uniform vec3 labelDirection;
+    uniform vec2 labelSize;
+    void main() {
+      vUv = vec2(corner.x * 0.5 + 0.5, 0.5 - corner.y * 0.5);
+      vec3 centre = labelDirection * 6.0;
+      vec3 right = normalize(vec3(viewRotationInverse[0][0], viewRotationInverse[1][0], viewRotationInverse[2][0]));
+      vec3 up = normalize(vec3(viewRotationInverse[0][1], viewRotationInverse[1][1], viewRotationInverse[2][1]));
+      vec3 world = centre + right * corner.x * labelSize.x + up * corner.y * labelSize.y;
+      gl_Position = projection * vec4(mat3(
+        viewRotationInverse[0][0], viewRotationInverse[0][1], viewRotationInverse[0][2],
+        viewRotationInverse[1][0], viewRotationInverse[1][1], viewRotationInverse[1][2],
+        viewRotationInverse[2][0], viewRotationInverse[2][1], viewRotationInverse[2][2]
+      ) * world, 1.0);
+    }`;
+
+  const LABEL_FRAGMENT_SHADER = `
+    precision mediump float;
+    varying vec2 vUv;
+    uniform sampler2D label;
+    uniform float looking;
+    void main() {
+      vec4 colour = texture2D(label, vUv);
+      gl_FragColor = vec4(colour.rgb + vec3(looking * 0.18), colour.a);
+    }`;
+
   function invert4(m) {
     const out = new Float32Array(16);
     const a00 = m[0], a01 = m[1], a02 = m[2], a03 = m[3];
@@ -294,6 +328,10 @@
   let markerButton = null;
   let playback = null;
   let trimNote = null;
+  /* The live sphere, reachable by swapRoom: choosing another room from
+     inside the headset must reload what the sphere shows, never the page. */
+  let activeSphere = null;
+  let activeSwapMedia = null;
   let session = null;
   let restoreOverflow = "";
 
@@ -410,7 +448,12 @@
     return shader;
   }
 
-  function startSphere(media, isVideo, onFrame, onVRChange) {
+  function startSphere(initialMedia, initialIsVideo, onFrame, onVRChange) {
+    /* Mutable on purpose: choosing another room from inside the headset
+       replaces what the sphere samples without ending the XR session —
+       taking the headset off to change rooms is a dead end. */
+    let media = initialMedia;
+    let isVideo = initialIsVideo;
     const canvas = document.createElement("canvas");
     stage.appendChild(canvas);
     /* xrCompatible from the start, exactly as the headset probe asked for it.
@@ -485,13 +528,30 @@
        frames the pixels have not changed and re-uploading them (and
        rebuilding the mip pyramid) is pure waste. The browser says when a
        real new frame exists; where it cannot, the clock stands in. */
-    const frameCallbackSupported = isVideo && typeof media.requestVideoFrameCallback === "function";
-    if (frameCallbackSupported) {
+    let frameCallbackSupported = false;
+    function watchVideoFrames() {
+      frameCallbackSupported = isVideo && typeof media.requestVideoFrameCallback === "function";
+      if (!frameCallbackSupported) return;
+      const watched = media;
       const noteVideoFrame = () => {
+        /* The room may have been swapped mid-chain; a stale element's frames
+           must neither dirty the texture nor keep an orphan loop alive. */
+        if (!state.alive || watched !== media) return;
         state.videoFrameDirty = true;
-        if (state.alive) media.requestVideoFrameCallback(noteVideoFrame);
+        watched.requestVideoFrameCallback(noteVideoFrame);
       };
-      media.requestVideoFrameCallback(noteVideoFrame);
+      watched.requestVideoFrameCallback(noteVideoFrame);
+    }
+    watchVideoFrames();
+
+    function setMedia(nextMedia, nextIsVideo) {
+      if (isVideo) media.pause?.();
+      media = nextMedia;
+      isVideo = Boolean(nextIsVideo);
+      state.textureReady = false;
+      state.videoFrameDirty = true;
+      state.uploadedTime = -1;
+      watchVideoFrames();
     }
 
     function resize() {
@@ -560,6 +620,72 @@
     let onMarkerChosen = null;
     function whenMarkerChosen(handler) { onMarkerChosen = handler; }
 
+    /* The other rooms of the same project, reachable from inside the headset.
+       A person standing in the Family Room asking "now show me the Dining
+       Room" must not have to take the headset off to answer it. */
+    let headsetRooms = [];
+    let onRoomChosen = null;
+    function whenRoomChosen(handler) { onRoomChosen = handler; }
+
+    function bakeLabelTexture(text, current) {
+      const board = document.createElement("canvas");
+      board.width = 512;
+      board.height = 96;
+      const ink = board.getContext("2d");
+      ink.clearRect(0, 0, 512, 96);
+      ink.fillStyle = "rgba(7, 20, 33, 0.9)";
+      ink.strokeStyle = current ? "rgba(72, 211, 232, 0.9)" : "rgba(255, 255, 255, 0.28)";
+      ink.lineWidth = 3;
+      const round = 22;
+      ink.beginPath();
+      ink.moveTo(round, 2);
+      ink.arcTo(510, 2, 510, 94, round);
+      ink.arcTo(510, 94, 2, 94, round);
+      ink.arcTo(2, 94, 2, 2, round);
+      ink.arcTo(2, 2, 510, 2, round);
+      ink.closePath();
+      ink.fill();
+      ink.stroke();
+      ink.font = "600 40px Inter, system-ui, sans-serif";
+      ink.textAlign = "center";
+      ink.textBaseline = "middle";
+      ink.fillStyle = current ? "#8ce8f3" : "#edf5f7";
+      let shown = String(text || "");
+      while (shown.length > 4 && ink.measureText(shown).width > 452) shown = `${shown.slice(0, -2).trimEnd()}…`;
+      ink.fillText(shown, 256, 50);
+      const baked = gl.createTexture();
+      gl.bindTexture(gl.TEXTURE_2D, baked);
+      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
+      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
+      gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, board);
+      return baked;
+    }
+
+    function rebuildRoomMenu() {
+      if (!xr) return;
+      const menu = xr.menu;
+      for (const item of menu.items) gl.deleteTexture(item.texture);
+      if (menu.chipTexture) gl.deleteTexture(menu.chipTexture);
+      menu.items = headsetRooms.map((room) => ({
+        id: room.id,
+        current: Boolean(room.current),
+        texture: bakeLabelTexture(room.current ? `● ${room.title}` : room.title, Boolean(room.current)),
+        dir: [0, -1, 0],
+      }));
+      menu.chipTexture = menu.items.length ? bakeLabelTexture("Rooms ▾", false) : null;
+      if (!menu.items.length) menu.open = false;
+    }
+
+    function setHeadsetRooms(list) {
+      headsetRooms = (Array.isArray(list) ? list : [])
+        .filter((room) => room && room.id && room.title)
+        .slice(0, 8);
+      rebuildRoomMenu();
+      return headsetRooms.length;
+    }
+
     async function enterVR() {
       if (xr?.session) return { ok: true, already: true };
       if (!navigator.xr) return { ok: false, why: "This browser cannot open an immersive view." };
@@ -619,6 +745,24 @@
         ]), gl.STATIC_DRAW);
         const xrPosition = gl.getAttribLocation(program2, "position");
 
+        /* The room menu's words, on the same quad geometry the pins use. */
+        const labelProgram = gl.createProgram();
+        gl.attachShader(labelProgram, compile(gl, gl.VERTEX_SHADER, LABEL_VERTEX_SHADER));
+        gl.attachShader(labelProgram, compile(gl, gl.FRAGMENT_SHADER, LABEL_FRAGMENT_SHADER));
+        gl.linkProgram(labelProgram);
+        if (!gl.getProgramParameter(labelProgram, gl.LINK_STATUS)) {
+          throw new Error(gl.getProgramInfoLog(labelProgram) || "Label program link failed");
+        }
+        const labelUniforms = {
+          projection: gl.getUniformLocation(labelProgram, "projection"),
+          viewRotationInverse: gl.getUniformLocation(labelProgram, "viewRotationInverse"),
+          labelDirection: gl.getUniformLocation(labelProgram, "labelDirection"),
+          labelSize: gl.getUniformLocation(labelProgram, "labelSize"),
+          label: gl.getUniformLocation(labelProgram, "label"),
+          looking: gl.getUniformLocation(labelProgram, "looking"),
+        };
+        const labelCorner = gl.getAttribLocation(labelProgram, "corner");
+
         xrSession.updateRenderState({ baseLayer: new XRWebGLLayer(xrSession, gl) });
         let reference = null;
         for (const kind of ["local-floor", "local", "viewer"]) {
@@ -632,17 +776,44 @@
           /* 1.0 is the capture at true angular scale, which is where it starts.
              Anything else is somebody's preference about how a room reads. */
           angularScale: headsetAngularScale,
+          menu: { open: false, items: [], chipTexture: null, chipDir: [0, -1, 0], lookingChip: false, lookingItem: null },
         };
-        /* Test hooks: the lazy remap centre, observable without a headset —
-           and the pin list, replaceable, so a measurement of the sphere alone
-           is not photobombed by a ring drawn where a pin belongs. */
+        rebuildRoomMenu();
+        /* Test hooks: the lazy remap centre, the pin list, and the room menu —
+           each observable and drivable without a headset, so what only runs
+           inside one can still be proven on a machine that has none. */
         window.__xrAnchor = () => xr?.anchor || null;
         window.__xrSetMarkers = (list) => setHeadsetMarkers(list || []);
+        window.__xrMenu = () => (xr ? {
+          open: xr.menu.open,
+          chipDir: xr.menu.chipDir.slice(),
+          items: xr.menu.items.map((item) => ({ id: item.id, dir: item.dir.slice(), current: item.current })),
+          lookingChip: xr.menu.lookingChip,
+          lookingItem: xr.menu.lookingItem?.id || null,
+        } : null);
 
         /* A pinch, a controller trigger, a tap — whatever the device calls
-           choosing something. Opening the pin somebody is looking at is the
-           whole point of putting pins in the room. */
+           choosing something. The menu owns the gesture while it is on
+           screen; otherwise the pin somebody is looking at opens, which is
+           the whole point of putting pins in the room. */
         xrSession.addEventListener("select", () => {
+          const menu = xr?.menu;
+          if (menu?.items.length) {
+            if (menu.lookingItem) {
+              const chosen = menu.lookingItem;
+              menu.open = false;
+              if (!chosen.current) onRoomChosen?.(chosen.id);
+              return;
+            }
+            if (menu.lookingChip) {
+              menu.open = !menu.open;
+              return;
+            }
+            if (menu.open) {
+              menu.open = false;
+              return;
+            }
+          }
           const marker = xr?.looking;
           if (!marker) return;
           onMarkerChosen?.(marker.id);
@@ -694,14 +865,57 @@
           const anchorLength = Math.hypot(blended[0], blended[1], blended[2]) || 1;
           xr.anchor = [blended[0] / anchorLength, blended[1] / anchorLength, blended[2] / anchorLength];
 
+          /* The room menu rides the same lazy heading as the size remap: a
+             chip below the horizon wherever the person has settled facing,
+             and — once opened — an arc of room names above it. Glued to the
+             instantaneous gaze it would run away from the eye reaching for
+             it; parked at a fixed compass point it would be behind their
+             back half the time. */
+          const menu = xr.menu;
+          if (menu.items.length) {
+            const headingLength = Math.hypot(xr.anchor[0], xr.anchor[2]);
+            const heading = headingLength > 0.2
+              ? [xr.anchor[0] / headingLength, xr.anchor[2] / headingLength]
+              : [0, -1];
+            const chipPitch = 0.96;
+            menu.chipDir = [heading[0] * Math.cos(chipPitch), -Math.sin(chipPitch), heading[1] * Math.cos(chipPitch)];
+            const itemPitch = 0.5;
+            const spread = 0.34;
+            menu.items.forEach((item, index) => {
+              const yaw = (index - (menu.items.length - 1) / 2) * spread;
+              const turned = [
+                heading[0] * Math.cos(yaw) + heading[1] * Math.sin(yaw),
+                heading[1] * Math.cos(yaw) - heading[0] * Math.sin(yaw),
+              ];
+              item.dir = [turned[0] * Math.cos(itemPitch), -Math.sin(itemPitch), turned[1] * Math.cos(itemPitch)];
+            });
+            let lookedItem = null;
+            let bestItem = Math.cos(0.16);
+            if (menu.open) {
+              for (const item of menu.items) {
+                const dot = item.dir[0] * forward[0] + item.dir[1] * forward[1] + item.dir[2] * forward[2];
+                if (dot > bestItem) { bestItem = dot; lookedItem = item; }
+              }
+            }
+            menu.lookingItem = lookedItem;
+            const chipDot = menu.chipDir[0] * forward[0] + menu.chipDir[1] * forward[1] + menu.chipDir[2] * forward[2];
+            menu.lookingChip = !lookedItem && chipDot > Math.cos(0.14);
+          } else {
+            menu.lookingChip = false;
+            menu.lookingItem = null;
+          }
+
           /* The pin nearest to where somebody is looking, and only if they are
              looking near it at all. Highlighting whatever happens to be closest
-             would light one up permanently, wherever the head turned. */
+             would light one up permanently, wherever the head turned. An open
+             menu owns the gaze — a pin must not light up through the list. */
           let looked = null;
-          let best = Math.cos(0.14);
-          for (const marker of xr.markers) {
-            const dot = marker.dir[0] * forward[0] + marker.dir[1] * forward[1] + marker.dir[2] * forward[2];
-            if (dot > best) { best = dot; looked = marker; }
+          if (!menu.open) {
+            let best = Math.cos(0.14);
+            for (const marker of xr.markers) {
+              const dot = marker.dir[0] * forward[0] + marker.dir[1] * forward[1] + marker.dir[2] * forward[2];
+              if (dot > best) { best = dot; looked = marker; }
+            }
           }
           xr.looking = looked;
 
@@ -727,34 +941,68 @@
             gl.uniform1f(xrUniforms.angularScale, xr.angularScale);
             gl.drawArrays(gl.TRIANGLES, 0, 3);
 
-            if (!xr.markers.length) continue;
-            gl.useProgram(markerProgram);
-            gl.bindBuffer(gl.ARRAY_BUFFER, markerQuad);
-            gl.enableVertexAttribArray(markerCorner);
-            gl.vertexAttribPointer(markerCorner, 2, gl.FLOAT, false, 0, 0);
-            gl.enable(gl.BLEND);
-            gl.blendFunc(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA);
-            gl.uniformMatrix4fv(markerUniforms.projection, false, eyeView.projectionMatrix);
-            gl.uniformMatrix3fv(markerUniforms.viewRotationInverse, false, rotation);
-            for (const marker of xr.markers) {
-              const isLooked = marker === looked;
-              gl.uniform3f(markerUniforms.markerDirection, marker.dir[0], marker.dir[1], marker.dir[2]);
-              gl.uniform1f(markerUniforms.markerSize, isLooked ? 0.46 : 0.32);
-              gl.uniform1f(markerUniforms.looking, isLooked ? 1 : 0);
-              /* Confirmed by a person and seen only by the AI are different
-                 things, and a pin is exactly where that distinction gets lost
-                 if it is not carried. */
-              const colour = marker.confirmed
-                ? [0.50, 0.84, 0.66, 0.95]
-                : [1.0, 0.81, 0.60, 0.95];
-              gl.uniform4f(markerUniforms.markerColour, colour[0], colour[1], colour[2], colour[3]);
-              gl.drawArrays(gl.TRIANGLES, 0, 6);
+            if (xr.markers.length && !menu.open) {
+              gl.useProgram(markerProgram);
+              gl.bindBuffer(gl.ARRAY_BUFFER, markerQuad);
+              gl.enableVertexAttribArray(markerCorner);
+              gl.vertexAttribPointer(markerCorner, 2, gl.FLOAT, false, 0, 0);
+              gl.enable(gl.BLEND);
+              gl.blendFunc(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA);
+              gl.uniformMatrix4fv(markerUniforms.projection, false, eyeView.projectionMatrix);
+              gl.uniformMatrix3fv(markerUniforms.viewRotationInverse, false, rotation);
+              for (const marker of xr.markers) {
+                const isLooked = marker === looked;
+                gl.uniform3f(markerUniforms.markerDirection, marker.dir[0], marker.dir[1], marker.dir[2]);
+                gl.uniform1f(markerUniforms.markerSize, isLooked ? 0.46 : 0.32);
+                gl.uniform1f(markerUniforms.looking, isLooked ? 1 : 0);
+                /* Confirmed by a person and seen only by the AI are different
+                   things, and a pin is exactly where that distinction gets lost
+                   if it is not carried. */
+                const colour = marker.confirmed
+                  ? [0.50, 0.84, 0.66, 0.95]
+                  : [1.0, 0.81, 0.60, 0.95];
+                gl.uniform4f(markerUniforms.markerColour, colour[0], colour[1], colour[2], colour[3]);
+                gl.drawArrays(gl.TRIANGLES, 0, 6);
+              }
+              gl.disable(gl.BLEND);
             }
-            gl.disable(gl.BLEND);
+
+            if (menu.items.length) {
+              gl.useProgram(labelProgram);
+              gl.bindBuffer(gl.ARRAY_BUFFER, markerQuad);
+              gl.enableVertexAttribArray(labelCorner);
+              gl.vertexAttribPointer(labelCorner, 2, gl.FLOAT, false, 0, 0);
+              gl.enable(gl.BLEND);
+              gl.blendFunc(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA);
+              gl.uniformMatrix4fv(labelUniforms.projection, false, eyeView.projectionMatrix);
+              gl.uniformMatrix3fv(labelUniforms.viewRotationInverse, false, rotation);
+              gl.uniform1i(labelUniforms.label, 0);
+              gl.activeTexture(gl.TEXTURE0);
+              const drawLabel = (labelTexture, dir, width, height, lit) => {
+                gl.bindTexture(gl.TEXTURE_2D, labelTexture);
+                gl.uniform3f(labelUniforms.labelDirection, dir[0], dir[1], dir[2]);
+                gl.uniform2f(labelUniforms.labelSize, width, height);
+                gl.uniform1f(labelUniforms.looking, lit ? 1 : 0);
+                gl.drawArrays(gl.TRIANGLES, 0, 6);
+              };
+              if (menu.chipTexture) drawLabel(menu.chipTexture, menu.chipDir, 0.9, 0.2, menu.lookingChip);
+              if (menu.open) {
+                for (const item of menu.items) {
+                  const lit = item === menu.lookingItem;
+                  drawLabel(item.texture, item.dir, lit ? 1.3 : 1.15, lit ? 0.26 : 0.23, lit);
+                }
+              }
+              gl.disable(gl.BLEND);
+              /* The sphere's texture unit is shared; leave it bound the way
+                 the next frame's video upload expects to find it. */
+              gl.bindTexture(gl.TEXTURE_2D, texture);
+            }
           }
         });
 
         xrSession.addEventListener("end", () => {
+          for (const item of xr?.menu.items || []) gl.deleteTexture(item.texture);
+          if (xr?.menu.chipTexture) gl.deleteTexture(xr.menu.chipTexture);
           xr = null;
           /* Taking the headset off must give the flat viewer back, not a black
              rectangle where a room used to be. */
@@ -768,7 +1016,7 @@
         onVRChange?.(true);
         return { ok: true };
       } catch (error) {
-        try { await session.end(); } catch (_) { /* already gone */ }
+        try { await xrSession.end(); } catch (_) { /* already gone */ }
         xr = null;
         return {
           ok: false,
@@ -931,8 +1179,9 @@
     }
 
     return {
-      dispose, lookAt, view, canvas, enterVR, exitVR,
-      setHeadsetMarkers, setAngularScale, angularScale, whenMarkerChosen,
+      dispose, lookAt, view, canvas, enterVR, exitVR, setMedia,
+      setHeadsetMarkers, setHeadsetRooms, setAngularScale, angularScale,
+      whenMarkerChosen, whenRoomChosen,
       xrViews: () => xr?.views || 0,
       xrMarkerCount: () => headsetMarkers.length,
     };
@@ -1458,6 +1707,9 @@
 
   function teardown() {
     resetMarkers();
+    activeSphere = null;
+    activeSwapMedia?.pause?.();
+    activeSwapMedia = null;
     /* Both belong to a sphere that is about to stop existing. Left on screen
        they are two controls that do nothing, which is the same failure as a
        button that does nothing when pressed. */
@@ -1549,6 +1801,11 @@
           if (!vrButton) return;
           vrButton.textContent = inHeadset ? "◉ Leave the room" : "◉ Stand in this room";
         });
+        activeSphere = sphere;
+        if (Array.isArray(options.rooms) && options.rooms.length && typeof options.onRoomChosen === "function") {
+          sphere.setHeadsetRooms(options.rooms);
+          sphere.whenRoomChosen(options.onRoomChosen);
+        }
         session = {
           dispose: () => {
             sphere.exitVR();
@@ -1655,5 +1912,72 @@
     }, { once: true });
   }
 
-  window.MDAIPano360 = { open, close };
+  /* The viewer stays, the room changes. Called by the opener when a room is
+     chosen from inside the headset (or anywhere else): the new capture loads
+     off-screen first, and only a ready frame replaces the sphere's texture —
+     the person in the headset sees the old room until the new one exists,
+     never a black void. The XR session is untouched throughout. */
+  function swapRoom(options = {}) {
+    if (!activeSphere) return false;
+    const { src, mediaType = "", title = "Evidence", subtitle = "", trim = null } = options;
+    if (!src) return false;
+    const kind = String(mediaType || "").toLowerCase();
+    const nextIsVideo = kind.startsWith("video") || /\.(mp4|mov|m4v|webm)$/i.test(String(src || ""));
+    const nextMedia = document.createElement(nextIsVideo ? "video" : "img");
+    nextMedia.crossOrigin = "anonymous";
+    if (nextIsVideo) {
+      nextMedia.playsInline = true;
+      nextMedia.loop = true;
+      nextMedia.muted = true;
+      nextMedia.preload = "auto";
+    }
+    nextMedia.src = src;
+    const arrive = () => {
+      const sphere = activeSphere;
+      if (!sphere) return;
+      sphere.setMedia(nextMedia, nextIsVideo);
+      activeSwapMedia = nextIsVideo ? nextMedia : null;
+      titleNode.textContent = title;
+      subtitleNode.textContent = subtitle;
+      /* The new room's markers and review powers replace the old room's —
+         a pin from the Family Room has no business in the Dining Room. */
+      markerState.media = nextIsVideo ? nextMedia : null;
+      markerState.list = Array.isArray(options.markers) ? options.markers.slice() : [];
+      markerState.canReview = Boolean(options.canReviewMarkers);
+      markerState.canPlace = Boolean(options.onMarkerPlace);
+      markerState.onReview = options.onMarkerReview || null;
+      markerState.onPlace = options.onMarkerPlace || null;
+      markerState.onRequest = options.onMarkerRequest || null;
+      markerState.evidenceId = options.evidenceId || null;
+      markerState.openId = null;
+      markerState.aiming = false;
+      markerState.pins.clear();
+      if (markerState.layer) markerState.layer.innerHTML = "";
+      renderMarkerPins();
+      updateMarkerButton();
+      renderMarkerAction();
+      syncHeadsetMarkers();
+      if (Array.isArray(options.rooms)) sphere.setHeadsetRooms(options.rooms);
+      playback?.remove();
+      playback = null;
+      trimNote?.remove();
+      trimNote = null;
+      if (nextIsVideo) {
+        const window360 = resolveTrim(trim, nextMedia);
+        showTrimNote(window360);
+        buildPlayback(nextMedia, window360);
+        seekToWindowStart(nextMedia, window360);
+        nextMedia.play().catch(() => {});
+      }
+      announce(`Now in ${title}`, "good");
+    };
+    if (nextIsVideo) nextMedia.addEventListener("loadeddata", arrive, { once: true });
+    else nextMedia.addEventListener("load", arrive, { once: true });
+    nextMedia.addEventListener("error", () => {
+      announce("That room could not be loaded — you are still in the previous one.", "bad");
+    }, { once: true });
+    return true;
+  }
+
+  window.MDAIPano360 = { open, close, swapRoom };
 })();

@@ -182,6 +182,31 @@ const opened = await page.evaluate(async () => {
     evidenceId: "ev-test",
     canReviewMarkers: true,
     onMarkerReview: () => {},
+    /* Two rooms, so the headset offers the walk between them. Choosing the
+       other one swaps in a solid blue frame — a colour the test can read
+       back to prove the sphere really changed rooms mid-session. */
+    rooms: [
+      { id: "room-a", title: "Family Room", current: true },
+      { id: "room-b", title: "Dining Room" },
+    ],
+    onRoomChosen: (id) => {
+      window.__roomChosen = id;
+      const blue = document.createElement("canvas");
+      blue.width = 64; blue.height = 32;
+      const paint = blue.getContext("2d");
+      paint.fillStyle = "#2040d0"; paint.fillRect(0, 0, 64, 32);
+      window.MDAIPano360.swapRoom({
+        src: blue.toDataURL("image/png"),
+        mediaType: "image/png",
+        title: "Dining Room",
+        subtitle: "test capture",
+        markers: [],
+        rooms: [
+          { id: "room-a", title: "Family Room" },
+          { id: "room-b", title: "Dining Room", current: true },
+        ],
+      });
+    },
   });
   await new Promise((r) => setTimeout(r, 1500));
   const overlay = document.querySelector(".pano-overlay");
@@ -391,6 +416,57 @@ check("one quick turn leaves the room's centre where it was",
   anchored.stayed > 0.995, `dot with the pre-turn centre: ${anchored.stayed.toFixed(5)}`);
 check("and a settled gaze re-centres it within moments",
   anchored.settled > 0.99, `dot with the new gaze: ${anchored.settled.toFixed(5)}`);
+
+console.log("\n── walking to another room without leaving the headset ──");
+/* The ask, verbatim: a menu inside the goggles, so moving to any other
+   captured room never requires taking them off. A chip waits below the
+   horizon; looking at it and pinching opens the list; choosing a room
+   reloads the sphere in place — the XR session never ends. */
+const walked = await page.evaluate(async () => {
+  const surface = document.querySelector(".pano-overlay canvas");
+  const gl = surface.getContext("webgl2") || surface.getContext("webgl");
+  const centre = () => {
+    const px = new Uint8Array(4);
+    gl.readPixels(256, 256, 1, 1, gl.RGBA, gl.UNSIGNED_BYTE, px);
+    return [px[0], px[1], px[2]];
+  };
+  const out = {};
+  window.__xrFrame([0, 0, -1]);
+  out.closed = window.__xrMenu();
+  /* Look at the chip and pinch. */
+  window.__xrFrame(out.closed.chipDir);
+  window.__xrSelect();
+  window.__xrFrame(out.closed.chipDir);
+  out.opened = window.__xrMenu();
+  /* Look at the other room and pinch. */
+  const target = out.opened.items.find((item) => item.id === "room-b");
+  if (!target) return out;
+  window.__xrFrame(target.dir);
+  out.lit = window.__xrMenu().lookingItem;
+  window.__xrSelect();
+  out.chosen = window.__roomChosen || null;
+  /* The swap loads a data-URL image; give it a beat, then look ahead. */
+  await new Promise((resolve) => setTimeout(resolve, 700));
+  window.__xrFrame([0, 0, -1]);
+  out.centreAfter = centre();
+  out.after = window.__xrMenu();
+  out.sessionAlive = window.__xrLive();
+  return out;
+});
+check("the Rooms chip waits below the horizon with the list closed",
+  walked.closed?.items.length === 2 && walked.closed.open === false && walked.closed.chipDir[1] < -0.5);
+check("looking at it and pinching opens the list",
+  walked.opened?.open === true, JSON.stringify(walked.opened));
+check("looking at a room lights that room and no other",
+  walked.lit === "room-b", String(walked.lit));
+check("pinching it asks for exactly that room",
+  walked.chosen === "room-b", String(walked.chosen));
+check("and the sphere is now the other room — blue, mid-session",
+  Array.isArray(walked.centreAfter) && walked.centreAfter[2] > 140 && walked.centreAfter[0] < 100,
+  `centre pixel ${String(walked.centreAfter)}`);
+check("the list closed itself and the new room is marked current",
+  walked.after?.open === false && walked.after.items.find((item) => item.id === "room-b")?.current === true);
+check("and the XR session never ended", walked.sessionAlive === true);
 
 console.log("\n── taking the headset off ──");
 const left = await page.evaluate(async () => {
