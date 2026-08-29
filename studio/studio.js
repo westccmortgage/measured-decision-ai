@@ -245,23 +245,24 @@ function collapseInsta360Sources(items) {
 
 function waitForMediaEvent(target, eventName, timeoutMs = 20000) {
   return new Promise((resolve, reject) => {
-    const timeout = setTimeout(() => {
-      cleanup();
-      reject(new Error(`Timed out while preparing video ${eventName}`));
-    }, timeoutMs);
-    const cleanup = () => {
+    let timeout = null;
+    function cleanup() {
       clearTimeout(timeout);
       target.removeEventListener(eventName, onSuccess);
       target.removeEventListener("error", onError);
-    };
-    const onSuccess = () => {
+    }
+    function onSuccess() {
       cleanup();
       resolve();
-    };
-    const onError = () => {
+    }
+    function onError() {
       cleanup();
       reject(new Error("The video could not be decoded for AI keyframes"));
-    };
+    }
+    timeout = setTimeout(() => {
+      cleanup();
+      reject(new Error(`Timed out while preparing video ${eventName}`));
+    }, timeoutMs);
     target.addEventListener(eventName, onSuccess, { once: true });
     target.addEventListener("error", onError, { once: true });
   });
@@ -1751,7 +1752,7 @@ async function loadPropertyDirectory() {
   renderPropertyDirectory();
   /* Never lets the list fail to load: somebody whose role cannot see removed
      projects still gets their projects. */
-  renderRemovedProjects().catch((error) => console.error("Removed projects", error));
+  renderRemovedProjects().catch((removedError) => console.error("Removed projects", removedError));
 }
 
 async function hydrateCloudRecord() {
@@ -2804,12 +2805,12 @@ function inferFocusMediaType(file) {
    no hint that it is a sphere, so name matching alone silently files a real 360
    master as ordinary video. */
 function measureMediaFile(file) {
-  const isVideo = Boolean(file?.type?.startsWith("video/"));
-  const isImage = Boolean(file?.type?.startsWith("image/"));
-  if (!isVideo && !isImage) return Promise.resolve({});
+  const fileIsVideo = Boolean(file?.type?.startsWith("video/"));
+  const fileIsImage = Boolean(file?.type?.startsWith("image/"));
+  if (!fileIsVideo && !fileIsImage) return Promise.resolve({});
   return new Promise((resolve) => {
     const url = URL.createObjectURL(file);
-    const element = document.createElement(isVideo ? "video" : "img");
+    const element = document.createElement(fileIsVideo ? "video" : "img");
     const finish = (measured = {}) => {
       URL.revokeObjectURL(url);
       resolve(measured);
@@ -2819,7 +2820,7 @@ function measureMediaFile(file) {
       window.clearTimeout(timeout);
       finish(measured);
     };
-    if (isVideo) {
+    if (fileIsVideo) {
       element.preload = "metadata";
       element.onloadedmetadata = () => done({
         width: Number(element.videoWidth || 0),
@@ -5234,10 +5235,10 @@ function uploadGateQuestions(files) {
   return questions;
 }
 
-async function uploadFocusEvidence(fileList) {
-  const files = [...fileList].filter(focusFileAllowed);
+async function uploadFocusEvidence(pickedFiles) {
+  const files = [...pickedFiles].filter(focusFileAllowed);
   if (!files.length || focusUploadBusy) {
-    if (fileList?.length) notify("Choose photos, video, PDF, INSV, INSP, or LRV files");
+    if (pickedFiles?.length) notify("Choose photos, video, PDF, INSV, INSP, or LRV files");
     return;
   }
   const questions = uploadGateQuestions(files);

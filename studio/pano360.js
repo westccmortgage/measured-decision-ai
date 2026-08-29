@@ -281,6 +281,10 @@
   let subtitleNode = null;
   let hintNode = null;
   let gyroButton = null;
+  let vrButton = null;
+  let scaleControl = null;
+  let scaleInput = null;
+  let scaleValue = null;
   let markerButton = null;
   let playback = null;
   let trimNote = null;
@@ -346,10 +350,6 @@
     });
   }
 
-  let vrButton = null;
-  let scaleControl = null;
-  let scaleInput = null;
-  let scaleValue = null;
 
   /* Remembered, because somebody who has settled on how a room should read
      should not have to settle on it again every time they open one. What is
@@ -521,9 +521,9 @@
     async function enterVR() {
       if (xr?.session) return { ok: true, already: true };
       if (!navigator.xr) return { ok: false, why: "This browser cannot open an immersive view." };
-      let session;
+      let xrSession;
       try {
-        session = await navigator.xr.requestSession("immersive-vr", {
+        xrSession = await navigator.xr.requestSession("immersive-vr", {
           optionalFeatures: ["local-floor"],
         });
       } catch (error) {
@@ -577,15 +577,15 @@
         ]), gl.STATIC_DRAW);
         const xrPosition = gl.getAttribLocation(program2, "position");
 
-        session.updateRenderState({ baseLayer: new XRWebGLLayer(session, gl) });
+        xrSession.updateRenderState({ baseLayer: new XRWebGLLayer(xrSession, gl) });
         let reference = null;
         for (const kind of ["local-floor", "local", "viewer"]) {
-          try { reference = await session.requestReferenceSpace(kind); break; } catch (_) { /* try the next */ }
+          try { reference = await xrSession.requestReferenceSpace(kind); break; } catch (_) { /* try the next */ }
         }
         if (!reference) throw new Error("no reference space");
 
         xr = {
-          session, reference, program2, xrUniforms, xrPosition, views: 0,
+          session: xrSession, reference, program2, xrUniforms, xrPosition, views: 0,
           markers: headsetMarkers, looking: null, forward: [0, 0, -1],
           /* 1.0 is the capture at true angular scale, which is where it starts.
              Anything else is somebody's preference about how a room reads. */
@@ -595,15 +595,15 @@
         /* A pinch, a controller trigger, a tap — whatever the device calls
            choosing something. Opening the pin somebody is looking at is the
            whole point of putting pins in the room. */
-        session.addEventListener("select", () => {
+        xrSession.addEventListener("select", () => {
           const marker = xr?.looking;
           if (!marker) return;
           onMarkerChosen?.(marker.id);
         });
 
-        session.requestAnimationFrame(function xrFrame(time, frame) {
+        xrSession.requestAnimationFrame(function xrFrame(time, frame) {
           if (!xr?.session) return;
-          session.requestAnimationFrame(xrFrame);
+          xrSession.requestAnimationFrame(xrFrame);
           /* The capture is a video, so the texture has to be refreshed here as
              well — the flat loop is not running while the headset is. */
           if (isVideo || !state.textureReady) uploadTexture();
@@ -611,7 +611,7 @@
           const pose = frame.getViewerPose(reference);
           if (!pose) return;
           xr.views = pose.views.length;
-          const layer = session.renderState.baseLayer;
+          const layer = xrSession.renderState.baseLayer;
           gl.bindFramebuffer(gl.FRAMEBUFFER, layer.framebuffer);
           gl.clearColor(0, 0, 0, 1);
           gl.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT);
@@ -638,10 +638,10 @@
           }
           xr.looking = looked;
 
-          for (const view of pose.views) {
-            const viewport = layer.getViewport(view);
+          for (const eyeView of pose.views) {
+            const viewport = layer.getViewport(eyeView);
             gl.viewport(viewport.x, viewport.y, viewport.width, viewport.height);
-            const m = view.transform.inverse.matrix;
+            const m = eyeView.transform.inverse.matrix;
             /* World → eye read the other way is eye → world, which for a
                rotation is the transpose. */
             const rotation = new Float32Array([
@@ -654,7 +654,7 @@
             gl.enableVertexAttribArray(xrPosition);
             gl.vertexAttribPointer(xrPosition, 2, gl.FLOAT, false, 0, 0);
             gl.bindTexture(gl.TEXTURE_2D, texture);
-            gl.uniformMatrix4fv(xrUniforms.invProjection, false, invert4(view.projectionMatrix));
+            gl.uniformMatrix4fv(xrUniforms.invProjection, false, invert4(eyeView.projectionMatrix));
             gl.uniformMatrix3fv(xrUniforms.viewRotation, false, rotation);
             gl.uniform3f(xrUniforms.forward, forward[0], forward[1], forward[2]);
             gl.uniform1f(xrUniforms.angularScale, xr.angularScale);
@@ -667,7 +667,7 @@
             gl.vertexAttribPointer(markerCorner, 2, gl.FLOAT, false, 0, 0);
             gl.enable(gl.BLEND);
             gl.blendFunc(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA);
-            gl.uniformMatrix4fv(markerUniforms.projection, false, view.projectionMatrix);
+            gl.uniformMatrix4fv(markerUniforms.projection, false, eyeView.projectionMatrix);
             gl.uniformMatrix3fv(markerUniforms.viewRotationInverse, false, rotation);
             for (const marker of xr.markers) {
               const isLooked = marker === looked;
@@ -687,7 +687,7 @@
           }
         });
 
-        session.addEventListener("end", () => {
+        xrSession.addEventListener("end", () => {
           xr = null;
           /* Taking the headset off must give the flat viewer back, not a black
              rectangle where a room used to be. */
