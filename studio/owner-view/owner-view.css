@@ -31,29 +31,29 @@
 }
 :root[data-theme="light"] {
   color-scheme: light;
-  --d06101c: #e0ebf8;
-  --d0a1726: #d9e6f5;
-  --d0d1c2c: #d3e2f2;
-  --d1b3347: #b8d0e4;
-  --d7f94a6: #596e80;
-  --df4f7fa: #121d28;
+  --d06101c: #f5f4f3;
+  --d0a1726: #f0efee;
+  --d0d1c2c: #ebebe9;
+  --d1b3347: #d8d7d3;
+  --d7f94a6: #736f66;
+  --df4f7fa: #191c21;
   --d48d3e8: #0b7c8f;
   --d54d39a: #2cab72;
   --de5ac4b: #b47b1a;
-  --d071421: #deebf8;
-  --d29506b: #94bbd6;
-  --d102537: #c8ddef;
-  --da7bccb: #344958;
+  --d071421: #f3f3f2;
+  --d29506b: #c2beb7;
+  --d102537: #e5e4e1;
+  --da7bccb: #3d434f;
   --d82d9b0: #267d54;
   --drgba-84-211-154-08: rgba(44, 171, 114, 0.08);
   --drgba-84-211-154-25: rgba(44, 171, 114, 0.25);
-  --dcfdbe5: #1a2630;
-  --d04101c: #dfedfa;
+  --dcfdbe5: #20232a;
+  --d04101c: #f5f5f4;
   --d04222b: #d4f2fb;
   --drgba-229-172-75-1: rgba(180, 123, 26, 0.1);
   --drgba-229-172-75-35: rgba(180, 123, 26, 0.35);
   --dff7b76: #890500;
-  --drgba-27-51-71-5: rgba(184, 208, 228, 0.5);
+  --drgba-27-51-71-5: rgba(216, 215, 211, 0.5);
 }
 
 /* Owner View — the record, published.
