@@ -301,6 +301,13 @@ const scale = await page.evaluate(async () => {
   const surface = document.querySelector(".pano-overlay canvas");
   const gl = surface.getContext("webgl2") || surface.getContext("webgl");
 
+  /* This section measures the sphere, and only the sphere. The pin that
+     stands dead ahead is correct behaviour — but at 30% the whole room
+     crowds toward the centre and its ring lands on the very band being
+     measured, on a frame that depends on where the lazy anchor happens to
+     be. Cleared here so the width read is the band's and nobody else's. */
+  window.__xrSetMarkers([]);
+
   /* How wide the band lands, straight ahead, in the row through the middle of
      the eye's viewport. Read back from the drawing buffer in the same task the
      frame was drawn in, before anything is presented. */
