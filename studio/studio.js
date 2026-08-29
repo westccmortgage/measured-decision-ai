@@ -5602,6 +5602,7 @@ async function processFocusEvidence() {
 /* -------------------------------------------------------------------- Wiring */
 
 $("#focus-open-comparison")?.addEventListener("click", () => openProjectPlans("visual"));
+$("#focus-open-plans")?.addEventListener("click", () => openProjectPlans());
 $("#focus-open-files")?.addEventListener("click", openFileList);
 $("#focus-files-close")?.addEventListener("click", closeFileList);
 $("#focus-files")?.addEventListener("click", (event) => {
