@@ -192,3 +192,20 @@ initialize().catch(showLoadFailure);
 
 document.addEventListener("visibilitychange",()=>{ if(document.visibilityState==="visible"&&state.propertyId) load().catch(error=>console.warn("Background field refresh interrupted",error)); });
 state.pollTimer=window.setInterval(()=>{ if(document.visibilityState==="visible"&&state.propertyId) load().catch(console.error); },15000);
+
+/* Day and night are one studio: the palette swaps, the record does not.
+   The choice is shared with the landing site through the same storage key,
+   and the pre-paint script in <head> applies it before the first frame. */
+{
+  const themeToggle = document.querySelector("#theme-toggle");
+  const reflectTheme = () => {
+    if (themeToggle) themeToggle.textContent = document.documentElement.dataset.theme === "light" ? "☀ Day" : "☾ Night";
+  };
+  themeToggle?.addEventListener("click", () => {
+    const next = document.documentElement.dataset.theme === "light" ? "dark" : "light";
+    document.documentElement.dataset.theme = next;
+    try { window.localStorage.setItem("mdai-theme", next); } catch (_) { /* private browsing: the choice lasts the visit */ }
+    reflectTheme();
+  });
+  reflectTheme();
+}

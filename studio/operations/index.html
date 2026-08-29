@@ -1,6 +1,8 @@
 <!doctype html>
 <html lang="en">
   <head>
+    <script>/* Theme before first paint: shared with the landing site. */
+try{var t=localStorage.getItem("mdai-theme");document.documentElement.dataset.theme=t==="light"?"light":"dark"}catch(e){document.documentElement.dataset.theme="dark"}</script>
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <meta name="robots" content="noindex,nofollow,noarchive">
@@ -9,7 +11,7 @@
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
-    <link rel="stylesheet" href="operations.css?v=2236ac8dfb">
+    <link rel="stylesheet" href="operations.css?v=9d0093cb43">
   </head>
   <body>
     <div class="boot" id="boot" role="status" aria-live="polite">
@@ -28,7 +30,7 @@
       <header>
         <a class="brand" href="../"><i></i>Measured Decision <strong>Studio</strong></a>
         <span class="secure">Private operations workspace</span>
-        <div><a class="button secondary" href="../">Return to evidence</a><a class="button secondary" href="../plans/">Project plans</a><button class="button secondary" id="sign-out">Sign out</button></div>
+        <div><button class="button secondary" id="theme-toggle" type="button" aria-label="Switch between day and night theme">☼ Day</button><a class="button secondary" href="../">Return to evidence</a><a class="button secondary" href="../plans/">Project plans</a><button class="button secondary" id="sign-out">Sign out</button></div>
       </header>
       <main>
         <section class="hero">
@@ -81,6 +83,6 @@
     <script src="../config.js?v=0772f5f463"></script>
     <script src="../s3-upload.js?v=49e7eb1bcf"></script>
     <script src="../recent-projects.js?v=529636c5de"></script>
-    <script src="operations.js?v=3a184c50a3"></script>
+    <script src="operations.js?v=14660fa437"></script>
   </body>
 </html>
