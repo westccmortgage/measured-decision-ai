@@ -65,34 +65,27 @@
     uniform sampler2D source;
     uniform mat4 invProjection;
     uniform mat3 viewRotation;
-    uniform vec3 forward;
-    uniform float angularScale;
+    uniform vec3 eyeOffset;
+    uniform float sphereRadius;
     const float PI = 3.14159265359;
     void main() {
       vec4 eye = invProjection * vec4(vScreen, -1.0, 1.0);
       vec3 dir = normalize(viewRotation * normalize(eye.xyz / eye.w));
-      /* A room captured on one lens has no stereo and no parallax, so nothing
-         tells the eye how far a wall is and it reads as larger than it is. This
-         widens or narrows how much of the sphere lands in the same field — a
-         viewing preference, not a correction: the capture is already at true
-         angular scale. Held at 1.0 it does nothing at all. */
-      if (abs(angularScale - 1.0) > 0.001) {
-        /* Not acos(dot): its slope is infinite where the two directions
-           agree, so near the centre of gaze float precision turns the angle
-           into per-pixel noise — magnified by the scale it reads as a
-           shimmer exactly where the person is looking, and the noisy
-           derivatives drive mipmap selection to the smallest levels. The
-           half-chord form is exact where it matters most. */
-        float a = 2.0 * asin(clamp(0.5 * length(dir - forward), 0.0, 1.0));
-        vec3 axis = cross(forward, dir);
-        float len = length(axis);
-        if (len > 0.00001) {
-          axis /= len;
-          float b = clamp(a * angularScale, 0.0, PI);
-          float c = cos(b);
-          float sn = sin(b);
-          dir = normalize(forward * c + cross(axis, forward) * sn + axis * dot(axis, forward) * (1.0 - c));
-        }
+      /* A room captured on one lens has no stereo, so nothing tells the eye
+         how far a wall is and the room reads larger than it is. The first
+         answer warped angles around a centre, and every centre was wrong:
+         glued to the gaze the room flowed after the head, parked anywhere
+         else the view went round wherever the gaze was not. This one warps
+         nothing. The sphere is given a finite radius around the head, each
+         eye is placed at its true offset, and the two eyes' rays land on
+         honestly different texels — real disparity, which is the cue the
+         brain actually uses for distance. The capture keeps its exact
+         angular truth; only the felt distance of the walls changes. A
+         non-positive radius is the capture as shot, at infinity. */
+      if (sphereRadius > 0.0) {
+        float along = dot(eyeOffset, dir);
+        float t = sqrt(max(along * along + sphereRadius * sphereRadius - dot(eyeOffset, eyeOffset), 0.0)) - along;
+        dir = normalize(eyeOffset + t * dir);
       }
       float u = atan(dir.x, -dir.z) / (2.0 * PI) + 0.5;
       float v = acos(clamp(dir.y, -1.0, 1.0)) / PI;
@@ -135,13 +128,17 @@
     uniform mat3 viewRotationInverse;
     uniform vec3 markerDirection;
     uniform float markerSize;
+    uniform float markerDistance;
+    uniform vec3 eyeOffset;
     varying vec2 vCorner;
     void main() {
       vCorner = corner;
-      /* The pin sits on a sphere of fixed radius and always faces the viewer:
-         its plane is built from the view's own right and up axes, so it never
-         turns edge-on however somebody walks around it. */
-      vec3 centre = markerDirection * 6.0;
+      /* The pin sits at the same distance the sphere is drawn at and always
+         faces the viewer: its plane is built from the view's own right and
+         up axes, so it never turns edge-on however somebody walks around it.
+         Sharing the sphere's distance matters in stereo — a pin left at a
+         different depth than the wall it marks floats uncomfortably off it. */
+      vec3 centre = markerDirection * markerDistance - eyeOffset;
       vec3 right = normalize(vec3(viewRotationInverse[0][0], viewRotationInverse[1][0], viewRotationInverse[2][0]));
       vec3 up = normalize(vec3(viewRotationInverse[0][1], viewRotationInverse[1][1], viewRotationInverse[2][1]));
       vec3 world = centre + (right * corner.x + up * corner.y) * markerSize;
@@ -179,9 +176,11 @@
     uniform mat3 viewRotationInverse;
     uniform vec3 labelDirection;
     uniform vec2 labelSize;
+    uniform float labelDistance;
+    uniform vec3 eyeOffset;
     void main() {
       vUv = vec2(corner.x * 0.5 + 0.5, 0.5 - corner.y * 0.5);
-      vec3 centre = labelDirection * 6.0;
+      vec3 centre = labelDirection * labelDistance - eyeOffset;
       vec3 right = normalize(vec3(viewRotationInverse[0][0], viewRotationInverse[1][0], viewRotationInverse[2][0]));
       vec3 up = normalize(vec3(viewRotationInverse[0][1], viewRotationInverse[1][1], viewRotationInverse[2][1]));
       vec3 world = centre + right * corner.x * labelSize.x + up * corner.y * labelSize.y;
@@ -363,14 +362,15 @@
         <!-- Only ever shown once the headset has said it can do this. A button
              that fails when pressed is worse than one that was never there. -->
         <button class="pano-icon pano-vr" type="button" data-pano-vr hidden>◉ Stand in this room</button>
-        <!-- A monoscopic capture has no stereo and no parallax, so a true-scale
-             room can still read as too large. This changes how much of the
-             sphere lands in the same field. It is a viewing preference; the
-             capture itself is never altered. -->
+        <!-- A monoscopic capture has no stereo, so nothing tells the eye how
+             far a wall is and a true-scale room still reads as too large.
+             This sets how far the walls feel, by drawing the sphere at a
+             finite distance and giving each eye its own view of it. Angles
+             are never distorted, and the capture itself is never altered. -->
         <label class="pano-scale" data-pano-scale hidden>
           <span>Room size</span>
-          <input type="range" min="30" max="160" step="5" value="100" data-pano-scale-input
-                 aria-label="How large the room reads in the headset, in percent">
+          <input type="range" min="30" max="100" step="5" value="100" data-pano-scale-input
+                 aria-label="How close the walls of the room feel in the headset, in percent">
           <em data-pano-scale-value>100%</em>
         </label>
       </div>
@@ -406,13 +406,15 @@
      varies by room and by person. 30% doubles the shrink the old floor
      offered; the default stays 100%, the capture's own angular scale. */
   const SIZE_MIN = 30;
-  const SIZE_MAX = 160;
+  const SIZE_MAX = 100;
 
-  /* Smaller room means more of the sphere in the same field of view, which is
-     a LARGER angular factor. Getting this the wrong way round is invisible in
-     code review and obvious the second somebody puts the headset on: they ask
-     for half the room and get twice as much of it. */
-  const sizeToAngularScale = (size) => 100 / size;
+  /* The number on the slider is a felt size, delivered as a distance: below
+     100% the sphere is drawn at a finite radius around the head and each eye
+     at its true offset, so stereo disparity — the cue the brain actually
+     uses — says how far the walls are. 50% puts them at two metres; 100% is
+     the capture as shot, at infinity. Angles are never distorted at any
+     setting. */
+  const sizeToRadius = (size) => (size >= 100 ? 0 : size * 0.04);
 
   function rememberedRoomSize() {
     try {
@@ -615,7 +617,7 @@
        not be in the room. */
     let headsetMarkerSource = [];
     let headsetMarkers = [];
-    let headsetAngularScale = 1;
+    let headsetRadius = 0;
 
     let onMarkerChosen = null;
     function whenMarkerChosen(handler) { onMarkerChosen = handler; }
@@ -725,8 +727,8 @@
         const xrUniforms = {
           invProjection: gl.getUniformLocation(program2, "invProjection"),
           viewRotation: gl.getUniformLocation(program2, "viewRotation"),
-          forward: gl.getUniformLocation(program2, "forward"),
-          angularScale: gl.getUniformLocation(program2, "angularScale"),
+          eyeOffset: gl.getUniformLocation(program2, "eyeOffset"),
+          sphereRadius: gl.getUniformLocation(program2, "sphereRadius"),
         };
 
         /* The pins, in the room rather than on a pane in front of it. */
@@ -744,6 +746,8 @@
           markerSize: gl.getUniformLocation(markerProgram, "markerSize"),
           markerColour: gl.getUniformLocation(markerProgram, "markerColour"),
           looking: gl.getUniformLocation(markerProgram, "looking"),
+          markerDistance: gl.getUniformLocation(markerProgram, "markerDistance"),
+          eyeOffset: gl.getUniformLocation(markerProgram, "eyeOffset"),
         };
         const markerCorner = gl.getAttribLocation(markerProgram, "corner");
         const markerQuad = gl.createBuffer();
@@ -769,6 +773,8 @@
           labelSize: gl.getUniformLocation(labelProgram, "labelSize"),
           label: gl.getUniformLocation(labelProgram, "label"),
           looking: gl.getUniformLocation(labelProgram, "looking"),
+          labelDistance: gl.getUniformLocation(labelProgram, "labelDistance"),
+          eyeOffset: gl.getUniformLocation(labelProgram, "eyeOffset"),
         };
         const labelCorner = gl.getAttribLocation(labelProgram, "corner");
 
@@ -782,9 +788,10 @@
         xr = {
           session: xrSession, reference, program2, xrUniforms, xrPosition, views: 0,
           markers: headsetMarkers, looking: null, forward: [0, 0, -1],
-          /* 1.0 is the capture at true angular scale, which is where it starts.
-             Anything else is somebody's preference about how a room reads. */
-          angularScale: headsetAngularScale,
+          /* 0 is the capture as shot, at infinity — where it starts. A
+             positive radius is somebody's preference about how far the
+             walls should feel. */
+          sphereRadius: headsetRadius,
           menu: { open: false, items: [], chipTexture: null, chipDir: [0, -1, 0], lookingChip: false, lookingItem: null },
         };
         rebuildRoomMenu();
@@ -855,14 +862,11 @@
           const forward = [-head[2], -head[6], -head[10]];
           xr.forward = forward;
 
-          /* The size remap needs a centre, and the centre must NOT be the
-             head: glued to the gaze it dragged the warp field with every
-             turn, and the whole room flowed after the head. The centre
-             follows the gaze through a slow filter instead — effectively
-             still while the head is turning, caught up a second or two
-             after the gaze settles — so the world holds still, and the
-             room-size control keeps working in every direction you end up
-             facing. At 100% the shader ignores the centre entirely. */
+          /* The image no longer needs a centre — nothing is warped any more,
+             so the room is simply still. The lazy heading survives for one
+             job only: parking the menu. Glued to the instantaneous gaze the
+             chip would run from the eye reaching for it; nailed to a compass
+             point it would sit behind the person half the time. */
           const previousAnchor = xr.anchor || forward;
           const dt = Math.min(0.1, Math.max(1 / 90, (time - (xr.anchorTime || time)) / 1000));
           xr.anchorTime = time;
@@ -875,12 +879,8 @@
           const anchorLength = Math.hypot(blended[0], blended[1], blended[2]) || 1;
           xr.anchor = [blended[0] / anchorLength, blended[1] / anchorLength, blended[2] / anchorLength];
 
-          /* The room menu rides the same lazy heading as the size remap: a
-             chip below the horizon wherever the person has settled facing,
-             and — once opened — an arc of room names above it. Glued to the
-             instantaneous gaze it would run away from the eye reaching for
-             it; parked at a fixed compass point it would be behind their
-             back half the time. */
+          /* The chip waits below the horizon wherever the person has settled
+             facing; opened, an arc of room names sits above it. */
           const menu = xr.menu;
           if (menu.items.length) {
             const headingLength = Math.hypot(xr.anchor[0], xr.anchor[2]);
@@ -929,6 +929,11 @@
           }
           xr.looking = looked;
 
+          /* The head's own position, so each eye's offset is measured from
+             the centre of the head rather than from the origin of whatever
+             reference space the device handed back. */
+          const headPosition = pose.transform?.position || { x: 0, y: 0, z: 0 };
+
           for (const eyeView of pose.views) {
             const viewport = layer.getViewport(eyeView);
             gl.viewport(viewport.x, viewport.y, viewport.width, viewport.height);
@@ -940,6 +945,14 @@
               m[1], m[5], m[9],
               m[2], m[6], m[10],
             ]);
+            /* Where this eye is, relative to the head. Half an
+               interpupillary distance left or right — the whole reason the
+               two eyes see the sphere differently and the brain believes a
+               wall is two metres away rather than at infinity. */
+            const eyePosition = eyeView.transform.position || { x: 0, y: 0, z: 0 };
+            const offset = xr.sphereRadius > 0
+              ? [eyePosition.x - headPosition.x, eyePosition.y - headPosition.y, eyePosition.z - headPosition.z]
+              : [0, 0, 0];
             gl.useProgram(program2);
             gl.bindBuffer(gl.ARRAY_BUFFER, buffer);
             gl.enableVertexAttribArray(xrPosition);
@@ -947,9 +960,14 @@
             gl.bindTexture(gl.TEXTURE_2D, texture);
             gl.uniformMatrix4fv(xrUniforms.invProjection, false, invert4(eyeView.projectionMatrix));
             gl.uniformMatrix3fv(xrUniforms.viewRotation, false, rotation);
-            gl.uniform3f(xrUniforms.forward, xr.anchor[0], xr.anchor[1], xr.anchor[2]);
-            gl.uniform1f(xrUniforms.angularScale, xr.angularScale);
+            gl.uniform3f(xrUniforms.eyeOffset, offset[0], offset[1], offset[2]);
+            gl.uniform1f(xrUniforms.sphereRadius, xr.sphereRadius);
             gl.drawArrays(gl.TRIANGLES, 0, 3);
+
+            /* Pins and menu ride at the sphere's own distance, so they sit on
+               the wall they mark instead of floating in front of it. With the
+               sphere at infinity they keep the old fixed six metres. */
+            const surfaceDistance = xr.sphereRadius > 0 ? xr.sphereRadius : 6.0;
 
             if (xr.markers.length && !menu.open) {
               gl.useProgram(markerProgram);
@@ -960,10 +978,15 @@
               gl.blendFunc(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA);
               gl.uniformMatrix4fv(markerUniforms.projection, false, eyeView.projectionMatrix);
               gl.uniformMatrix3fv(markerUniforms.viewRotationInverse, false, rotation);
+              gl.uniform1f(markerUniforms.markerDistance, surfaceDistance);
+              gl.uniform3f(markerUniforms.eyeOffset, offset[0], offset[1], offset[2]);
               for (const marker of xr.markers) {
                 const isLooked = marker === looked;
                 gl.uniform3f(markerUniforms.markerDirection, marker.dir[0], marker.dir[1], marker.dir[2]);
-                gl.uniform1f(markerUniforms.markerSize, isLooked ? 0.46 : 0.32);
+                /* A pin drawn at half the distance must be half the size, or
+                   a smaller room silently grows its pins. */
+                const pinScale = surfaceDistance / 6.0;
+                gl.uniform1f(markerUniforms.markerSize, (isLooked ? 0.46 : 0.32) * pinScale);
                 gl.uniform1f(markerUniforms.looking, isLooked ? 1 : 0);
                 /* Confirmed by a person and seen only by the AI are different
                    things, and a pin is exactly where that distinction gets lost
@@ -986,12 +1009,18 @@
               gl.blendFunc(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA);
               gl.uniformMatrix4fv(labelUniforms.projection, false, eyeView.projectionMatrix);
               gl.uniformMatrix3fv(labelUniforms.viewRotationInverse, false, rotation);
+              /* The menu is read, not inspected: kept at arm's length even
+                 when the walls are closer, so the words stay legible. */
+              const menuDistance = Math.min(surfaceDistance, 3.0);
+              gl.uniform1f(labelUniforms.labelDistance, menuDistance);
+              gl.uniform3f(labelUniforms.eyeOffset, offset[0], offset[1], offset[2]);
               gl.uniform1i(labelUniforms.label, 0);
               gl.activeTexture(gl.TEXTURE0);
+              const labelScale = menuDistance / 6.0;
               const drawLabel = (labelTexture, dir, width, height, lit) => {
                 gl.bindTexture(gl.TEXTURE_2D, labelTexture);
                 gl.uniform3f(labelUniforms.labelDirection, dir[0], dir[1], dir[2]);
-                gl.uniform2f(labelUniforms.labelSize, width, height);
+                gl.uniform2f(labelUniforms.labelSize, width * labelScale, height * labelScale);
                 gl.uniform1f(labelUniforms.looking, lit ? 1 : 0);
                 gl.drawArrays(gl.TRIANGLES, 0, 6);
               };
@@ -1056,17 +1085,18 @@
       return headsetMarkers.length;
     }
 
-    /* Held between 0.6 and 1.7: far enough to change how a room reads, close
-       enough that nobody is asked to look through a fisheye. The bounds are
-       the inverse of the sizes the control offers — a slider that says
-       30% and silently delivers 34% is a slider that lies. */
-    function setAngularScale(value) {
-      headsetAngularScale = Math.max(100 / SIZE_MAX, Math.min(100 / SIZE_MIN, Number(value) || 1));
-      if (xr) xr.angularScale = headsetAngularScale;
-      return headsetAngularScale;
+    /* The felt size of the room, as the distance of its walls. Zero radius
+       is the capture at infinity, exactly as shot; anything else must stay
+       between the slider's own bounds — a slider that says 30% and silently
+       delivers 34% is a slider that lies. */
+    function setRoomSize(size) {
+      const bounded = Math.max(SIZE_MIN, Math.min(SIZE_MAX, Number(size) || 100));
+      headsetRadius = sizeToRadius(bounded);
+      if (xr) xr.sphereRadius = headsetRadius;
+      return headsetRadius;
     }
 
-    function angularScale() { return headsetAngularScale; }
+    function roomRadius() { return headsetRadius; }
 
     function exitVR() {
       if (xr?.session) xr.session.end().catch(() => undefined);
@@ -1190,7 +1220,7 @@
 
     return {
       dispose, lookAt, view, canvas, enterVR, exitVR, setMedia,
-      setHeadsetMarkers, setHeadsetRooms, setAngularScale, angularScale,
+      setHeadsetMarkers, setHeadsetRooms, setRoomSize, roomRadius,
       whenMarkerChosen, whenRoomChosen,
       xrViews: () => xr?.views || 0,
       xrMarkerCount: () => headsetMarkers.length,
@@ -1831,7 +1861,7 @@
           if (!offered) return;
           if (scaleInput) {
             const apply = (size) => {
-              sphere.setAngularScale(sizeToAngularScale(size));
+              sphere.setRoomSize(size);
               scaleInput.value = String(size);
               if (scaleValue) scaleValue.textContent = `${size}%`;
             };

@@ -127,16 +127,28 @@ await context.addInitScript(() => {
     if (proto) proto.prototype.makeXRCompatible = async function makeXRCompatible() { return undefined; };
   }
 
-  /* Drives exactly one frame, with the head pointed where the test says. */
-  window.__xrFrame = (dir) => {
+  /* Drives exactly one frame, with the head pointed where the test says.
+     The eyes carry real positions — half an interpupillary distance either
+     side of the head, along the head's own right axis — because that offset
+     is the whole mechanism by which a finite sphere reads as a near wall.
+     `only` renders a single eye: the stand-in gives both the same viewport,
+     so measuring what one eye sees means drawing one eye. */
+  const IPD = 0.064;
+  window.__xrFrame = (dir, only) => {
     if (!live || !live.queue.length) return { frames: 0 };
     const matrix = lookMatrix(dir);
-    const view = {
-      eye: "left",
-      projectionMatrix: perspective(),
-      transform: { inverse: { matrix } },
-    };
-    const pose = { views: [view, { ...view, eye: "right" }] };
+    /* Column 0 of world→eye is the head's right axis in world terms. */
+    const right = [matrix[0], matrix[4], matrix[8]];
+    const at = (sign) => ({
+      x: right[0] * sign * IPD / 2,
+      y: right[1] * sign * IPD / 2,
+      z: right[2] * sign * IPD / 2,
+    });
+    const eyes = [
+      { eye: "left", projectionMatrix: perspective(), transform: { inverse: { matrix }, position: at(-1) } },
+      { eye: "right", projectionMatrix: perspective(), transform: { inverse: { matrix }, position: at(1) } },
+    ].filter((view) => !only || view.eye === only);
+    const pose = { views: eyes, transform: { position: { x: 0, y: 0, z: 0 } } };
     const frame = { getViewerPose: () => pose };
     const cb = live.queue.shift();
     cb(performance.now(), frame);
@@ -307,18 +319,19 @@ check("five degrees off still counts as looking at it",
 check("but twelve degrees off does not",
   chosen.near === "", chosen.near.slice(0, 120));
 
-console.log("\n── how large the room reads ──");
-/* The report was "the room is very big — maybe 50% of it". A control that
-   answers that has to make the room SMALLER when the number goes down, which
-   means fitting MORE of the sphere into the same view. It is exactly the kind
-   of thing that reads correctly in code and turns out inverted on the head, so
-   it is measured off the rendered pixels rather than reasoned about: the band
-   is 40.08° wide, and at a 90° field of view in a 512-pixel square its width on
-   screen has one right answer.
-     100% →  2·tan(20.04°)·256 ≈ 187 px
-      60% →  2·tan(12.02°)·256 ≈ 109 px   (a smaller room: less of it fills the view)
-      30% →  2·tan(6.012°)·256 ≈ 54 px    (the new floor: an outlet stops reading head-sized)
-     160% →  2·tan(32.06°)·256 ≈ 321 px   (a larger room) */
+console.log("\n── how far the walls feel ──");
+/* The verdict from the headset killed the first mechanism: warping angles
+   around a centre made everything "round", and no centre was ever right.
+   Distance is now delivered the way the eye actually reads it — the sphere
+   sits at a finite radius and each eye sees it from its own position, so
+   the two eyes disagree exactly as they would about a real near wall.
+   Two things must therefore be true, and both are read off rendered pixels
+   rather than reasoned about:
+     · angles are untouched — the 40.08° band keeps its width at every
+       setting (2·tan(20.04°)·256 ≈ 187 px in a 512-px square at 90° fov);
+     · the eyes disagree — at 100% the capture is at infinity and both eyes
+       see the band identically; at 30% the walls are 1.2 m away and the
+       band sits about 14 px apart between the eyes. */
 const scale = await page.evaluate(async () => {
   const control = document.querySelector("[data-pano-scale]");
   const input = document.querySelector("[data-pano-scale-input]");
@@ -326,18 +339,13 @@ const scale = await page.evaluate(async () => {
   const surface = document.querySelector(".pano-overlay canvas");
   const gl = surface.getContext("webgl2") || surface.getContext("webgl");
 
-  /* This section measures the sphere, and only the sphere. The pin that
-     stands dead ahead is correct behaviour — but at 30% the whole room
-     crowds toward the centre and its ring lands on the very band being
-     measured, on a frame that depends on where the lazy anchor happens to
-     be. Cleared here so the width read is the band's and nobody else's. */
+  /* The sphere alone: at 30% the menu and pins crowd toward the centre and
+     would land on the very band being measured. */
   window.__xrSetMarkers([]);
 
-  /* How wide the band lands, straight ahead, in the row through the middle of
-     the eye's viewport. Read back from the drawing buffer in the same task the
-     frame was drawn in, before anything is presented. */
-  const bandWidth = () => {
-    window.__xrFrame([0, 0, -1]);
+  /* Where the red band lands for one eye, in the row through the middle. */
+  const band = (eye) => {
+    window.__xrFrame([0, 0, -1], eye);
     const row = new Uint8Array(512 * 4);
     gl.readPixels(0, 256, 512, 1, gl.RGBA, gl.UNSIGNED_BYTE, row);
     let lo = -1; let hi = -1;
@@ -345,52 +353,59 @@ const scale = await page.evaluate(async () => {
       const r = row[i * 4]; const g = row[i * 4 + 1]; const b = row[i * 4 + 2];
       if (r > 150 && g < 110 && b < 110) { if (lo < 0) lo = i; hi = i; }
     }
-    return lo < 0 ? 0 : hi - lo + 1;
+    return lo < 0 ? null : { lo, hi, width: hi - lo + 1, centre: (lo + hi) / 2 };
+  };
+  const read = (size) => {
+    if (size !== null) {
+      input.value = String(size);
+      input.dispatchEvent(new Event("input", { bubbles: true }));
+    }
+    const left = band("left");
+    const rightEye = band("right");
+    return {
+      shown: value?.textContent,
+      width: left?.width ?? 0,
+      disparity: left && rightEye ? left.centre - rightEye.centre : null,
+    };
   };
 
-  const set = (size) => {
-    input.value = String(size);
-    input.dispatchEvent(new Event("input", { bubbles: true }));
-    return { shown: value?.textContent, width: bandWidth() };
-  };
-
-  const start = { hidden: control?.hidden, shown: value?.textContent, width: bandWidth() };
-  const smaller = set(60);
-  const smallest = set(30);
-  const larger = set(160);
-  const back = set(100);
+  const start = read(null);
+  const close = read(30);
+  const middle = read(50);
+  const back = read(100);
   return {
-    start, smaller, smallest, larger, back,
+    start, close, middle, back,
+    hidden: control?.hidden,
+    max: input?.max,
     min: input?.min,
     stored: window.localStorage.getItem("mdai.pano360.roomSize"),
   };
 });
-check("the control is on screen once a headset is offered", scale.start.hidden === false);
-check("it starts at the capture's own scale", scale.start.shown === "100%", scale.start.shown);
+check("the control is on screen once a headset is offered", scale.hidden === false);
+check("it starts at the capture as shot", scale.start.shown === "100%", scale.start.shown);
 check("at 100% the room is drawn at true angular scale",
   Math.abs(scale.start.width - 187) <= 14, `${scale.start.width} px — expected about 187`);
-check("moving it says where it is now", scale.smaller.shown === "60%", scale.smaller.shown);
-/* The whole point of the control, and the half of it that can be silently
-   backwards. */
-check("60% makes the room smaller, not larger",
-  scale.smaller.width < scale.start.width,
-  `60% drew ${scale.smaller.width} px against ${scale.start.width} px at 100%`);
-check("and by the amount the number promises",
-  Math.abs(scale.smaller.width - 109) <= 14, `${scale.smaller.width} px — expected about 109`);
-/* The old floor. A person in a real room reported that even at 60% an outlet
-   still read the size of a head — the control has to keep going. */
-check("the slider reaches 30%", scale.min === "30", String(scale.min));
-check("30% shrinks the room to half of what 60% offered",
-  scale.smallest.shown === "30%" && Math.abs(scale.smallest.width - 54) <= 10,
-  `${scale.smallest.width} px — expected about 54`);
-check("160% makes it larger",
-  scale.larger.width > scale.start.width,
-  `160% drew ${scale.larger.width} px against ${scale.start.width} px at 100%`);
-check("and by the amount that number promises",
-  Math.abs(scale.larger.width - 321) <= 16, `${scale.larger.width} px — expected about 321`);
-check("and coming back to 100% returns the capture untouched",
-  Math.abs(scale.back.width - scale.start.width) <= 2,
-  `${scale.back.width} px against ${scale.start.width} px`);
+/* The whole complaint about the first mechanism, made into a check: the
+   capture's geometry must survive every setting untouched. */
+check("and every setting keeps that geometry — nothing is warped",
+  Math.abs(scale.close.width - scale.start.width) <= 3 && Math.abs(scale.middle.width - scale.start.width) <= 3,
+  `30%: ${scale.close.width} px · 50%: ${scale.middle.width} px · 100%: ${scale.start.width} px`);
+/* A monoscopic capture at infinity: both eyes see exactly the same thing,
+   which is precisely why an untouched room reads too large. */
+check("at 100% the two eyes agree — the capture sits at infinity",
+  Math.abs(scale.start.disparity) <= 1, `disparity ${scale.start.disparity} px`);
+check("the slider now stops at the capture as shot",
+  scale.max === "100" && scale.min === "30", `${scale.min}–${scale.max}`);
+/* The mechanism itself: closer walls mean the eyes disagree more. */
+check("30% puts the walls close enough that the eyes disagree",
+  scale.close.disparity >= 10 && scale.close.disparity <= 20,
+  `disparity ${scale.close.disparity} px — expected about 14`);
+check("and 50% disagrees less than 30%, as a farther wall must",
+  scale.middle.disparity > 4 && scale.middle.disparity < scale.close.disparity,
+  `50%: ${scale.middle.disparity} px against 30%: ${scale.close.disparity} px`);
+check("coming back to 100% returns the capture untouched",
+  Math.abs(scale.back.disparity) <= 1 && Math.abs(scale.back.width - scale.start.width) <= 2,
+  `disparity ${scale.back.disparity} px, width ${scale.back.width} px`);
 /* Somebody who has settled how a room should read should not settle it again
    every time they open one. */
 check("and the setting is remembered for next time", Number(scale.stored) === 100, String(scale.stored));
