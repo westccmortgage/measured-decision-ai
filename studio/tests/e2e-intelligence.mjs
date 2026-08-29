@@ -88,6 +88,8 @@ console.log("\n── one project, two channels ──");
      the chain from classify to the page-scoped document reader must run
      exactly as production runs it. */
   world.project_documents = [...(world.project_documents || []), planDocument({
+    id: "doc-invoice", original_filename: "abc-lumber-4471.pdf", document_type: "invoice", status: "failed",
+  }), planDocument({
     id: "doc-mixed", original_filename: "closeout-set.pdf", document_type: "other",
     page_classification: {
       contract: "test", classified_at: "2026-08-26T12:00:00Z", summary: "mixed close-out set",
@@ -235,6 +237,22 @@ console.log("\n── one project, two channels ──");
     /Pages read by AI · not confirmed/.test(classified.provenance)
     && /2 plan pages/.test(classified.provenance) && /1 invoice page/.test(classified.provenance),
     classified.provenance);
+  /* Paperwork is fenced out of plan analysis: fed in, a live project's
+     analysis run failed and dropped the workflow back to intake. The
+     invoice's checkbox is dead, and its chip names what it is instead of
+     wearing a plan-analysis verdict it never earned. */
+  const fenced = await page.evaluate(() => {
+    const row = [...document.querySelectorAll(".document-row")].find((item) => /abc-lumber-4471/.test(item.innerText));
+    return {
+      disabled: row?.querySelector("[data-document-select]")?.disabled,
+      chip: row?.querySelector(".document-status")?.textContent || "",
+    };
+  });
+  check("an invoice can never be selected for plan analysis, whatever its status",
+    fenced.disabled === true, JSON.stringify(fenced));
+  check("and its chip says Paperwork, not a plan-analysis verdict",
+    /Paperwork/.test(fenced.chip), fenced.chip);
+
   check("the mixed file chains itself: classify, then the reader receives ONLY the paperwork pages",
     classified.calls.some((call) => call.name === "document-classify" && call.args?.document_id === "doc-mixed")
     && classified.calls.some((call) => call.name === "document-evidence"
