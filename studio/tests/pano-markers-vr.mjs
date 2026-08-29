@@ -454,7 +454,8 @@ const walked = await page.evaluate(async () => {
   return out;
 });
 check("the Rooms chip waits below the horizon with the list closed",
-  walked.closed?.items.length === 2 && walked.closed.open === false && walked.closed.chipDir[1] < -0.5);
+  walked.closed?.items.length === 3 && walked.closed.open === false && walked.closed.chipDir[1] < -0.5,
+  `${walked.closed?.items.length} items (two rooms and the way back)`);
 check("looking at it and pinching opens the list",
   walked.opened?.open === true, JSON.stringify(walked.opened));
 check("looking at a room lights that room and no other",
@@ -469,15 +470,36 @@ check("the list closed itself and the new room is marked current",
 check("and the XR session never ended", walked.sessionAlive === true);
 
 console.log("\n── taking the headset off ──");
+/* The way back rides in the same menu as the rooms — asked for in exactly
+   those words. Choosing it fires the same session-end path a system gesture
+   does, so this covers both. */
 const left = await page.evaluate(async () => {
-  await window.__xrEnd();
+  window.__xrFrame([0, 0, -1]);
+  let menu = window.__xrMenu();
+  window.__xrFrame(menu.chipDir);
+  window.__xrSelect();
+  window.__xrFrame(menu.chipDir);
+  menu = window.__xrMenu();
+  const exit = menu.items.find((item) => item.exit);
+  if (exit) {
+    window.__xrFrame(exit.dir);
+    window.__xrSelect();
+  }
   await new Promise((r) => setTimeout(r, 400));
   const button = document.querySelector("[data-pano-vr]");
   const canvas = document.querySelector(".pano-overlay canvas");
   const before = canvas?.width;
   await new Promise((r) => setTimeout(r, 300));
-  return { text: button?.textContent.trim(), flatAlive: Boolean(canvas), width: before };
+  return {
+    hadExit: Boolean(exit),
+    sessionDead: !window.__xrLive(),
+    text: button?.textContent.trim(),
+    flatAlive: Boolean(canvas),
+    width: before,
+  };
 });
+check("the menu carries the way back to the screen", left.hadExit === true);
+check("choosing it ends the immersive session", left.sessionDead === true);
 check("the button offers the way back in", /stand in this room/i.test(left.text || ""), left.text);
 check("and the flat viewer is there rather than a black rectangle",
   left.flatAlive === true && left.width > 0, `canvas ${left.width}px`);

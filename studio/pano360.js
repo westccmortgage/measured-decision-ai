@@ -674,8 +674,17 @@
         texture: bakeLabelTexture(room.current ? `● ${room.title}` : room.title, Boolean(room.current)),
         dir: [0, -1, 0],
       }));
-      menu.chipTexture = menu.items.length ? bakeLabelTexture("Rooms ▾", false) : null;
-      if (!menu.items.length) menu.open = false;
+      /* The way out rides in the same list. A person who can walk to any
+         room from inside the headset must be able to walk back to the
+         screen the same way — asked for in exactly those words. */
+      menu.items.push({
+        id: "__exit-vr",
+        exit: true,
+        current: false,
+        texture: bakeLabelTexture("◉ Back to the screen", false),
+        dir: [0, -1, 0],
+      });
+      menu.chipTexture = bakeLabelTexture(headsetRooms.length ? "Rooms ▾" : "◉ Menu", false);
     }
 
     function setHeadsetRooms(list) {
@@ -787,7 +796,7 @@
         window.__xrMenu = () => (xr ? {
           open: xr.menu.open,
           chipDir: xr.menu.chipDir.slice(),
-          items: xr.menu.items.map((item) => ({ id: item.id, dir: item.dir.slice(), current: item.current })),
+          items: xr.menu.items.map((item) => ({ id: item.id, dir: item.dir.slice(), current: item.current, exit: Boolean(item.exit) })),
           lookingChip: xr.menu.lookingChip,
           lookingItem: xr.menu.lookingItem?.id || null,
         } : null);
@@ -802,7 +811,8 @@
             if (menu.lookingItem) {
               const chosen = menu.lookingItem;
               menu.open = false;
-              if (!chosen.current) onRoomChosen?.(chosen.id);
+              if (chosen.exit) exitVR();
+              else if (!chosen.current) onRoomChosen?.(chosen.id);
               return;
             }
             if (menu.lookingChip) {
