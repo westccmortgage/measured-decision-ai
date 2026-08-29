@@ -363,6 +363,28 @@ check("and coming back to 100% returns the capture untouched",
    every time they open one. */
 check("and the setting is remembered for next time", Number(scale.stored) === 100, String(scale.stored));
 
+console.log("\n── the room holds still while the head turns ──");
+/* The report from the headset: the room did not stay, it flowed after the
+   head. The size remap's centre was the gaze itself, so every turn dragged
+   the warp field along. The centre now follows through a slow filter:
+   one quick turn must leave it almost untouched, a settled gaze must
+   re-centre it within a few seconds. */
+const anchored = await page.evaluate(() => {
+  const turned = [0.5, 0, -Math.sqrt(0.75)]; // 30 degrees to the right
+  window.__xrFrame([0, 0, -1]);
+  const start = window.__xrAnchor().slice();
+  window.__xrFrame(turned);
+  const afterOneFrame = window.__xrAnchor().slice();
+  for (let i = 0; i < 400; i += 1) window.__xrFrame(turned);
+  const settled = window.__xrAnchor().slice();
+  const dot = (a, b) => a[0] * b[0] + a[1] * b[1] + a[2] * b[2];
+  return { stayed: dot(afterOneFrame, start), settled: dot(settled, turned) };
+});
+check("one quick turn leaves the room's centre where it was",
+  anchored.stayed > 0.995, `dot with the pre-turn centre: ${anchored.stayed.toFixed(5)}`);
+check("and a settled gaze re-centres it within moments",
+  anchored.settled > 0.99, `dot with the new gaze: ${anchored.settled.toFixed(5)}`);
+
 console.log("\n── taking the headset off ──");
 const left = await page.evaluate(async () => {
   await window.__xrEnd();

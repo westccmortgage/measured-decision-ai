@@ -591,6 +591,8 @@
              Anything else is somebody's preference about how a room reads. */
           angularScale: headsetAngularScale,
         };
+        /* Test hook: the lazy remap centre, observable without a headset. */
+        window.__xrAnchor = () => xr?.anchor || null;
 
         /* A pinch, a controller trigger, a tap — whatever the device calls
            choosing something. Opening the pin somebody is looking at is the
@@ -627,6 +629,26 @@
           const forward = [-head[2], -head[6], -head[10]];
           xr.forward = forward;
 
+          /* The size remap needs a centre, and the centre must NOT be the
+             head: glued to the gaze it dragged the warp field with every
+             turn, and the whole room flowed after the head. The centre
+             follows the gaze through a slow filter instead — effectively
+             still while the head is turning, caught up a second or two
+             after the gaze settles — so the world holds still, and the
+             room-size control keeps working in every direction you end up
+             facing. At 100% the shader ignores the centre entirely. */
+          const previousAnchor = xr.anchor || forward;
+          const dt = Math.min(0.1, Math.max(1 / 90, (time - (xr.anchorTime || time)) / 1000));
+          xr.anchorTime = time;
+          const follow = 1 - Math.exp(-dt / 1.2);
+          const blended = [
+            previousAnchor[0] + (forward[0] - previousAnchor[0]) * follow,
+            previousAnchor[1] + (forward[1] - previousAnchor[1]) * follow,
+            previousAnchor[2] + (forward[2] - previousAnchor[2]) * follow,
+          ];
+          const anchorLength = Math.hypot(blended[0], blended[1], blended[2]) || 1;
+          xr.anchor = [blended[0] / anchorLength, blended[1] / anchorLength, blended[2] / anchorLength];
+
           /* The pin nearest to where somebody is looking, and only if they are
              looking near it at all. Highlighting whatever happens to be closest
              would light one up permanently, wherever the head turned. */
@@ -656,7 +678,7 @@
             gl.bindTexture(gl.TEXTURE_2D, texture);
             gl.uniformMatrix4fv(xrUniforms.invProjection, false, invert4(eyeView.projectionMatrix));
             gl.uniformMatrix3fv(xrUniforms.viewRotation, false, rotation);
-            gl.uniform3f(xrUniforms.forward, forward[0], forward[1], forward[2]);
+            gl.uniform3f(xrUniforms.forward, xr.anchor[0], xr.anchor[1], xr.anchor[2]);
             gl.uniform1f(xrUniforms.angularScale, xr.angularScale);
             gl.drawArrays(gl.TRIANGLES, 0, 3);
 
