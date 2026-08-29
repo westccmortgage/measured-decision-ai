@@ -290,6 +290,48 @@ console.log("\n── 10. the unread pointer lands on the picker it promised ─
   await ctx.close();
 }
 
+console.log("\n── 11. day and night are one studio ──");
+/* The palette swaps, the record does not: night by default, the toggle
+   flips to day, the choice persists through the landing site's own key,
+   and the pre-paint script applies it before the first frame. */
+{
+  const ctx = await browser.newContext({ viewport: { width: 1280, height: 900 } });
+  await ctx.route("**://*/**", (route) =>
+    route.request().url().startsWith(base) ? route.continue() : route.abort());
+  const page5 = await ctx.newPage();
+  await page5.addInitScript(`window.__seed = ${JSON.stringify(seed)};`);
+  await page5.addInitScript({ path: "studio/tests/fake-supabase.js" });
+  await page5.goto(`${base}/studio/`, { waitUntil: "networkidle" });
+  await page5.waitForTimeout(900);
+  const flipped = await page5.evaluate(() => {
+    const before = {
+      theme: document.documentElement.dataset.theme,
+      bg: getComputedStyle(document.body).backgroundColor,
+    };
+    document.querySelector("#theme-toggle")?.click();
+    return {
+      before,
+      after: {
+        theme: document.documentElement.dataset.theme,
+        bg: getComputedStyle(document.body).backgroundColor,
+        stored: window.localStorage.getItem("mdai-theme"),
+        label: document.querySelector("#theme-toggle")?.textContent || "",
+      },
+    };
+  });
+  check("the studio wakes up at night, as always",
+    flipped.before.theme === "dark", JSON.stringify(flipped.before));
+  check("one press turns on the day — palette, storage and label agree",
+    flipped.after.theme === "light" && flipped.after.stored === "light"
+    && flipped.after.bg !== flipped.before.bg && /Day/.test(flipped.after.label),
+    JSON.stringify(flipped.after));
+  await page5.reload({ waitUntil: "networkidle" });
+  await page5.waitForTimeout(700);
+  const kept = await page5.evaluate(() => document.documentElement.dataset.theme);
+  check("and the day survives a reload", kept === "light", String(kept));
+  await ctx.close();
+}
+
 await browser.close();
 server.close();
 
