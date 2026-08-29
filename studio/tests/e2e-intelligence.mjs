@@ -383,6 +383,58 @@ console.log("\n── an architectural set: the reality channel opens without a 
   await context.close();
 }
 
+console.log("\n── a fresh project accepts its plan set ──");
+/* The regression that reached a person: an inner const shadowed the
+   declared document type across the try block, and every plan save threw
+   'Cannot access documentType before initialization' before the upload
+   began. This drives the exact flow — pick a PDF, press Save — with the
+   uploader stubbed, and demands the upload actually starts. */
+{
+  const world = deckTakeoffRows();
+  world.project_documents = [];
+  world.document_baselines = [];
+  world.material_takeoffs = [];
+  world.properties[0].workflow_state = "intake";
+  world.properties[0].active_baseline_id = null;
+
+  const context = await browser.newContext({ viewport: { width: 1280, height: 900 } });
+  await context.route("**://*/**", (r) => (r.request().url().startsWith(base) ? r.continue() : r.abort()));
+  await context.addInitScript(`window.__seed = ${JSON.stringify({ rows: world })};`);
+  await context.addInitScript({ path: "studio/tests/fake-supabase.js" });
+  const page = await context.newPage();
+  const errors = [];
+  page.on("pageerror", (e) => errors.push(String(e).slice(0, 200)));
+  await page.goto(`${base}/studio/plans/?property=prop-1`, { waitUntil: "networkidle" });
+  await page.waitForTimeout(1300);
+
+  const saved = await page.evaluate(async () => {
+    const calls = [];
+    window.MDAIObjectStorage = {
+      upload: async (options) => {
+        calls.push({ entityType: options.entityType, org: options.organizationId, property: options.propertyId });
+        return { record: { id: "doc-new-1" } };
+      },
+    };
+    const input = document.querySelector("#plan-files");
+    const transfer = new DataTransfer();
+    transfer.items.add(new File(["%PDF-1.4 fake"], "Main House RTI Set.pdf", { type: "application/pdf" }));
+    input.files = transfer.files;
+    input.dispatchEvent(new Event("change", { bubbles: true }));
+    await new Promise((resolve) => setTimeout(resolve, 200));
+    document.querySelector("#confirm-upload")?.click();
+    await new Promise((resolve) => setTimeout(resolve, 800));
+    return { calls, toast: document.querySelector(".toast")?.textContent || "" };
+  });
+  check("pressing Save actually starts the upload, with the project it was aimed at",
+    saved.calls.length === 1 && saved.calls[0].entityType === "project_document"
+    && saved.calls[0].org === "org-1" && saved.calls[0].property === "prop-1",
+    JSON.stringify(saved.calls));
+  check("and the save reports success, not an initialization error",
+    /1 plan document saved/.test(saved.toast), saved.toast);
+  check("nothing threw", errors.length === 0, errors.join(" | "));
+  await context.close();
+}
+
 console.log("\n── the vocabulary grows: printed schedules distil into requirements ──");
 /* An architectural set whose reader recorded component_schedules — doors,
    windows, fixtures from PRINTED schedules. The chain must treat that as
