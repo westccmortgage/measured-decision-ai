@@ -204,8 +204,16 @@
     varying vec2 vUv;
     uniform sampler2D label;
     uniform float looking;
+    uniform float dwell;
     void main() {
       vec4 colour = texture2D(label, vUv);
+      /* A bar filling along the bottom of the panel while somebody holds
+         their gaze on it. Without it, waiting is indistinguishable from a
+         control that does nothing — which is how the pinch felt. */
+      if (dwell > 0.0 && vUv.y > 0.86 && vUv.x < dwell) {
+        gl_FragColor = vec4(0.55, 0.91, 0.95, 1.0);
+        return;
+      }
       gl_FragColor = vec4(colour.rgb + vec3(looking * 0.18), colour.a);
     }`;
 
@@ -420,7 +428,15 @@
      from the chip brings it round to where the person now faces. */
   const MENU_CHIP_PITCH = 0.38;
   const MENU_ITEM_PITCH = 0.14;
-  const MENU_HOLD_ANGLE = 0.87;
+  /* The menu stays where it was left. It only comes back around when the
+     person has turned so far that it is behind them — anything tighter and
+     it teleports in front of the eyes on every glance, which is exactly what
+     the headset reported: "however you move your head, it runs with you". */
+  const MENU_HOLD_ANGLE = 2.2;
+  /* Holding a look is the way in. Reported twice from the headset: pinches
+     do not reach this page on that device — not for pins, not for the menu.
+     A gaze needs no controller, no hand tracking and no permission. */
+  const DWELL_SECONDS = 1.1;
   const MENU_CHIP_COS = Math.cos(MENU_CHIP_PITCH);
   const MENU_CHIP_SIN = Math.sin(MENU_CHIP_PITCH);
   const MENU_ITEM_COS = Math.cos(MENU_ITEM_PITCH);
@@ -669,13 +685,22 @@
       ink.closePath();
       ink.fill();
       ink.stroke();
-      ink.font = "600 40px Inter, system-ui, sans-serif";
       ink.textAlign = "center";
       ink.textBaseline = "middle";
       ink.fillStyle = current ? "#8ce8f3" : "#edf5f7";
-      let shown = String(text || "");
-      while (shown.length > 4 && ink.measureText(shown).width > 452) shown = `${shown.slice(0, -2).trimEnd()}…`;
-      ink.fillText(shown, 256, 50);
+      const shown = String(text || "");
+      /* Shrink the lettering to fit before shortening the words: a room
+         called "Primary bathroom, second floor" should read as itself, not
+         as an ellipsis. Only past the smallest legible size is it cut. */
+      let size = 40;
+      ink.font = `600 ${size}px Inter, system-ui, sans-serif`;
+      while (size > 26 && ink.measureText(shown).width > 452) {
+        size -= 2;
+        ink.font = `600 ${size}px Inter, system-ui, sans-serif`;
+      }
+      let fitted = shown;
+      while (fitted.length > 4 && ink.measureText(fitted).width > 452) fitted = `${fitted.slice(0, -2).trimEnd()}…`;
+      ink.fillText(fitted, 256, 50);
       const baked = gl.createTexture();
       gl.bindTexture(gl.TEXTURE_2D, baked);
       gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
@@ -707,7 +732,9 @@
         texture: bakeLabelTexture("◉ Back to the screen", false),
         dir: [0, -1, 0],
       });
-      menu.chipTexture = bakeLabelTexture(headsetRooms.length ? "Rooms ▾" : "◉ Menu", false);
+      /* The chip says how it is used, because a held look is not a gesture
+         anybody arrives already knowing. */
+      menu.chipTexture = bakeLabelTexture(headsetRooms.length ? "Rooms ▾ · hold a look" : "◉ Menu · hold a look", false);
     }
 
     function setHeadsetRooms(list) {
@@ -794,6 +821,7 @@
           labelSize: gl.getUniformLocation(labelProgram, "labelSize"),
           label: gl.getUniformLocation(labelProgram, "label"),
           looking: gl.getUniformLocation(labelProgram, "looking"),
+          dwell: gl.getUniformLocation(labelProgram, "dwell"),
           labelDistance: gl.getUniformLocation(labelProgram, "labelDistance"),
           eyeOffset: gl.getUniformLocation(labelProgram, "eyeOffset"),
         };
@@ -813,7 +841,7 @@
              positive radius is somebody's preference about how far the
              walls should feel. */
           sphereRadius: headsetRadius,
-          menu: { open: false, items: [], chipTexture: null, chipDir: [0, -1, 0], heading: null, lookingChip: false, lookingItem: null },
+          menu: { open: false, items: [], chipTexture: null, chipDir: [0, -1, 0], heading: null, lookingChip: false, lookingItem: null, dwellOn: null, dwell: 0, dwellFired: false },
         };
         rebuildRoomMenu();
         /* Test hooks: the lazy remap centre, the pin list, and the room menu —
@@ -828,13 +856,16 @@
           items: xr.menu.items.map((item) => ({ id: item.id, dir: item.dir.slice(), current: item.current, exit: Boolean(item.exit) })),
           lookingChip: xr.menu.lookingChip,
           lookingItem: xr.menu.lookingItem?.id || null,
+          dwellOn: xr.menu.dwellOn,
+          dwell: xr.menu.dwell,
         } : null);
 
-        /* A pinch, a controller trigger, a tap — whatever the device calls
-           choosing something. The menu owns the gesture while it is on
-           screen; otherwise the pin somebody is looking at opens, which is
-           the whole point of putting pins in the room. */
-        xrSession.addEventListener("select", () => {
+        /* One place where choosing happens, however it was asked for: a
+           held gaze, a pinch, a controller trigger, a grip. The menu owns
+           the choice while it is on screen; otherwise the pin somebody is
+           looking at opens, which is the whole point of putting pins in the
+           room. */
+        function chooseWhatIsLookedAt() {
           const menu = xr?.menu;
           if (menu?.items.length) {
             if (menu.lookingItem) {
@@ -842,21 +873,39 @@
               menu.open = false;
               if (chosen.exit) exitVR();
               else if (!chosen.current) onRoomChosen?.(chosen.id);
-              return;
+              return true;
             }
             if (menu.lookingChip) {
               menu.open = !menu.open;
-              return;
+              return true;
             }
             if (menu.open) {
               menu.open = false;
-              return;
+              return true;
             }
           }
           const marker = xr?.looking;
-          if (!marker) return;
+          if (!marker) return false;
           onMarkerChosen?.(marker.id);
-        });
+          return true;
+        }
+        xr.choose = chooseWhatIsLookedAt;
+
+        /* Devices disagree about which gesture they report — a pinch, a
+           trigger, a grip — so both completion events are heard. Only the
+           completion ones: pairing these with their *start twins would fire
+           twice for a single deliberate press held for a moment. A short
+           guard collapses a device that reports both at once. */
+        let lastChoice = 0;
+        const chooseOnce = () => {
+          const now = performance.now();
+          if (now - lastChoice < 150) return;
+          lastChoice = now;
+          chooseWhatIsLookedAt();
+        };
+        for (const name of ["select", "squeeze"]) {
+          xrSession.addEventListener(name, chooseOnce);
+        }
 
         xrSession.requestAnimationFrame(function xrFrame(time, frame) {
           if (!xr?.session) return;
@@ -950,6 +999,27 @@
             menu.lookingChip = false;
             menu.lookingItem = null;
           }
+
+          /* Holding a look is choosing. The gaze must leave and come back
+             before the same thing fires again, so opening the list does not
+             instantly close it under a gaze that has not moved yet. */
+          const dwellOn = menu.lookingItem?.id || (menu.lookingChip ? "__chip" : null);
+          if (dwellOn !== menu.dwellOn) {
+            menu.dwellOn = dwellOn;
+            menu.dwell = 0;
+            menu.dwellFired = false;
+          } else if (dwellOn && !menu.dwellFired) {
+            menu.dwell = Math.min(1, menu.dwell + dt / DWELL_SECONDS);
+            if (menu.dwell >= 1) {
+              menu.dwellFired = true;
+              xr.choose?.();
+              /* Choosing can end the session — the way out lives in this
+                 very list — and the rest of this frame would then be drawing
+                 into a room that no longer exists. */
+              if (!xr?.session) return;
+            }
+          }
+          if (!dwellOn) menu.dwell = 0;
 
           /* The pin nearest to where somebody is looking, and only if they are
              looking near it at all. Highlighting whatever happens to be closest
@@ -1053,18 +1123,21 @@
               gl.uniform1i(labelUniforms.label, 0);
               gl.activeTexture(gl.TEXTURE0);
               const labelScale = menuDistance / 6.0;
-              const drawLabel = (labelTexture, dir, width, height, lit) => {
+              const drawLabel = (labelTexture, dir, width, height, lit, filling) => {
                 gl.bindTexture(gl.TEXTURE_2D, labelTexture);
                 gl.uniform3f(labelUniforms.labelDirection, dir[0], dir[1], dir[2]);
                 gl.uniform2f(labelUniforms.labelSize, width * labelScale, height * labelScale);
                 gl.uniform1f(labelUniforms.looking, lit ? 1 : 0);
+                gl.uniform1f(labelUniforms.dwell, filling ? menu.dwell : 0);
                 gl.drawArrays(gl.TRIANGLES, 0, 6);
               };
-              if (menu.chipTexture) drawLabel(menu.chipTexture, menu.chipDir, 0.9, 0.2, menu.lookingChip);
+              if (menu.chipTexture) {
+                drawLabel(menu.chipTexture, menu.chipDir, 0.9, 0.2, menu.lookingChip, menu.dwellOn === "__chip");
+              }
               if (menu.open) {
                 for (const item of menu.items) {
                   const lit = item === menu.lookingItem;
-                  drawLabel(item.texture, item.dir, lit ? 1.3 : 1.15, lit ? 0.26 : 0.23, lit);
+                  drawLabel(item.texture, item.dir, lit ? 1.3 : 1.15, lit ? 0.26 : 0.23, lit, menu.dwellOn === item.id);
                 }
               }
               gl.disable(gl.BLEND);
