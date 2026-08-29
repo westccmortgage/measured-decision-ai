@@ -230,6 +230,34 @@ console.log("\n── a plan set that printed no dimensions ──");
   await context.close();
 }
 
+/* ── a corrected line keeps what it corrected ──────────────────────────────
+   The product's rule is that an AI reading is never presented as fact. Its
+   mirror is easy to lose: once a person overrules a reading, the screen must
+   not quietly bury the fact that the machine had been wrong. An auditor
+   reading the row has to be able to see both numbers. */
+{
+  const world = deckTakeoffRows();
+  world.takeoff_line_reviews = [{
+    id: "rev-c", baseline_id: "bl-1", kind: "wood_framing", state: "active",
+    line_key: "column COL.2: 8x8 #1",
+    verdict: "corrected", value: "9 drawn on plan", reviewer_role: "engineer",
+    reviewed_at: "2026-08-26T05:00:00Z",
+  }];
+  const { context, page, errors } = await openPlans(world);
+  const shown = await page.evaluate(() => ({
+    rows: [...document.querySelectorAll("#takeoff-table tbody tr")].map((row) => row.innerText.replace(/\s+/g, " ").trim()),
+  }));
+  const corrected = shown.rows.filter((row) => /COL\.2/.test(row));
+  check("a corrected line shows the confirmed number and the reading it replaced",
+    corrected.some((row) => /9 drawn on plan/.test(row) && /AI read 12 drawn on plan/.test(row) && /corrected by engineer/.test(row)),
+    JSON.stringify(corrected));
+  check("and every untouched line stays undecorated",
+    !shown.rows.some((row) => !/COL\.2/.test(row) && /AI read/.test(row)),
+    JSON.stringify(shown.rows.filter((row) => /AI read/.test(row))));
+  check("nothing threw while showing the correction", errors.length === 0, errors[0] || "");
+  await context.close();
+}
+
 await browser.close(); server.close();
 console.log(bad ? `\n${bad} FAILURES` : "\nALL OK");
 process.exit(bad ? 1 : 0);

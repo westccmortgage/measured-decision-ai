@@ -871,3 +871,7 @@ body.view-visual .roadmap-section,
 body.view-visual .routes-section,
 body.view-visual .takeoff-section { display: none; }
 @media (max-width: 760px) { .visual-grid { grid-template-columns: minmax(0, 1fr); } }
+
+/* A corrected quantity keeps the reading it replaced in view: provenance is
+   not provenance if the screen quietly drops the half that was wrong. */
+.corrected-from { display: block; margin-top: 3px; color: var(--amber); font-size: 10px; letter-spacing: .02em; }
