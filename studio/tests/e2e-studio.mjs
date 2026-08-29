@@ -290,6 +290,31 @@ console.log("\n── 10. the unread pointer lands on the picker it promised ─
   await ctx.close();
 }
 
+console.log("\n── 10b. the plans door is always in the header ──");
+/* A person with rooms had no way from the evidence screen to Plan
+   Intelligence — the door only appeared in special states. Now it is a
+   header button, always. */
+{
+  const ctx = await browser.newContext({ viewport: { width: 430, height: 900 } });
+  await ctx.route("**://*/**", (route) =>
+    route.request().url().startsWith(base) ? route.continue() : route.abort());
+  const page4b = await ctx.newPage();
+  await page4b.addInitScript(`window.__seed = ${JSON.stringify(seed)};`);
+  await page4b.addInitScript({ path: "studio/tests/fake-supabase.js" });
+  await page4b.goto(`${base}/studio/?property=prop-1`, { waitUntil: "networkidle" });
+  await page4b.waitForTimeout(1200);
+  const door = await page4b.evaluate(() => {
+    const button = document.querySelector("#focus-open-plans");
+    const visible = Boolean(button && button.offsetParent !== null);
+    button?.click();
+    return { visible };
+  });
+  await page4b.waitForTimeout(600);
+  check("the Plans button is visible in the studio header and opens Plan Intelligence",
+    door.visible && /\/studio\/plans\/\?property=prop-1/.test(page4b.url()), page4b.url());
+  await ctx.close();
+}
+
 console.log("\n── 11. day and night are one studio ──");
 /* The palette swaps, the record does not: night by default, the toggle
    flips to day, the choice persists through the landing site's own key,
