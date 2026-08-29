@@ -2241,8 +2241,10 @@ async function savePendingFiles() {
     await openProperty(state.property.id);
     /* Sources route themselves: delivery paperwork goes straight to the
        document-evidence worker, which records what the paper says was
-       delivered — never installation — and refreshes reconciliation. */
-    const documentType = $("#document-type")?.value || "other";
+       delivered — never installation — and refreshes reconciliation.
+       The declared type was read once at the top of this function — a
+       second const here shadowed it across the whole try block and made
+       every upload throw before it began. */
     if (["invoice", "delivery_ticket", "receipt"].includes(documentType) && uploadedDocumentIds.length) {
       setMessage("Reading the delivery paperwork — recording what it documents as delivered…");
       for (const savedId of uploadedDocumentIds) {
