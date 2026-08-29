@@ -203,19 +203,23 @@ const opened = await page.evaluate(async () => {
     ],
     onRoomChosen: (id) => {
       window.__roomChosen = id;
-      const blue = document.createElement("canvas");
-      blue.width = 64; blue.height = 32;
-      const paint = blue.getContext("2d");
-      paint.fillStyle = "#2040d0"; paint.fillRect(0, 0, 64, 32);
+      /* Each room swaps in a flat colour of its own, so which room the
+         sphere is actually showing is a pixel the test can read back — in
+         both directions, not just away from home. */
+      const board = document.createElement("canvas");
+      board.width = 64; board.height = 32;
+      const paint = board.getContext("2d");
+      paint.fillStyle = id === "room-b" ? "#2040d0" : "#20a050";
+      paint.fillRect(0, 0, 64, 32);
       window.MDAIPano360.swapRoom({
-        src: blue.toDataURL("image/png"),
+        src: board.toDataURL("image/png"),
         mediaType: "image/png",
-        title: "Dining Room",
+        title: id === "room-b" ? "Dining Room" : "Family Room",
         subtitle: "test capture",
         markers: [],
         rooms: [
-          { id: "room-a", title: "Family Room" },
-          { id: "room-b", title: "Dining Room", current: true },
+          { id: "room-a", title: "Family Room", current: id === "room-a" },
+          { id: "room-b", title: "Dining Room", current: id === "room-b" },
         ],
       });
     },
@@ -442,18 +446,26 @@ console.log("\n── the menu stays where it can be reached ──");
 const parked = await page.evaluate(() => {
   const dot = (a, b) => a[0] * b[0] + a[1] * b[1] + a[2] * b[2];
   const ahead = [0, 0, -1];
-  for (let i = 0; i < 40; i += 1) window.__xrFrame(ahead);
+  const run = (dir, frames) => { for (let i = 0; i < frames; i += 1) window.__xrFrame(dir); };
+  run(ahead, 30);
   const rest = window.__xrMenu();
-  /* Look at the chip and keep looking: it must not drift away. */
+  /* Look at the chip briefly: it must not drift away. Kept well short of
+     the dwell time, which this section is not about. */
   const aim = rest.chipDir.slice();
-  for (let i = 0; i < 90; i += 1) window.__xrFrame(aim);
+  run(aim, 30);
   const held = window.__xrMenu();
   /* Chase downwards, where the old code's heading collapsed. */
-  for (let i = 0; i < 90; i += 1) window.__xrFrame([0, -0.97, -0.24]);
+  run([0, -0.97, -0.24], 30);
   const chased = window.__xrMenu();
-  /* Turn right round: the menu should come back to where the person faces. */
+  /* An ordinary look around the room — a quarter turn — must leave the menu
+     exactly where it was left. It used to jump in front of the eyes every
+     fifty degrees, which in the headset read as "however you move your head
+     it runs with you". */
+  run([1, 0, 0], 30);
+  const glanced = window.__xrMenu();
+  /* Turn right round: only then does it come back to where the person faces. */
   const behind = [0, 0, 1];
-  for (let i = 0; i < 90; i += 1) window.__xrFrame(behind);
+  run(behind, 30);
   const followed = window.__xrMenu();
   return {
     aheadDot: dot(rest.chipDir, ahead),
@@ -461,6 +473,7 @@ const parked = await page.evaluate(() => {
     drift: dot(rest.chipDir, held.chipDir),
     lookingChip: held.lookingChip,
     chasedDot: dot(chased.chipDir, held.chipDir),
+    glancedDot: dot(glanced.chipDir, held.chipDir),
     behindDot: dot(followed.chipDir, behind),
   };
 });
@@ -473,6 +486,8 @@ check("and it holds still instead of running from the eye",
   parked.drift > 0.999, `moved by ${(Math.acos(Math.min(1, parked.drift)) * 57.3).toFixed(2)}°`);
 check("chasing it downwards never flips it overhead",
   parked.chasedDot > 0.999, `moved by ${(Math.acos(Math.min(1, parked.chasedDot)) * 57.3).toFixed(2)}°`);
+check("a quarter turn to look around leaves it exactly where it was left",
+  parked.glancedDot > 0.999, `moved by ${(Math.acos(Math.min(1, parked.glancedDot)) * 57.3).toFixed(2)}°`);
 check("but turning right round brings it back to where the person now faces",
   parked.behindDot > 0.9, `dot with the new facing ${parked.behindDot.toFixed(3)}`);
 
@@ -530,6 +545,9 @@ const walked = await page.evaluate(async () => {
   if (!target) return out;
   window.__xrFrame(target.dir);
   out.lit = window.__xrMenu().lookingItem;
+  /* Two separate gestures, spaced the way a hand actually moves — the
+     viewer collapses the burst one gesture makes, not two real presses. */
+  await new Promise((resolve) => setTimeout(resolve, 250));
   window.__xrSelect();
   out.chosen = window.__roomChosen || null;
   /* The swap loads a data-URL image; give it a beat, then look ahead. */
@@ -557,22 +575,65 @@ check("the list closed itself and the new room is marked current",
   walked.after?.open === false && walked.after.items.find((item) => item.id === "room-b")?.current === true);
 check("and the XR session never ended", walked.sessionAlive === true);
 
+console.log("\n── a held look is the way in, with no gesture at all ──");
+/* Twice from the headset: pinches never reach this page on that device —
+   not for pins, not for the menu. A gaze needs no controller, no hand
+   tracking and no permission, so holding a look must open and choose on
+   its own. Not one select event is fired anywhere in this section. */
+const gazed = await page.evaluate(async () => {
+  const run = (dir, frames) => { for (let i = 0; i < frames; i += 1) window.__xrFrame(dir); };
+  const out = {};
+  /* Settle, then hold the look on the chip. */
+  run([0, 0, -1], 30);
+  const chip = window.__xrMenu().chipDir.slice();
+  run(chip, 20);
+  out.partway = window.__xrMenu().dwell;
+  run(chip, 120);
+  out.openedByGaze = window.__xrMenu().open;
+  /* Holding on does not flicker it back closed. */
+  run(chip, 120);
+  out.stillOpen = window.__xrMenu().open;
+  /* Now hold a look on the room we are not in, and walk back to it. */
+  window.__roomChosen = null;
+  const target = window.__xrMenu().items.find((item) => item.id === "room-a");
+  run(target.dir, 130);
+  out.chosen = window.__roomChosen || null;
+  out.closedAfterChoosing = window.__xrMenu().open;
+  await new Promise((resolve) => setTimeout(resolve, 700));
+  window.__xrFrame([0, 0, -1]);
+  const surface = document.querySelector(".pano-overlay canvas");
+  const gl = surface.getContext("webgl2") || surface.getContext("webgl");
+  const px = new Uint8Array(4);
+  gl.readPixels(256, 256, 1, 1, gl.RGBA, gl.UNSIGNED_BYTE, px);
+  out.centre = [px[0], px[1], px[2]];
+  return out;
+});
+check("the bar fills while the look is held", gazed.partway > 0.1 && gazed.partway < 0.9,
+  `filled to ${(gazed.partway * 100).toFixed(0)}% after a fifth of a second`);
+check("holding a look on the chip opens the list — no pinch anywhere",
+  gazed.openedByGaze === true);
+check("and keeping the eyes there does not flicker it shut",
+  gazed.stillOpen === true);
+check("holding a look on a room walks into it",
+  gazed.chosen === "room-a", String(gazed.chosen));
+check("and the sphere really is that room now — green, the way back",
+  gazed.centre[1] > 120 && gazed.centre[2] < 110, `centre pixel ${String(gazed.centre)}`);
+check("and the list closes behind you", gazed.closedAfterChoosing === false);
+
 console.log("\n── taking the headset off ──");
 /* The way back rides in the same menu as the rooms — asked for in exactly
    those words. Choosing it fires the same session-end path a system gesture
    does, so this covers both. */
 const left = await page.evaluate(async () => {
-  window.__xrFrame([0, 0, -1]);
+  const run = (dir, frames) => { for (let i = 0; i < frames; i += 1) window.__xrFrame(dir); };
+  run([0, 0, -1], 20);
   let menu = window.__xrMenu();
-  window.__xrFrame(menu.chipDir);
-  window.__xrSelect();
-  window.__xrFrame(menu.chipDir);
+  /* Left by gaze alone, the way somebody whose device sends no gesture at
+     all has to leave — the way out must not depend on a pinch either. */
+  run(menu.chipDir, 130);
   menu = window.__xrMenu();
   const exit = menu.items.find((item) => item.exit);
-  if (exit) {
-    window.__xrFrame(exit.dir);
-    window.__xrSelect();
-  }
+  if (exit) run(exit.dir, 130);
   await new Promise((r) => setTimeout(r, 400));
   const button = document.querySelector("[data-pano-vr]");
   const canvas = document.querySelector(".pano-overlay canvas");
