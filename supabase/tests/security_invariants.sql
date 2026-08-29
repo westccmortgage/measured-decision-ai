@@ -1187,6 +1187,44 @@ select pg_temp.check('a schedule row nobody could count stays an open RFI, never
             and quantity is null and method = 'OPEN_RFI' and state = 'active'));
 reset role;
 
+-- One mark, one requirement (042): the reader reports sheet by sheet — the
+-- same door in the door schedule and again on a floor plan — but the record
+-- speaks component by component. Duplicates merge with united provenance;
+-- a mark shared by two categories stays two components with honest keys.
+insert into public.document_baselines(id, organization_id, property_id, version, state,
+  source_document_ids, analysis, created_by)
+values ('eeeeeeee-0000-0000-0000-000000000004','aaaaaaaa-0000-0000-0000-000000000001',
+  'bbbbbbbb-0000-0000-0000-000000000001', 4, 'approved', '{}'::uuid[],
+  '{"component_schedules":[
+     {"mark":"101.1","category":"door","description":"3-0 x 8-0 flush","unit":"count","count_scheduled":1,"count_drawn":0,"count_proposed":1,"count_confidence":"high","count_note":"door schedule","source_refs":["A-6.0"]},
+     {"mark":"101.1","category":"door","description":"3-0 x 8-0 flush door, first floor plan","unit":"count","count_scheduled":1,"count_drawn":1,"count_proposed":1,"count_confidence":"medium","count_note":"tag on floor plan","source_refs":["A-2.1"]},
+     {"mark":"201","category":"door","description":"pocket door","unit":"count","count_scheduled":1,"count_drawn":0,"count_proposed":0,"count_confidence":"low","count_note":"","source_refs":["A-6.0"]},
+     {"mark":"201","category":"window","description":"fixed window","unit":"count","count_scheduled":1,"count_drawn":0,"count_proposed":0,"count_confidence":"high","count_note":"","source_refs":["A-6.1"]}
+   ]}'::jsonb,
+  '11111111-1111-1111-1111-111111111111');
+
+set local role authenticated;
+set local test.uid = '33333333-3333-3333-3333-333333333333';
+select public.extract_project_requirements('eeeeeeee-0000-0000-0000-000000000004');
+select pg_temp.check('the same mark read from two sheets is one requirement, with both sheets in its provenance',
+  (select count(*) from public.project_requirements
+   where baseline_id = 'eeeeeeee-0000-0000-0000-000000000004' and component_key = '101.1' and state = 'active') = 1
+  and exists (select 1 from public.project_requirements
+          where baseline_id = 'eeeeeeee-0000-0000-0000-000000000004' and component_key = '101.1' and state = 'active'
+            and quantity = 1 and confidence = 'high'
+            and source_refs @> '["A-6.0"]'::jsonb and source_refs @> '["A-2.1"]'::jsonb));
+select pg_temp.check('a mark shared by two categories stays two components with honest keys',
+  exists (select 1 from public.project_requirements
+          where baseline_id = 'eeeeeeee-0000-0000-0000-000000000004' and component_key = '201 · door' and state = 'active')
+  and exists (select 1 from public.project_requirements
+          where baseline_id = 'eeeeeeee-0000-0000-0000-000000000004' and component_key = '201 · window' and state = 'active')
+  and not exists (select 1 from public.project_requirements
+          where baseline_id = 'eeeeeeee-0000-0000-0000-000000000004' and component_key = '201' and state = 'active'));
+select pg_temp.check('four sheet rows distil into exactly three components — never more, never fewer',
+  (select count(*) from public.project_requirements
+   where baseline_id = 'eeeeeeee-0000-0000-0000-000000000004' and state = 'active') = 3);
+reset role;
+
 set local role authenticated;
 set local test.uid = '22222222-2222-2222-2222-222222222222';
 select public.record_observation('bbbbbbbb-0000-0000-0000-000000000001', 'P1', 'delivered_documented', 14, null, '{}'::uuid[], null, 'DOCUMENT', 'high', 'supplier invoice 4471');
