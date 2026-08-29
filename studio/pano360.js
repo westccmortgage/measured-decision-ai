@@ -436,7 +436,7 @@
   /* Holding a look is the way in. Reported twice from the headset: pinches
      do not reach this page on that device — not for pins, not for the menu.
      A gaze needs no controller, no hand tracking and no permission. */
-  const DWELL_SECONDS = 1.1;
+  const DWELL_SECONDS = 0.9;
   const MENU_CHIP_COS = Math.cos(MENU_CHIP_PITCH);
   const MENU_CHIP_SIN = Math.sin(MENU_CHIP_PITCH);
   const MENU_ITEM_COS = Math.cos(MENU_ITEM_PITCH);
@@ -711,6 +711,37 @@
       return baked;
     }
 
+    /* The way in is a dot, not a signboard. A banner the width of a door
+       sat in the middle of the room and was, in the headset's own words,
+       annoying; the menu it opens is the thing worth showing, and only
+       once it is asked for. */
+    function bakeDotTexture() {
+      const board = document.createElement("canvas");
+      board.width = 128;
+      board.height = 128;
+      const ink = board.getContext("2d");
+      ink.clearRect(0, 0, 128, 128);
+      ink.beginPath();
+      ink.arc(64, 64, 40, 0, Math.PI * 2);
+      ink.fillStyle = "rgba(7, 20, 33, 0.82)";
+      ink.fill();
+      ink.lineWidth = 8;
+      ink.strokeStyle = "rgba(140, 232, 243, 0.95)";
+      ink.stroke();
+      ink.beginPath();
+      ink.arc(64, 64, 13, 0, Math.PI * 2);
+      ink.fillStyle = "rgba(140, 232, 243, 0.95)";
+      ink.fill();
+      const baked = gl.createTexture();
+      gl.bindTexture(gl.TEXTURE_2D, baked);
+      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
+      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
+      gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, board);
+      return baked;
+    }
+
     function rebuildRoomMenu() {
       if (!xr) return;
       const menu = xr.menu;
@@ -732,9 +763,12 @@
         texture: bakeLabelTexture("◉ Back to the screen", false),
         dir: [0, -1, 0],
       });
-      /* The chip says how it is used, because a held look is not a gesture
-         anybody arrives already knowing. */
-      menu.chipTexture = bakeLabelTexture(headsetRooms.length ? "Rooms ▾ · hold a look" : "◉ Menu · hold a look", false);
+      menu.chipTexture = bakeDotTexture();
+      /* The words appear only while the dot is aimed at: a held look is not
+         a gesture anybody arrives already knowing, but nobody needs to be
+         told twice, and nobody needs a signboard in their room. */
+      if (menu.hintTexture) gl.deleteTexture(menu.hintTexture);
+      menu.hintTexture = bakeLabelTexture(headsetRooms.length ? "Rooms · keep looking" : "Menu · keep looking", false);
     }
 
     function setHeadsetRooms(list) {
@@ -841,13 +875,14 @@
              positive radius is somebody's preference about how far the
              walls should feel. */
           sphereRadius: headsetRadius,
-          menu: { open: false, items: [], chipTexture: null, chipDir: [0, -1, 0], heading: null, lookingChip: false, lookingItem: null, dwellOn: null, dwell: 0, dwellFired: false },
+          menu: { open: false, items: [], chipTexture: null, chipDir: [0, -1, 0], heading: null, lookingChip: false, lookingItem: null, dwellOn: null, dwell: 0, dwellFired: false, hintTexture: null },
         };
         rebuildRoomMenu();
         /* Test hooks: the lazy remap centre, the pin list, and the room menu —
            each observable and drivable without a headset, so what only runs
            inside one can still be proven on a machine that has none. */
         window.__xrAnchor = () => xr?.anchor || null;
+        window.__xrForward = () => (xr ? xr.forward.slice() : null);
         window.__xrSetMarkers = (list) => setHeadsetMarkers(list || []);
         window.__xrMenu = () => (xr ? {
           open: xr.menu.open,
@@ -927,10 +962,23 @@
           gl.vertexAttribPointer(xrPosition, 2, gl.FLOAT, false, 0, 0);
           gl.activeTexture(gl.TEXTURE0);
           gl.bindTexture(gl.TEXTURE_2D, texture);
-          /* Where the head is pointing, taken once per frame from the first
-             view: the two eyes look the same way. */
-          const head = pose.views[0].transform.inverse.matrix;
-          const forward = [-head[2], -head[6], -head[10]];
+          /* Where the head is pointing — averaged across the eyes rather
+             than taken from the left one. Headset lenses are canted
+             outward by several degrees, so one eye's forward is not the
+             head's: aim taken from it sits off to one side of where the
+             person is actually looking, and a target they are staring
+             straight at never lights up. */
+          const forward = [0, 0, 0];
+          for (const eyeView of pose.views) {
+            const m = eyeView.transform.inverse.matrix;
+            forward[0] -= m[2];
+            forward[1] -= m[6];
+            forward[2] -= m[10];
+          }
+          const forwardLength = Math.hypot(forward[0], forward[1], forward[2]) || 1;
+          forward[0] /= forwardLength;
+          forward[1] /= forwardLength;
+          forward[2] /= forwardLength;
           xr.forward = forward;
 
           /* The image no longer needs a centre — nothing is warped any more,
@@ -985,7 +1033,7 @@
               item.dir = [turned[0] * MENU_ITEM_COS, -MENU_ITEM_SIN, turned[1] * MENU_ITEM_COS];
             });
             let lookedItem = null;
-            let bestItem = Math.cos(0.19);
+            let bestItem = Math.cos(0.22);
             if (menu.open) {
               for (const item of menu.items) {
                 const dot = item.dir[0] * forward[0] + item.dir[1] * forward[1] + item.dir[2] * forward[2];
@@ -994,7 +1042,7 @@
             }
             menu.lookingItem = lookedItem;
             const chipDot = menu.chipDir[0] * forward[0] + menu.chipDir[1] * forward[1] + menu.chipDir[2] * forward[2];
-            menu.lookingChip = !lookedItem && chipDot > Math.cos(0.22);
+            menu.lookingChip = !lookedItem && chipDot > Math.cos(0.30);
           } else {
             menu.lookingChip = false;
             menu.lookingItem = null;
@@ -1075,6 +1123,28 @@
                sphere at infinity they keep the old fixed six metres. */
             const surfaceDistance = xr.sphereRadius > 0 ? xr.sphereRadius : 6.0;
 
+            /* A reticle at the gaze. Without one, nobody in a headset can
+               tell where the page thinks they are looking — which is how
+               "I look right at it and nothing happens" happens. */
+            gl.useProgram(markerProgram);
+            gl.bindBuffer(gl.ARRAY_BUFFER, markerQuad);
+            gl.enableVertexAttribArray(markerCorner);
+            gl.vertexAttribPointer(markerCorner, 2, gl.FLOAT, false, 0, 0);
+            gl.enable(gl.BLEND);
+            gl.blendFunc(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA);
+            gl.uniformMatrix4fv(markerUniforms.projection, false, eyeView.projectionMatrix);
+            gl.uniformMatrix3fv(markerUniforms.viewRotationInverse, false, rotation);
+            gl.uniform1f(markerUniforms.markerDistance, 1.6);
+            gl.uniform3f(markerUniforms.eyeOffset, offset[0], offset[1], offset[2]);
+            gl.uniform3f(markerUniforms.markerDirection, forward[0], forward[1], forward[2]);
+            gl.uniform1f(markerUniforms.markerSize, 0.022);
+            gl.uniform1f(markerUniforms.looking, 0);
+            const aiming = menu.lookingChip || menu.lookingItem || looked;
+            gl.uniform4f(markerUniforms.markerColour,
+              aiming ? 0.55 : 1, aiming ? 0.91 : 1, aiming ? 0.95 : 1, aiming ? 0.95 : 0.55);
+            gl.drawArrays(gl.TRIANGLES, 0, 6);
+            gl.disable(gl.BLEND);
+
             if (xr.markers.length && !menu.open) {
               gl.useProgram(markerProgram);
               gl.bindBuffer(gl.ARRAY_BUFFER, markerQuad);
@@ -1131,8 +1201,19 @@
                 gl.uniform1f(labelUniforms.dwell, filling ? menu.dwell : 0);
                 gl.drawArrays(gl.TRIANGLES, 0, 6);
               };
-              if (menu.chipTexture) {
-                drawLabel(menu.chipTexture, menu.chipDir, 0.9, 0.2, menu.lookingChip, menu.dwellOn === "__chip");
+              if (!menu.open && menu.chipTexture) {
+                /* Small, and a little larger while aimed at — the dot is the
+                   whole of the closed menu. */
+                const dotSize = menu.lookingChip ? 0.17 : 0.13;
+                drawLabel(menu.chipTexture, menu.chipDir, dotSize, dotSize, menu.lookingChip, menu.dwellOn === "__chip");
+                /* The words, only while somebody is aiming at it. */
+                if (menu.lookingChip && menu.hintTexture) {
+                  const under = [menu.chipDir[0], menu.chipDir[1] - 0.13, menu.chipDir[2]];
+                  const underLength = Math.hypot(under[0], under[1], under[2]) || 1;
+                  drawLabel(menu.hintTexture,
+                    [under[0] / underLength, under[1] / underLength, under[2] / underLength],
+                    0.75, 0.17, false, false);
+                }
               }
               if (menu.open) {
                 for (const item of menu.items) {
@@ -1151,6 +1232,7 @@
         xrSession.addEventListener("end", () => {
           for (const item of xr?.menu.items || []) gl.deleteTexture(item.texture);
           if (xr?.menu.chipTexture) gl.deleteTexture(xr.menu.chipTexture);
+          if (xr?.menu.hintTexture) gl.deleteTexture(xr.menu.hintTexture);
           xr = null;
           /* Taking the headset off must give the flat viewer back, not a black
              rectangle where a room used to be. */

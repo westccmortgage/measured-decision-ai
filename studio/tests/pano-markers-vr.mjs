@@ -134,7 +134,14 @@ await context.addInitScript(() => {
      `only` renders a single eye: the stand-in gives both the same viewport,
      so measuring what one eye sees means drawing one eye. */
   const IPD = 0.064;
-  window.__xrFrame = (dir, only) => {
+  /* `cant` turns each eye outward by that many radians, the way real headset
+     lenses are angled. Aim taken from one eye alone is then wrong by that
+     much — which is why the shipping code averages the two. */
+  const turnFlat = (dir, radians) => {
+    const c = Math.cos(radians); const sn = Math.sin(radians);
+    return [dir[0] * c + dir[2] * sn, dir[1], dir[2] * c - dir[0] * sn];
+  };
+  window.__xrFrame = (dir, only, cant = 0) => {
     if (!live || !live.queue.length) return { frames: 0 };
     const matrix = lookMatrix(dir);
     /* Column 0 of world→eye is the head's right axis in world terms. */
@@ -145,8 +152,8 @@ await context.addInitScript(() => {
       z: right[2] * sign * IPD / 2,
     });
     const eyes = [
-      { eye: "left", projectionMatrix: perspective(), transform: { inverse: { matrix }, position: at(-1) } },
-      { eye: "right", projectionMatrix: perspective(), transform: { inverse: { matrix }, position: at(1) } },
+      { eye: "left", projectionMatrix: perspective(), transform: { inverse: { matrix: cant ? lookMatrix(turnFlat(dir, -cant)) : matrix }, position: at(-1) } },
+      { eye: "right", projectionMatrix: perspective(), transform: { inverse: { matrix: cant ? lookMatrix(turnFlat(dir, cant)) : matrix }, position: at(1) } },
     ].filter((view) => !only || view.eye === only);
     const pose = { views: eyes, transform: { position: { x: 0, y: 0, z: 0 } } };
     const frame = { getViewerPose: () => pose };
@@ -516,8 +523,39 @@ const chipOnScreen = await page.evaluate(() => {
   return { count, lowest, highest };
 });
 check("and a person looking straight ahead can actually see it",
-  chipOnScreen.count > 300 && chipOnScreen.highest < 256 && chipOnScreen.lowest > 40,
+  chipOnScreen.count > 20 && chipOnScreen.highest < 256 && chipOnScreen.lowest > 40,
   `${chipOnScreen.count} px, rows ${chipOnScreen.lowest}-${chipOnScreen.highest} (256 is the eye line, 0 the floor of the view)`);
+/* A dot, not a signboard: the closed menu must be a small thing in the
+   room. The banner it replaced covered seventeen degrees of the view and
+   was reported from the headset as annoying. */
+check("and it is a dot rather than a banner across the room",
+  chipOnScreen.count < 4000 && (chipOnScreen.highest - chipOnScreen.lowest) < 60,
+  `${chipOnScreen.count} px spanning ${chipOnScreen.highest - chipOnScreen.lowest} rows`);
+
+console.log("\n── aim survives the way headset lenses are angled ──");
+/* Headset lenses are canted outward, so the left eye's forward is not the
+   head's. Aim taken from that one view sits degrees off to the side of
+   where the person is actually looking — a target stared straight at that
+   never lights up. Averaging the eyes puts the aim back on the nose. */
+const canted = await page.evaluate(() => {
+  const dot = (a, b) => a[0] * b[0] + a[1] * b[1] + a[2] * b[2];
+  const aim = [0, -0.37, -0.93];
+  const cant = 0.28; // sixteen degrees each way
+  for (let i = 0; i < 10; i += 1) window.__xrFrame(aim, undefined, cant);
+  const averaged = window.__xrForward();
+  /* What one eye alone would have claimed, for the contrast. */
+  const oneEye = [Math.sin(-cant) * -0.93, -0.37, Math.cos(-cant) * -0.93];
+  const oneEyeLength = Math.hypot(...oneEye);
+  return {
+    trueAim: dot(averaged, aim) / (Math.hypot(...aim) || 1),
+    oneEyeOff: Math.acos(Math.min(1, dot(oneEye, aim) / (oneEyeLength * Math.hypot(...aim)))) * 57.3,
+    lookingChip: window.__xrMenu().lookingChip,
+  };
+});
+check("aim lands on the nose, not on one lens",
+  canted.trueAim > 0.999, `off by ${(Math.acos(Math.min(1, canted.trueAim)) * 57.3).toFixed(2)}° — one eye alone would be off by ${canted.oneEyeOff.toFixed(1)}°`);
+check("so a dot stared straight at still lights up on a canted headset",
+  canted.lookingChip === true);
 
 console.log("\n── walking to another room without leaving the headset ──");
 /* The ask, verbatim: a menu inside the goggles, so moving to any other
