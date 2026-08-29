@@ -77,7 +77,13 @@
          viewing preference, not a correction: the capture is already at true
          angular scale. Held at 1.0 it does nothing at all. */
       if (abs(angularScale - 1.0) > 0.001) {
-        float a = acos(clamp(dot(dir, forward), -1.0, 1.0));
+        /* Not acos(dot): its slope is infinite where the two directions
+           agree, so near the centre of gaze float precision turns the angle
+           into per-pixel noise — magnified by the scale it reads as a
+           shimmer exactly where the person is looking, and the noisy
+           derivatives drive mipmap selection to the smallest levels. The
+           half-chord form is exact where it matters most. */
+        float a = 2.0 * asin(clamp(0.5 * length(dir - forward), 0.0, 1.0));
         vec3 axis = cross(forward, dir);
         float len = length(axis);
         if (len > 0.00001) {
@@ -439,12 +445,27 @@
     gl.enableVertexAttribArray(positionLocation);
     gl.vertexAttribPointer(positionLocation, 2, gl.FLOAT, false, 0, 0);
 
+    /* A 5.7K equirectangular frame seen through a headset puts many texels
+       under every screen pixel, and the room-size remap compresses them
+       further. Sampled with plain LINEAR that undersampling shimmers on
+       every head turn — the room reads as rippling water. WebGL 2 allows
+       mipmaps on any size, so there the texture gets a proper pyramid and
+       trilinear + anisotropic sampling; WebGL 1 forbids NPOT mipmaps and
+       keeps the old filter. */
+    const isWebGL2 = typeof WebGL2RenderingContext !== "undefined" && gl instanceof WebGL2RenderingContext;
     const texture = gl.createTexture();
     gl.bindTexture(gl.TEXTURE_2D, texture);
     gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
     gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
-    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, isWebGL2 ? gl.LINEAR_MIPMAP_LINEAR : gl.LINEAR);
     gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
+    if (isWebGL2) {
+      const anisotropy = gl.getExtension("EXT_texture_filter_anisotropic");
+      if (anisotropy) {
+        const maxAnisotropy = gl.getParameter(anisotropy.MAX_TEXTURE_MAX_ANISOTROPY_EXT);
+        gl.texParameterf(gl.TEXTURE_2D, anisotropy.TEXTURE_MAX_ANISOTROPY_EXT, Math.min(8, maxAnisotropy));
+      }
+    }
     /* An equirectangular frame stores the zenith in its first row, and the
        shader samples it that way: v = 0 is straight up. Flipping the upload
        turned the sphere over — looking up showed the floor. */
@@ -458,7 +479,20 @@
     };
 
     const view = { yaw: 0, pitch: 0, fov: 1.4 };
-    const state = { alive: true, dragging: false, gyro: false, frame: 0, textureReady: false };
+    const state = { alive: true, dragging: false, gyro: false, frame: 0, textureReady: false, videoFrameDirty: true, uploadedTime: -1 };
+
+    /* The render loop runs at headset rate, the video at its own — most
+       frames the pixels have not changed and re-uploading them (and
+       rebuilding the mip pyramid) is pure waste. The browser says when a
+       real new frame exists; where it cannot, the clock stands in. */
+    const frameCallbackSupported = isVideo && typeof media.requestVideoFrameCallback === "function";
+    if (frameCallbackSupported) {
+      const noteVideoFrame = () => {
+        state.videoFrameDirty = true;
+        if (state.alive) media.requestVideoFrameCallback(noteVideoFrame);
+      };
+      media.requestVideoFrameCallback(noteVideoFrame);
+    }
 
     function resize() {
       const ratio = Math.min(window.devicePixelRatio || 1, 2);
@@ -474,8 +508,16 @@
     function uploadTexture() {
       const ready = isVideo ? media.readyState >= 2 : media.complete && media.naturalWidth > 0;
       if (!ready) return;
+      if (isVideo && state.textureReady) {
+        if (frameCallbackSupported) {
+          if (!state.videoFrameDirty) return;
+        } else if (media.currentTime === state.uploadedTime) return;
+      }
       gl.bindTexture(gl.TEXTURE_2D, texture);
       gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGB, gl.RGB, gl.UNSIGNED_BYTE, media);
+      if (isWebGL2) gl.generateMipmap(gl.TEXTURE_2D);
+      state.videoFrameDirty = false;
+      state.uploadedTime = isVideo ? media.currentTime : 0;
       state.textureReady = true;
     }
 
@@ -591,8 +633,11 @@
              Anything else is somebody's preference about how a room reads. */
           angularScale: headsetAngularScale,
         };
-        /* Test hook: the lazy remap centre, observable without a headset. */
+        /* Test hooks: the lazy remap centre, observable without a headset —
+           and the pin list, replaceable, so a measurement of the sphere alone
+           is not photobombed by a ring drawn where a pin belongs. */
         window.__xrAnchor = () => xr?.anchor || null;
+        window.__xrSetMarkers = (list) => setHeadsetMarkers(list || []);
 
         /* A pinch, a controller trigger, a tap — whatever the device calls
            choosing something. Opening the pin somebody is looking at is the
