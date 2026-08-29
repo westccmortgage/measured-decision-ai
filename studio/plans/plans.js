@@ -346,8 +346,17 @@ function selectedDocuments() {
   return state.documents.filter((document) => state.selectedDocumentIds.has(document.id));
 }
 
+/* Delivery paperwork has its own reader and its own doctrine. Fed into plan
+   analysis it produced a failed run that dropped a live project back to
+   intake — an invoice is never a drawing. */
+const PAPERWORK_TYPES = new Set(["invoice", "delivery_ticket", "receipt"]);
+
+function isPaperworkDocument(document) {
+  return PAPERWORK_TYPES.has(document?.document_type);
+}
+
 function canAnalyzeDocument(document) {
-  return ANALYZABLE_DOCUMENT_STATUSES.has(document?.status);
+  return ANALYZABLE_DOCUMENT_STATUSES.has(document?.status) && !isPaperworkDocument(document);
 }
 
 function sameDocumentSet(left = [], right = []) {
@@ -754,11 +763,14 @@ function renderDocuments() {
   elements.documentList.hidden = state.documents.length === 0;
   elements.documentList.innerHTML = state.documents.map((document) => {
     const selectable = canAnalyzeDocument(document);
-    const choiceTitle = document.status === "failed"
-      ? "Select to retry analysis"
-      : selectable
-        ? "Include in a new baseline"
-        : `Unavailable while ${label(document.status)}`;
+    const paperwork = isPaperworkDocument(document);
+    const choiceTitle = paperwork
+      ? "Delivery paperwork is read by the document reader — it is never part of plan analysis"
+      : document.status === "failed"
+        ? "Select to retry analysis"
+        : selectable
+          ? "Include in a new baseline"
+          : `Unavailable while ${label(document.status)}`;
     const baselineVersion = state.baseline?.id === state.property?.active_baseline_id
       && (state.baseline?.source_document_ids || []).includes(document.id)
       ? state.baseline.version
@@ -790,7 +802,9 @@ function renderDocuments() {
       <div class="document-name"><strong title="${escapeHtml(document.original_filename)}">${escapeHtml(document.original_filename)}</strong><small>${document.byte_size ? `${(document.byte_size / 1048576).toFixed(1)} MB` : "Private source"}</small>${classifiedLine}</div>
       <div class="document-cell"><span>Discipline</span><strong>${escapeHtml(label(document.document_type))}</strong></div>
       <div class="document-cell"><span>Revision</span><strong>${escapeHtml(display(document.revision_label, "Not stated"))}</strong></div>
-      <span class="document-status ${document.status}" title="${escapeHtml(document.processing_error || "")}">${escapeHtml(label(document.status))}</span>
+      ${paperwork
+        ? `<span class="document-status uploaded" title="Delivery paperwork — read for delivered quantities, never analyzed as plans">Paperwork</span>`
+        : `<span class="document-status ${document.status}" title="${escapeHtml(document.processing_error || "")}">${escapeHtml(label(document.status))}</span>`}
       ${canDeletePlans() ? `<button class="document-delete" type="button" data-document-delete="${document.id}" title="${escapeHtml(deleteTitle)}" aria-label="${escapeHtml(deleteTitle)}" ${baselineVersion ? "disabled" : ""}>Delete</button>` : ""}
     </article>
   `;
@@ -2278,10 +2292,16 @@ async function savePendingFiles() {
         }
       }
     }
-    if (uploadedDocumentIds.length) {
-      state.selectedDocumentIds = new Set(uploadedDocumentIds);
+    /* Only technical documents are offered to plan analysis. Auto-selecting
+       everything — invoices included — invited exactly the wrong click. */
+    const technicalIds = uploadedDocumentIds.filter((id) => {
+      const uploaded = state.documents.find((document) => document.id === id);
+      return uploaded ? canAnalyzeDocument(uploaded) : !PAPERWORK_TYPES.has(documentType);
+    });
+    if (technicalIds.length) {
+      state.selectedDocumentIds = new Set(technicalIds);
       render();
-      setMessage(`${uploadedDocumentIds.length} new PDF${uploadedDocumentIds.length === 1 ? " is" : "s are"} selected and ready for analysis.`, "success");
+      setMessage(`${technicalIds.length} new PDF${technicalIds.length === 1 ? " is" : "s are"} selected and ready for analysis.`, "success");
     }
   } catch (error) {
     console.error(error);
