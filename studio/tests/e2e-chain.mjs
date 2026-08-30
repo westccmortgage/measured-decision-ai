@@ -13,7 +13,7 @@
  */
 import { chromium } from "/opt/node22/lib/node_modules/playwright/index.mjs";
 import http from "http"; import fs from "fs"; import path from "path";
-import { plansUploadedRows, plansReadingRows, roomsNoEvidenceRows, machineWorkingRows, aiReviewedRows, baselineAwaitingApprovalRows } from "./seed.mjs";
+import { plansUploadedRows, plansReadingRows, roomsNoEvidenceRows, machineWorkingRows, machineFinishedRows, aiReviewedRows, baselineAwaitingApprovalRows } from "./seed.mjs";
 
 const ROOT = path.resolve(".");
 const TYPES = { ".html": "text/html", ".js": "text/javascript", ".css": "text/css" };
@@ -177,6 +177,27 @@ console.log("\n── the 360 machine is working right now ──");
     !/originals are untouched/i.test(text),
     (text.match(/[^.]*untouched[^.]*\./i) || [""])[0].trim());
   check("it still promises originals are never altered", /never altered/i.test(text));
+  await context.close();
+}
+
+console.log("\n── the machine says how long it took ──");
+/* Automation earns its keep in a number: a site gets captured every week
+   only if the capture step is cheap. A record that says a capture was
+   stitched but never how long that took cannot answer that, and the person
+   holding the camera is the one who needs the answer. */
+{
+  const { context, page, errors } = await open(machineFinishedRows(), "/studio/");
+  check("the project opens", errors.length === 0, errors[0] || "");
+  await page.evaluate(() => document.querySelector('[data-focus-step="results"]')?.click());
+  await page.waitForTimeout(500);
+  const text = await visibleText(page);
+  check("the screen says how long the last capture took to stitch",
+    /stitched in 41s/i.test(text),
+    (text.match(/[^.]*stitched in[^.]*/i) || ["(nothing about how long)"])[0].trim());
+  /* Six minutes of waiting for a sleeping machine is not six minutes of
+     stitching, and the screen must not let the two be read as one. */
+  check("and does not pass the wait for the machine off as stitching time",
+    !/stitched in 6m/i.test(text) && !/stitched in 7m/i.test(text));
   await context.close();
 }
 

@@ -173,6 +173,30 @@ export const machineWorkingRows = () => {
   return r;
 };
 
+/* The machine has finished, and the record knows how long it took. The
+   number that decides whether a site gets captured every week or whenever
+   somebody remembers. */
+export const machineFinishedRows = () => {
+  const r = clone(rows);
+  const finished = new Date();
+  const started = new Date(finished.getTime() - 41_000);
+  const queued = new Date(started.getTime() - 6 * 60_000);
+  r.worker_machine_runs = [{
+    id: "run-2", instance_id: "i-0abc", region: "us-east-2", worker_version: "2026-08-21.3",
+    state: "finished", step: "Queue empty", exit_code: 0, message: null,
+    log_url: null, jobs_claimed: 1, jobs_completed: 1, jobs_failed: 0,
+    started_at: started.toISOString(), last_seen_at: finished.toISOString(),
+    finished_at: finished.toISOString(),
+  }];
+  r.capture_360_jobs[0].state = "completed";
+  r.capture_360_jobs[0].progress = 100;
+  r.capture_360_jobs[0].stage = "VR master ready";
+  r.capture_360_jobs[0].created_at = queued.toISOString();
+  r.capture_360_jobs[0].started_at = started.toISOString();
+  r.capture_360_jobs[0].finished_at = finished.toISOString();
+  return r;
+};
+
 /* An AI review has produced an interpretation nobody has confirmed. */
 export const aiReviewedRows = () => {
   const r = clone(rows);
