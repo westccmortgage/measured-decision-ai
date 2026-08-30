@@ -1755,6 +1755,71 @@ select pg_temp.check('and invitations are invisible signed out',
   (select count(*) from public.property_invitations) = 0);
 reset role;
 
+-- Money joins the record (045). Costs and a person's trade corrections used
+-- to live in a browser: invisible to everyone else, absent from the export,
+-- outside every audit, gone with the cache. And money is the one thing on a
+-- project that must not be visible to everybody who can see the building.
+set local role authenticated;
+set local test.uid = '11111111-1111-1111-1111-111111111111';
+do $$
+declare
+  cost_id uuid;
+begin
+  cost_id := public.record_project_cost('bbbbbbbb-0000-0000-0000-000000000001',
+    'electrical', 12400, 'USD', 'INV-4471', null, 'rough electrical, first floor');
+  perform pg_temp.check('a cost entry names the person who entered it',
+    (select recorded_by from public.project_costs where id = cost_id)
+      = '11111111-1111-1111-1111-111111111111'::uuid);
+  /* Called on its own line: inside one AND, the planner is free to test the
+     state before the call that changes it. */
+  perform public.supersede_project_cost(cost_id);
+  perform pg_temp.check('and withdrawing it supersedes rather than deletes',
+    (select state from public.project_costs where id = cost_id) = 'superseded'
+    and exists (select 1 from public.project_costs where id = cost_id));
+  -- A correction outranks the dictionary forever after, so only one may be live.
+  perform public.correct_observation_trade('bbbbbbbb-0000-0000-0000-000000000001', 'outlet-north-wall', 'electrical');
+  perform public.correct_observation_trade('bbbbbbbb-0000-0000-0000-000000000001', 'outlet-north-wall', 'low_voltage');
+  perform pg_temp.check('a trade correction leaves exactly one live ruling, and keeps the old one',
+    (select count(*) from public.project_trade_corrections
+      where observation_key = 'outlet-north-wall' and state = 'active') = 1
+    and (select count(*) from public.project_trade_corrections
+      where observation_key = 'outlet-north-wall') = 2
+    and (select trade from public.project_trade_corrections
+      where observation_key = 'outlet-north-wall' and state = 'active') = 'low_voltage');
+end $$;
+select pg_temp.refused('an entry that says nothing is not an entry',
+  $$select public.record_project_cost('bbbbbbbb-0000-0000-0000-000000000001', 'framing')$$);
+select pg_temp.refused('and a negative cost is refused',
+  $$select public.record_project_cost('bbbbbbbb-0000-0000-0000-000000000001', 'framing', -5)$$);
+reset role;
+
+-- The field records what it saw; it has no business seeing what it cost.
+set local role authenticated;
+set local test.uid = '22222222-2222-2222-2222-222222222222';
+select pg_temp.refused('a contributor cannot record money',
+  $$select public.record_project_cost('bbbbbbbb-0000-0000-0000-000000000001', 'framing', 100)$$);
+select pg_temp.check('nor read the ledger',
+  (select count(*) from public.project_costs) = 0);
+reset role;
+
+set local role authenticated;
+set local test.uid = '55555555-5555-5555-5555-555555555555';
+select pg_temp.check('an external owner viewer sees an approved release, not the ledger',
+  (select count(*) from public.project_costs) = 0);
+select pg_temp.refused('and cannot overrule the trade dictionary',
+  $$select public.correct_observation_trade('bbbbbbbb-0000-0000-0000-000000000001', 'x', 'framing')$$);
+reset role;
+
+set local role anon;
+set local test.uid = '';
+select pg_temp.refused('nobody signed out records money',
+  $$select public.record_project_cost('bbbbbbbb-0000-0000-0000-000000000001', 'framing', 100)$$);
+/* Harder than invisible: signed out, the policy that guards the ledger
+   cannot even be evaluated. */
+select pg_temp.refused('and the ledger cannot even be looked at signed out',
+  $$select count(*) from public.project_costs$$);
+reset role;
+
 -- The period pass (044). Every number cumulative meant the question an owner
 -- asks weekly — what arrived, what went in, what is sitting on site — had no
 -- answer at all. These check that the window is real, that bought-and-not-
