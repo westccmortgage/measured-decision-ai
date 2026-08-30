@@ -1755,6 +1755,49 @@ select pg_temp.check('and invitations are invisible signed out',
   (select count(*) from public.property_invitations) = 0);
 reset role;
 
+-- Stacked is a seen thing (046). Bought-is-not-installed rested on
+-- subtraction; a camera that can see a pallet standing in a room can say so,
+-- and an observation is not the same evidence as an inference.
+set local role authenticated;
+set local test.uid = '22222222-2222-2222-2222-222222222222';
+do $$
+declare
+  seen uuid;
+begin
+  seen := public.record_observation('bbbbbbbb-0000-0000-0000-000000000001', 'STACKED-1',
+    'on_site_not_installed', 9, null, '{}'::uuid[], null, 'AI_VISION', 'medium', 'palletised against the north wall');
+  perform pg_temp.check('material standing on site is its own observation',
+    (select kind from public.project_observations where id = seen) = 'on_site_not_installed'
+    and (select quantity from public.project_observations where id = seen) = 9);
+end $$;
+select pg_temp.refused('an on-site observation without a number is refused',
+  $$select public.record_observation('bbbbbbbb-0000-0000-0000-000000000001', 'STACKED-2',
+      'on_site_not_installed', null, null, '{}'::uuid[], null, 'AI_VISION', 'medium', null)$$);
+/* A delivery note proves a delivery. It never saw a pallet. */
+select pg_temp.refused('and a document cannot claim to have seen it standing there',
+  $$select public.record_observation('bbbbbbbb-0000-0000-0000-000000000001', 'STACKED-3',
+      'on_site_not_installed', 4, null, '{}'::uuid[], null, 'DOCUMENT', 'high', null)$$);
+reset role;
+
+set local role authenticated;
+set local test.uid = '11111111-1111-1111-1111-111111111111';
+do $$
+declare
+  pass jsonb;
+begin
+  pass := public.reconcile_period('bbbbbbbb-0000-0000-0000-000000000001',
+                                  now() - interval '7 days', now());
+  perform pg_temp.check('the period pass reports what was seen standing there',
+    (select (entry->>'quantity')::numeric from jsonb_array_elements(pass->'on_site_seen') entry
+      where entry->>'component_key' = 'STACKED-1') = 9);
+  /* The two must never be merged: one was looked at, the other was worked out. */
+  perform pg_temp.check('and keeps it apart from what subtraction merely implies',
+    not exists (select 1 from jsonb_array_elements(pass->'on_site_not_installed') entry
+      where entry->>'component_key' = 'STACKED-1')
+    and pass->>'doctrine' like '%which is an inference and not the same thing%');
+end $$;
+reset role;
+
 -- Money joins the record (045). Costs and a person's trade corrections used
 -- to live in a browser: invisible to everyone else, absent from the export,
 -- outside every audit, gone with the cache. And money is the one thing on a
