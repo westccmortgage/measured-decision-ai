@@ -33,6 +33,8 @@ const state = {
   requestedBaselineId: new URLSearchParams(window.location.search).get("baseline"),
   baselines: [],
   activeBaseline: null,
+  readingRegister: null,
+  readingWeakSpots: null,
   generatedFieldLink: null,
   pendingFiles: [],
   selectedDocumentIds: new Set(),
@@ -70,6 +72,7 @@ const elements = {
   analysisStageDetail: $("#analysis-stage-detail"),
   analysisElapsed: $("#analysis-elapsed"),
   baselineSection: $("#baseline-section"),
+  registerSection: $("#register-section"),
   roadmapSection: $("#roadmap-section"),
   phaseList: $("#phase-list"),
   toast: $("#toast"),
@@ -654,6 +657,10 @@ async function openProperty(propertyId) {
       .select("space_id")
       .eq("property_id", propertyId).eq("state", "active").eq("kind", "installed_seen");
     state.readSpaceIds = new Set((readResult.data || []).map((row) => row.space_id).filter(Boolean));
+    /* Where the reader could not read, accumulated across every reading of
+       this project. Roles without the register simply see no section. */
+    await loadReadingRegister(propertyId);
+    await loadReadingWeakSpots();
   }
   render();
   elements.sync.textContent = state.activeAnalysisJob
@@ -716,6 +723,9 @@ async function ensureIntelligenceChain(trigger) {
     .select("component_key, required_quantity, delivered_quantity, evidenced_quantity, coverage, verdict, narrative")
     .eq("property_id", state.property.id).eq("state", "active");
   if (!reconResult.error) state.reconciliations = reconResult.data || [];
+  /* The distillation just told the register what this reading could not
+     count. Re-read it so the screen carries the same news. */
+  await loadReadingRegister(state.property.id);
   render();
   if ((existing || []).length === 0) {
     notify("The plans' requirements are distilled — Visual Evidence now compares required, delivered and installed.");
@@ -738,6 +748,7 @@ function render() {
   renderRoadmapDivergence();
   renderDocuments();
   renderBaseline();
+  renderRegister();
   renderRoadmap();
   renderRoutes();
   renderTakeoff();
@@ -2097,6 +2108,243 @@ function renderBaseline() {
     : '<div class="gap-item"><i></i><span>No unresolved gaps were reported. Human review is still required.</span></div>';
 }
 
+/* The reading register.
+ *
+ * Every reading of a plan set already admits what it could not do: the
+ * questions it raises, the counts it could not make, the numbers it would
+ * not stand behind. Until now all of that lived inside one run — open a
+ * baseline, see that run's gaps — so nobody could answer the question that
+ * matters about our own machine: where does the reader KEEP failing.
+ *
+ * This is that register, accumulated across every reading of the project.
+ * One rule governs the screen exactly as it governs the table: a gap a
+ * later reading stopped raising is shown as no longer raised, never as
+ * answered. Only a person answers, and their answer carries their name. */
+const REGISTER_KIND_LABELS = {
+  unanswered_question: "Open question",
+  no_count: "No count",
+  weak_count: "Weak count",
+};
+const REGISTER_STATUS_LABELS = {
+  answered: "Answered by a person",
+  withdrawn: "Withdrawn by a person",
+  not_raised_again: "The newest reading did not raise it",
+};
+let openGapId = null;
+
+/* The same failure on two projects is the reader's weakness, not the
+   project's — so the map that says so is read at the organisation level and
+   printed under the project's own list. */
+async function loadReadingWeakSpots() {
+  if (!state.organizationId) { state.readingWeakSpots = null; return; }
+  const { data, error } = await client.rpc("plan_reading_weak_spots", {
+    p_organization_id: state.organizationId,
+  });
+  if (error) { console.error("weak spots", error); state.readingWeakSpots = null; return; }
+  state.readingWeakSpots = data || null;
+}
+
+function weakSpotSentence() {
+  const spots = state.readingWeakSpots;
+  if (!spots) return "";
+  const kinds = Array.isArray(spots.by_kind) ? spots.by_kind : [];
+  const sheets = Array.isArray(spots.by_sheet) ? spots.by_sheet : [];
+  const worst = kinds.slice().sort((left, right) => Number(right.gaps || 0) - Number(left.gaps || 0))[0];
+  if (!worst) return "";
+  const projects = Number(worst.projects || 0);
+  const parts = [`Across this account: ${Number(worst.gaps || 0)} × ${REGISTER_KIND_LABELS[worst.kind] || worst.kind}`
+    + ` on ${projects} project${projects === 1 ? "" : "s"}`];
+  const sheet = sheets[0];
+  if (sheet?.sheet) parts.push(`the reference the reader stumbles on most is ${sheet.sheet} (${Number(sheet.gaps || 0)})`);
+  return `${parts.join(" · ")}.`;
+}
+
+async function loadReadingRegister(propertyId) {
+  if (!propertyId) { state.readingRegister = null; return; }
+  const { data, error } = await client.rpc("plan_reading_register", { p_property_id: propertyId });
+  if (error) {
+    /* The register is for the people who run the project. A role without it
+       simply does not see the section — it is never an error on screen. */
+    console.error("reading register", error);
+    state.readingRegister = null;
+    return;
+  }
+  state.readingRegister = data || null;
+}
+
+function registerPool(name) {
+  const pool = state.readingRegister?.[name];
+  return Array.isArray(pool) ? pool : [];
+}
+
+function registerGapById(gapId) {
+  return ["open", "answered", "not_raised_again", "withdrawn"]
+    .flatMap((name) => registerPool(name))
+    .find((row) => row.id === gapId) || null;
+}
+
+function registerSheets(row) {
+  const refs = Array.isArray(row?.source_refs) ? row.source_refs : [];
+  return refs.filter((ref) => typeof ref === "string" && ref.trim()).join(" · ");
+}
+
+function registerRowMarkup(row) {
+  const seen = Number(row.readings_seen || 1);
+  const chips = [`<span>${escapeHtml(REGISTER_KIND_LABELS[row.kind] || "Gap")}</span>`];
+  if (row.blocks_activation) chips.push('<span class="blocking">Blocks activation</span>');
+  chips.push(seen > 1
+    ? `<span class="recurring">Raised by ${seen} readings</span>`
+    : "<span>Raised once</span>");
+  const sheets = registerSheets(row);
+  if (sheets) chips.push(`<span>${escapeHtml(sheets)}</span>`);
+  chips.push(`<span>First seen ${escapeHtml(shortDate(row.first_seen_at))}</span>`);
+  /* An answer the drawings never absorbed is not a closed question, and the
+     row says both halves out loud. */
+  const priorAnswer = row.answer
+    ? `<p class="register-answer">A person answered on ${escapeHtml(shortDate(row.answered_at))}: ${escapeHtml(row.answer)} — and a later reading raised it again.</p>`
+    : "";
+  return `
+    <div class="register-row ${escapeHtml(row.severity || "informational")}">
+      <i></i>
+      <div>
+        <p class="register-question">${escapeHtml(row.question)}</p>
+        <div class="register-meta">${chips.join("")}</div>
+        ${priorAnswer}
+      </div>
+      <button class="button secondary" type="button" data-gap="${escapeHtml(row.id)}">Answer this</button>
+    </div>`;
+}
+
+function registerHistoryMarkup(row, status) {
+  const seen = Number(row.readings_seen || 1);
+  const when = row.answered_at ? ` · ${escapeHtml(shortDate(row.answered_at))}` : "";
+  const answer = row.answer ? ` — ${escapeHtml(row.answer)}` : "";
+  return `
+    <div class="register-history-row">
+      <div>
+        <b>${escapeHtml(row.question)}</b><br>
+        ${escapeHtml(REGISTER_STATUS_LABELS[status] || status)}${when}${answer}
+        · raised by ${seen} reading${seen === 1 ? "" : "s"}
+      </div>
+      <button class="button secondary" type="button" data-gap="${escapeHtml(row.id)}">Answer this</button>
+    </div>`;
+}
+
+/* Ranked on the screen as well as in the query: what blocks activation, then
+   severity, then what keeps coming back. A screen that trusts the caller's
+   order shows the wrong thing first the day the caller changes. */
+function registerRank(row) {
+  const severity = { critical: 1, important: 2, informational: 3 }[row.severity] || 3;
+  return [row.blocks_activation ? 0 : 1, severity, -Number(row.readings_seen || 1),
+    new Date(row.first_seen_at || 0).valueOf()];
+}
+
+function byRegisterRank(left, right) {
+  const a = registerRank(left);
+  const b = registerRank(right);
+  for (let index = 0; index < a.length; index += 1) {
+    if (a[index] !== b[index]) return a[index] - b[index];
+  }
+  return 0;
+}
+
+function renderRegister() {
+  const register = state.readingRegister;
+  const open = registerPool("open").slice().sort(byRegisterRank);
+  const answered = registerPool("answered");
+  const quiet = registerPool("not_raised_again");
+  const withdrawn = registerPool("withdrawn");
+  const total = open.length + answered.length + quiet.length + withdrawn.length;
+  elements.registerSection.hidden = !register || total === 0;
+  if (elements.registerSection.hidden) return;
+
+  const summary = register.summary || {};
+  $("#register-state").textContent = open.length
+    ? `${open.length} open · ${Number(summary.readings || 0)} readings`
+    : `Nothing open · ${Number(summary.readings || 0)} readings`;
+  $("#register-metrics").innerHTML = [
+    ["Open", open.length, Number(summary.blocking || 0) ? `${summary.blocking} blocks activation` : "None block activation"],
+    ["Recurring", Number(summary.recurring || 0), "Raised by more than one reading"],
+    ["Answered by a person", answered.length, "With a name and a date on it"],
+    ["No longer raised", quiet.length, "Silence, not an answer"],
+  ].map(([title, value, note]) =>
+    `<article><span>${escapeHtml(title)}</span><strong>${escapeHtml(String(value))}</strong><small>${escapeHtml(note)}</small></article>`,
+  ).join("");
+
+  $("#register-list").innerHTML = open.length
+    ? open.map(registerRowMarkup).join("")
+    : '<div class="register-empty">Nothing is open. Everything the readings raised was answered, withdrawn, or dropped by a later reading — all of it is kept below.</div>';
+
+  const history = [
+    ...answered.map((row) => registerHistoryMarkup(row, "answered")),
+    ...withdrawn.map((row) => registerHistoryMarkup(row, "withdrawn")),
+    ...quiet.map((row) => registerHistoryMarkup(row, "not_raised_again")),
+  ];
+  $("#register-history-summary").textContent =
+    `Answered, withdrawn, and no longer raised (${history.length})`;
+  $("#register-history").innerHTML = history.join("")
+    || '<div class="register-empty">Nothing has left the open list yet.</div>';
+  const weakSpots = weakSpotSentence();
+  $("#register-weak-spots").hidden = !weakSpots;
+  $("#register-weak-spots").textContent = weakSpots;
+  $("#register-doctrine").textContent = register.doctrine || "";
+
+  elements.registerSection.querySelectorAll("[data-gap]").forEach((button) => {
+    button.addEventListener("click", () => openGapDialog(button.dataset.gap));
+  });
+}
+
+function updateGapDialogAction() {
+  const written = $("#gap-answer").value.trim().length >= 3;
+  $("#answer-gap").disabled = !written || state.busy;
+  $("#withdraw-gap").disabled = !written || state.busy;
+}
+
+function openGapDialog(gapId) {
+  const row = registerGapById(gapId);
+  if (!row) return;
+  openGapId = gapId;
+  const seen = Number(row.readings_seen || 1);
+  const sheets = registerSheets(row);
+  $("#gap-dialog-question").textContent = row.question;
+  $("#gap-dialog-history").textContent = [
+    `${REGISTER_KIND_LABELS[row.kind] || "Gap"} · raised by ${seen} reading${seen === 1 ? "" : "s"}`,
+    `first seen ${shortDate(row.first_seen_at)}`,
+    sheets ? `sheets ${sheets}` : "",
+    row.answer ? `previously answered: ${row.answer}` : "",
+  ].filter(Boolean).join(" · ");
+  $("#gap-answer").value = "";
+  updateGapDialogAction();
+  $("#gap-dialog").showModal();
+}
+
+async function submitGapAnswer(verdict) {
+  const gapId = openGapId;
+  const answer = $("#gap-answer").value.trim();
+  if (!gapId || answer.length < 3 || state.busy) return;
+  setBusy(true, verdict === "answered" ? "Recording your answer…" : "Recording the withdrawal…");
+  try {
+    const { error } = await client.rpc("answer_plan_reading_gap", {
+      p_gap_id: gapId,
+      p_verdict: verdict,
+      p_answer: answer,
+    });
+    if (error) throw error;
+    $("#gap-dialog").close();
+    await loadReadingRegister(state.property?.id);
+    notify(verdict === "answered"
+      ? "Answered, with your name and today's date on it. The question stays in the register with its whole history."
+      : "Withdrawn. The register keeps it, and records that a person withdrew it.");
+  } catch (error) {
+    console.error(error);
+    notify(error.message || "That could not be recorded", "error");
+  } finally {
+    openGapId = null;
+    setBusy(false, `Cloud connected · ${state.role}`);
+    render();
+  }
+}
+
 function renderRoadmap() {
   elements.roadmapSection.hidden = !state.baseline;
   if (!state.baseline) return;
@@ -2760,6 +3008,9 @@ $("#divergence-open-active").addEventListener("click", (event) => {
 $("#attestation-reference").addEventListener("input", updateAttestationAction);
 $("#attestation-confirmed").addEventListener("change", updateAttestationAction);
 $("#confirm-governing-set").addEventListener("click", attestAndApproveBaseline);
+$("#gap-answer").addEventListener("input", updateGapDialogAction);
+$("#answer-gap").addEventListener("click", () => { void submitGapAnswer("answered"); });
+$("#withdraw-gap").addEventListener("click", () => { void submitGapAnswer("withdrawn"); });
 $("#send-field-task").addEventListener("click", createFieldAssignment);
 $("#copy-field-link").addEventListener("click", copyFieldLink);
 $("#phase-filter").addEventListener("change", renderRoadmap);

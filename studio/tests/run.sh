@@ -58,6 +58,7 @@ run "the headset probe"               studio/tests/vr-check.mjs
 run "standing in a real capture"      studio/tests/pano-vr.mjs
 run "a pin is where it was placed"    studio/tests/marker-direction.mjs
 run "pressing a pin in the room"      studio/tests/pano-markers-vr.mjs
+run "where the reader could not read" studio/tests/reading-register.mjs
 run "no shadowed bindings"            studio/tests/static-shadows.mjs
 
 printf "\n%s\n" "────────────────────────────────────────────"

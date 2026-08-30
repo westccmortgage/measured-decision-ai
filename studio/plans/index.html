@@ -11,7 +11,7 @@ try{var t=localStorage.getItem("mdai-theme");document.documentElement.dataset.th
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
-    <link rel="stylesheet" href="plans.css?v=dd845a70b4">
+    <link rel="stylesheet" href="plans.css?v=e459aa40e1">
   </head>
   <body>
     <div class="boot-screen" id="boot-screen">
@@ -228,9 +228,26 @@ try{var t=localStorage.getItem("mdai-theme");document.documentElement.dataset.th
           <p class="governance-note"><i></i>Approval confirms the roadmap as the current capture baseline. It does not certify the design, code compliance, construction quality, schedule, or concealed conditions.</p>
         </section>
 
+        <section class="register-section" id="register-section" hidden>
+          <div class="section-heading">
+            <div><p>04 · The reading register</p><h2>Where the reader could not read</h2></div>
+            <div class="heading-actions">
+              <span class="state-pill" id="register-state">No gaps recorded</span>
+            </div>
+          </div>
+          <div class="register-metrics" id="register-metrics"></div>
+          <div class="register-list" id="register-list"></div>
+          <details class="register-history">
+            <summary id="register-history-summary">Answered, withdrawn, and no longer raised</summary>
+            <div id="register-history"></div>
+          </details>
+          <p class="register-weak-spots" id="register-weak-spots" hidden></p>
+          <p class="governance-note register-doctrine"><i></i><span id="register-doctrine"></span></p>
+        </section>
+
         <section class="roadmap-section" id="roadmap-section" hidden>
           <div class="section-heading">
-            <div><p>04 · Field capture roadmap</p><h2>What to capture, when, and why</h2></div>
+            <div><p>05 · Field capture roadmap</p><h2>What to capture, when, and why</h2></div>
             <div class="roadmap-filters">
               <select id="phase-filter"><option value="all">All phases</option></select>
               <select id="status-filter">
@@ -252,7 +269,7 @@ try{var t=localStorage.getItem("mdai-theme");document.documentElement.dataset.th
              a person who knows the place confirms it. -->
         <section class="routes-section" id="routes-section" hidden>
           <div class="section-heading">
-            <div><p>05 · How the rooms connect</p><h2>Confirm the way through</h2></div>
+            <div><p>06 · How the rooms connect</p><h2>Confirm the way through</h2></div>
             <div class="heading-actions">
               <span class="state-pill" id="routes-state">Not read yet</span>
             </div>
@@ -271,7 +288,7 @@ try{var t=localStorage.getItem("mdai-theme");document.documentElement.dataset.th
              signs. Nothing here is an estimate, and the screen says so. -->
         <section class="takeoff-section" id="takeoff-section" hidden>
           <div class="section-heading">
-            <div><p>06 · AI Takeoff Review</p><h2>What the plans imply in lumber</h2></div>
+            <div><p>07 · AI Takeoff Review</p><h2>What the plans imply in lumber</h2></div>
             <div class="heading-actions">
               <span class="state-pill" id="takeoff-state">Not computed</span>
               <button class="button" id="download-ai-takeoff" type="button" hidden title="The takeoff as a document: fixed presentation, the same on every screen">Download AI Takeoff (PDF)</button>
@@ -401,6 +418,29 @@ try{var t=localStorage.getItem("mdai-theme");document.documentElement.dataset.th
       </form>
     </dialog>
 
+    <dialog id="gap-dialog" class="attestation-dialog">
+      <form method="dialog" id="gap-form">
+        <div class="dialog-heading">
+          <div><p class="eyebrow">The reading register</p><h2 id="gap-dialog-heading">Answer what the reader could not read</h2></div>
+          <button class="dialog-close" value="cancel" aria-label="Close">×</button>
+        </div>
+        <div class="attestation-body">
+          <p class="attestation-intro" id="gap-dialog-question"></p>
+          <p class="gap-dialog-history" id="gap-dialog-history"></p>
+          <label class="attestation-reference" id="gap-dialog-answer-field">Your answer
+            <textarea id="gap-answer" maxlength="600" rows="3" placeholder="A-6.0 governs the door counts; the floor-plan tags repeat them."></textarea>
+            <small>Written as your answer, with your name and today's date on it. The AI cannot write here.</small>
+          </label>
+          <p class="attestation-warning" id="gap-dialog-warning">Answering records what a person knows. It does not change what the reader read, and the question stays in the register with its history.</p>
+        </div>
+        <div class="dialog-actions">
+          <button class="button secondary" value="cancel">Cancel</button>
+          <button class="button secondary" id="withdraw-gap" type="button">No longer applies</button>
+          <button class="button primary" id="answer-gap" type="button" disabled>Record my answer</button>
+        </div>
+      </form>
+    </dialog>
+
     <div class="toast" id="toast" role="status" aria-live="polite"></div>
     <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2.106.2"></script>
     <script>window.supabase||document.write('<script src="../vendor/supabase-js-2.106.2.min.js?v=ea40068925"><\/script>');</script>
@@ -412,6 +452,6 @@ try{var t=localStorage.getItem("mdai-theme");document.documentElement.dataset.th
     <script src="../pdf360.js?v=39ada1add4"></script>
     <script src="../intelligence-routing.js?v=fb2b0e5dc2"></script>
     <script src="../page-renders.js?v=ebb42cee89"></script>
-    <script src="plans.js?v=fca5f6fd09"></script>
+    <script src="plans.js?v=8e8082ba85"></script>
   </body>
 </html>
