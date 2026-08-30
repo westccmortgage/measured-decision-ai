@@ -2546,7 +2546,7 @@ async function hydrateStitchJobs() {
   if (!cloud.schemaReady || !cloud.propertyId) return;
   const { data, error } = await cloud.client
     .from("capture_360_jobs")
-    .select("id, state, stage, progress, error_code, updated_at, capture_360_groups(capture_key, state)")
+    .select("id, state, stage, progress, error_code, updated_at, created_at, started_at, finished_at, capture_360_groups(capture_key, state)")
     .eq("property_id", cloud.propertyId)
     .order("created_at", { ascending: true });
   if (error) return;
@@ -2557,6 +2557,9 @@ async function hydrateStitchJobs() {
     progress: Number(job.progress) || 0,
     error: job.error_code || "",
     captureKey: job.capture_360_groups?.capture_key || "",
+    queuedAt: job.created_at || null,
+    startedAt: job.started_at || null,
+    finishedAt: job.finished_at || null,
   }));
 }
 
@@ -2673,6 +2676,21 @@ function stitchSummary() {
   return { active, running, failed, done: stitchJobs.filter((job) => job.state === "completed") };
 }
 
+/* How long a stitch actually took, from the record's own stamps rather than
+   from anybody's stopwatch. Kept apart from the wait: a machine that had to
+   wake up first is a slow start, not a slow stitch, and rolling them together
+   would quietly answer the wrong question. */
+function stitchDuration(job) {
+  const from = Date.parse(job?.startedAt || "");
+  const to = Date.parse(job?.finishedAt || "");
+  if (!Number.isFinite(from) || !Number.isFinite(to) || to < from) return "";
+  const seconds = Math.round((to - from) / 1000);
+  if (seconds < 90) return `${seconds}s`;
+  const minutes = Math.floor(seconds / 60);
+  const rest = seconds % 60;
+  return rest ? `${minutes}m ${rest}s` : `${minutes}m`;
+}
+
 /* What a person actually needs to know: is anything happening, and is the
    machine that does it awake. A queued job with no worker running is not
    progress, and saying so is the difference between waiting and being stuck. */
@@ -2693,9 +2711,17 @@ function stitchLine() {
     return machine ? `${broke} · ${machine}` : broke;
   }
   /* Nothing queued is not nothing to say: a machine that is awake, or that
-     stopped at a gate an hour ago, is exactly what a person is looking for. */
+     stopped at a gate an hour ago, is exactly what a person is looking for.
+     And when the queue is empty because the work is done, how long the last
+     one took is the number that decides whether this happens every week. */
   const machineNow = machineStatus();
-  return machineNow.awake || machineNow.stopped ? machine : "";
+  const { done } = stitchSummary();
+  const lastDone = done[done.length - 1];
+  const took = stitchDuration(lastDone);
+  const idle = machineNow.awake || machineNow.stopped ? machine : "";
+  if (!took) return idle;
+  const sentence = `Last capture stitched in ${took}`;
+  return idle ? `${idle} · ${sentence.toLowerCase()}` : sentence;
 }
 
 /* Poll only while something is in flight, and stop as soon as it lands. A

@@ -856,6 +856,36 @@ select pg_temp.check('and each has its own stitch job',
      join public.capture_360_groups g on g.id = j.capture_group_id
     where g.capture_key = 'vid_20250222_042646_016') = 2);
 
+-- How long it took (043). A processing record that says a capture was
+-- stitched but not how long it took cannot answer the question the whole
+-- automation exists to earn. The stamps are set by the database, so the
+-- machine cannot flatter its own timing, and queue time is kept apart from
+-- stitch time — waiting for a sleeping machine is not stitching.
+do $$
+declare
+  probe uuid;
+  began timestamptz;
+begin
+  select j.id into probe from public.capture_360_jobs j
+    join public.capture_360_groups g on g.id = j.capture_group_id
+   where g.capture_key = 'vid_20250222_042646_016' limit 1;
+  update public.capture_360_jobs set state = 'processing', stage = 'Stitching' where id = probe;
+  select started_at into began from public.capture_360_jobs where id = probe;
+  perform pg_temp.check('a job that starts work records when it started',
+    began is not null and (select finished_at from public.capture_360_jobs where id = probe) is null);
+  update public.capture_360_jobs set state = 'completed', progress = 100 where id = probe;
+  perform pg_temp.check('and finishing records the end, leaving a real duration',
+    (select finished_at from public.capture_360_jobs where id = probe) is not null
+    and (select finished_at - started_at from public.capture_360_jobs where id = probe) >= interval '0');
+  perform pg_temp.check('queue time and stitch time stay separate numbers',
+    (select started_at > created_at or started_at = created_at from public.capture_360_jobs where id = probe));
+  -- A retry is its own attempt: the stamps describe the run on screen.
+  update public.capture_360_jobs set state = 'processing' where id = probe;
+  perform pg_temp.check('a retry clears the old ending and starts its own clock',
+    (select finished_at from public.capture_360_jobs where id = probe) is null
+    and (select started_at from public.capture_360_jobs where id = probe) >= began);
+end $$;
+
 -- One lens on its own is not a capture, and saying so is what tells somebody a
 -- file is missing rather than silently borrowing one from another room.
 insert into public.evidence_items(id, organization_id, property_id, space_id, storage_path,
