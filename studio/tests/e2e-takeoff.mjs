@@ -93,20 +93,34 @@ console.log("\n── the owner opens a finished takeoff — zero technical inpu
   check("the governance note says what accepting is and is not",
     /working baseline/i.test(view.note) && /line-by-line expert review/i.test(view.note), view.note.slice(0, 200));
 
-  console.log("\n── the AI workbook downloads without any approval ──");
+  console.log("\n── the AI takeoff downloads without any approval ──");
   const download = await page.evaluate(async () => {
-    let blob = null; let filename = ""; let clicked = false;
-    URL.createObjectURL = (b) => { blob = b; return "blob:captured"; };
-    HTMLAnchorElement.prototype.click = function () { clicked = true; filename = this.download; };
+    const grabbed = [];
+    URL.createObjectURL = (b) => { grabbed.push(b); return "blob:captured"; };
+    const names = [];
+    HTMLAnchorElement.prototype.click = function () { names.push(this.download); };
     document.querySelector("#download-ai-takeoff")?.click();
     await new Promise((r) => setTimeout(r, 150));
-    const head = blob ? [...new Uint8Array((await blob.arrayBuffer()).slice(0, 2))] : [];
+    document.querySelector("#download-ai-takeoff-xlsx")?.click();
+    await new Promise((r) => setTimeout(r, 150));
+    const magic = async (blob) => (blob ? [...new Uint8Array((await blob.arrayBuffer()).slice(0, 4))] : []);
     const sheets = window.__aiTakeoffSheets();
-    return { clicked, filename, head, sheets: sheets.map((sheet) => sheet.name), summary: sheets[0].rows, detail: sheets[1].rows };
+    return {
+      clicked: names.length, names,
+      head: await magic(grabbed[0]), workingHead: await magic(grabbed[1]),
+      sheets: sheets.map((sheet) => sheet.name), summary: sheets[0].rows, detail: sheets[1].rows,
+    };
   });
-  check("it downloads as a real workbook, no signature asked",
-    download.clicked === true && /^ai-takeoff-.+\.xlsx$/.test(download.filename) && download.head.join(",") === "80,75",
-    download.filename);
+  /* A document, not a spreadsheet: %PDF at the front of the file. No
+     signature is asked for either — that part of the rule is unchanged. */
+  check("it downloads as a real document, no signature asked",
+    download.clicked === 2 && /^ai-takeoff-.+\.pdf$/.test(download.names[0] || "")
+      && download.head.join(",") === "37,80,68,70",
+    JSON.stringify({ name: download.names[0], magic: download.head }));
+  check("and the spreadsheet is still available beside it, as the working copy",
+    /^ai-takeoff-working-copy-.+\.xlsx$/.test(download.names[1] || "")
+      && download.workingHead.slice(0, 2).join(",") === "80,75",
+    JSON.stringify({ name: download.names[1], magic: download.workingHead }));
   check("with the four AI sheets",
     JSON.stringify(download.sheets) === JSON.stringify(["AI Takeoff Summary", "Detailed Quantities & Basis", "Sources & Arithmetic", "RFIs & Holds"]),
     JSON.stringify(download.sheets));
@@ -255,6 +269,60 @@ console.log("\n── a plan set that printed no dimensions ──");
     !shown.rows.some((row) => !/COL\.2/.test(row) && /AI read/.test(row)),
     JSON.stringify(shown.rows.filter((row) => /AI read/.test(row))));
   check("nothing threw while showing the correction", errors.length === 0, errors[0] || "");
+  await context.close();
+}
+
+/* ── the list leaves as a document ─────────────────────────────────────────
+   A spreadsheet is a working tool: any recipient can change a number and
+   forward it, and no two machines render it the same way. The artifact a
+   person signs or hands on is a document. The workbook stays, plainly
+   labelled as a working copy — it is no longer what the main button gives. */
+{
+  const world = deckTakeoffRows();
+  world.takeoff_line_reviews = [{
+    id: "rev-d", baseline_id: "bl-1", kind: "wood_framing", state: "active",
+    line_key: "column COL.2: 8x8 #1",
+    verdict: "corrected", value: "9 drawn on plan", reviewer_role: "engineer",
+    reviewed_at: "2026-08-26T05:00:00Z",
+  }];
+  const { context, page, errors } = await openPlans(world);
+  const downloads = await page.evaluate(async () => {
+    const caught = [];
+    const realCreate = URL.createObjectURL;
+    URL.createObjectURL = (blob) => { caught.push({ type: blob.type, size: blob.size }); return realCreate.call(URL, blob); };
+    const names = [];
+    const realClick = HTMLAnchorElement.prototype.click;
+    HTMLAnchorElement.prototype.click = function noop() { names.push(this.download); };
+    document.querySelector("#download-ai-takeoff").click();
+    document.querySelector("#download-takeoff").click();
+    document.querySelector("#download-ai-takeoff-xlsx").click();
+    HTMLAnchorElement.prototype.click = realClick;
+    URL.createObjectURL = realCreate;
+    return {
+      caught, names,
+      documentButton: document.querySelector("#download-ai-takeoff")?.textContent.trim(),
+      workingButton: document.querySelector("#download-ai-takeoff-xlsx")?.textContent.trim(),
+      workingHidden: document.querySelector("#download-ai-takeoff-xlsx")?.hidden,
+    };
+  });
+  check("the takeoff button hands over a PDF, not a spreadsheet",
+    downloads.caught[0]?.type === "application/pdf" && /\.pdf$/.test(downloads.names[0] || ""),
+    JSON.stringify({ type: downloads.caught[0]?.type, name: downloads.names[0] }));
+  check("so does the human-verified order",
+    downloads.caught[1]?.type === "application/pdf" && /^verified-order-.*\.pdf$/.test(downloads.names[1] || ""),
+    JSON.stringify({ type: downloads.caught[1]?.type, name: downloads.names[1] }));
+  check("the spreadsheet is still there, named as the working copy it is",
+    downloads.workingHidden === false
+      && /working copy/i.test(downloads.workingButton || "")
+      && /working-copy/.test(downloads.names[2] || "")
+      && downloads.caught[2]?.type.includes("spreadsheet"),
+    JSON.stringify({ label: downloads.workingButton, name: downloads.names[2] }));
+  check("and the buttons say which is which",
+    /PDF/.test(downloads.documentButton || ""), downloads.documentButton);
+  check("every document has real bytes in it",
+    downloads.caught.every((blob) => blob.size > 500),
+    JSON.stringify(downloads.caught.map((blob) => blob.size)));
+  check("nothing threw while exporting", errors.length === 0, errors[0] || "");
   await context.close();
 }
 

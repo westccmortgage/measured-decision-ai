@@ -68,6 +68,56 @@ check("parentheses and backslashes are escaped, not broken",
 check("a character outside WinAnsi degrades to ?, never vanishes",
   /honestly: \? -> \?/.test(text.replace(/\\\d{3}/g, "?")) || /\(Non-Latin characters degrade honestly: \?\?\? -> \?\)/.test(text));
 
+console.log("\n── the material list is a table, not a paragraph ──");
+/* A takeoff read as prose is a takeoff nobody can check: the quantity has to
+   sit under the quantity above it. Columns are placed at their own point
+   offsets, and a cell too wide for its column is trimmed rather than allowed
+   to run through its neighbour. */
+{
+  const columned = buildPdf([
+    { text: "Measured Decision - AI Takeoff", size: 16, bold: true },
+    { rule: true },
+    { size: 9, bold: true, cells: [
+      { text: "Item", x: 0 }, { text: "Qty", x: 292, align: "right" },
+      { text: "Unit", x: 356 }, { text: "Method", x: 420 },
+    ] },
+    { size: 9, cells: [
+      { text: "2x6 joist (F.R.T.) - linear feet", x: 0 }, { text: "1230", x: 292, align: "right" },
+      { text: "LF", x: 356 }, { text: "DERIVED", x: 420 },
+    ] },
+    { size: 9, cells: [
+      { text: "column COL.2: 8x8 #1", x: 0 }, { text: "12", x: 292, align: "right" },
+      { text: "drawn", x: 356 }, { text: "AI_PLAN_COUNT", x: 420 },
+    ] },
+    { size: 9, cells: [
+      { text: "a line whose name is far too long to fit inside the column it was given and must be trimmed", x: 0 },
+      { text: "7", x: 292, align: "right" }, { text: "ea", x: 356 }, { text: "DERIVED", x: 420 },
+    ] },
+  ], { title: "AI Takeoff" });
+  const text = Buffer.from(columned).toString("latin1");
+  const placements = [...text.matchAll(/BT \/F\d 9 Tf (\d+) (\d+) Td \(([^)]*)\) Tj ET/g)]
+    .map((match) => ({ x: Number(match[1]), y: Number(match[2]), text: match[3] }));
+  const unitX = placements.filter((place) => ["Unit", "LF", "drawn", "ea"].includes(place.text)).map((place) => place.x);
+  check("every cell in a column starts at the same x",
+    unitX.length === 4 && new Set(unitX).size === 1, JSON.stringify(unitX));
+  /* Right alignment is a claim about where a number ENDS, not where it
+     starts: "1230" and "7" must finish on the same edge. */
+  const qtyRight = placements.filter((place) => ["1230", "12", "7"].includes(place.text))
+    .map((place) => ({ ...place, right: place.x + place.text.length * 9 * 0.5 }));
+  const edges = qtyRight.map((place) => place.right);
+  check("numbers end on one edge, so the digits line up",
+    qtyRight.length === 3 && Math.max(...edges) - Math.min(...edges) <= 1,
+    JSON.stringify(qtyRight.map((place) => `${place.text} ends at ${place.right}`)));
+  const firstRowY = placements.find((place) => place.text === "1230")?.y;
+  check("a row's cells sit on one baseline",
+    firstRowY !== undefined
+      && placements.filter((place) => ["1230", "LF"].includes(place.text)).every((place) => place.y === firstRowY),
+    JSON.stringify(placements.filter((place) => place.y === firstRowY).map((place) => place.text)));
+  check("an over-long name is trimmed instead of running through the next column",
+    placements.some((place) => place.x === 54 && /\.\.\.$/.test(place.text) && place.text.length < 90),
+    JSON.stringify(placements.filter((place) => place.x === 54).map((place) => place.text.slice(0, 60))));
+}
+
 console.log("\n── determinism ──");
 check("the same record produces the same bytes",
   Buffer.compare(Buffer.from(bytes), Buffer.from(buildPdf(lines, { title: "Owner Report - Sarita" }))) === 0);

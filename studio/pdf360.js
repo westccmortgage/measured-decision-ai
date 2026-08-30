@@ -6,11 +6,12 @@
  * true. Everything here is deterministic — the same record produces the same
  * bytes — which is what makes it testable, exactly like the XLSX writer.
  *
- * Supported on purpose: pages of text lines with size, bold, indent, and
- * rule separators, in Helvetica. Not supported on purpose: images, forms,
- * links — a verification record carries statements and their provenance,
- * not decoration. Text is WinAnsi (Latin-1); a character outside it becomes
- * '?' rather than silently vanishing.
+ * Supported on purpose: pages of text lines with size, bold, indent, rule
+ * separators, and columns — a material list is a table, and a table whose
+ * numbers do not line up is a list nobody trusts. Not supported on purpose:
+ * images, forms, links — a verification record carries statements and their
+ * provenance, not decoration. Text is WinAnsi (Latin-1); a character outside
+ * it becomes '?' rather than silently vanishing.
  */
 (() => {
   const PAGE_WIDTH = 612;   // US Letter, points
@@ -29,11 +30,27 @@
     return out;
   }
 
-  /* lines: [{ text, size?, bold?, indent?, rule?, gap? }].
+  /* lines: [{ text, size?, bold?, indent?, rule?, gap?, cells? }].
      rule: true draws a horizontal separator; gap: extra points of space
      before the line. Long lines wrap on an estimated character budget —
      Helvetica averages ~0.5em per character, and a conservative budget
-     keeps every wrapped line inside the margins. */
+     keeps every wrapped line inside the margins.
+
+     cells: [{ text, x, bold?, align? }] places each cell at its own point
+     offset from the left margin, so quantities sit under quantities down
+     the whole page. A right-aligned cell is nudged back by its estimated
+     width — Helvetica has no metrics table here, and half an em per
+     character is close enough that a column of numbers reads as a column.
+     A cell that would collide with the next one is trimmed with an ellipsis
+     rather than allowed to run through its neighbour. */
+  const CHAR_EM = 0.5;
+  const textWidth = (text, size) => String(text ?? "").length * size * CHAR_EM;
+  function fitCell(text, size, room) {
+    let shown = String(text ?? "");
+    if (room <= 0) return "";
+    while (shown.length > 1 && textWidth(shown, size) > room) shown = shown.slice(0, -1);
+    return shown.length < String(text ?? "").length ? `${shown.slice(0, -1)}...` : shown;
+  }
   function layout(lines) {
     const pages = [];
     let cursor = PAGE_HEIGHT - MARGIN;
@@ -54,6 +71,25 @@
         cursor -= 4;
         ops.push(`0.75 w ${MARGIN} ${cursor} m ${PAGE_WIDTH - MARGIN} ${cursor} l S`);
         cursor -= 8;
+        continue;
+      }
+      if (Array.isArray(line.cells) && line.cells.length) {
+        if (cursor - leading < MARGIN) newPage();
+        cursor -= leading;
+        const cells = line.cells;
+        for (const [index, cell] of cells.entries()) {
+          const start = MARGIN + (cell.x || 0);
+          /* How much room this cell has before the next one begins. The
+             last cell runs to the right margin. */
+          const next = cells[index + 1];
+          const limit = next ? MARGIN + (next.x || 0) - 6 : PAGE_WIDTH - MARGIN;
+          const shown = fitCell(cell.text, size, limit - start);
+          if (!shown) continue;
+          const at = cell.align === "right"
+            ? Math.max(start, limit - textWidth(shown, size))
+            : start;
+          ops.push(`BT /${cell.bold || line.bold ? "F2" : "F1"} ${size} Tf ${Math.round(at)} ${cursor} Td (${pdfEscape(shown)}) Tj ET`);
+        }
         continue;
       }
       const budget = Math.max(20, Math.floor((PAGE_WIDTH - MARGIN - indent) / (size * 0.5)));

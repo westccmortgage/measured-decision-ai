@@ -1052,6 +1052,7 @@ function renderTakeoff() {
     pill.className = "state-pill intake";
     approve.hidden = true;
     $("#download-ai-takeoff").hidden = true;
+    $("#download-ai-takeoff-xlsx").hidden = true;
     $("#export-record").hidden = true;
     $("#download-takeoff").hidden = true;
     $("#takeoff-expert").hidden = true;
@@ -1076,6 +1077,7 @@ function renderTakeoff() {
   const mayReview = canApproveBaseline() || state.role === "project_manager";
   approve.hidden = Boolean(accepted) || !mayReview;
   $("#download-ai-takeoff").hidden = false;
+  $("#download-ai-takeoff-xlsx").hidden = false;
   $("#export-record").hidden = false;
   $("#download-takeoff").hidden = confirmedCount === 0;
   $("#takeoff-expert").hidden = !mayReview;
@@ -1231,6 +1233,135 @@ function takeoffStamp() {
   return String(state.baseline?.created_at || "").slice(0, 10) || "draft";
 }
 
+/* ── the material list, as a document ──────────────────────────────────────
+
+   A spreadsheet is a working tool: any recipient can change a number and
+   forward it, and no two machines render it the same way. The list a person
+   signs, hands to a supplier, or files against a build is a document — fixed
+   presentation, same on every screen, and awkward to alter quietly. The
+   workbook stays for anyone who needs the rows as data; the record leaves as
+   a PDF. */
+/* Two columns, not four. The first draft squeezed method and unit into
+   narrow columns and the writer trimmed them — "DERIVED_FROM_PRIN..." — which
+   loses exactly the provenance the document exists to carry. The name and the
+   quantity get the width they need; how the number was arrived at, and from
+   which sheets, goes on its own line underneath where nothing is cut. */
+function takeoffRow(item, quantity) {
+  return {
+    size: 9,
+    cells: [
+      { text: item, x: 0 },
+      { text: quantity, x: 340, align: "right" },
+    ],
+  };
+}
+
+function takeoffColumnHeader() {
+  return {
+    size: 9,
+    bold: true,
+    cells: [
+      { text: "Item", x: 0 },
+      { text: "Quantity", x: 340, align: "right" },
+    ],
+  };
+}
+
+function aiTakeoffPdfLines(draft, propertyName) {
+  const lines = draft.result.lines || [];
+  const proposals = draft.result.proposals || [];
+  const holds = lines.filter((line) => line.status === "hold");
+  const openGaps = draft.result.gaps || [];
+  const reviews = activeReviews();
+  const confirmedCount = [...reviews.values()].filter((review) => review.verdict !== "kept_open").length;
+  const out = [
+    { text: "Measured Decision - AI Takeoff", size: 16, bold: true },
+    { text: "Read by AI - not confirmed", size: 11, bold: true },
+    { text: `Project: ${propertyName}`, size: 10 },
+    { text: `Baseline analyzed ${takeoffStamp()} - calculator ${TAKEOFF_CALCULATOR_VERSION}`, size: 9 },
+    { text: "Not a contractor's estimate: no waste, no cut optimisation, no scale measuring. Every row below carries its provenance - printed fact, plan count, or derived arithmetic.", size: 9, gap: 4 },
+    { rule: true },
+    { text: `${lines.length} quantities computed - ${holds.length} on HOLD - ${proposals.length} AI proposals awaiting review - ${openGaps.length} open RFIs - ${confirmedCount} human-confirmed`, size: 9 },
+    { rule: true },
+    takeoffColumnHeader(),
+    { rule: true },
+  ];
+  for (const line of lines) {
+    const review = reviews.get(line.item);
+    const corrected = review?.verdict === "corrected";
+    out.push(takeoffRow(
+      line.item,
+      corrected ? String(review.value) : `${line.quantity} ${line.unit || ""}`.trim(),
+    ));
+    const notes = [TAKEOFF_METHOD_LABELS[line.method] || "Derived from printed dimensions"];
+    if ((line.source_refs || []).length) notes.push(`sheets ${(line.source_refs || []).join(", ")}`);
+    if (line.category === "not_lumber") notes.push("not lumber - verification count");
+    if (line.status === "hold") notes.push(`HOLD - do not procure${line.hold_reason ? `: ${line.hold_reason}` : ""}`);
+    /* A corrected row keeps the reading it replaced, exactly as the screen
+       does: the document must not be the one place the machine's error is
+       hidden. */
+    if (corrected) notes.push(`AI read ${line.quantity} ${line.unit || ""} - corrected by ${review.reviewer_role}`);
+    else if (review) notes.push(`HUMAN_CONFIRMED by ${review.reviewer_role}`);
+    if (notes.length) out.push({ text: notes.join(" - "), size: 8, indent: 10 });
+  }
+  if (proposals.length) {
+    out.push({ rule: true }, { text: "AI proposals - not confirmed", size: 11, bold: true, gap: 6 });
+    for (const proposal of proposals) {
+      out.push(takeoffRow(proposal.question, String(proposal.proposed)));
+      out.push({ text: `AI plan count - ${proposal.confidence} confidence - ${proposal.basis}`, size: 8, indent: 10 });
+    }
+  }
+  if (openGaps.length) {
+    out.push({ rule: true }, { text: "RFIs and holds - raised automatically", size: 11, bold: true, gap: 6 });
+    for (const gap of openGaps) out.push({ text: `${gap} - OPEN_RFI, do not order`, size: 9, indent: 10 });
+  }
+  out.push({ rule: true }, { text: "Generated by Measured Decision. Accepting this takeoff records a working baseline; only line-by-line expert review creates a human-confirmed value.", size: 8 });
+  return out;
+}
+
+function verifiedOrderPdfLines(draft, propertyName) {
+  const reviews = activeReviews();
+  const confirmed = [...reviews.entries()].filter(([, review]) => review.verdict !== "kept_open");
+  const out = [
+    { text: "Measured Decision - Human-Verified Order", size: 16, bold: true },
+    { text: `Project: ${propertyName}`, size: 10 },
+    { text: "Every row below was confirmed line-by-line by a qualified reviewer. Nothing else qualifies.", size: 9, gap: 4 },
+    { rule: true },
+    {
+      size: 9,
+      bold: true,
+      cells: [
+        { text: "Line", x: 0 },
+        { text: "Confirmed value", x: 340, align: "right" },
+      ],
+    },
+    { rule: true },
+  ];
+  for (const [key, review] of confirmed) {
+    out.push(takeoffRow(key, review.value || ""));
+    out.push({
+      text: `HUMAN_CONFIRMED by ${review.reviewer_role} on ${String(review.reviewed_at || "").slice(0, 10)}`,
+      size: 8,
+      indent: 10,
+    });
+  }
+  out.push({ rule: true }, { text: `${confirmed.length} line${confirmed.length === 1 ? "" : "s"} human-confirmed. Everything the AI proposed that no person has confirmed is in the AI Takeoff document, marked as proposed.`, size: 8 });
+  return out;
+}
+
+function downloadPdf(lines, title, suffix) {
+  const name = state.property?.name || "project";
+  const slug = name.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "") || "project";
+  const bytes = window.MDAIPdf360.buildPdf(lines, { title });
+  const link = document.createElement("a");
+  link.href = URL.createObjectURL(new Blob([bytes], { type: "application/pdf" }));
+  link.download = `${suffix}-${slug}-${takeoffStamp()}.pdf`;
+  document.body.appendChild(link);
+  link.click();
+  link.remove();
+  setTimeout(() => URL.revokeObjectURL(link.href), 4000);
+}
+
 function aiTakeoffSheets(draft, propertyName) {
   const lines = draft.result.lines || [];
   const proposals = draft.result.proposals || [];
@@ -1365,8 +1496,20 @@ function downloadWorkbook(sheets, suffix) {
 $("#download-ai-takeoff")?.addEventListener("click", () => {
   const draft = takeoffDraft();
   if (!draft) return;
-  downloadWorkbook(aiTakeoffSheets(draft, state.property?.name || "project"), "ai-takeoff");
-  notify("The AI takeoff is downloading — no signature needed; every row carries its provenance.");
+  const name = state.property?.name || "project";
+  downloadPdf(aiTakeoffPdfLines(draft, name), `AI Takeoff - ${name}`, "ai-takeoff");
+  notify("The AI takeoff is downloading as a document — no signature needed; every row carries its provenance.");
+});
+
+/* The same rows as data. Offered plainly rather than as the default: a
+   supplier pasting quantities into their own system has a real need, and a
+   spreadsheet serves it — but the artifact a person signs or forwards is the
+   document, which nobody can quietly edit on the way. */
+$("#download-ai-takeoff-xlsx")?.addEventListener("click", () => {
+  const draft = takeoffDraft();
+  if (!draft) return;
+  downloadWorkbook(aiTakeoffSheets(draft, state.property?.name || "project"), "ai-takeoff-working-copy");
+  notify("The working copy is downloading — a spreadsheet is data to work with, not the record.");
 });
 
 $("#download-takeoff")?.addEventListener("click", () => {
@@ -1374,8 +1517,9 @@ $("#download-takeoff")?.addEventListener("click", () => {
   if (!draft) return;
   const confirmed = [...activeReviews().values()].filter((review) => review.verdict !== "kept_open");
   if (!confirmed.length) { notify("Nothing is human-confirmed yet — that takes line-by-line expert review", "error"); return; }
-  downloadWorkbook(verifiedOrderSheets(draft, state.property?.name || "project"), "verified-order");
-  notify("The human-verified order is downloading.");
+  const name = state.property?.name || "project";
+  downloadPdf(verifiedOrderPdfLines(draft, name), `Human-Verified Order - ${name}`, "verified-order");
+  notify("The human-verified order is downloading as a document.");
 });
 
 /* The record leaves with its owner.
@@ -1546,17 +1690,21 @@ async function buildRecordParts() {
       "",
       "owner-report.pdf - the record, readable",
       "manifest.json - the record, machine-readable, provenance on every value",
-      draft ? "ai-takeoff.xlsx - the AI takeoff (Read by AI - not confirmed)" : "",
+      draft ? "ai-takeoff.pdf - the AI takeoff as a document (Read by AI - not confirmed)" : "",
       draft && manifest.takeoff.human_reviews.some((review) => review.provenance === "HUMAN_CONFIRMED")
-        ? "human-verified-order.xlsx - only line-by-line confirmed rows" : "",
+        ? "human-verified-order.pdf - only line-by-line confirmed rows, as a document" : "",
+      draft ? "working-copies/ - the same rows as spreadsheets, for working with, not for signing" : "",
     ].filter(Boolean).join("\n") },
     { path: "manifest.json", content: JSON.stringify(manifest, null, 2) },
     { path: "owner-report.pdf", content: window.MDAIPdf360.buildPdf(ownerReportLines(manifest), { title: `Project Record - ${manifest.project.name}` }) },
   ];
   if (draft) {
-    parts.push({ path: "ai-takeoff.xlsx", content: window.MDAIXlsx360.buildXlsx(aiTakeoffSheets(draft, state.property?.name || "project")) });
+    const projectName = state.property?.name || "project";
+    parts.push({ path: "ai-takeoff.pdf", content: window.MDAIPdf360.buildPdf(aiTakeoffPdfLines(draft, projectName), { title: `AI Takeoff - ${projectName}` }) });
+    parts.push({ path: "working-copies/ai-takeoff.xlsx", content: window.MDAIXlsx360.buildXlsx(aiTakeoffSheets(draft, projectName)) });
     if (manifest.takeoff.human_reviews.some((review) => review.provenance === "HUMAN_CONFIRMED")) {
-      parts.push({ path: "human-verified-order.xlsx", content: window.MDAIXlsx360.buildXlsx(verifiedOrderSheets(draft, state.property?.name || "project")) });
+      parts.push({ path: "human-verified-order.pdf", content: window.MDAIPdf360.buildPdf(verifiedOrderPdfLines(draft, projectName), { title: `Human-Verified Order - ${projectName}` }) });
+      parts.push({ path: "working-copies/human-verified-order.xlsx", content: window.MDAIXlsx360.buildXlsx(verifiedOrderSheets(draft, projectName)) });
     }
   }
   return parts;
