@@ -444,6 +444,115 @@ function saveProjectCosts(message = "Cost recorded") {
   setTimeout(() => (elements.autosave.textContent = cloud.schemaReady ? `Cloud connected · ${cloud.role}` : "Saved locally"), 1300);
 }
 
+/* Money belongs in the record, not in a browser.
+
+   Costs and a person's trade corrections used to live only in localStorage:
+   invisible to everyone else on the project, absent from the export, outside
+   every audit, and gone with the cache. They are rows now. The browser copy
+   survives as the offline path — a person entering figures with no connection
+   still keeps them — and anything already sitting there can be moved across in
+   one press rather than quietly abandoned. */
+let costsAreInTheRecord = false;
+let costsWaitingInBrowser = 0;
+let strandedCosts = [];
+
+async function hydrateProjectCosts() {
+  costsAreInTheRecord = false;
+  costsWaitingInBrowser = 0;
+  if (!cloud.schemaReady || !cloud.propertyId) return;
+  const [{ data: costRows, error: costError }, { data: correctionRows }] = await Promise.all([
+    cloud.client.from("project_costs")
+      .select("id, trade, amount, currency, invoice_ref, document_evidence_id, note, recorded_at")
+      .eq("property_id", cloud.propertyId).eq("state", "active")
+      .order("recorded_at", { ascending: true }),
+    cloud.client.from("project_trade_corrections")
+      .select("observation_key, trade")
+      .eq("property_id", cloud.propertyId).eq("state", "active"),
+  ]);
+  /* A reader who is not allowed to see money gets nothing here, and that is
+     the policy working. The screen simply has no ledger to show them. */
+  if (costError) return;
+  costsAreInTheRecord = true;
+  const fromRecord = (costRows || []).map((row) => ({
+    id: row.id,
+    trade: row.trade,
+    amount: row.amount == null ? null : Number(row.amount),
+    currency: row.currency || "USD",
+    invoice_ref: row.invoice_ref || "",
+    document_evidence_id: row.document_evidence_id || "",
+    note: row.note || "",
+    recorded_at: row.recorded_at,
+  }));
+  /* Anything still carrying a browser-made id has not reached the record.
+     It stays on screen — a figure a person entered does not vanish because
+     the record has not got it yet — and it stays movable. */
+  strandedCosts = projectCosts.filter((entry) => String(entry.id || "").startsWith("ct-"));
+  costsWaitingInBrowser = strandedCosts.length;
+  projectCosts = [...fromRecord, ...strandedCosts];
+  tradeOverrides = Object.fromEntries((correctionRows || []).map((row) => [row.observation_key, row.trade]));
+}
+
+/* One entered figure, written wherever it can be kept. */
+async function recordCost(entry) {
+  if (cloud.schemaReady && cloud.propertyId) {
+    const { error } = await cloud.client.rpc("record_project_cost", {
+      p_property_id: cloud.propertyId,
+      p_trade: entry.trade,
+      p_amount: entry.amount,
+      p_currency: entry.currency || "USD",
+      p_invoice_ref: entry.invoice_ref || null,
+      p_document_evidence_id: entry.document_evidence_id || null,
+      p_note: entry.note || null,
+    });
+    if (!error) return true;
+    /* Never silently drop a figure a person typed: if the record refused it,
+       the browser still holds it and says so. */
+    notify(`Recorded in this browser only — the record refused it: ${error.message}`, "error");
+  }
+  projectCosts.push({
+    id: `ct-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 6)}`,
+    recorded_at: new Date().toISOString(),
+    recorded_by: cloud.session?.user?.email || "",
+    currency: "USD",
+    invoice_ref: "",
+    document_evidence_id: "",
+    ...entry,
+  });
+  return false;
+}
+
+/* What is still only in this browser, moved across in one press. */
+async function moveBrowserCostsIntoRecord() {
+  const stranded = strandedCosts.slice();
+  if (!stranded.length) return;
+  let moved = 0;
+  for (const entry of stranded) {
+    const { error } = await cloud.client.rpc("record_project_cost", {
+      p_property_id: cloud.propertyId,
+      p_trade: entry.trade,
+      p_amount: entry.amount ?? null,
+      p_currency: entry.currency || "USD",
+      p_invoice_ref: entry.invoice_ref || null,
+      p_document_evidence_id: entry.document_evidence_id || null,
+      p_note: entry.note || null,
+    });
+    if (!error) {
+      moved += 1;
+      /* Moved rows leave the browser copy, so a second press cannot enter
+         the same figure twice. */
+      projectCosts = projectCosts.filter((row) => row.id !== entry.id);
+      strandedCosts = strandedCosts.filter((row) => row.id !== entry.id);
+    }
+  }
+  saveProjectCosts("Moving into the record…");
+  await hydrateProjectCosts();
+  saveProjectCosts(`${moved} moved into the record`);
+  renderFocusStudio();
+  notify(moved === stranded.length
+    ? `${moved} cost${moved === 1 ? "" : "s"} moved into the record — they are part of the project now, not this browser.`
+    : `${moved} of ${stranded.length} moved; the rest stay in this browser and can be tried again.`, 6000);
+}
+
 function projectCoverage() {
   return window.MDAIMoney360 ? window.MDAIMoney360.coverage(rooms, projectCosts, tradeOverrides) : null;
 }
@@ -474,29 +583,28 @@ function openMoneyQuestions(preselect = "") {
 }
 
 function saveMoneyQuestions() {
-  let saved = 0;
+  const entries = [];
   $("#money-question-list").querySelectorAll("[data-trade]").forEach((input) => {
     const value = input.value.trim();
     if (value === "") return;
     const amount = Number(value);
     if (!Number.isFinite(amount)) return;
-    projectCosts.push({
-      id: `ct-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 6)}`,
-      trade: input.dataset.trade,
-      amount,
-      currency: "USD",
-      invoice_ref: "",
-      document_evidence_id: "",
-      recorded_at: new Date().toISOString(),
-      recorded_by: cloud.session?.user?.email || "",
-    });
-    saved += 1;
+    entries.push({ trade: input.dataset.trade, amount, currency: "USD", invoice_ref: "", document_evidence_id: "" });
   });
   $("#money-dialog").close();
-  if (!saved) return;
-  saveProjectCosts(`${saved} cost${saved === 1 ? "" : "s"} recorded`);
-  renderFocusStudio();
-  notify(`${saved} cost${saved === 1 ? "" : "s"} recorded against the work on record.`, 5000);
+  if (!entries.length) return;
+  void (async () => {
+    let kept = 0;
+    for (const entry of entries) {
+      if (await recordCost(entry)) kept += 1;
+    }
+    if (kept) await hydrateProjectCosts();
+    saveProjectCosts(`${entries.length} cost${entries.length === 1 ? "" : "s"} recorded`);
+    renderFocusStudio();
+    notify(kept === entries.length
+      ? `${kept} cost${kept === 1 ? "" : "s"} recorded against the work — in the project record, not this browser.`
+      : `${entries.length} recorded, ${entries.length - kept} of them in this browser only.`, 5000);
+  })();
 }
 
 /* One trade, in full: several invoices can sit under it, because that is how
@@ -544,20 +652,21 @@ function saveCostEntry() {
     $("#cost-dialog").close();
     return;
   }
-  projectCosts.push({
-    id: `ct-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 6)}`,
+  const entry = {
     trade: costEditor.trade,
     amount: amountValue === "" ? null : Number(amountValue),
     currency: "USD",
     invoice_ref: invoice,
     document_evidence_id,
-    recorded_at: new Date().toISOString(),
-    recorded_by: cloud.session?.user?.email || "",
-  });
+  };
   costEditor = null;
   $("#cost-dialog").close();
-  saveProjectCosts("Cost and document recorded");
-  renderFocusStudio();
+  void (async () => {
+    const kept = await recordCost(entry);
+    if (kept) await hydrateProjectCosts();
+    saveProjectCosts(kept ? "Cost and document in the record" : "Cost and document recorded");
+    renderFocusStudio();
+  })();
 }
 
 /* Money recorded for work nobody can see is the one thing here that is not a
@@ -1863,6 +1972,7 @@ async function hydrateCloudRecord() {
   activeRoomId = rooms[0]?.id || null;
 
   loadProjectCosts();
+  await hydrateProjectCosts();
   await hydrateStitchJobs();
   await hydrateMachineRun();
   scheduleStitchPoll();
@@ -5197,10 +5307,19 @@ function renderFocusResults() {
           ? `<button class="focus-secondary-action" type="button" data-money="alarm">Ask where ${escapeText(coverage.alarms[0].label.toLowerCase())} was done</button>`
           : ""}
       </div>
+      ${costsWaitingInBrowser && costsAreInTheRecord
+        ? `<p class="money-headline alarm">${costsWaitingInBrowser} figure${costsWaitingInBrowser === 1 ? "" : "s"} ${
+            costsWaitingInBrowser === 1 ? "is" : "are"
+          } in this browser only — not in the project record, not in the export, and gone if this cache is cleared.</p>
+          <div class="focus-vr-actions"><button class="focus-primary-action" type="button" data-money="move">Move ${
+            costsWaitingInBrowser === 1 ? "it" : "them"
+          } into the record</button></div>`
+        : ""}
       <p class="focus-vr-note">Money is only ever entered by a person. The AI never reads an amount and never decides which invoice belongs to which work.</p>`;
     moneyCard.querySelectorAll("[data-trade-row]").forEach((button) =>
       button.addEventListener("click", () => openTradeEditor(button.dataset.tradeRow)),
     );
+    moneyCard.querySelector('[data-money="move"]')?.addEventListener("click", () => { void moveBrowserCostsIntoRecord(); });
     moneyCard.querySelector('[data-money="ask"]')?.addEventListener("click", () => openMoneyQuestions());
     moneyCard.querySelector('[data-money="alarm"]')?.addEventListener("click", () => requestTradeDocument(coverage.alarms[0]));
   } else {
