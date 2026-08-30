@@ -711,6 +711,105 @@
       return baked;
     }
 
+    /* What the pin says once it is chosen, drawn as a texture because inside
+       an immersive session there is no DOM to draw it in. The evidence card
+       the flat viewer opens is HTML — perfectly good on a laptop, and
+       completely invisible to somebody wearing the headset. That is why
+       choosing a pin in VR appeared to do nothing at all even after the
+       gesture worked: the answer was being rendered where nobody could see
+       it. This is the same content, drawn into the room. */
+    function bakePanelTexture(marker) {
+      const board = document.createElement("canvas");
+      board.width = 768;
+      board.height = 432;
+      const ink = board.getContext("2d");
+      ink.clearRect(0, 0, 768, 432);
+      ink.fillStyle = "rgba(6, 17, 28, 0.94)";
+      ink.strokeStyle = marker.confirmed ? "rgba(128, 214, 169, 0.85)" : "rgba(255, 207, 153, 0.85)";
+      ink.lineWidth = 4;
+      const round = 26;
+      ink.beginPath();
+      ink.moveTo(round, 3);
+      ink.arcTo(765, 3, 765, 429, round);
+      ink.arcTo(765, 429, 3, 429, round);
+      ink.arcTo(3, 429, 3, 3, round);
+      ink.arcTo(3, 3, 765, 3, round);
+      ink.closePath();
+      ink.fill();
+      ink.stroke();
+
+      /* The standing first, and in its own colour. A reading the AI made and
+         a value a person confirmed must never look alike — least of all here,
+         where somebody is standing in the room believing what they see. */
+      const standing = String(marker.standing || "Read by AI · not confirmed");
+      ink.textAlign = "left";
+      ink.textBaseline = "middle";
+      ink.font = "600 26px Inter, system-ui, sans-serif";
+      const chipWidth = Math.min(560, ink.measureText(standing).width + 40);
+      ink.fillStyle = marker.confirmed ? "rgba(80, 214, 148, 0.16)" : "rgba(255, 187, 120, 0.16)";
+      ink.beginPath();
+      ink.moveTo(50, 38);
+      ink.arcTo(42 + chipWidth, 38, 42 + chipWidth, 90, 16);
+      ink.arcTo(42 + chipWidth, 90, 42, 90, 16);
+      ink.arcTo(42, 90, 42, 38, 16);
+      ink.arcTo(42, 38, 42 + chipWidth, 38, 16);
+      ink.closePath();
+      ink.fill();
+      ink.fillStyle = marker.confirmed ? "#7fe0ad" : "#ffcf99";
+      ink.fillText(standing, 62, 65);
+
+      /* The title, shrunk to fit and wrapped over two lines before anything
+         is cut: a marked point called "Panel schedule mismatch, north wall"
+         should read as itself. */
+      const words = String(marker.label || "Marked point").split(/\s+/);
+      let size = 46;
+      ink.font = `700 ${size}px Inter, system-ui, sans-serif`;
+      const lines = [];
+      let line = "";
+      for (const word of words) {
+        const candidate = line ? `${line} ${word}` : word;
+        if (ink.measureText(candidate).width > 668 && line) { lines.push(line); line = word; }
+        else line = candidate;
+        if (lines.length === 2) break;
+      }
+      if (line && lines.length < 2) lines.push(line);
+      ink.fillStyle = "#eef6f9";
+      lines.slice(0, 2).forEach((text, index) => {
+        let fitted = text;
+        while (fitted.length > 4 && ink.measureText(fitted).width > 668) fitted = `${fitted.slice(0, -2).trimEnd()}…`;
+        ink.fillText(fitted, 46, 150 + index * 56);
+      });
+
+      ink.font = "400 27px Inter, system-ui, sans-serif";
+      ink.fillStyle = "#a8bccb";
+      const rows = [
+        marker.detail || "",
+        marker.source ? `Seen in ${marker.source}` : "",
+      ].filter(Boolean);
+      rows.slice(0, 2).forEach((text, index) => {
+        let fitted = text;
+        while (fitted.length > 4 && ink.measureText(fitted).width > 668) fitted = `${fitted.slice(0, -2).trimEnd()}…`;
+        ink.fillText(fitted, 46, 272 + index * 42);
+      });
+
+      /* The refusal, printed where the temptation is. A confirmation is a
+         person putting their name on a value; a held glance is not that, and
+         a headset that let a stare confirm a reading would launder provenance
+         by accident — the one failure this product exists to refuse. */
+      ink.font = "500 23px Inter, system-ui, sans-serif";
+      ink.fillStyle = "#7c93a5";
+      ink.fillText("A verdict is not given by a glance — confirm it on the screen.", 46, 392);
+
+      const baked = gl.createTexture();
+      gl.bindTexture(gl.TEXTURE_2D, baked);
+      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
+      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
+      gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, board);
+      return baked;
+    }
+
     /* The way in is a dot, not a signboard. A banner the width of a door
        sat in the middle of the room and was, in the headset's own words,
        annoying; the menu it opens is the thing worth showing, and only
@@ -732,6 +831,39 @@
       ink.arc(64, 64, 13, 0, Math.PI * 2);
       ink.fillStyle = "rgba(140, 232, 243, 0.95)";
       ink.fill();
+      const baked = gl.createTexture();
+      gl.bindTexture(gl.TEXTURE_2D, baked);
+      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
+      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
+      gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, board);
+      return baked;
+    }
+
+    /* The way out of a pin's answer. Its own texture rather than the menu's
+       dot: the same shape for "open the rooms" and "close this" is a riddle,
+       and a panel whose exit is a riddle is a dead end with a view. */
+    function bakeCloseTexture() {
+      const board = document.createElement("canvas");
+      board.width = 128;
+      board.height = 128;
+      const ink = board.getContext("2d");
+      ink.clearRect(0, 0, 128, 128);
+      ink.beginPath();
+      ink.arc(64, 64, 40, 0, Math.PI * 2);
+      ink.fillStyle = "rgba(7, 20, 33, 0.86)";
+      ink.fill();
+      ink.lineWidth = 8;
+      ink.strokeStyle = "rgba(200, 224, 236, 0.95)";
+      ink.stroke();
+      ink.lineWidth = 11;
+      ink.lineCap = "round";
+      ink.strokeStyle = "rgba(226, 240, 247, 0.98)";
+      ink.beginPath();
+      ink.moveTo(48, 48); ink.lineTo(80, 80);
+      ink.moveTo(80, 48); ink.lineTo(48, 80);
+      ink.stroke();
       const baked = gl.createTexture();
       gl.bindTexture(gl.TEXTURE_2D, baked);
       gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
@@ -876,6 +1008,9 @@
              walls should feel. */
           sphereRadius: headsetRadius,
           menu: { open: false, items: [], chipTexture: null, chipDir: [0, -1, 0], heading: null, lookingChip: false, lookingItem: null, approach: 0, dwellOn: null, dwell: 0, dwellFired: false, hintTexture: null },
+          /* What a chosen pin says, parked in the room in front of whoever
+             chose it. Empty until somebody holds a look on a pin. */
+          panel: { markerId: null, texture: null, closeTexture: null, lines: [], dir: [0, 0, -1], closeDir: [0, -0.3, -0.95], lookingClose: false },
         };
         rebuildRoomMenu();
         /* Test hooks: the lazy remap centre, the pin list, and the room menu —
@@ -894,13 +1029,57 @@
           dwellOn: xr.menu.dwellOn,
           dwell: xr.menu.dwell,
         } : null);
+        window.__xrPanel = () => (xr?.panel.markerId ? {
+          markerId: xr.panel.markerId,
+          dir: xr.panel.dir.slice(),
+          closeDir: xr.panel.closeDir.slice(),
+          lookingClose: xr.panel.lookingClose,
+          lines: xr.panel.lines.slice(),
+        } : null);
 
         /* One place where choosing happens, however it was asked for: a
            held gaze, a pinch, a controller trigger, a grip. The menu owns
            the choice while it is on screen; otherwise the pin somebody is
            looking at opens, which is the whole point of putting pins in the
            room. */
+        /* A pin's answer, parked where the person was looking when they chose
+           it, with its own way out. Drawn in the room because the room is
+           where they are. */
+        function openHeadsetPanel(marker) {
+          const panel = xr.panel;
+          if (panel.texture) gl.deleteTexture(panel.texture);
+          panel.markerId = marker.id;
+          panel.texture = bakePanelTexture(marker);
+          if (!panel.closeTexture) panel.closeTexture = bakeCloseTexture();
+          panel.lines = [marker.standing || "Read by AI · not confirmed", marker.label || "Marked point",
+            marker.detail || "", marker.source ? `Seen in ${marker.source}` : ""].filter(Boolean);
+          const forward = xr.forward;
+          panel.dir = [forward[0], forward[1], forward[2]];
+          const under = [forward[0], forward[1] - 0.34, forward[2]];
+          const length = Math.hypot(under[0], under[1], under[2]) || 1;
+          panel.closeDir = [under[0] / length, under[1] / length, under[2] / length];
+          panel.lookingClose = false;
+        }
+
+        function closeHeadsetPanel() {
+          const panel = xr?.panel;
+          if (!panel?.markerId) return false;
+          if (panel.texture) gl.deleteTexture(panel.texture);
+          panel.texture = null;
+          panel.markerId = null;
+          panel.lines = [];
+          panel.lookingClose = false;
+          return true;
+        }
+
         function chooseWhatIsLookedAt() {
+          const panel = xr?.panel;
+          /* While a pin's answer is up it owns the gaze: the only thing to
+             choose is the way out of it. */
+          if (panel?.markerId) {
+            if (panel.lookingClose) closeHeadsetPanel();
+            return true;
+          }
           const menu = xr?.menu;
           if (menu?.items.length) {
             if (menu.lookingItem) {
@@ -921,10 +1100,15 @@
           }
           const marker = xr?.looking;
           if (!marker) return false;
+          /* Both surfaces answer: the panel for the person in the headset,
+             and the flat card for the same person the moment they take it
+             off. Neither one is the other's substitute. */
+          openHeadsetPanel(marker);
           onMarkerChosen?.(marker.id);
           return true;
         }
         xr.choose = chooseWhatIsLookedAt;
+        xr.closePanel = closeHeadsetPanel;
 
         /* Devices disagree about which gesture they report — a pinch, a
            trigger, a grip — so both completion events are heard. Only the
@@ -1007,7 +1191,8 @@
              does nothing". Frozen while looked at, and while the list is
              open, it is a thing in the room that can be aimed at. */
           const menu = xr.menu;
-          if (menu.items.length) {
+          const panel = xr.panel;
+          if (menu.items.length && !panel.markerId) {
             const flat = Math.hypot(forward[0], forward[2]);
             /* Looking straight up or down says nothing about which way the
                person is facing; the last good heading does. */
@@ -1055,10 +1240,52 @@
             menu.approach = 0;
           }
 
-          /* Holding a look is choosing. The gaze must leave and come back
-             before the same thing fires again, so opening the list does not
-             instantly close it under a gaze that has not moved yet. */
-          const dwellOn = menu.lookingItem?.id || (menu.lookingChip ? "__chip" : null);
+          /* The pin nearest to where somebody is looking, and only if they are
+             looking near it at all. Highlighting whatever happens to be closest
+             would light one up permanently, wherever the head turned. An open
+             menu owns the gaze — a pin must not light up through the list, and
+             neither must it light up through an open panel.
+
+             This hit test used to run AFTER the dwell below, which is why a
+             pin could only ever be opened by a select event: the held gaze
+             was computed over the menu alone, and a device that never reports
+             a pinch had no way to open a pin at all. */
+          let looked = null;
+          if (!menu.open && !panel.markerId) {
+            let best = Math.cos(0.16);
+            for (const marker of xr.markers) {
+              const dot = marker.dir[0] * forward[0] + marker.dir[1] * forward[1] + marker.dir[2] * forward[2];
+              if (dot > best) { best = dot; looked = marker; }
+            }
+          }
+          xr.looking = looked;
+          /* How close the aim is to the nearest pin, so a pin answers an
+             approaching reticle exactly as the menu dot does. */
+          let pinApproach = 0;
+          if (!menu.open && !panel.markerId) {
+            for (const marker of xr.markers) {
+              const dot = marker.dir[0] * forward[0] + marker.dir[1] * forward[1] + marker.dir[2] * forward[2];
+              pinApproach = Math.max(pinApproach, Math.min(1,
+                (dot - Math.cos(0.55)) / Math.max(0.0001, Math.cos(0.16) - Math.cos(0.55))));
+            }
+          }
+          xr.pinApproach = Math.max(0, pinApproach);
+
+          if (panel.markerId) {
+            const closeDot = panel.closeDir[0] * forward[0] + panel.closeDir[1] * forward[1] + panel.closeDir[2] * forward[2];
+            panel.lookingClose = closeDot > Math.cos(0.24);
+          } else {
+            panel.lookingClose = false;
+          }
+
+          /* Holding a look is choosing — of a menu item, of the way out, and
+             of a pin in the room. The gaze must leave and come back before the
+             same thing fires again, so opening the list does not instantly
+             close it under a gaze that has not moved yet. */
+          const dwellOn = menu.lookingItem?.id
+            || (menu.lookingChip ? "__chip" : null)
+            || (panel.lookingClose ? "__panel-close" : null)
+            || (looked ? `pin:${looked.id}` : null);
           if (dwellOn !== menu.dwellOn) {
             menu.dwellOn = dwellOn;
             menu.dwell = 0;
@@ -1075,20 +1302,6 @@
             }
           }
           if (!dwellOn) menu.dwell = 0;
-
-          /* The pin nearest to where somebody is looking, and only if they are
-             looking near it at all. Highlighting whatever happens to be closest
-             would light one up permanently, wherever the head turned. An open
-             menu owns the gaze — a pin must not light up through the list. */
-          let looked = null;
-          if (!menu.open) {
-            let best = Math.cos(0.14);
-            for (const marker of xr.markers) {
-              const dot = marker.dir[0] * forward[0] + marker.dir[1] * forward[1] + marker.dir[2] * forward[2];
-              if (dot > best) { best = dot; looked = marker; }
-            }
-          }
-          xr.looking = looked;
 
           /* The head's own position, so each eye's offset is measured from
              the centre of the head rather than from the origin of whatever
@@ -1130,7 +1343,7 @@
                sphere at infinity they keep the old fixed six metres. */
             const surfaceDistance = xr.sphereRadius > 0 ? xr.sphereRadius : 6.0;
 
-            if (xr.markers.length && !menu.open) {
+            if (xr.markers.length && !menu.open && !panel.markerId) {
               gl.useProgram(markerProgram);
               gl.bindBuffer(gl.ARRAY_BUFFER, markerQuad);
               gl.enableVertexAttribArray(markerCorner);
@@ -1147,7 +1360,15 @@
                 /* A pin drawn at half the distance must be half the size, or
                    a smaller room silently grows its pins. */
                 const pinScale = surfaceDistance / 6.0;
-                gl.uniform1f(markerUniforms.markerSize, (isLooked ? 0.46 : 0.32) * pinScale);
+                /* Aimed at, it is bigger; held, it keeps growing while the
+                   dwell fills. A control that shows nothing between "not yet"
+                   and "done" is a control nobody can learn — which is how a
+                   pin that could only be opened by an absent pinch felt from
+                   inside the headset: dead. */
+                const holding = menu.dwellOn === `pin:${marker.id}` ? menu.dwell : 0;
+                const idle = 0.32 + 0.10 * xr.pinApproach;
+                gl.uniform1f(markerUniforms.markerSize,
+                  (isLooked ? 0.46 + 0.20 * holding : idle) * pinScale);
                 gl.uniform1f(markerUniforms.looking, isLooked ? 1 : 0);
                 /* Confirmed by a person and seen only by the AI are different
                    things, and a pin is exactly where that distinction gets lost
@@ -1161,7 +1382,7 @@
               gl.disable(gl.BLEND);
             }
 
-            if (menu.items.length) {
+            if (menu.items.length || panel.markerId) {
               gl.useProgram(labelProgram);
               gl.bindBuffer(gl.ARRAY_BUFFER, markerQuad);
               gl.enableVertexAttribArray(labelCorner);
@@ -1188,7 +1409,7 @@
                 gl.uniform1f(labelUniforms.dwell, filling ? menu.dwell : 0);
                 gl.drawArrays(gl.TRIANGLES, 0, 6);
               };
-              if (!menu.open && menu.chipTexture) {
+              if (!menu.open && !panel.markerId && menu.chipTexture) {
                 /* Small, and growing as the aim closes on it — the dot is the
                    whole of the closed menu, and its answer to an approaching
                    reticle is the only instruction anybody gets. */
@@ -1204,11 +1425,20 @@
                     0.75, 0.17, false, false);
                 }
               }
-              if (menu.open) {
+              if (menu.open && !panel.markerId) {
                 for (const item of menu.items) {
                   const lit = item === menu.lookingItem;
                   drawLabel(item.texture, item.dir, lit ? 1.3 : 1.15, lit ? 0.26 : 0.23, lit, menu.dwellOn === item.id);
                 }
+              }
+              /* The pin's answer, in the room. Held at reading distance and
+                 parked where the person was looking when they chose it, with
+                 its own way out underneath — because a panel somebody cannot
+                 dismiss is worse than one that never opened. */
+              if (panel.markerId && panel.texture) {
+                drawLabel(panel.texture, panel.dir, 1.62, 0.91, false, false);
+                drawLabel(panel.closeTexture, panel.closeDir, 0.15, 0.15,
+                  panel.lookingClose ? 1 : 0.55, menu.dwellOn === "__panel-close");
               }
               gl.disable(gl.BLEND);
               /* The sphere's texture unit is shared; leave it bound the way
@@ -1237,7 +1467,7 @@
             gl.uniform3f(markerUniforms.eyeOffset, offset[0], offset[1], offset[2]);
             gl.uniform3f(markerUniforms.markerDirection, forward[0], forward[1], forward[2]);
             gl.uniform1f(markerUniforms.looking, 0);
-            const aiming = Boolean(menu.lookingChip || menu.lookingItem || looked);
+            const aiming = Boolean(menu.lookingChip || menu.lookingItem || looked || panel.lookingClose);
             /* A dark halo first, then the bright ring inside it. */
             gl.uniform1f(markerUniforms.markerSize, 0.075);
             gl.uniform4f(markerUniforms.markerColour, 0.02, 0.06, 0.10, 0.75);
@@ -1254,6 +1484,8 @@
           for (const item of xr?.menu.items || []) gl.deleteTexture(item.texture);
           if (xr?.menu.chipTexture) gl.deleteTexture(xr.menu.chipTexture);
           if (xr?.menu.hintTexture) gl.deleteTexture(xr.menu.hintTexture);
+          if (xr?.panel.texture) gl.deleteTexture(xr.panel.texture);
+          if (xr?.panel.closeTexture) gl.deleteTexture(xr.panel.closeTexture);
           xr = null;
           /* Taking the headset off must give the flat viewer back, not a black
              rectangle where a room used to be. */
@@ -1286,6 +1518,9 @@
           id: marker.id,
           label: marker.label || "",
           confirmed: marker.confirmed === true,
+          standing: marker.standing || "",
+          detail: marker.detail || "",
+          source: marker.source || "",
           dir: markerDirection(Number(marker.u), Number(marker.v)),
         }));
       if (xr) {
@@ -1293,6 +1528,11 @@
         /* The pin somebody was looking at may have just been removed; keeping
            the old object would light a ring that is no longer in the list. */
         xr.looking = headsetMarkers.find((marker) => marker.id === xr.looking?.id) || null;
+        /* And an answer about a pin that is no longer in this room — after a
+           room change, or a marker deleted on the laptop — closes with it. */
+        if (xr.panel.markerId && !headsetMarkers.some((marker) => marker.id === xr.panel.markerId)) {
+          xr.closePanel?.();
+        }
       }
       return headsetMarkers.length;
     }
@@ -1434,6 +1674,9 @@
       dispose, lookAt, view, canvas, enterVR, exitVR, setMedia,
       setHeadsetMarkers, setHeadsetRooms, setRoomSize, roomRadius,
       whenMarkerChosen, whenRoomChosen,
+      /* One card, two surfaces: dismissing the evidence on the flat pane
+         dismisses it in the room as well. */
+      closeHeadsetPanel: () => Boolean(xr?.closePanel?.()),
       xrViews: () => xr?.views || 0,
       xrMarkerCount: () => headsetMarkers.length,
     };
@@ -1594,6 +1837,7 @@
   }
 
   function clearMarkerPanels() {
+    markerState.sphere?.closeHeadsetPanel?.();
     stage.querySelectorAll(".pano-card, .pano-list").forEach((node) => node.remove());
     markerState.openId = null;
     markerState.pins.forEach((pin) => pin.setAttribute("aria-expanded", "false"));
@@ -1879,6 +2123,13 @@
         u: marker.u,
         v: marker.v,
         confirmed: marker.state === "confirmed",
+        /* What the pin has to be able to SAY inside the headset. Carried at
+           this seam because the immersive session cannot read the DOM card:
+           a pin that opens a panel a headset cannot show is a pin that does
+           nothing, which is exactly how this was reported. */
+        standing: markerStateLabel(marker),
+        detail: marker.detail && marker.detail !== marker.label ? marker.detail : "",
+        source: marker.source_name || "",
       })),
     );
   }

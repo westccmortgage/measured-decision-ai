@@ -682,6 +682,108 @@ check("and the sphere really is that room now — green, the way back",
   gazed.centre[1] > 120 && gazed.centre[2] < 110, `centre pixel ${String(gazed.centre)}`);
 check("and the list closes behind you", gazed.closedAfterChoosing === false);
 
+console.log("\n── a pin answers inside the room ──");
+/* Reported from the headset, twice: "click on the marker doesn't have any
+   effect whatsoever". Two faults sat behind it, and the second is the one
+   that made the first invisible:
+     · the held look was computed over the room menu ONLY, so a pin could be
+       opened by a select event and nothing else — and this device never
+       sends one;
+     · the answer was an HTML card. An immersive session draws its own layer
+       and nothing else, so even a pin that DID open answered somewhere the
+       person wearing the headset could not see.
+   Not one select event is fired anywhere in this section. */
+const pinned = await page.evaluate(async () => {
+  const surface = document.querySelector(".pano-overlay canvas");
+  const gl = surface.getContext("webgl2") || surface.getContext("webgl");
+  const run = (dir, frames) => { for (let i = 0; i < frames; i += 1) window.__xrFrame(dir); };
+  /* How much of the view is the near-black of a card face. The sphere
+     fixture is bright, so this separates "a panel is drawn" from "a panel
+     exists in a variable". */
+  const cardPixels = () => {
+    const px = new Uint8Array(512 * 512 * 4);
+    gl.readPixels(0, 0, 512, 512, gl.RGBA, gl.UNSIGNED_BYTE, px);
+    let dark = 0;
+    for (let i = 0; i < px.length; i += 4) {
+      if (px[i] < 45 && px[i + 1] < 55 && px[i + 2] < 70) dark += 1;
+    }
+    return dark;
+  };
+  const out = {};
+  window.__xrSetMarkers([
+    { id: "pin-ahead", label: "Water stain on ceiling", u: 0.5, v: 0.5,
+      confirmed: false, standing: "Seen by AI · not verified", detail: "Dark ring, roughly 300mm",
+      source: "Capture of 12 August" },
+    { id: "pin-left", label: "Cracked drywall", u: 0.25, v: 0.5, confirmed: false,
+      standing: "Seen by AI · not verified", source: "Capture of 12 August" },
+  ]);
+
+  run([0, 0, -1], 4);
+  out.beforeDark = cardPixels();
+  out.beforePanel = window.__xrPanel();
+  /* A fifth of a second of looking: aimed, not yet chosen. */
+  run([0, 0, -1], 12);
+  out.partway = window.__xrMenu().dwell;
+  out.stillClosed = window.__xrPanel();
+  /* Keep looking. Nothing else — no pinch, no trigger, no controller. */
+  run([0, 0, -1], 120);
+  out.panel = window.__xrPanel();
+  run([0, 0, -1], 4);
+  out.afterDark = cardPixels();
+
+  /* The way out of it, by the same held look. */
+  const closeDir = out.panel ? out.panel.closeDir : [0, -1, 0];
+  run(closeDir, 10);
+  out.lookingClose = window.__xrPanel()?.lookingClose === true;
+  run(closeDir, 130);
+  out.closed = window.__xrPanel();
+  run([0, 0, -1], 4);
+  out.closedDark = cardPixels();
+
+  /* A verdict is a person putting their name on a value. A stare is not
+     that, and a headset that let one confirm a reading would launder
+     provenance by accident. */
+  run([0, 0, -1], 140);
+  out.reopened = window.__xrPanel();
+  run([0, 0, -1], 200);
+  out.standingAfterStaring = window.__xrPanel()?.lines[0] || "";
+
+  /* Put the room back the way the next section expects to find it: an open
+     panel owns the gaze, and the way out of the headset lives in the menu it
+     covers. A test that leaves its own state lying around fails the section
+     after it and blames the product. */
+  const closeAgain = window.__xrPanel()?.closeDir || [0, -1, 0];
+  run(closeAgain, 140);
+  out.tidied = window.__xrPanel();
+  window.__xrSetMarkers([]);
+  return out;
+});
+check("a pin is not open until somebody holds a look on it",
+  pinned.beforePanel === null && pinned.stillClosed === null && pinned.partway > 0.05,
+  `dwell filled to ${Math.round((pinned.partway || 0) * 100)}% part-way`);
+check("holding a look on a pin opens it — no pinch, no trigger, nothing",
+  pinned.panel?.markerId === "pin-ahead", JSON.stringify(pinned.panel?.markerId || null));
+check("and what it opens is the evidence, not a dot",
+  /not verified/i.test(pinned.panel?.lines[0] || "")
+  && /Water stain on ceiling/.test(pinned.panel?.lines[1] || "")
+  && pinned.panel?.lines.some((line) => /12 August/.test(line)),
+  JSON.stringify(pinned.panel?.lines || []));
+/* The fault that made the whole thing look dead: an answer rendered where
+   the headset cannot show it. Pixels, not state. */
+check("the answer is actually drawn where the person is standing",
+  pinned.afterDark > pinned.beforeDark + 3000,
+  `${pinned.beforeDark} dark px before, ${pinned.afterDark} after`);
+check("its way out can be aimed at",
+  pinned.lookingClose === true);
+check("and a held look on that closes it",
+  pinned.closed === null && pinned.closedDark < pinned.beforeDark + 3000,
+  `${pinned.closedDark} dark px after closing`);
+check("and the room is handed back with nothing left open",
+  pinned.tidied === null);
+check("staring at a reading never confirms it",
+  pinned.reopened?.markerId === "pin-ahead" && /not verified/i.test(pinned.standingAfterStaring),
+  pinned.standingAfterStaring || "(no standing)");
+
 console.log("\n── taking the headset off ──");
 /* The way back rides in the same menu as the rooms — asked for in exactly
    those words. Choosing it fires the same session-end path a system gesture
