@@ -1919,4 +1919,228 @@ select pg_temp.refused('an owner viewer cannot run the period pass',
   $$select public.reconcile_period('bbbbbbbb-0000-0000-0000-000000000001')$$);
 reset role;
 
+-- The register of what could not be read (047). Every reading already admits
+-- what it could not do — and then that admission stayed inside the run.
+-- These check the cumulative register: that it fills itself, that it counts
+-- recurrence, that a person's answer is the only thing that can mark a gap
+-- answered, and that a reader falling silent is recorded as silence.
+
+-- The three readings above ran without anybody calling the register.
+select pg_temp.check('a count the distiller could not make is on the register by itself',
+  exists (select 1 from public.plan_reading_gaps
+          where property_id = 'bbbbbbbb-0000-0000-0000-000000000001'
+            and kind = 'no_count' and component_key = 'PF-1'
+            and question like 'No count could be read for PF-1%'));
+/* BM.1 could not be counted in reading 2; readings 3 and 4 never mentioned
+   it. That is silence, and the register says so in those words. */
+select pg_temp.check('a gap a later reading stopped raising is silence, never an answer',
+  (select status from public.plan_reading_gaps
+    where property_id = 'bbbbbbbb-0000-0000-0000-000000000001'
+      and kind = 'no_count' and component_key = 'BM.1') = 'not_raised_again'
+  and (select answer from public.plan_reading_gaps
+    where property_id = 'bbbbbbbb-0000-0000-0000-000000000001'
+      and kind = 'no_count' and component_key = 'BM.1') is null);
+
+-- Two more readings of the same set. The first question survives into the
+-- second reading with different capitals and punctuation — the same failure,
+-- not a new one.
+insert into public.document_baselines(id, organization_id, property_id, version, state,
+  source_document_ids, analysis, gaps, created_by)
+values ('eeeeeeee-0000-0000-0000-000000000005','aaaaaaaa-0000-0000-0000-000000000001',
+  'bbbbbbbb-0000-0000-0000-000000000001', 5, 'review', '{}'::uuid[],
+  '{"component_schedules":[
+     {"mark":"MW-3","category":"millwork","description":"base cabinet run","unit":"count","count_scheduled":0,"count_drawn":0,"count_proposed":3,"count_confidence":"low","count_note":"tags partly obscured","source_refs":["A-8.2"]}
+   ]}'::jsonb,
+  '[{"severity":"critical","question":"Which schedule governs the door counts?","source_refs":["A-6.0"],"blocks_activation":true},
+    {"severity":"informational","question":"Is the deck framing revised after RFI 12?","source_refs":["S-2.0"],"blocks_activation":false}]'::jsonb,
+  '11111111-1111-1111-1111-111111111111');
+
+set local role authenticated;
+set local test.uid = '33333333-3333-3333-3333-333333333333';
+select public.extract_project_requirements('eeeeeeee-0000-0000-0000-000000000005');
+reset role;
+
+/* A number the reader would not stand behind is a different failure from no
+   number at all, and the register keeps the two apart. */
+select pg_temp.check('a count that came back weak is its own kind of failure',
+  exists (select 1 from public.plan_reading_gaps
+          where property_id = 'bbbbbbbb-0000-0000-0000-000000000001'
+            and kind = 'weak_count' and component_key = 'MW-3'
+            and question like '%low confidence%'
+            and source_refs = '["A-8.2"]'::jsonb));
+
+select pg_temp.check('a reading''s own questions land on the register with their severity',
+  (select count(*) from public.plan_reading_gaps
+    where property_id = 'bbbbbbbb-0000-0000-0000-000000000001'
+      and kind = 'unanswered_question' and status = 'open') = 2
+  and exists (select 1 from public.plan_reading_gaps
+              where gap_key = 'which schedule governs the door counts'
+                and severity = 'critical' and blocks_activation
+                and readings_seen = 1));
+
+insert into public.document_baselines(id, organization_id, property_id, version, state,
+  source_document_ids, analysis, gaps, created_by)
+values ('eeeeeeee-0000-0000-0000-000000000006','aaaaaaaa-0000-0000-0000-000000000001',
+  'bbbbbbbb-0000-0000-0000-000000000001', 6, 'review', '{}'::uuid[], '{}'::jsonb,
+  '[{"severity":"critical","question":"  Which schedule governs the DOOR counts  ","source_refs":["A-2.1"],"blocks_activation":true}]'::jsonb,
+  '11111111-1111-1111-1111-111111111111');
+
+select pg_temp.check('the same question asked twice is one row that has been asked twice',
+  (select readings_seen from public.plan_reading_gaps
+    where gap_key = 'which schedule governs the door counts') = 2
+  and (select first_seen_baseline from public.plan_reading_gaps
+    where gap_key = 'which schedule governs the door counts') = 'eeeeeeee-0000-0000-0000-000000000005'
+  and (select last_seen_baseline from public.plan_reading_gaps
+    where gap_key = 'which schedule governs the door counts') = 'eeeeeeee-0000-0000-0000-000000000006');
+select pg_temp.check('and every sheet that ever raised it stays in its provenance',
+  (select source_refs from public.plan_reading_gaps
+    where gap_key = 'which schedule governs the door counts') = '["A-2.1", "A-6.0"]'::jsonb);
+select pg_temp.check('the question the newest reading dropped is marked as dropped, not as done',
+  (select status from public.plan_reading_gaps
+    where gap_key = 'is the deck framing revised after rfi 12') = 'not_raised_again');
+
+-- Only a person answers.
+set local role authenticated;
+set local test.uid = '11111111-1111-1111-1111-111111111111';
+do $$
+declare
+  door_gap uuid;
+  deck_gap uuid;
+begin
+  select id into door_gap from public.plan_reading_gaps
+    where gap_key = 'which schedule governs the door counts';
+  select id into deck_gap from public.plan_reading_gaps
+    where gap_key = 'is the deck framing revised after rfi 12';
+  perform public.answer_plan_reading_gap(door_gap, 'answered',
+    'A-6.0 governs; the floor-plan tags are informational.');
+  perform pg_temp.check('an answer carries the name of the person who gave it',
+    (select status from public.plan_reading_gaps where id = door_gap) = 'answered'
+    and (select answered_by from public.plan_reading_gaps where id = door_gap)
+        = '11111111-1111-1111-1111-111111111111'::uuid
+    and (select answered_at from public.plan_reading_gaps where id = door_gap) is not null);
+  perform public.answer_plan_reading_gap(deck_gap, 'withdrawn',
+    'RFI 12 was closed without a drawing change.');
+  perform pg_temp.check('and a gap that no longer applies is withdrawn by a person too',
+    (select status from public.plan_reading_gaps where id = deck_gap) = 'withdrawn');
+end $$;
+select pg_temp.refused('an answer that says nothing is not an answer',
+  $$select public.answer_plan_reading_gap(
+      (select id from public.plan_reading_gaps where gap_key = 'pf-1'), 'answered', '   ')$$);
+select pg_temp.refused('and nothing else can be done to a gap',
+  $$select public.answer_plan_reading_gap(
+      (select id from public.plan_reading_gaps where gap_key = 'pf-1'), 'resolved', 'done')$$);
+reset role;
+
+-- A seventh reading raises both again. An answer the drawings never absorbed
+-- is a gap that is still open; a person's withdrawal is not overturned by a
+-- machine repeating itself.
+insert into public.document_baselines(id, organization_id, property_id, version, state,
+  source_document_ids, analysis, gaps, created_by)
+values ('eeeeeeee-0000-0000-0000-000000000007','aaaaaaaa-0000-0000-0000-000000000001',
+  'bbbbbbbb-0000-0000-0000-000000000001', 7, 'review', '{}'::uuid[], '{}'::jsonb,
+  '[{"severity":"critical","question":"Which schedule governs the door counts?","source_refs":["A-6.0"],"blocks_activation":true},
+    {"severity":"informational","question":"Is the deck framing revised after RFI 12?","source_refs":["S-2.0"],"blocks_activation":false}]'::jsonb,
+  '11111111-1111-1111-1111-111111111111');
+
+select pg_temp.check('an answered question raised again is open again, and keeps the answer it was given',
+  (select status from public.plan_reading_gaps
+    where gap_key = 'which schedule governs the door counts') = 'open'
+  and (select answer from public.plan_reading_gaps
+    where gap_key = 'which schedule governs the door counts') like 'A-6.0 governs%'
+  and (select readings_seen from public.plan_reading_gaps
+    where gap_key = 'which schedule governs the door counts') = 3);
+select pg_temp.check('a person''s withdrawal is not overturned by the reader repeating itself',
+  (select status from public.plan_reading_gaps
+    where gap_key = 'is the deck framing revised after rfi 12') = 'withdrawn'
+  and (select readings_seen from public.plan_reading_gaps
+    where gap_key = 'is the deck framing revised after rfi 12') = 2);
+
+set local role authenticated;
+set local test.uid = '11111111-1111-1111-1111-111111111111';
+do $$
+declare
+  register jsonb;
+  spots jsonb;
+begin
+  register := public.plan_reading_register('bbbbbbbb-0000-0000-0000-000000000001');
+  perform pg_temp.check('the register ranks what blocks activation first',
+    register->'open'->0->>'gap_key' is null
+    and (register->'open'->0->>'blocks_activation')::boolean
+    and register->'open'->0->>'question' like 'Which schedule governs%');
+  perform pg_temp.check('it counts recurrence, blockers and how long the oldest has been open',
+    (register->'summary'->>'recurring')::integer >= 1
+    and (register->'summary'->>'blocking')::integer = 1
+    and (register->'summary'->>'readings')::integer = 7
+    and (register->'summary'->>'withdrawn')::integer = 1);
+  perform pg_temp.check('and it says out loud that silence is not an answer',
+    register->>'doctrine' like '%a reader falling silent is not an answer%');
+
+  spots := public.plan_reading_weak_spots('aaaaaaaa-0000-0000-0000-000000000001');
+  perform pg_temp.check('the weak-spot map counts the kinds of failure across the projects',
+    exists (select 1 from jsonb_array_elements(spots->'by_kind') k
+             where k->>'kind' = 'no_count' and (k->>'gaps')::integer >= 1));
+  perform pg_temp.check('and names the sheets the reader keeps stumbling on',
+    exists (select 1 from jsonb_array_elements(spots->'by_sheet') s
+             where s->>'sheet' = 'A-6.0'));
+  perform pg_temp.check('while claiming nothing about the drawings or the work',
+    spots->>'doctrine' like '%not a judgement of any drawing set%');
+end $$;
+reset role;
+
+-- Who may look, and who may write.
+/* Held outside the register, because the roles below cannot read it — a
+   refusal that only proves the id was invisible proves nothing. */
+create temporary table register_ids as
+  select id from public.plan_reading_gaps where gap_key = 'pf-1';
+grant select on register_ids to authenticated;
+
+set local role authenticated;
+set local test.uid = '22222222-2222-2222-2222-222222222222';
+select pg_temp.check('a field contributor does not read the register of the reader''s failures',
+  (select count(*) from public.plan_reading_gaps) = 0);
+select pg_temp.refused('nor answers a real gap they were handed the id of',
+  $$select public.answer_plan_reading_gap((select id from register_ids), 'answered', 'anything')$$);
+select pg_temp.refused('nor reads the register through its own door',
+  $$select public.plan_reading_register('bbbbbbbb-0000-0000-0000-000000000001')$$);
+reset role;
+
+set local role authenticated;
+set local test.uid = '44444444-4444-4444-4444-444444444444';
+select pg_temp.refused('another organisation gets no weak-spot map of this one',
+  $$select public.plan_reading_weak_spots('aaaaaaaa-0000-0000-0000-000000000001')$$);
+reset role;
+
+set local role authenticated;
+set local test.uid = '11111111-1111-1111-1111-111111111111';
+/* The register is written by the readings themselves. There is no write
+   policy at all, so not even the project owner can put a row in by hand. */
+select pg_temp.refused('nobody writes to the register by hand — not even the owner',
+  $$insert into public.plan_reading_gaps(organization_id, property_id, kind, gap_key, question)
+    values ('aaaaaaaa-0000-0000-0000-000000000001','bbbbbbbb-0000-0000-0000-000000000001',
+            'no_count','invented','A gap nobody read')$$);
+/* An update finds no row to change: there is no update policy, so the row
+   the owner can read is not a row the owner can write. */
+select pg_temp.affects('nor edits one — the register has no writable rows at all',
+  $$update public.plan_reading_gaps set status = 'answered' where gap_key = 'pf-1'$$, 0);
+select pg_temp.affects('nor deletes one',
+  $$delete from public.plan_reading_gaps where gap_key = 'pf-1'$$, 0);
+select pg_temp.check('and the row stands exactly as the reading left it',
+  (select status from public.plan_reading_gaps where gap_key = 'pf-1') <> 'answered');
+reset role;
+
+select pg_temp.check('the fold is the triggers'' alone, and its triggers keep firing without EXECUTE',
+  not has_function_privilege('authenticated', 'public.fold_plan_reading_gaps(uuid,boolean)', 'execute')
+  and not has_function_privilege('anon', 'public.fold_plan_reading_gaps(uuid,boolean)', 'execute')
+  and not has_function_privilege('authenticated', 'public.note_baseline_reading_gaps()', 'execute')
+  and not has_function_privilege('authenticated', 'public.note_extraction_reading_gaps()', 'execute'));
+
+set local role anon;
+set local test.uid = '';
+select pg_temp.refused('signed out, the register cannot even be looked at',
+  $$select count(*) from public.plan_reading_gaps$$);
+select pg_temp.refused('and its doors are shut',
+  $$select public.plan_reading_register('bbbbbbbb-0000-0000-0000-000000000001')$$);
+reset role;
+
+
 rollback;

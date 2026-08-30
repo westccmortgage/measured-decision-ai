@@ -553,6 +553,42 @@ select:focus, input:focus { border-color: var(--cyan); box-shadow: 0 0 0 2px var
 .gap-item i { width: 7px; height: 7px; margin-top: 5px; border-radius: 50%; background: var(--d62798b); }
 .gap-item.critical i { background: var(--red); }
 .gap-item.important i { background: var(--amber); }
+
+/* The reading register: where the plan reader could not read, accumulated
+   across every reading of this project. Styled from the semantic tokens
+   only, so day and night both hold without a new literal. */
+.register-section { margin-top: 18px; border: 1px solid var(--line); background: var(--drgba-8-22-35-72); }
+.register-metrics { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); border-bottom: 1px solid var(--line); }
+.register-metrics article { padding: 14px 18px; border-right: 1px solid var(--line); }
+.register-metrics article:last-child { border-right: 0; }
+.register-metrics span { display: block; margin-bottom: 6px; color: var(--cyan); text-transform: uppercase; letter-spacing: .08em; font-size: 9px; font-weight: 700; }
+.register-metrics strong { display: block; font-size: 21px; line-height: 1.2; }
+.register-metrics small { color: var(--muted); font-size: 10px; }
+.register-list { display: grid; }
+.register-row { display: grid; grid-template-columns: 7px minmax(0, 1fr) auto; gap: 12px; align-items: start; padding: 14px 18px; border-bottom: 1px solid var(--line); }
+.register-row:last-child { border-bottom: 0; }
+.register-row > i { width: 7px; height: 7px; margin-top: 6px; border-radius: 50%; background: var(--d62798b); }
+.register-row.critical > i { background: var(--red); }
+.register-row.important > i { background: var(--amber); }
+.register-question { margin: 0 0 6px; color: var(--text); font-size: 12px; }
+.register-meta { display: flex; flex-wrap: wrap; gap: 7px; }
+.register-meta span { padding: 4px 7px; border: 1px solid var(--line); border-radius: 4px; color: var(--muted); font-size: 9px; text-transform: uppercase; letter-spacing: .06em; }
+.register-meta span.recurring { color: var(--amber); border-color: var(--amber); }
+.register-meta span.blocking { color: var(--red); border-color: var(--red); }
+.register-answer { margin: 7px 0 0; color: var(--muted); font-size: 11px; }
+.register-history { border-top: 1px solid var(--line); }
+.register-history summary { padding: 12px 18px; color: var(--cyan); font-size: 10px; text-transform: uppercase; letter-spacing: .08em; cursor: pointer; }
+.register-history-row { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 12px; padding: 10px 18px; border-top: 1px solid var(--line); color: var(--muted); font-size: 11px; }
+.register-history-row b { color: var(--text); font-weight: 600; }
+.register-empty { padding: 18px; color: var(--muted); font-size: 11px; }
+.register-weak-spots { margin: 0; padding: 12px 18px; border-top: 1px solid var(--line); color: var(--muted); font-size: 11px; }
+.gap-dialog-history { margin: 0 0 4px; color: var(--muted); font-size: 11px; }
+@media (max-width: 720px) {
+  .register-metrics { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .register-metrics article:nth-child(2) { border-right: 0; }
+  .register-row { grid-template-columns: 7px minmax(0, 1fr); }
+  .register-row > .button { grid-column: 2; justify-self: start; }
+}
 .governance-note { margin: 0; padding: 12px 18px; border-top: 1px solid var(--line); color: var(--d708699); font-size: 10px; }
 .governance-note i { display: inline-block; width: 7px; height: 7px; margin-right: 8px; border-radius: 50%; background: var(--green); }
 
@@ -845,6 +881,7 @@ body.summary-mode .metrics,
 body.summary-mode .roadmap-divergence,
 body.summary-mode .workflow-grid,
 body.summary-mode .baseline-section,
+body.summary-mode .register-section,
 body.summary-mode .roadmap-section,
 body.summary-mode .routes-section,
 body.summary-mode .takeoff-section { display: none; }
@@ -867,6 +904,7 @@ body.view-visual .metrics,
 body.view-visual .roadmap-divergence,
 body.view-visual .workflow-grid,
 body.view-visual .baseline-section,
+body.view-visual .register-section,
 body.view-visual .roadmap-section,
 body.view-visual .routes-section,
 body.view-visual .takeoff-section { display: none; }
