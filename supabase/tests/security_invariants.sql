@@ -1755,4 +1755,60 @@ select pg_temp.check('and invitations are invisible signed out',
   (select count(*) from public.property_invitations) = 0);
 reset role;
 
+-- The period pass (044). Every number cumulative meant the question an owner
+-- asks weekly — what arrived, what went in, what is sitting on site — had no
+-- answer at all. These check that the window is real, that bought-and-not-
+-- installed is a row rather than a slogan, and that no budget was invented.
+--
+-- The rows go in before a role is taken: back-dating an observation is not
+-- something the recording door allows, and rightly so — a person cannot
+-- claim to have seen something last month.
+insert into public.project_observations(organization_id, property_id, component_key, kind,
+  quantity, method, confidence, observed_at, state)
+values
+  ('aaaaaaaa-0000-0000-0000-000000000001','bbbbbbbb-0000-0000-0000-000000000001',
+   'PERIOD-1','delivered_documented', 10, 'DOCUMENT', 'high', now() - interval '40 days', 'active'),
+  ('aaaaaaaa-0000-0000-0000-000000000001','bbbbbbbb-0000-0000-0000-000000000001',
+   'PERIOD-1','delivered_documented', 4, 'DOCUMENT', 'high', now() - interval '2 days', 'active'),
+  ('aaaaaaaa-0000-0000-0000-000000000001','bbbbbbbb-0000-0000-0000-000000000001',
+   'PERIOD-1','installed_seen', 6, 'AI_VISION', 'medium', now() - interval '1 day', 'active');
+
+set local role authenticated;
+set local test.uid = '11111111-1111-1111-1111-111111111111';
+do $$
+declare
+  pass jsonb;
+begin
+  pass := public.reconcile_period('bbbbbbbb-0000-0000-0000-000000000001',
+                                  now() - interval '7 days', now());
+
+  perform pg_temp.check('the window holds only what happened inside it',
+    (select (entry->>'quantity')::numeric from jsonb_array_elements(pass->'arrived') entry
+      where entry->>'component_key' = 'PERIOD-1') = 4);
+  perform pg_temp.check('and what the capture confirmed in the same window',
+    (select (entry->>'quantity')::numeric from jsonb_array_elements(pass->'installed') entry
+      where entry->>'component_key' = 'PERIOD-1') = 6);
+  -- Fourteen delivered across all time, six installed: eight are on site.
+  perform pg_temp.check('bought and not installed is a number, not a slogan',
+    (select (entry->>'difference')::numeric from jsonb_array_elements(pass->'on_site_not_installed') entry
+      where entry->>'component_key' = 'PERIOD-1') = 8);
+  perform pg_temp.check('a delivery from before the window still counts as on site',
+    (select (entry->>'delivered_total')::numeric from jsonb_array_elements(pass->'on_site_not_installed') entry
+      where entry->>'component_key' = 'PERIOD-1') = 14);
+  -- The one thing this pass must never grow on its own.
+  perform pg_temp.check('the pass invents no budget and no forecast',
+    not (pass ? 'budget') and not (pass ? 'forecast') and not (pass ? 'projection')
+    and pass->>'doctrine' like '%holds no budget%');
+end $$;
+
+select pg_temp.refused('a period that ends before it begins is refused',
+  $$select public.reconcile_period('bbbbbbbb-0000-0000-0000-000000000001', now(), now() - interval '1 day')$$);
+reset role;
+
+set local role authenticated;
+set local test.uid = '55555555-5555-5555-5555-555555555555';
+select pg_temp.refused('an owner viewer cannot run the period pass',
+  $$select public.reconcile_period('bbbbbbbb-0000-0000-0000-000000000001')$$);
+reset role;
+
 rollback;
