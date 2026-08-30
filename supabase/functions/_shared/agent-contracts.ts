@@ -1,4 +1,4 @@
-export const AGENT_CONTRACT_VERSION = "2026-08-28.1";
+export const AGENT_CONTRACT_VERSION = "2026-08-30.1";
 
 export type AgentKey =
   | "document_controller"

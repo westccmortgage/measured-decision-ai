@@ -175,10 +175,14 @@ const componentCountsSchema = {
   items: {
     type: "object",
     additionalProperties: false,
-    required: ["component_key", "count_visible", "confidence", "note"],
+    required: ["component_key", "count_visible", "count_on_site", "confidence", "note"],
     properties: {
       component_key: { type: "string" },
       count_visible: { type: "integer" },
+      /* Standing on site and not built in. A separate fact from the one
+         above, and the stronger evidence for "bought is not installed":
+         subtraction infers it, a pallet in frame shows it. */
+      count_on_site: { type: "integer" },
       confidence: { type: "string", enum: ["high", "medium", "low"] },
       note: { type: "string" },
     },
@@ -485,7 +489,7 @@ Deno.serve(async (request) => {
         `Evidence manifest: ${JSON.stringify(evidenceManifest)}`,
         "Analyze only the visual material that follows. Every visible observation must cite one or more exact evidence IDs from the manifest.",
         ...(componentVocabulary.length ? [
-          `Component counting. This project's technical documents require these components:\n${componentVocabulary.join("\n")}\nIn component_counts, report each of these components you can ACTUALLY SEE INSTALLED in the frames, with the count you can verify by looking. Count only what is visible: absence from view is not absence from the site, and you never report a zero. If you cannot identify or count a component with confidence, omit it entirely — the record treats a missing count as not-yet-evidenced, which is the honest state. Use note for what limited the count (angle, occlusion, distance).`,
+          `Component counting. This project's technical documents require these components:\n${componentVocabulary.join("\n")}\nIn component_counts, report each of these components you can ACTUALLY SEE in the frames. count_visible is how many are BUILT IN — installed, fixed in place, part of the structure. count_on_site is how many of the same component are PRESENT BUT NOT INSTALLED — stacked, palletised, leaning against a wall, still wrapped. These are different facts and both matter: material bought and not yet built in is exactly what nobody can otherwise tell. Count only what is visible: absence from view is not absence from the site, and you never report a zero for something you simply could not see — use 0 only when the component is genuinely absent from a frame that would have shown it. If you cannot identify or count a component with confidence, omit it entirely — the record treats a missing count as not-yet-evidenced, which is the honest state. Use note for what limited the count (angle, occlusion, distance).`,
         ] : []),
         ...(sphericalFrames.length ? [SPHERICAL_ANCHOR_INSTRUCTIONS] : []),
       ].join("\n"),
