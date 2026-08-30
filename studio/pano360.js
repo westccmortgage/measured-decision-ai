@@ -875,7 +875,7 @@
              positive radius is somebody's preference about how far the
              walls should feel. */
           sphereRadius: headsetRadius,
-          menu: { open: false, items: [], chipTexture: null, chipDir: [0, -1, 0], heading: null, lookingChip: false, lookingItem: null, dwellOn: null, dwell: 0, dwellFired: false, hintTexture: null },
+          menu: { open: false, items: [], chipTexture: null, chipDir: [0, -1, 0], heading: null, lookingChip: false, lookingItem: null, approach: 0, dwellOn: null, dwell: 0, dwellFired: false, hintTexture: null },
         };
         rebuildRoomMenu();
         /* Test hooks: the lazy remap centre, the pin list, and the room menu —
@@ -1043,9 +1043,16 @@
             menu.lookingItem = lookedItem;
             const chipDot = menu.chipDir[0] * forward[0] + menu.chipDir[1] * forward[1] + menu.chipDir[2] * forward[2];
             menu.lookingChip = !lookedItem && chipDot > Math.cos(0.30);
+            /* How close the aim is, from far out. The dot brightens as the
+               reticle approaches it, so the first head movement teaches the
+               gesture: a control that answers before it is reached explains
+               itself, and one that stays inert until it is hit does not. */
+            menu.approach = Math.max(0, Math.min(1,
+              (chipDot - Math.cos(0.75)) / Math.max(0.0001, Math.cos(0.30) - Math.cos(0.75))));
           } else {
             menu.lookingChip = false;
             menu.lookingItem = null;
+            menu.approach = 0;
           }
 
           /* Holding a look is choosing. The gaze must leave and come back
@@ -1123,28 +1130,6 @@
                sphere at infinity they keep the old fixed six metres. */
             const surfaceDistance = xr.sphereRadius > 0 ? xr.sphereRadius : 6.0;
 
-            /* A reticle at the gaze. Without one, nobody in a headset can
-               tell where the page thinks they are looking — which is how
-               "I look right at it and nothing happens" happens. */
-            gl.useProgram(markerProgram);
-            gl.bindBuffer(gl.ARRAY_BUFFER, markerQuad);
-            gl.enableVertexAttribArray(markerCorner);
-            gl.vertexAttribPointer(markerCorner, 2, gl.FLOAT, false, 0, 0);
-            gl.enable(gl.BLEND);
-            gl.blendFunc(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA);
-            gl.uniformMatrix4fv(markerUniforms.projection, false, eyeView.projectionMatrix);
-            gl.uniformMatrix3fv(markerUniforms.viewRotationInverse, false, rotation);
-            gl.uniform1f(markerUniforms.markerDistance, 1.6);
-            gl.uniform3f(markerUniforms.eyeOffset, offset[0], offset[1], offset[2]);
-            gl.uniform3f(markerUniforms.markerDirection, forward[0], forward[1], forward[2]);
-            gl.uniform1f(markerUniforms.markerSize, 0.022);
-            gl.uniform1f(markerUniforms.looking, 0);
-            const aiming = menu.lookingChip || menu.lookingItem || looked;
-            gl.uniform4f(markerUniforms.markerColour,
-              aiming ? 0.55 : 1, aiming ? 0.91 : 1, aiming ? 0.95 : 1, aiming ? 0.95 : 0.55);
-            gl.drawArrays(gl.TRIANGLES, 0, 6);
-            gl.disable(gl.BLEND);
-
             if (xr.markers.length && !menu.open) {
               gl.useProgram(markerProgram);
               gl.bindBuffer(gl.ARRAY_BUFFER, markerQuad);
@@ -1193,19 +1178,23 @@
               gl.uniform1i(labelUniforms.label, 0);
               gl.activeTexture(gl.TEXTURE0);
               const labelScale = menuDistance / 6.0;
+              /* `lit` is a level, not a flag: a control part-way to being
+                 aimed at should look part-way there. */
               const drawLabel = (labelTexture, dir, width, height, lit, filling) => {
                 gl.bindTexture(gl.TEXTURE_2D, labelTexture);
                 gl.uniform3f(labelUniforms.labelDirection, dir[0], dir[1], dir[2]);
                 gl.uniform2f(labelUniforms.labelSize, width * labelScale, height * labelScale);
-                gl.uniform1f(labelUniforms.looking, lit ? 1 : 0);
+                gl.uniform1f(labelUniforms.looking, typeof lit === "number" ? lit : (lit ? 1 : 0));
                 gl.uniform1f(labelUniforms.dwell, filling ? menu.dwell : 0);
                 gl.drawArrays(gl.TRIANGLES, 0, 6);
               };
               if (!menu.open && menu.chipTexture) {
-                /* Small, and a little larger while aimed at — the dot is the
-                   whole of the closed menu. */
-                const dotSize = menu.lookingChip ? 0.17 : 0.13;
-                drawLabel(menu.chipTexture, menu.chipDir, dotSize, dotSize, menu.lookingChip, menu.dwellOn === "__chip");
+                /* Small, and growing as the aim closes on it — the dot is the
+                   whole of the closed menu, and its answer to an approaching
+                   reticle is the only instruction anybody gets. */
+                const dotSize = 0.13 + 0.07 * menu.approach;
+                drawLabel(menu.chipTexture, menu.chipDir, dotSize, dotSize,
+                  menu.lookingChip ? 1 : menu.approach * 0.8, menu.dwellOn === "__chip");
                 /* The words, only while somebody is aiming at it. */
                 if (menu.lookingChip && menu.hintTexture) {
                   const under = [menu.chipDir[0], menu.chipDir[1] - 0.13, menu.chipDir[2]];
@@ -1226,6 +1215,38 @@
                  the next frame's video upload expects to find it. */
               gl.bindTexture(gl.TEXTURE_2D, texture);
             }
+
+            /* The reticle, drawn last so nothing can cover it, and drawn
+               twice so it reads against a bright wall as well as a dark one.
+
+               It marks where the HEAD points, which is the aim this page can
+               actually measure — eyes moving behind a still head steer
+               nothing. The first version of it was under two degrees across:
+               technically present, practically invisible, and a person with
+               no visible aim has no way to learn that aiming is the gesture.
+               Reported from the headset as a dot that would not press. */
+            gl.useProgram(markerProgram);
+            gl.bindBuffer(gl.ARRAY_BUFFER, markerQuad);
+            gl.enableVertexAttribArray(markerCorner);
+            gl.vertexAttribPointer(markerCorner, 2, gl.FLOAT, false, 0, 0);
+            gl.enable(gl.BLEND);
+            gl.blendFunc(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA);
+            gl.uniformMatrix4fv(markerUniforms.projection, false, eyeView.projectionMatrix);
+            gl.uniformMatrix3fv(markerUniforms.viewRotationInverse, false, rotation);
+            gl.uniform1f(markerUniforms.markerDistance, 1.6);
+            gl.uniform3f(markerUniforms.eyeOffset, offset[0], offset[1], offset[2]);
+            gl.uniform3f(markerUniforms.markerDirection, forward[0], forward[1], forward[2]);
+            gl.uniform1f(markerUniforms.looking, 0);
+            const aiming = Boolean(menu.lookingChip || menu.lookingItem || looked);
+            /* A dark halo first, then the bright ring inside it. */
+            gl.uniform1f(markerUniforms.markerSize, 0.075);
+            gl.uniform4f(markerUniforms.markerColour, 0.02, 0.06, 0.10, 0.75);
+            gl.drawArrays(gl.TRIANGLES, 0, 6);
+            gl.uniform1f(markerUniforms.markerSize, 0.058);
+            gl.uniform4f(markerUniforms.markerColour,
+              aiming ? 0.55 : 1, aiming ? 0.91 : 1, aiming ? 0.95 : 1, 0.95);
+            gl.drawArrays(gl.TRIANGLES, 0, 6);
+            gl.disable(gl.BLEND);
           }
         });
 

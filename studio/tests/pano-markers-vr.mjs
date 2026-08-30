@@ -512,8 +512,10 @@ const chipOnScreen = await page.evaluate(() => {
   for (let row = 0; row < 512; row += 1) {
     for (let col = 0; col < 512; col += 1) {
       const i = (row * 512 + col) * 4;
-      /* the chip's panel: dark navy, unlike the grey sphere or its red band */
-      if (px[i] < 60 && px[i + 1] < 70 && px[i + 2] < 90) {
+      /* The dot by its cyan ring. Not by its dark centre: the reticle now
+         carries a dark halo of its own, and a detector that cannot tell the
+         aim from the thing being aimed at measures the wrong object. */
+      if (px[i] < 180 && px[i + 1] > 180 && px[i + 2] > 200) {
         count += 1;
         if (row < lowest) lowest = row;
         if (row > highest) highest = row;
@@ -522,6 +524,28 @@ const chipOnScreen = await page.evaluate(() => {
   }
   return { count, lowest, highest };
 });
+/* The aim has to be visible or aiming is not a gesture anybody can learn.
+   The first reticle was under two degrees across and the headset reported
+   the dot as unpressable — not because the test was wrong, but because
+   nobody could see where they were pointing. */
+const reticle = await page.evaluate(() => {
+  const surface = document.querySelector(".pano-overlay canvas");
+  const gl = surface.getContext("webgl2") || surface.getContext("webgl");
+  for (let i = 0; i < 10; i += 1) window.__xrFrame([0, 0, -1]);
+  const px = new Uint8Array(512 * 512 * 4);
+  gl.readPixels(0, 0, 512, 512, gl.RGBA, gl.UNSIGNED_BYTE, px);
+  /* The bright ring sits at the centre of the eye, over the grey sphere. */
+  let bright = 0; let left = 512; let right = -1;
+  for (let col = 0; col < 512; col += 1) {
+    const i = (256 * 512 + col) * 4;
+    if (px[i] > 200 && px[i + 1] > 200 && px[i + 2] > 200) { bright += 1; if (col < left) left = col; if (col > right) right = col; }
+  }
+  return { bright, span: right - left + 1 };
+});
+check("the reticle is big enough to steer by",
+  reticle.bright >= 4 && reticle.span >= 10 && reticle.span <= 90,
+  `${reticle.bright} bright px across ${reticle.span} of 512 in the centre row`);
+
 check("and a person looking straight ahead can actually see it",
   chipOnScreen.count > 20 && chipOnScreen.highest < 256 && chipOnScreen.lowest > 40,
   `${chipOnScreen.count} px, rows ${chipOnScreen.lowest}-${chipOnScreen.highest} (256 is the eye line, 0 the floor of the view)`);
