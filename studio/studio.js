@@ -4249,15 +4249,35 @@ async function openEvidenceViewer(item, room, focusMarkerId = null) {
      without taking the headset off — a menu in the sphere, not a dead end. */
   const roomChoices = [];
   if (spatial) {
+    /* The moment being stood in. Walking to the next room must not walk you
+       silently forward in time: somebody standing in the building as it was
+       three weeks ago, stepping through a doorway, expects the next room
+       three weeks ago too — not today's, wearing the same room's name. The
+       anchor stays the capture they entered by, so the whole walk is one
+       moment rather than a drift through the project's history. */
+    const standingAt = Date.parse(item.capturedAt || "") || null;
     for (const other of rooms) {
-      const capture = (other.evidence || []).find((entry) => focusIsSpatial(entry));
-      if (capture) {
-        roomChoices.push({ id: other.id, title: other.name || "Room", item: capture, roomRef: other });
-      }
+      const captures = (other.evidence || []).filter((entry) => focusIsSpatial(entry));
+      if (!captures.length) continue;
+      const capture = standingAt
+        ? captures.reduce((closest, entry) => {
+          const gap = Math.abs((Date.parse(entry.capturedAt || "") || 0) - standingAt);
+          const best = Math.abs((Date.parse(closest.capturedAt || "") || 0) - standingAt);
+          return gap < best ? entry : closest;
+        }, captures[0])
+        : captures[0];
+      roomChoices.push({ id: other.id, title: other.name || "Room", item: capture, roomRef: other });
     }
   }
+  /* The date rides on the label. Even with the nearest capture chosen, a room
+     may simply have no capture from that week, and a person in a headset must
+     never have to guess which day they are looking at. */
   const roomList = (currentId) =>
-    roomChoices.map((entry) => ({ id: entry.id, title: entry.title, current: entry.id === currentId }));
+    roomChoices.map((entry) => ({
+      id: entry.id,
+      title: entry.item.date ? `${entry.title} · ${entry.item.date}` : entry.title,
+      current: entry.id === currentId,
+    }));
   const chooseRoom = async (roomId) => {
     const choice = roomChoices.find((entry) => entry.id === roomId);
     if (!choice) return;

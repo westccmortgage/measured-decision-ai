@@ -173,6 +173,25 @@ export const machineWorkingRows = () => {
   return r;
 };
 
+/* The same rooms, captured on two different days. Standing in a building as
+   it was three weeks ago and walking to the next room must land in that
+   room three weeks ago too — not in today's, wearing the same name. */
+export const roomsAcrossTimeRows = () => {
+  const r = clone(rows);
+  const spatial = (id, space, day) => file(id, space, `${id}-vr-master.mp4`, "video/mp4", {
+    media_type: "360 capture",
+    source_metadata: { projection: "equirectangular", vr: { playback_ready: true } },
+    captured_at: `${day}T10:00:00Z`, created_at: `${day}T10:00:00Z`,
+  });
+  r.evidence_items = [
+    spatial("ev-a-old", "space-viewable", "2026-08-01"),
+    spatial("ev-a-new", "space-viewable", "2026-08-22"),
+    spatial("ev-b-old", "space-waiting", "2026-08-02"),
+    spatial("ev-b-new", "space-waiting", "2026-08-23"),
+  ];
+  return r;
+};
+
 /* The machine has finished, and the record knows how long it took. The
    number that decides whether a site gets captured every week or whenever
    somebody remembers. */

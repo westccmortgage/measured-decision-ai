@@ -10,7 +10,7 @@ import { chromium } from "/opt/node22/lib/node_modules/playwright/index.mjs";
 import http from "http";
 import fs from "fs";
 import path from "path";
-import { seed } from "./seed.mjs";
+import { seed, roomsAcrossTimeRows } from "./seed.mjs";
 
 const ROOT = path.resolve(".");
 const TYPES = { ".html": "text/html", ".js": "text/javascript", ".css": "text/css", ".json": "application/json" };
@@ -354,6 +354,56 @@ console.log("\n── 11. day and night are one studio ──");
   await page5.waitForTimeout(700);
   const kept = await page5.evaluate(() => document.documentElement.dataset.theme);
   check("and the day survives a reload", kept === "light", String(kept));
+  await ctx.close();
+}
+
+console.log("\n── 12. the walk keeps its moment ──");
+/* Standing in the building as it was three weeks ago and stepping into the
+   next room must land in that room three weeks ago too. The first draft of
+   the headset menu took whichever capture a room happened to list first, so
+   a walk through a doorway could be a walk forward in time with nothing on
+   screen saying so — a false comparison, made silently. */
+{
+  const ctx = await browser.newContext({ viewport: { width: 430, height: 900 } });
+  await ctx.route("**://*/**", (route) =>
+    route.request().url().startsWith(base) ? route.continue() : route.abort());
+  const walked = await ctx.newPage();
+  const walkErrors = [];
+  walked.on("pageerror", (e) => walkErrors.push(String(e).slice(0, 200)));
+  await walked.addInitScript(`window.__seed = ${JSON.stringify({ rows: roomsAcrossTimeRows() })};`);
+  await walked.addInitScript({ path: "studio/tests/fake-supabase.js" });
+  await walked.goto(`${base}/studio/?property=prop-1`, { waitUntil: "networkidle" });
+  await walked.waitForTimeout(1200);
+
+  const offered = await walked.evaluate(async () => {
+    const captured = [];
+    const real = window.MDAIPano360.open;
+    window.MDAIPano360.open = (options) => { captured.push(options); };
+    /* Stand in the older capture of the first room — the building as it was
+       three weeks ago. */
+    const room = rooms.find((entry) => (entry.evidence || []).some((file) => file.id === "ev-a-old"));
+    const old = room?.evidence.find((file) => file.id === "ev-a-old");
+    await openEvidenceViewer(old, room);
+    window.MDAIPano360.open = real;
+    const options = captured[0] || {};
+    return {
+      standingOn: old?.date || "",
+      rooms: options.rooms || [],
+      opened: Boolean(captured.length),
+    };
+  });
+  check("opening a capture offers the other rooms", offered.opened === true && offered.rooms.length >= 2,
+    JSON.stringify(offered.rooms));
+  /* The second room has captures from both days; the one offered must be the
+     one from the same week, not the newest it happens to hold. */
+  const other = offered.rooms.find((entry) => /Master Bedroom/.test(entry.title || ""));
+  check("the next room is offered from the same moment, not today",
+    /August 2, 2026/.test(other?.title || "") && !/August 23, 2026/.test(other?.title || ""),
+    other?.title || "(the other room was not offered at all)");
+  check("and every room wears the date you would be standing in",
+    offered.rooms.every((entry) => /·\s+\w+ \d{1,2}, \d{4}$/.test(entry.title || "")),
+    JSON.stringify(offered.rooms.map((entry) => entry.title)));
+  check("nothing threw while offering the walk", walkErrors.length === 0, walkErrors[0] || "");
   await ctx.close();
 }
 
