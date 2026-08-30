@@ -92,10 +92,18 @@ const result = await page.evaluate(async () => {
   };
 });
 
-check("the archive carries the manifest, the PDF report and both workbooks",
-  JSON.stringify(result.paths) === JSON.stringify(["README.txt", "manifest.json", "owner-report.pdf", "ai-takeoff.xlsx"])
-  || JSON.stringify(result.paths) === JSON.stringify(["README.txt", "manifest.json", "owner-report.pdf", "ai-takeoff.xlsx", "human-verified-order.xlsx"]),
+/* The record travels as documents, with the spreadsheets kept beside them as
+   working copies rather than as the record itself: a file anyone can edit
+   and forward is data to work with, not the thing a person signed. */
+check("the archive carries the manifest, the report and the takeoff as documents",
+  ["README.txt", "manifest.json", "owner-report.pdf", "ai-takeoff.pdf"].every((path) => result.paths.includes(path))
+  && result.paths.includes("working-copies/ai-takeoff.xlsx")
+  && !result.paths.includes("ai-takeoff.xlsx"),
   JSON.stringify(result.paths));
+check("and the README says which file is the record and which is the working copy",
+  /ai-takeoff\.pdf - the AI takeoff as a document/.test(result.readme)
+  && /working-copies\/ - the same rows as spreadsheets, for working with, not for signing/.test(result.readme),
+  result.readme.split("\n").filter((line) => /takeoff|working/.test(line)).join(" | "));
 check("the same record exports the same bytes", result.deterministic);
 
 const manifest = JSON.parse(result.manifest);
