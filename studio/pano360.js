@@ -162,15 +162,39 @@
     varying vec2 vCorner;
     uniform vec4 markerColour;
     uniform float looking;
+    uniform float reticle;
     void main() {
       float radius = length(vCorner);
-      if (radius > 1.0) discard;
-      /* A ring rather than a blob: it has to be visible against timber and
-         daylight alike without hiding what it points at. */
-      float edge = smoothstep(1.0, 0.86, radius);
-      float hole = smoothstep(0.52, 0.66, radius);
-      float alpha = edge * mix(hole, 1.0, looking * 0.55);
-      gl_FragColor = vec4(markerColour.rgb, markerColour.a * alpha);
+      if (reticle > 0.5) {
+        /* A sight, not a target.
+         *
+         * The aim used to be drawn by this same shader as the same ring the
+         * pins are: identical shape, brighter, and parked in the middle of
+         * the view. So the most button-like object in the room was the one
+         * thing that can never be pressed — it follows the head, so it can
+         * never be aimed at — and it was pressed for four rounds by somebody
+         * doing exactly what they had been told to do. Four ticks and an
+         * open centre cannot be mistaken for a thing in the room. */
+        float ax = abs(vCorner.x);
+        float ay = abs(vCorner.y);
+        float arm = 0.19;
+        float gap = 0.34;
+        float horizontal = smoothstep(arm, arm * 0.55, ay)
+          * smoothstep(gap * 0.8, gap, ax) * smoothstep(1.0, 0.9, ax);
+        float vertical = smoothstep(arm, arm * 0.55, ax)
+          * smoothstep(gap * 0.8, gap, ay) * smoothstep(1.0, 0.9, ay);
+        float mark = max(horizontal, vertical);
+        if (mark <= 0.01) discard;
+        gl_FragColor = vec4(markerColour.rgb, markerColour.a * mark);
+      } else {
+        if (radius > 1.0) discard;
+        /* A ring rather than a blob: it has to be visible against timber and
+           daylight alike without hiding what it points at. */
+        float edge = smoothstep(1.0, 0.86, radius);
+        float hole = smoothstep(0.52, 0.66, radius);
+        float alpha = edge * mix(hole, 1.0, looking * 0.55);
+        gl_FragColor = vec4(markerColour.rgb, markerColour.a * alpha);
+      }
     }`;
 
   /* The room menu: text baked to a canvas, carried into the scene as a quad
@@ -1021,6 +1045,7 @@
           markerSize: gl.getUniformLocation(markerProgram, "markerSize"),
           markerColour: gl.getUniformLocation(markerProgram, "markerColour"),
           looking: gl.getUniformLocation(markerProgram, "looking"),
+          reticle: gl.getUniformLocation(markerProgram, "reticle"),
           markerDistance: gl.getUniformLocation(markerProgram, "markerDistance"),
           eyeOffset: gl.getUniformLocation(markerProgram, "eyeOffset"),
         };
@@ -1419,6 +1444,7 @@
               gl.uniformMatrix3fv(markerUniforms.viewRotationInverse, false, rotation);
               gl.uniform1f(markerUniforms.markerDistance, surfaceDistance);
               gl.uniform3f(markerUniforms.eyeOffset, offset[0], offset[1], offset[2]);
+              gl.uniform1f(markerUniforms.reticle, 0);
               for (const marker of xr.markers) {
                 const isLooked = marker === looked;
                 gl.uniform3f(markerUniforms.markerDirection, marker.dir[0], marker.dir[1], marker.dir[2]);
@@ -1481,8 +1507,13 @@
                 const dotSize = 0.13 + 0.07 * menu.approach;
                 drawLabel(menu.chipTexture, menu.chipDir, dotSize, dotSize,
                   menu.lookingChip ? 1 : menu.approach * 0.8, menu.dwellOn === "__chip");
-                /* The words, only while somebody is aiming at it. */
-                if (menu.lookingChip && menu.hintTexture) {
+                /* The words, while somebody is aiming at it — and always,
+                   when it is the only thing in the room. A person standing
+                   in a room with no marked points sees exactly one object
+                   and will press it forever; an unlabelled dot in an empty
+                   room is a riddle, and this one was pressed for four
+                   rounds in the belief that it was a marker. */
+                if ((menu.lookingChip || xr.markers.length === 0) && menu.hintTexture) {
                   const under = [menu.chipDir[0], menu.chipDir[1] - 0.13, menu.chipDir[2]];
                   const underLength = Math.hypot(under[0], under[1], under[2]) || 1;
                   drawLabel(menu.hintTexture,
@@ -1567,6 +1598,7 @@
             gl.uniform3f(markerUniforms.eyeOffset, offset[0], offset[1], offset[2]);
             gl.uniform3f(markerUniforms.markerDirection, forward[0], forward[1], forward[2]);
             gl.uniform1f(markerUniforms.looking, 0);
+            gl.uniform1f(markerUniforms.reticle, 1);
             const aiming = Boolean(menu.lookingChip || menu.lookingItem || looked || panel.lookingClose);
             /* A dark halo first, then the bright ring inside it. */
             gl.uniform1f(markerUniforms.markerSize, 0.075);

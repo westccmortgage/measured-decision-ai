@@ -540,8 +540,20 @@ const reticle = await page.evaluate(() => {
     const i = (256 * 512 + col) * 4;
     if (px[i] > 200 && px[i + 1] > 200 && px[i + 2] > 200) { bright += 1; if (col < left) left = col; if (col > right) right = col; }
   }
-  return { bright, span: right - left + 1 };
+  /* The very middle must be the room, not the mark: a sight with a filled
+     centre is a target. */
+  const middle = (256 * 512 + 256) * 4;
+  const centrePixel = [px[middle], px[middle + 1], px[middle + 2]];
+  const centreGap = !(px[middle] > 200 && px[middle + 1] > 200 && px[middle + 2] > 200);
+  return { bright, span: right - left + 1, centrePixel, centreGap };
 });
+/* A sight, not a target. Drawn as the same ring the pins are, the one
+   object that can never be pressed was the most button-like thing in the
+   room — and it was pressed for four rounds by somebody following the
+   instructions exactly. An open centre is what tells them apart. */
+check("the aim is a sight, with nothing pressable at its centre",
+  reticle.centreGap === true,
+  `centre pixel ${String(reticle.centrePixel)} against the sphere`);
 check("the reticle is big enough to steer by",
   reticle.bright >= 4 && reticle.span >= 10 && reticle.span <= 90,
   `${reticle.bright} bright px across ${reticle.span} of 512 in the centre row`);
@@ -794,6 +806,19 @@ const pinned = await page.evaluate(async () => {
   window.__xrSetMarkers([]);
   run([0, 0, -1], 4);
   out.emptyReadout = window.__xrReadout();
+  /* With nothing marked, the only object in the room must say what it is
+     without being aimed at first. Measured off the pixels below the eye
+     line, where the chip and its words sit. */
+  const chipDir = window.__xrMenu().chipDir;
+  const away = [chipDir[0], chipDir[1] + 0.9, chipDir[2]];
+  run(away, 6);
+  const labelled = new Uint8Array(512 * 512 * 4);
+  gl.readPixels(0, 0, 512, 512, gl.RGBA, gl.UNSIGNED_BYTE, labelled);
+  let words = 0;
+  for (let i = 0; i < labelled.length; i += 4) {
+    if (labelled[i] > 180 && labelled[i + 1] > 200 && labelled[i + 2] > 200) words += 1;
+  }
+  out.unaimedWords = words;
   /* Rows spanned is what legibility actually depends on: the eye is 512 px
      across 90°, so a row is about a sixth of a degree. */
   let top = -1; let bottom = -1;
@@ -840,6 +865,8 @@ check("the room says what to do, not what state it is in",
   /^2 marked points · put the ring on one and hold/.test(pinned.idleReadout || "")
   && / · 2 eyes · \d+fps · ([0-9a-f]{8}|unstamped)$/.test(pinned.idleReadout || ""),
   pinned.idleReadout || "(no readout)");
+check("with nothing marked, the one dot in the room names itself unasked",
+  pinned.unaimedWords > 60, `${pinned.unaimedWords} px of lettering without aiming at it`);
 check("and a room with nothing to press says exactly that",
   /^This room has no marked points · /.test(pinned.emptyReadout || ""),
   pinned.emptyReadout || "(no readout)");
