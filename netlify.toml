@@ -46,3 +46,31 @@
   for = "/assets/hero/*"
   [headers.values]
     Cache-Control = "public, max-age=31536000, immutable"
+
+# One address for the product.
+#
+# measureddecision.ai is the prime domain. The .com apex was serving the same
+# site rather than pointing at it, so the product had three addresses and one
+# of them behaved differently — a sign-in page reached at .com is a different
+# origin to the browser, which is exactly the kind of difference nobody finds
+# until something breaks on a phone at eight in the morning.
+#
+# `force` matters: without it a rule loses to a file that exists at that path,
+# and every path here exists.
+[[redirects]]
+  from = "https://measureddecision.com/*"
+  to = "https://measureddecision.ai/:splat"
+  status = 301
+  force = true
+
+[[redirects]]
+  from = "https://www.measureddecision.com/*"
+  to = "https://measureddecision.ai/:splat"
+  status = 301
+  force = true
+
+[[redirects]]
+  from = "https://www.measureddecision.ai/*"
+  to = "https://measureddecision.ai/:splat"
+  status = 301
+  force = true

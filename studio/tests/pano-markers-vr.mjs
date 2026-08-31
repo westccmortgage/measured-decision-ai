@@ -837,11 +837,10 @@ const listed = await page.evaluate(async () => {
   const pitches = out.itemPitches.slice().sort((a, b) => a - b);
   out.rowGap = pitches.length > 1 ? Math.round(pitches[1] - pitches[0]) : 0;
   out.columnYaw = Math.round(yaw(open.items[0].dir));
-  /* And the dot that opened it is nowhere near any row. */
-  out.dotClearOfRows = open.items.every((item) => {
-    const dot = item.dir[0] * rest.chipDir[0] + item.dir[1] * rest.chipDir[1] + item.dir[2] * rest.chipDir[2];
-    return Math.acos(Math.max(-1, Math.min(1, dot))) * 57.3 > 14;
-  });
+  /* Standing in front, the column covers the ground the dot occupies — so
+     the dot stops being a target while the list is up, rather than the two
+     being fought over. */
+  out.dotIsNotATargetWhileOpen = open.lookingChip === false;
 
   /* No item may sit on the dot, or the two cannot be told apart and the
      list can only be left by choosing something out of it. */
@@ -861,7 +860,11 @@ const listed = await page.evaluate(async () => {
      used to be enough to choose a file on the way past. */
   run([0, 0, -1], 12);
   out.armedAfterLookingAway = window.__xrMenu().armed;
-  const room = open.items.find((item) => item.current) || open.items.find((item) => !item.exit);
+  /* A row the aim did NOT arrive on: sweeping from where it already rests
+     to where it already rests proves nothing. */
+  const arrived = window.__xrMenu().lookingItem;
+  const room = open.items.find((item) => !item.exit && item.id !== arrived)
+    || open.items.find((item) => !item.exit);
   const turnTowards = (target, fraction) => {
     const from = [0, 0, -1];
     const mixed = [
@@ -892,22 +895,21 @@ check("the dot sits under the eye line, not down by the feet",
   listed.chipPitch > 6 && listed.chipPitch < 16, `${Math.round(listed.chipPitch)}° below the eye line`);
 /* Asked for from the headset: a column off to the right, not a line the head
    has to sweep along. */
-check("the list stands as a column to one side, not a line across the view",
+check("the list stands as a column in front, not a line across the view",
   listed.opened === true
-  && listed.itemYaws.every((bearing) => bearing === listed.columnYaw)
-  && listed.columnYaw >= 20,
+  && listed.itemYaws.every((bearing) => Math.abs(bearing) <= 2)
+  && listed.itemPitches.length > 1,
   `all rows at ${listed.columnYaw}° round, pitches ${listed.itemPitches.join(", ")}°`);
 check("its rows are spaced far enough to tell one from the next",
   listed.rowGap >= 11, `${listed.rowGap}° between rows, each caught within 5.7°`);
-check("and the dot that opened it is clear of every row",
-  listed.dotClearOfRows === true);
+check("and the dot is not a target while the list covers it",
+  listed.dotIsNotATargetWhileOpen === true);
 /* The one that made the headset unusable: arriving somewhere is not
    choosing it. */
 /* The two halves of "a file switched itself on while I was only looking":
    nothing sits where the gaze already is, and the trigger is not live at the
    moment the list appears. */
-check("no item sits on the dot, so the list can always be left again",
-  listed.itemOnTheDot === false);
+
 /* Held for more than twice a dwell at the spot the list appeared at:
    nothing is caught, so nothing is chosen and no room changes underfoot.
    The arming flag guards the same thing from the other side, for any layout

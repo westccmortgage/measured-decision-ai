@@ -3421,7 +3421,7 @@ function focusNextAction(stats) {
   if (!stats.spatial.length && (stats.paired360 || stats.waiting360)) {
     return {
       title: "Add the 360 export for headset review",
-      copy: "Camera originals are preserved, but a full equirectangular MP4 is what makes the space walkable in the viewer and in Vision Pro.",
+      copy: "Camera originals are preserved, but a full equirectangular MP4 is what lets somebody stand inside the space, in the viewer and in a headset.",
       label: "Upload the 360 export",
       owner: "Field operator",
       run: () => showFocusStage("upload"),
@@ -4329,7 +4329,7 @@ async function openEvidenceViewer(item, room, focusMarkerId = null) {
   }
 
   if (spatial) {
-    actions.push({ label: "Copy link for Vision Pro", primary: true, onSelect: () => copyFocusLink(item) });
+    actions.push({ label: "Copy link for the headset", primary: true, onSelect: () => copyFocusLink(item) });
   }
   if (room) {
     actions.push({
@@ -5240,7 +5240,7 @@ function renderFocusResults() {
       stats.spatial.length > 1
         ? `<button class="focus-secondary-action" type="button" data-vr-action="choose">Stand in another room (${stats.spatial.length})</button>`
         : ""
-    }<button class="focus-secondary-action" type="button" data-vr-action="copy">Copy link for Vision Pro</button></div>`;
+    }<button class="focus-secondary-action" type="button" data-vr-action="copy">Copy link for the headset</button></div>`;
   } else if (stats.paired360 || stats.waiting360) {
     const pairText = `${stats.paired360} paired 360 capture${stats.paired360 === 1 ? "" : "s"}`;
     const waitingText = stats.waiting360
