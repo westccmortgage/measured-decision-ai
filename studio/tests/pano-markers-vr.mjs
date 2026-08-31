@@ -721,12 +721,18 @@ const pinned = await page.evaluate(async () => {
   run([0, 0, -1], 4);
   out.beforeDark = cardPixels();
   out.beforePanel = window.__xrPanel();
+  /* Looking at nothing, with pins in the room: the line must say how to
+     reach them rather than reporting a dash. */
+  run([0, 1, 0], 4);
+  out.idleReadout = window.__xrReadout();
   /* A fifth of a second of looking: aimed, not yet chosen. */
   run([0, 0, -1], 12);
   out.partway = window.__xrMenu().dwell;
   out.stillClosed = window.__xrPanel();
   /* Keep looking. Nothing else — no pinch, no trigger, no controller. */
-  run([0, 0, -1], 120);
+  run([0, 0, -1], 40);
+  out.holdingReadout = window.__xrReadout();
+  run([0, 0, -1], 90);
   out.panel = window.__xrPanel();
   run([0, 0, -1], 4);
   out.afterDark = cardPixels();
@@ -783,6 +789,11 @@ const pinned = await page.evaluate(async () => {
     }
   }
   out.readoutPlate = plate;
+  /* What the line says with nothing in the room to press — the branch the
+     headset report could have been and nobody could tell. */
+  window.__xrSetMarkers([]);
+  run([0, 0, -1], 4);
+  out.emptyReadout = window.__xrReadout();
   /* Rows spanned is what legibility actually depends on: the eye is 512 px
      across 90°, so a row is about a sixth of a degree. */
   let top = -1; let bottom = -1;
@@ -823,11 +834,18 @@ check("and the room is handed back with nothing left open",
 /* Three fixes have now passed on this machine and failed on the device.
    So the session says what it knows, in the room, where the only person who
    can see that device is standing. */
-check("the room says what it knows out loud, starting with which build it is",
-  /^[0-9a-f]{8}|^unstamped/.test(pinned.readout || "")
-  && / · pins 2 · aim /.test(pinned.readout || "")
-  && /hold \d+% · 2 eyes · \d+fps/.test(pinned.readout || ""),
-  pinned.readout || "(no readout)");
+/* The line tells a person what to do, and still carries the build so a
+   stale tab can be spotted from inside the headset. */
+check("the room says what to do, not what state it is in",
+  /^2 marked points · put the ring on one and hold/.test(pinned.idleReadout || "")
+  && / · 2 eyes · \d+fps · ([0-9a-f]{8}|unstamped)$/.test(pinned.idleReadout || ""),
+  pinned.idleReadout || "(no readout)");
+check("and a room with nothing to press says exactly that",
+  /^This room has no marked points · /.test(pinned.emptyReadout || ""),
+  pinned.emptyReadout || "(no readout)");
+check("while a held look reports itself by name",
+  /^Holding \d+% · Water stain on ceiling/.test(pinned.holdingReadout || ""),
+  pinned.holdingReadout || "(nothing held)");
 /* Big enough to read, not merely present. A row of the 512-px eye is about
    a sixth of a degree, so 13 rows is the ~2.2° a menu label's own lettering
    occupies — and those were read from the headset without complaint. */
