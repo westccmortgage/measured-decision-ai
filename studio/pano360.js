@@ -1139,7 +1139,7 @@
           sphereRadius: headsetRadius,
           menu: { open: false, items: [], chipTexture: null, chipDir: [0, -1, 0], heading: null, lookingChip: false, lookingItem: null, approach: 0, dwellOn: null, dwell: 0, dwellFired: false, armed: false,
             offset: 0, moreAbove: 0, moreBelow: 0, scrolling: 0, scrollHeld: 0, upTexture: null, downTexture: null, arrivedOn: null, justOpened: false,
-            anchor: null, origin: null, chipDistance: PANEL_DISTANCE, rowsPlaced: false },
+            anchor: null, origin: null, chipWorld: null, chipAim: false, chipDistance: PANEL_DISTANCE, rowsPlaced: false },
           /* What a chosen pin says, parked in the room in front of whoever
              chose it. Empty until somebody holds a look on a pin. */
           panel: { markerId: null, texture: null, closeTexture: null, lines: [], dir: [0, 0, -1], closeDir: [0, -0.3, -0.95], lookingClose: false,
@@ -1375,17 +1375,27 @@
               menu.scrolling = 0;
             }
             menu.lookingItem = lookedItem;
-            const chipAt = towards(menu.anchor);
+            const chipAt = towards(menu.chipWorld || menu.anchor);
             const chipDot = alignment(chipAt);
-            /* Only while the list is down. Standing in front of the person,
-               the column covers the ground the dot occupies, and a target
-               nobody can see is not a target. With the list up, the way out
-               is a row in the list. */
-            menu.lookingChip = !menu.open && !lookedItem && chipDot > Math.cos(MENU_CHIP_CATCH);
+            /* Whether the aim is ON the dot is a question about geometry, and
+               it has an answer whether the list is up or down — the dot is
+               the handle the list is carried by, and a handle that cannot be
+               taken hold of while the thing is open is no handle at all. */
+            menu.chipAim = !lookedItem && chipDot > Math.cos(MENU_CHIP_CATCH);
+            /* And the dot answers whether the list is up or down. It used to
+               be ignored while the list was open, for the good reason that
+               it sat UNDER the column where nobody could see it — which
+               left no way to put the list away except to choose something
+               out of it, so a person who only wanted to close it changed
+               rooms instead. At the head of the column it is visible, and it
+               is the way out: look at it, or pinch it, and the list goes
+               down without anything being chosen. */
+            menu.lookingChip = menu.chipAim;
             menu.approach = Math.max(0, Math.min(1,
               (chipDot - Math.cos(0.55)) / Math.max(0.0001, Math.cos(MENU_CHIP_CATCH) - Math.cos(0.55))));
           } else {
             menu.lookingChip = false;
+            menu.chipAim = false;
             menu.lookingItem = null;
             menu.approach = 0;
             menu.scrolling = 0;
@@ -1435,15 +1445,37 @@
          * that travels is a move. One gesture, told apart by whether the
          * hand went anywhere — which is how it works on a headset that has
          * no separate grab button either. */
-        const GRAB_ANGLE = 0.06;
+        /* How far a press has to travel before it stops being a choice.
+           Three degrees was inside the noise: a hand shakes, and on a device
+           where the ray is the gaze, the eyes move the moment the fingers do.
+           Eight degrees is a deliberate movement of the arm. */
+        const GRAB_ANGLE = 0.14;
         function beginGrab(ray) {
           if (!xr || !ray) return;
           const menu = xr.menu;
           const panel = xr.panel;
           aimEverything(ray);
-          const holding = panel.markerId && !panel.lookingClose ? "panel"
-            : (menu.lookingChip || menu.open ? "menu" : null);
-          xr.grab = holding ? { what: holding, from: ray.dir.slice(), moved: false } : null;
+          /* What may be taken hold of, and what may not.
+           *
+           * This got it wrong, and the report from the headset was the worst
+           * kind: "not a single file opens". An open list made EVERY pinch a
+           * grab of the menu — a row included. On a headset the pointer is
+           * the gaze, and a gaze never holds within a few degrees for the
+           * length of a pinch, so every press registered as travel, and
+           * travel is a move rather than a choice. Nothing could ever be
+           * chosen while the list was up.
+           *
+           * A row is a thing to choose and is never a handle. The handle is
+           * the dot, the way a window is carried by its bar and not by its
+           * text — and the panel is carried by its body, but not by the mark
+           * that closes it. */
+          const holding = panel.markerId
+            ? (panel.lookingClose ? null : "panel")
+            : (menu.chipAim ? "menu" : null);
+          const held = holding === "panel" ? panel.world : (menu.chipWorld || menu.anchor);
+          xr.grab = holding && held
+            ? { what: holding, from: ray.dir.slice(), world: held, moved: false }
+            : null;
         }
 
         function continueGrab(ray) {
@@ -1477,10 +1509,19 @@
               z: panel.closeWorld.z + shift[2],
             };
           } else if (grab.what === "menu" && menu.anchor) {
-            const before = menu.anchor;
+            /* Measured from the point that was taken hold of, which with the
+               list up is the bar above it rather than the dot's resting
+               place — otherwise the whole column jumps by that offset on the
+               first frame of a carry. */
+            const before = grab.world || menu.anchor;
             const moved = carry(before, menu.chipDistance || PANEL_DISTANCE);
             const shift = [moved.x - before.x, moved.y - before.y, moved.z - before.z];
-            menu.anchor = moved;
+            menu.anchor = {
+              x: menu.anchor.x + shift[0],
+              y: menu.anchor.y + shift[1],
+              z: menu.anchor.z + shift[2],
+            };
+            grab.world = moved;
             /* The rows are placed against the same origin, so the whole
                assembly travels as one thing rather than coming apart. */
             menu.origin = {
@@ -1640,9 +1681,6 @@
               menu.origin = { x: headPosition.x, y: headPosition.y, z: headPosition.z };
               menu.rowsPlaced = false;
             }
-            const standingAt = aimAt(menu.anchor);
-            menu.chipDir = standingAt.dir;
-            menu.chipDistance = standingAt.distance;
 
             /* One column, off to the right of where the person faced when it
                was placed, centred on the eye line — and standing at its own
@@ -1652,6 +1690,25 @@
               heading[0] * Math.cos(-MENU_COLUMN_YAW) + heading[1] * Math.sin(-MENU_COLUMN_YAW),
               heading[1] * Math.cos(-MENU_COLUMN_YAW) - heading[0] * Math.sin(-MENU_COLUMN_YAW),
             ];
+            /* The dot with the list up.
+               *
+               * Down, it rests below the eye line and IS the whole menu. Up,
+               * that place is under the column — a handle nobody can see or
+               * reach, which is how carrying an open list came to be
+               * impossible. So it moves to the head of the column, one row
+               * above the first, and reads as the bar the list hangs from. */
+            const chipPitch = menu.open
+              ? (-1 - (menu.items.length - 1) / 2) * MENU_ROW_PITCH
+              : MENU_CHIP_PITCH;
+            const chipFlat = Math.cos(chipPitch);
+            menu.chipWorld = menu.open && menu.origin ? {
+              x: menu.origin.x + turned[0] * chipFlat * PANEL_DISTANCE,
+              y: menu.origin.y - Math.sin(chipPitch) * PANEL_DISTANCE,
+              z: menu.origin.z + turned[1] * chipFlat * PANEL_DISTANCE,
+            } : menu.anchor;
+            const standingAt = aimAt(menu.chipWorld);
+            menu.chipDir = standingAt.dir;
+            menu.chipDistance = standingAt.distance;
             if (!menu.rowsPlaced) {
               menu.items.forEach((item, index) => {
                 const pitch = (index - (menu.items.length - 1) / 2) * MENU_ROW_PITCH;
@@ -1903,11 +1960,11 @@
                 gl.uniform1f(labelUniforms.dwell, filling ? menu.dwell : 0);
                 gl.drawArrays(gl.TRIANGLES, 0, 6);
               };
-              if (!menu.open && !panel.markerId && menu.chipTexture) {
+              if (!panel.markerId && menu.chipTexture) {
                 /* Small, and growing as the aim closes on it — the dot is the
                    whole of the closed menu, and its answer to an approaching
                    reticle is the only instruction anybody gets. */
-                const dotSize = 0.13 + 0.07 * menu.approach;
+                const dotSize = (menu.open ? 0.10 : 0.13) + 0.07 * menu.approach;
                 drawLabel(menu.chipTexture, menu.chipDir, dotSize, dotSize,
                   menu.lookingChip ? 1 : menu.approach * 0.8, menu.dwellOn === "__chip",
                   menu.chipDistance);
