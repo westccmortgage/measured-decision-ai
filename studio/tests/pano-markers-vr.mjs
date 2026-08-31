@@ -575,7 +575,10 @@ console.log("\n── aim survives the way headset lenses are angled ──");
    never lights up. Averaging the eyes puts the aim back on the nose. */
 const canted = await page.evaluate(() => {
   const dot = (a, b) => a[0] * b[0] + a[1] * b[1] + a[2] * b[2];
-  const aim = [0, -0.37, -0.93];
+  /* Aimed at where the dot actually is, rather than at a vector copied from
+     an earlier layout: a test that hard-codes geometry fails the day the
+     geometry is corrected, and says nothing about the aim. */
+  const aim = window.__xrMenu().chipDir.slice();
   const cant = 0.28; // sixteen degrees each way
   for (let i = 0; i < 10; i += 1) window.__xrFrame(aim, undefined, cant);
   const averaged = window.__xrForward();
@@ -882,6 +885,85 @@ check("and the state line is on the screen, as legible as a menu label",
 check("staring at a reading never confirms it",
   pinned.reopened?.markerId === "pin-ahead" && /not verified/i.test(pinned.standingAfterStaring),
   pinned.standingAfterStaring || "(no standing)");
+
+console.log("\n── the list opens where the dot was, and chooses nothing by itself ──");
+/* Reported from the headset: the line of files only appears if you look
+   almost at your own feet, sits in a very short stretch where it works at
+   all, and then a file switches itself on while you are only looking at it.
+   Three faults in the same geometry. */
+const listed = await page.evaluate(async () => {
+  const run = (dir, frames) => { for (let i = 0; i < frames; i += 1) window.__xrFrame(dir); };
+  const out = {};
+  window.__xrSetMarkers([]);
+  run([0, 0, -1], 6);
+  /* Start from a closed list, whatever an earlier section left behind. */
+  if (window.__xrMenu().open) {
+    const shut = window.__xrMenu().chipDir;
+    run([0, 1, 0], 10);
+    run(shut, 130);
+  }
+  run([0, 0, -1], 6);
+  const rest = window.__xrMenu();
+  out.startedClosed = window.__xrMenu().open === false;
+  /* How far below the eye line a person must look to reach the dot. */
+  out.chipPitch = Math.asin(-rest.chipDir[1]) * 57.3;
+
+  run(rest.chipDir, 130);
+  const open = window.__xrMenu();
+  out.opened = open.open;
+  /* The list must arrive at the height the dot was at, not above it. */
+  out.itemPitches = open.items.map((item) => Math.asin(-item.dir[1]) * 57.3);
+  /* And its items must be far enough apart to be separate targets. */
+  const yaw = (dir) => Math.atan2(dir[0], -dir[2]) * 57.3;
+  const spread = open.items.map((item) => yaw(item.dir)).sort((a, b) => a - b);
+  out.gap = spread.length > 1 ? Math.round(spread[1] - spread[0]) : 0;
+
+  /* No item may sit on the dot, or the two cannot be told apart and the
+     list can only be left by choosing something out of it. */
+  out.itemOnTheDot = open.items.some((item) => {
+    const dot = item.dir[0] * rest.chipDir[0] + item.dir[1] * rest.chipDir[1] + item.dir[2] * rest.chipDir[2];
+    return dot > Math.cos(0.20);
+  });
+  /* The trigger must not be live the instant the list appears. */
+  const currentBefore = open.items.find((item) => item.current)?.id || null;
+  run(rest.chipDir, 200);
+  out.afterStaring = window.__xrMenu().open;
+  out.roomUnchanged = (window.__xrMenu().items.find((item) => item.current)?.id || null) === currentBefore;
+
+  /* Look off the list, which arms it, then hold on a room and choose it. */
+  run([0, 0, -1], 12);
+  out.armedAfterLookingAway = window.__xrMenu().armed;
+  const room = open.items.find((item) => item.current) || open.items.find((item) => !item.exit);
+  run(room.dir, 140);
+  out.closedAfterChoosing = window.__xrMenu().open;
+  return out;
+});
+check("the list starts down, so the dot is what opens it",
+  listed.startedClosed === true);
+check("the dot sits under the eye line, not down by the feet",
+  listed.chipPitch > 6 && listed.chipPitch < 16, `${Math.round(listed.chipPitch)}° below the eye line`);
+check("and the list arrives at the same height, where the gaze already is",
+  listed.opened === true
+  && listed.itemPitches.every((pitch) => Math.abs(pitch - listed.chipPitch) < 2),
+  `open=${listed.opened} · chip ${Math.round(listed.chipPitch)}°, items ${listed.itemPitches.map((p) => Math.round(p)).join(", ")}°`);
+check("its items are separate targets, not one smeared band",
+  listed.gap >= 20, `${listed.gap}° apart, each caught within 11.5°`);
+/* The one that made the headset unusable: arriving somewhere is not
+   choosing it. */
+/* The two halves of "a file switched itself on while I was only looking":
+   nothing sits where the gaze already is, and the trigger is not live at the
+   moment the list appears. */
+check("no item sits on the dot, so the list can always be left again",
+  listed.itemOnTheDot === false);
+/* Held for more than twice a dwell at the spot the list appeared at:
+   nothing is caught, so nothing is chosen and no room changes underfoot.
+   The arming flag guards the same thing from the other side, for any layout
+   where an item could land under the gaze. */
+check("and staring where the list opened chooses nothing at all",
+  listed.afterStaring === true && listed.roomUnchanged === true,
+  JSON.stringify({ stillOpen: listed.afterStaring, sameRoom: listed.roomUnchanged }));
+check("while a look off the list and a held look on a room does choose it",
+  listed.armedAfterLookingAway === true && listed.closedAfterChoosing === false);
 
 console.log("\n── taking the headset off ──");
 /* The way back rides in the same menu as the rooms — asked for in exactly
