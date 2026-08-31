@@ -1132,11 +1132,19 @@ progress::-moz-progress-bar { background: linear-gradient(90deg, var(--d32bacd),
 .focus-project-dialog .focus-project-form-grid { display: block; }
 .focus-project-dialog .focus-project-form-grid > label { display: grid; gap: 8px; }
 .prototype-gate {
+  /* A fixed pane that centres a card taller than the screen puts half the
+     card out of reach: on a phone the sign-in button, the magic link and
+     the way back all sat below the fold of a container that cannot scroll.
+     Reported from a phone as "mobile login not working", and it was not a
+     login problem at all — the button could not be reached.
+     Scrolling here, and `margin: auto` on the card rather than centring by
+     the container, keeps a short card centred and lets a tall one scroll. */
   position: fixed;
   inset: 0;
   z-index: 50;
-  display: grid;
-  place-items: center;
+  display: flex;
+  overflow-y: auto;
+  -webkit-overflow-scrolling: touch;
   padding: 24px;
   background:
     radial-gradient(circle at 55% 40%, var(--d13344a) 0, transparent 34%),
@@ -1279,6 +1287,7 @@ progress::-moz-progress-bar { background: linear-gradient(90deg, var(--d32bacd),
 }
 .gate-card {
   width: min(540px, 100%);
+  margin: auto;
   padding: 54px;
   border: 1px solid var(--line);
   background: var(--drgba-12-23-39-0-9);
