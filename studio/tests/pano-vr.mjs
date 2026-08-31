@@ -165,8 +165,11 @@ console.log("\n── the link that reaches a headset ──");
       value: { writeText: async () => { throw new Error("denied"); } },
     });
     const copy = [...document.querySelectorAll("button")]
-      .find((b) => /copy link for vision pro/i.test(b.textContent || "") && b.offsetParent !== null);
-    if (!copy) return { found: false };
+      .find((b) => /copy link for the headset/i.test(b.textContent || "") && b.offsetParent !== null);
+    /* Every field, even when the control is missing: a section that throws
+       on its own absent case takes the rest of the suite down with it and
+       reports a crash where a plain failure belonged. */
+    if (!copy) return { found: false, shown: false, text: "", url: "" };
     copy.click();
     await new Promise((r) => setTimeout(r, 400));
     const dialog = document.querySelector("#headset-link-dialog");
