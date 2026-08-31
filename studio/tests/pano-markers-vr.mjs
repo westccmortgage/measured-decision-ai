@@ -755,6 +755,46 @@ const pinned = await page.evaluate(async () => {
   const closeAgain = window.__xrPanel()?.closeDir || [0, -1, 0];
   run(closeAgain, 140);
   out.tidied = window.__xrPanel();
+
+  /* The state line: what it says, and that it is drawn where somebody can
+     read it — under the eye line, in the lower half of the view. */
+  run([0, 0, -1], 6);
+  out.readout = window.__xrReadout();
+  const shot = new Uint8Array(512 * 512 * 4);
+  gl.readPixels(0, 0, 512, 512, gl.RGBA, gl.UNSIGNED_BYTE, shot);
+  let readoutPixels = 0;
+  /* Rows below 200 sit under the eye line (256 is straight ahead); the pale
+     blue lettering is the only thing of that colour down there. */
+  for (let row = 40; row < 200; row += 1) {
+    for (let col = 0; col < 512; col += 1) {
+      const i = (row * 512 + col) * 4;
+      /* Lettering is anything markedly lighter than the plate it sits on. */
+    if (shot[i] > 55 && shot[i + 1] > 90 && shot[i + 2] > 105) readoutPixels += 1;
+    }
+  }
+  out.readoutPixels = readoutPixels;
+  /* The plate it is written on, which is what settles whether the line is
+     big enough to read rather than merely present. */
+  let plate = 0;
+  for (let row = 40; row < 210; row += 1) {
+    for (let col = 0; col < 512; col += 1) {
+      const i = (row * 512 + col) * 4;
+      if (shot[i] < 60 && shot[i + 1] < 70 && shot[i + 2] < 85) plate += 1;
+    }
+  }
+  out.readoutPlate = plate;
+  /* Rows spanned is what legibility actually depends on: the eye is 512 px
+     across 90°, so a row is about a sixth of a degree. */
+  let top = -1; let bottom = -1;
+  for (let row = 40; row < 210; row += 1) {
+    let dark = 0;
+    for (let col = 0; col < 512; col += 1) {
+      const i = (row * 512 + col) * 4;
+      if (shot[i] < 60 && shot[i + 1] < 70 && shot[i + 2] < 85) dark += 1;
+    }
+    if (dark > 40) { if (top < 0) top = row; bottom = row; }
+  }
+  out.readoutRows = top < 0 ? 0 : bottom - top + 1;
   window.__xrSetMarkers([]);
   return out;
 });
@@ -780,6 +820,19 @@ check("and a held look on that closes it",
   `${pinned.closedDark} dark px after closing`);
 check("and the room is handed back with nothing left open",
   pinned.tidied === null);
+/* Three fixes have now passed on this machine and failed on the device.
+   So the session says what it knows, in the room, where the only person who
+   can see that device is standing. */
+check("the room says what it knows out loud",
+  /^pins 2 · aim /.test(pinned.readout || "")
+  && /hold \d+% · 2 eyes · \d+fps/.test(pinned.readout || ""),
+  pinned.readout || "(no readout)");
+/* Big enough to read, not merely present. A row of the 512-px eye is about
+   a sixth of a degree, so 13 rows is the ~2.2° a menu label's own lettering
+   occupies — and those were read from the headset without complaint. */
+check("and the state line is on the screen, as legible as a menu label",
+  pinned.readoutPixels > 150 && pinned.readoutRows >= 13,
+  `${pinned.readoutPixels} px of lettering spanning ${pinned.readoutRows} rows below the eye line`);
 check("staring at a reading never confirms it",
   pinned.reopened?.markerId === "pin-ahead" && /not verified/i.test(pinned.standingAfterStaring),
   pinned.standingAfterStaring || "(no standing)");
