@@ -464,7 +464,12 @@
      whole list at one height, so choosing meant swinging the head sideways
      across every other entry on the way — and the entries it swept over
      were the ones that kept choosing themselves. */
-  const MENU_COLUMN_YAW = 0.50;
+  /* Straight ahead. Set off to one side, the column could only be aimed at
+     by turning the head far enough that the column left the view — reported
+     from the headset as having to turn ninety degrees and then not being
+     able to see the thing being aimed at. A list stands in front of the
+     person who asked for it. */
+  const MENU_COLUMN_YAW = 0;
   const MENU_ROW_PITCH = 0.22;
   /* A column of rows is only a column while it fits in front of a person.
      Twelve rooms would stand seventy degrees tall — a wall, not a list — so
@@ -493,6 +498,7 @@
   /* Wide across, narrow up and down: every entry shares one yaw, so
      sideways precision buys nothing, and it is the vertical distance that
      has to tell one row from the next. */
+  const MENU_CHIP_CATCH = 0.13;
   const MENU_ROW_YAW_CATCH = 0.26;
   const MENU_ROW_PITCH_CATCH = 0.10;
   /* The menu stays where it was left. It only comes back around when the
@@ -968,10 +974,12 @@
         texture: bakeLabelTexture(room.current ? `● ${room.title}` : room.title, Boolean(room.current)),
         dir: [0, -1, 0],
       }));
-      /* The way out rides in the same list. A person who can walk to any
-         room from inside the headset must be able to walk back to the
-         screen the same way — asked for in exactly those words. */
-      menu.items.push({
+      /* The way out rides in the same list, at the TOP of it. A person who
+         can walk to any room from inside the headset must be able to walk
+         back to the screen the same way — but the most final thing in the
+         list must not be the row the aim happens to land on when the list
+         opens, and the list opens where the dot was, below. */
+      menu.items.unshift({
         id: "__exit-vr",
         exit: true,
         current: false,
@@ -1098,7 +1106,7 @@
              walls should feel. */
           sphereRadius: headsetRadius,
           menu: { open: false, items: [], chipTexture: null, chipDir: [0, -1, 0], heading: null, lookingChip: false, lookingItem: null, approach: 0, dwellOn: null, dwell: 0, dwellFired: false, armed: false,
-            offset: 0, moreAbove: 0, moreBelow: 0, scrolling: 0, scrollHeld: 0, upTexture: null, downTexture: null,
+            offset: 0, moreAbove: 0, moreBelow: 0, scrolling: 0, scrollHeld: 0, upTexture: null, downTexture: null, arrivedOn: null, justOpened: false,
             anchor: null, origin: null, chipDistance: PANEL_DISTANCE, rowsPlaced: false },
           /* What a chosen pin says, parked in the room in front of whoever
              chose it. Empty until somebody holds a look on a pin. */
@@ -1220,6 +1228,12 @@
                  until the gaze has left every item once: arriving somewhere
                  is not choosing it. */
               menu.armed = false;
+              /* Which row the aim lands on cannot be known yet: the rows are
+                 judged against a list that was closed a moment ago, so
+                 lookingItem is null here and "different from null" would arm
+                 the trigger instantly. The next frame knows, and records it. */
+              menu.justOpened = true;
+              menu.arrivedOn = null;
               return true;
             }
             if (menu.open) {
@@ -1239,16 +1253,171 @@
         xr.choose = chooseWhatIsLookedAt;
         xr.closePanel = closeHeadsetPanel;
 
+        /* Where the DEVICE says the person is aiming.
+         *
+         * A crosshair carried on the head made every target something to be
+         * chased, and on a headset that tracks eyes it is worse than useless:
+         * the person is already looking at the thing they mean. Reported from
+         * the headset in those words — nothing but crosshairs, and the room
+         * behind them unseeable.
+         *
+         * WebXR hands the aim over when the device knows it. A pinch on a
+         * headset with eye tracking raises a transient-pointer input source
+         * whose ray IS the gaze; a controller or a tracked hand raises one
+         * that points where it points. Read it, and there is nothing to
+         * chase. Only when the device offers no pointer at all does the head
+         * become the aim again, and only then is a crosshair drawn. */
+        function rayOf(pose) {
+          if (!pose) return null;
+          const m = pose.transform.matrix;
+          const position = pose.transform.position;
+          return {
+            origin: [position.x, position.y, position.z],
+            /* -Z of the pose's own basis is the way it points. */
+            dir: [-m[8], -m[9], -m[10]],
+          };
+        }
+
+        /* Everything the aim can be on, judged from one ray.
+         *
+         * Split out of the frame loop because the frame is not the only
+         * place aiming happens: a pinch on a headset that tracks eyes
+         * arrives with its own ray, in its own frame, and that ray is where
+         * the person was LOOKING. Judging it here means a pinch chooses what
+         * the eyes were on, and the head is left to do nothing but carry
+         * them — which is the whole difference between this and chasing a
+         * crosshair around a room. */
+        function aimEverything(ray) {
+          if (!xr) return;
+          const menu = xr.menu;
+          const panel = xr.panel;
+          const from = ray.origin;
+          const length = Math.hypot(ray.dir[0], ray.dir[1], ray.dir[2]) || 1;
+          const dir = [ray.dir[0] / length, ray.dir[1] / length, ray.dir[2] / length];
+          /* Where a thing standing in the room is, seen from the aim's own
+             origin — a controller in the hand is half a metre from the eye,
+             and half a metre is twelve degrees at arm's reach. */
+          const towards = (world) => {
+            const dx = world.x - from[0];
+            const dy = world.y - from[1];
+            const dz = world.z - from[2];
+            const span = Math.hypot(dx, dy, dz) || 0.0001;
+            return [dx / span, dy / span, dz / span];
+          };
+          const alignment = (a) => a[0] * dir[0] + a[1] * dir[1] + a[2] * dir[2];
+
+          let lookedItem = null;
+          if (menu.items.length && !panel.markerId && menu.anchor) {
+            if (menu.open) {
+              const rowAim = menu.items.map((item) => ({ item, at: towards(item.world) }));
+              const pitchOf = (v) => Math.asin(Math.max(-1, Math.min(1, -v[1])));
+              const aimPitch = pitchOf(dir);
+              const aimFlat = Math.hypot(dir[0], dir[2]) || 0.0001;
+              /* A column is aimed at by height: wide across, because every
+                 row shares one bearing, and narrow up and down, because that
+                 is what tells one row from the next. */
+              const columnAt = rowAim[0].at;
+              const columnFlat = Math.hypot(columnAt[0], columnAt[2]) || 0.0001;
+              const roundness = (columnAt[0] * dir[0] + columnAt[2] * dir[2]) / (columnFlat * aimFlat);
+              const yawOff = Math.acos(Math.max(-1, Math.min(1, roundness)));
+              if (yawOff < MENU_ROW_YAW_CATCH) {
+                let bestRow = MENU_ROW_PITCH_CATCH;
+                for (const row of rowAim) {
+                  const off = Math.abs(pitchOf(row.at) - aimPitch);
+                  if (off < bestRow) { bestRow = off; lookedItem = row.item; }
+                }
+                if (!lookedItem) {
+                  const pitches = rowAim.map((row) => pitchOf(row.at));
+                  const above = Math.min(...pitches) - aimPitch;
+                  const below = aimPitch - Math.max(...pitches);
+                  if (menu.moreAbove > 0 && above > MENU_ROW_PITCH_CATCH && above < MENU_SCROLL_ZONE) menu.scrolling = -1;
+                  else if (menu.moreBelow > 0 && below > MENU_ROW_PITCH_CATCH && below < MENU_SCROLL_ZONE) menu.scrolling = 1;
+                  else menu.scrolling = 0;
+                } else {
+                  menu.scrolling = 0;
+                }
+              } else {
+                menu.scrolling = 0;
+              }
+            } else {
+              menu.scrolling = 0;
+            }
+            menu.lookingItem = lookedItem;
+            const chipAt = towards(menu.anchor);
+            const chipDot = alignment(chipAt);
+            /* Only while the list is down. Standing in front of the person,
+               the column covers the ground the dot occupies, and a target
+               nobody can see is not a target. With the list up, the way out
+               is a row in the list. */
+            menu.lookingChip = !menu.open && !lookedItem && chipDot > Math.cos(MENU_CHIP_CATCH);
+            menu.approach = Math.max(0, Math.min(1,
+              (chipDot - Math.cos(0.55)) / Math.max(0.0001, Math.cos(MENU_CHIP_CATCH) - Math.cos(0.55))));
+          } else {
+            menu.lookingChip = false;
+            menu.lookingItem = null;
+            menu.approach = 0;
+            menu.scrolling = 0;
+          }
+
+          if (panel.markerId && panel.closeWorld) {
+            panel.lookingClose = alignment(towards(panel.closeWorld)) > Math.cos(0.24);
+          } else {
+            panel.lookingClose = false;
+          }
+
+          /* Pins are on the wall of the capture, which is a direction rather
+             than a place, so they are judged against the ray itself. */
+          let onPin = null;
+          if (!menu.open && !panel.markerId) {
+            let best = Math.cos(0.16);
+            for (const marker of xr.markers) {
+              const dot = alignment(marker.dir);
+              if (dot > best) { best = dot; onPin = marker; }
+            }
+            let approach = 0;
+            for (const marker of xr.markers) {
+              approach = Math.max(approach, Math.min(1,
+                (alignment(marker.dir) - Math.cos(0.55)) / Math.max(0.0001, Math.cos(0.16) - Math.cos(0.55))));
+            }
+            xr.pinApproach = Math.max(0, approach);
+          } else {
+            xr.pinApproach = 0;
+          }
+          xr.looking = onPin;
+        }
+
+        function pointerFromFrame(frame) {
+          for (const source of xrSession.inputSources || []) {
+            if (!source?.targetRaySpace) continue;
+            const ray = rayOf(frame.getPose(source.targetRaySpace, reference));
+            if (ray) return ray;
+          }
+          return null;
+        }
+
         /* Devices disagree about which gesture they report — a pinch, a
            trigger, a grip — so both completion events are heard. Only the
            completion ones: pairing these with their *start twins would fire
            twice for a single deliberate press held for a moment. A short
            guard collapses a device that reports both at once. */
         let lastChoice = 0;
-        const chooseOnce = () => {
+        const chooseOnce = (event) => {
           const now = performance.now();
           if (now - lastChoice < 150) return;
           lastChoice = now;
+          /* The event carries the frame it happened in, which is the only
+             place a transient pointer exists: on a headset that tracks eyes
+             the source appears with the pinch and is gone after it. Aim from
+             it, so a pinch chooses what the EYES were on rather than what
+             the head happened to face. */
+          const ray = event?.inputSource?.targetRaySpace && event.frame
+            ? rayOf(event.frame.getPose(event.inputSource.targetRaySpace, reference))
+            : null;
+          if (ray && xr) {
+            xr.pointer = ray;
+            xr.pointerIsDevice = true;
+            aimEverything(ray);
+          }
           chooseWhatIsLookedAt();
         };
         for (const name of ["select", "squeeze"]) {
@@ -1392,81 +1561,22 @@
               item.dir = at.dir;
               item.distance = at.distance;
             });
-            /* A column is aimed at by height, not by a cone: measure how far
-               the gaze is round from the column and how far it is above or
-               below the row, and judge each separately. */
-            let lookedItem = null;
-            if (menu.open) {
-              const gazeFlat = Math.hypot(forward[0], forward[2]) || 0.0001;
-              const gazePitch = Math.atan2(-forward[1], gazeFlat);
-              const roundness = (turned[0] * forward[0] + turned[1] * forward[2]) / gazeFlat;
-              const yawOff = Math.acos(Math.max(-1, Math.min(1, roundness)));
-              if (yawOff < MENU_ROW_YAW_CATCH) {
-                let bestRow = MENU_ROW_PITCH_CATCH;
-                for (const item of menu.items) {
-                  const rowPitch = Math.asin(Math.max(-1, Math.min(1, -item.dir[1])));
-                  const off = Math.abs(rowPitch - gazePitch);
-                  if (off < bestRow) { bestRow = off; lookedItem = item; }
-                }
-                /* Above the top row and below the bottom one: the column
-                   moves rather than ends. Only where there is something to
-                   scroll to — an edge that does nothing is a lie. */
-                if (!lookedItem) {
-                  const rows = menu.items.map((item) => Math.asin(Math.max(-1, Math.min(1, -item.dir[1]))));
-                  const top = Math.min(...rows);
-                  const bottom = Math.max(...rows);
-                  const above = top - gazePitch;
-                  const below = gazePitch - bottom;
-                  if (menu.moreAbove > 0 && above > MENU_ROW_PITCH_CATCH && above < MENU_SCROLL_ZONE) menu.scrolling = -1;
-                  else if (menu.moreBelow > 0 && below > MENU_ROW_PITCH_CATCH && below < MENU_SCROLL_ZONE) menu.scrolling = 1;
-                  else menu.scrolling = 0;
-                } else {
-                  menu.scrolling = 0;
-                }
-              } else {
-                menu.scrolling = 0;
-              }
-            }
-            menu.lookingItem = lookedItem;
-            const chipDot = menu.chipDir[0] * forward[0] + menu.chipDir[1] * forward[1] + menu.chipDir[2] * forward[2];
-            /* Tight enough that looking straight ahead is not looking at it.
-               At a 17-degree catch the dot sat inside an ordinary forward
-               gaze, so a person facing the room was aiming at the menu
-               without knowing it — and a press meant for a pin opened the
-               room list instead. */
-            menu.lookingChip = !lookedItem && chipDot > Math.cos(0.13);
-            /* How close the aim is, from far out. The dot brightens as the
-               reticle approaches it, so the first head movement teaches the
-               gesture: a control that answers before it is reached explains
-               itself, and one that stays inert until it is hit does not. */
-            menu.approach = Math.max(0, Math.min(1,
-              (chipDot - Math.cos(0.75)) / Math.max(0.0001, Math.cos(0.30) - Math.cos(0.75))));
-          } else {
-            menu.lookingChip = false;
-            menu.lookingItem = null;
-            menu.approach = 0;
-            menu.scrolling = 0;
+            /* Aiming happens in aimEverything, from whatever ray the
+               device gave us. Nothing is judged here. */
           }
 
-          /* The pin nearest to where somebody is looking, and only if they are
-             looking near it at all. Highlighting whatever happens to be closest
-             would light one up permanently, wherever the head turned. An open
-             menu owns the gaze — a pin must not light up through the list, and
-             neither must it light up through an open panel.
-
-             This hit test used to run AFTER the dwell below, which is why a
-             pin could only ever be opened by a select event: the held gaze
-             was computed over the menu alone, and a device that never reports
-             a pinch had no way to open a pin at all. */
-          let looked = null;
-          if (!menu.open && !panel.markerId) {
-            let best = Math.cos(0.16);
-            for (const marker of xr.markers) {
-              const dot = marker.dir[0] * forward[0] + marker.dir[1] * forward[1] + marker.dir[2] * forward[2];
-              if (dot > best) { best = dot; looked = marker; }
-            }
-          }
-          xr.looking = looked;
+          /* The ray the person is actually aiming with. A headset that
+             tracks eyes hands one over on every pinch; a controller or a
+             tracked hand hands one over continuously. Only when there is
+             none does the head become the aim. */
+          const devicePointer = pointerFromFrame(frame);
+          xr.pointerIsDevice = Boolean(devicePointer);
+          xr.pointer = devicePointer || {
+            origin: [headPosition.x, headPosition.y, headPosition.z],
+            dir: [forward[0], forward[1], forward[2]],
+          };
+          aimEverything(xr.pointer);
+          const looked = xr.looking;
           /* How close the aim is to the nearest pin, so a pin answers an
              approaching reticle exactly as the menu dot does. */
           let pinApproach = 0;
@@ -1508,8 +1618,19 @@
              across a close would hand the next opening a live trigger —
              which is exactly how a file chose itself: the list appeared
              under a gaze that was already armed from before it existed. */
-          if (!menu.open) menu.armed = false;
-          else if (!menu.lookingItem) menu.armed = true;
+          /* Armed by moving off whatever the aim happened to land on when
+             the list appeared. Requiring the aim to leave the list entirely
+             was too strict the moment the list stood in front of the person:
+             moving straight from one row to another never passes through
+             nothing, so nothing could ever be chosen. */
+          if (!menu.open) { menu.armed = false; menu.arrivedOn = null; menu.justOpened = false; }
+          else if (menu.justOpened) {
+            /* The first frame with rows in it: whatever the aim is on now is
+               where it arrived, and arriving is not choosing. */
+            menu.arrivedOn = menu.lookingItem?.id || "__nothing";
+            menu.justOpened = false;
+            menu.armed = false;
+          } else if (!menu.lookingItem || menu.lookingItem.id !== menu.arrivedOn) menu.armed = true;
           const dwellOn = (menu.armed ? menu.lookingItem?.id : null)
             || (menu.lookingChip ? "__chip" : null)
             || (panel.lookingClose ? "__panel-close" : null)
