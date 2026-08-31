@@ -841,6 +841,55 @@
       return baked;
     }
 
+    /* A line of live state, drawn in the room.
+     *
+     * Three fixes for "the pin does nothing" have now passed every test on
+     * this machine and failed on the device. That is not a coding problem,
+     * it is an evidence problem: the tests drive a stand-in session, and a
+     * headset I cannot attach a debugger to has been answering with one
+     * word. So the session says out loud what it knows — how many pins it
+     * holds, what the aim is on, how far the hold has filled, how many eyes
+     * it is drawing and how fast. Whatever is actually wrong, this line
+     * names it: no pins means the room never got them, no aim means the
+     * gaze test misses, a hold that never fills means the clock, and a full
+     * hold with nothing shown means the drawing. */
+    let readoutText = "";
+    let readoutTexture = null;
+    function bakeReadoutTexture(text) {
+      const board = document.createElement("canvas");
+      board.width = 512;
+      board.height = 64;
+      const ink = board.getContext("2d");
+      ink.clearRect(0, 0, 512, 64);
+      ink.fillStyle = "rgba(6, 16, 26, 0.72)";
+      ink.beginPath();
+      ink.moveTo(14, 2);
+      ink.arcTo(510, 2, 510, 62, 14);
+      ink.arcTo(510, 62, 2, 62, 14);
+      ink.arcTo(2, 62, 2, 2, 14);
+      ink.arcTo(2, 2, 510, 2, 14);
+      ink.closePath();
+      ink.fill();
+      ink.textAlign = "center";
+      ink.textBaseline = "middle";
+      ink.fillStyle = "rgba(150, 200, 220, 0.92)";
+      let size = 26;
+      ink.font = `500 ${size}px "IBM Plex Mono", ui-monospace, monospace`;
+      while (size > 15 && ink.measureText(text).width > 476) {
+        size -= 1;
+        ink.font = `500 ${size}px "IBM Plex Mono", ui-monospace, monospace`;
+      }
+      ink.fillText(text, 256, 34);
+      const baked = gl.createTexture();
+      gl.bindTexture(gl.TEXTURE_2D, baked);
+      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
+      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
+      gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, board);
+      return baked;
+    }
+
     /* The way out of a pin's answer. Its own texture rather than the menu's
        dot: the same shape for "open the rooms" and "close this" is a riddle,
        and a panel whose exit is a riddle is a dead end with a view. */
@@ -1029,6 +1078,7 @@
           dwellOn: xr.menu.dwellOn,
           dwell: xr.menu.dwell,
         } : null);
+        window.__xrReadout = () => readoutText;
         window.__xrPanel = () => (xr?.panel.markerId ? {
           markerId: xr.panel.markerId,
           dir: xr.panel.dir.slice(),
@@ -1270,6 +1320,9 @@
             }
           }
           xr.pinApproach = Math.max(0, pinApproach);
+          /* Smoothed, because a number that flickers every frame cannot be
+             read by somebody wearing the thing. */
+          xr.fps = xr.fps ? xr.fps * 0.9 + (1 / dt) * 0.1 : 1 / dt;
 
           if (panel.markerId) {
             const closeDot = panel.closeDir[0] * forward[0] + panel.closeDir[1] * forward[1] + panel.closeDir[2] * forward[2];
@@ -1382,7 +1435,7 @@
               gl.disable(gl.BLEND);
             }
 
-            if (menu.items.length || panel.markerId) {
+            {
               gl.useProgram(labelProgram);
               gl.bindBuffer(gl.ARRAY_BUFFER, markerQuad);
               gl.enableVertexAttribArray(labelCorner);
@@ -1440,6 +1493,25 @@
                 drawLabel(panel.closeTexture, panel.closeDir, 0.15, 0.15,
                   panel.lookingClose ? 1 : 0.55, menu.dwellOn === "__panel-close");
               }
+
+              /* The state line, under the gaze and carried with it — the one
+                 thing in the room that is meant to be read rather than
+                 aimed at, so unlike the menu it follows the head. */
+              const held = Math.round((menu.dwellOn ? menu.dwell : 0) * 100);
+              const line = `pins ${xr.markers.length} · aim ${xr.looking ? xr.looking.id : (menu.lookingChip ? "menu" : (panel.lookingClose ? "close" : "—"))}`
+                + ` · hold ${held}% · ${xr.views} eyes · ${Math.round(xr.fps || 0)}fps`;
+              if (line !== readoutText) {
+                readoutText = line;
+                if (readoutTexture) gl.deleteTexture(readoutTexture);
+                readoutTexture = bakeReadoutTexture(line);
+              }
+              if (readoutTexture) {
+                const below = [forward[0], forward[1] - 0.52, forward[2]];
+                const belowLength = Math.hypot(below[0], below[1], below[2]) || 1;
+                drawLabel(readoutTexture,
+                  [below[0] / belowLength, below[1] / belowLength, below[2] / belowLength],
+                  2.00, 0.250, false, false);
+              }
               gl.disable(gl.BLEND);
               /* The sphere's texture unit is shared; leave it bound the way
                  the next frame's video upload expects to find it. */
@@ -1486,6 +1558,7 @@
           if (xr?.menu.hintTexture) gl.deleteTexture(xr.menu.hintTexture);
           if (xr?.panel.texture) gl.deleteTexture(xr.panel.texture);
           if (xr?.panel.closeTexture) gl.deleteTexture(xr.panel.closeTexture);
+          if (readoutTexture) { gl.deleteTexture(readoutTexture); readoutTexture = null; readoutText = ""; }
           xr = null;
           /* Taking the headset off must give the flat viewer back, not a black
              rectangle where a room used to be. */
