@@ -450,8 +450,16 @@
      with a glance rather than a craned neck; the open list sits 8 degrees
      below, straight in comfortable view. Turning more than 50 degrees away
      from the chip brings it round to where the person now faces. */
-  const MENU_CHIP_PITCH = 0.38;
-  const MENU_ITEM_PITCH = 0.14;
+  /* Both at the same height, a little under the eye line rather than down by
+     the feet. The dot used to sit 22 degrees down and the list it opened 8
+     degrees down — so a person lowered their head to reach the dot and the
+     list then appeared ABOVE where they were now looking, out of reach of the
+     gaze that had just opened it. Reported from the headset as a line of
+     files you have to look at your own feet to summon and cannot then
+     choose from. One height for both: the list appears exactly where the
+     dot was. */
+  const MENU_CHIP_PITCH = 0.26;
+  const MENU_ITEM_PITCH = 0.26;
   /* The menu stays where it was left. It only comes back around when the
      person has turned so far that it is behind them — anything tighter and
      it teleports in front of the eyes on every glance, which is exactly what
@@ -1093,7 +1101,7 @@
              positive radius is somebody's preference about how far the
              walls should feel. */
           sphereRadius: headsetRadius,
-          menu: { open: false, items: [], chipTexture: null, chipDir: [0, -1, 0], heading: null, lookingChip: false, lookingItem: null, approach: 0, dwellOn: null, dwell: 0, dwellFired: false, hintTexture: null },
+          menu: { open: false, items: [], chipTexture: null, chipDir: [0, -1, 0], heading: null, lookingChip: false, lookingItem: null, approach: 0, dwellOn: null, dwell: 0, dwellFired: false, hintTexture: null, armed: false },
           /* What a chosen pin says, parked in the room in front of whoever
              chose it. Empty until somebody holds a look on a pin. */
           panel: { markerId: null, texture: null, closeTexture: null, lines: [], dir: [0, 0, -1], closeDir: [0, -0.3, -0.95], lookingClose: false },
@@ -1114,6 +1122,7 @@
           lookingItem: xr.menu.lookingItem?.id || null,
           dwellOn: xr.menu.dwellOn,
           dwell: xr.menu.dwell,
+          armed: xr.menu.armed,
         } : null);
         window.__xrReadout = () => readoutText;
         window.__xrPanel = () => (xr?.panel.markerId ? {
@@ -1178,6 +1187,13 @@
             }
             if (menu.lookingChip) {
               menu.open = !menu.open;
+              /* The list opens where the dot was, so an item lands under the
+                 gaze that just opened it — and it would start filling at
+                 once. Reported from the headset as a file that switches
+                 itself on while you are only looking. Nothing may be chosen
+                 until the gaze has left every item once: arriving somewhere
+                 is not choosing it. */
+              menu.armed = false;
               return true;
             }
             if (menu.open) {
@@ -1295,9 +1311,19 @@
             }
             const heading = menu.heading;
             menu.chipDir = [heading[0] * MENU_CHIP_COS, -MENU_CHIP_SIN, heading[1] * MENU_CHIP_COS];
-            const spread = 0.30;
+            /* Wide enough apart that each is its own target: neighbours 24
+               degrees apart with an 11.5 degree catch radius cannot both be
+               half-caught, which is what "a very short stretch where it
+               works" was describing. */
+            const spread = 0.46;
+            /* Laid out around the dot with a hole in the middle, so no item
+               ever sits on top of it. An item at the dot's own direction
+               makes the two impossible to tell apart: the list could then
+               only be closed by choosing something out of it. */
             menu.items.forEach((item, index) => {
-              const yaw = (index - (menu.items.length - 1) / 2) * spread;
+              const side = index % 2 === 0 ? 1 : -1;
+              const step = Math.floor(index / 2) + 0.5;
+              const yaw = side * step * spread;
               const turned = [
                 heading[0] * Math.cos(yaw) + heading[1] * Math.sin(yaw),
                 heading[1] * Math.cos(yaw) - heading[0] * Math.sin(yaw),
@@ -1305,7 +1331,7 @@
               item.dir = [turned[0] * MENU_ITEM_COS, -MENU_ITEM_SIN, turned[1] * MENU_ITEM_COS];
             });
             let lookedItem = null;
-            let bestItem = Math.cos(0.22);
+            let bestItem = Math.cos(0.20);
             if (menu.open) {
               for (const item of menu.items) {
                 const dot = item.dir[0] * forward[0] + item.dir[1] * forward[1] + item.dir[2] * forward[2];
@@ -1314,7 +1340,12 @@
             }
             menu.lookingItem = lookedItem;
             const chipDot = menu.chipDir[0] * forward[0] + menu.chipDir[1] * forward[1] + menu.chipDir[2] * forward[2];
-            menu.lookingChip = !lookedItem && chipDot > Math.cos(0.30);
+            /* Tight enough that looking straight ahead is not looking at it.
+               At a 17-degree catch the dot sat inside an ordinary forward
+               gaze, so a person facing the room was aiming at the menu
+               without knowing it — and a press meant for a pin opened the
+               room list instead. */
+            menu.lookingChip = !lookedItem && chipDot > Math.cos(0.13);
             /* How close the aim is, from far out. The dot brightens as the
                reticle approaches it, so the first head movement teaches the
                gesture: a control that answers before it is reached explains
@@ -1372,7 +1403,14 @@
              of a pin in the room. The gaze must leave and come back before the
              same thing fires again, so opening the list does not instantly
              close it under a gaze that has not moved yet. */
-          const dwellOn = menu.lookingItem?.id
+          /* Armed by looking away from the list while the list is up. While
+             it is down there is nothing to arm, and leaving the flag true
+             across a close would hand the next opening a live trigger —
+             which is exactly how a file chose itself: the list appeared
+             under a gaze that was already armed from before it existed. */
+          if (!menu.open) menu.armed = false;
+          else if (!menu.lookingItem) menu.armed = true;
+          const dwellOn = (menu.armed ? menu.lookingItem?.id : null)
             || (menu.lookingChip ? "__chip" : null)
             || (panel.lookingClose ? "__panel-close" : null)
             || (looked ? `pin:${looked.id}` : null);
@@ -1565,7 +1603,7 @@
                 readoutTexture = bakeReadoutTexture(line);
               }
               if (readoutTexture) {
-                const below = [forward[0], forward[1] - 0.52, forward[2]];
+                const below = [forward[0], forward[1] - 0.34, forward[2]];
                 const belowLength = Math.hypot(below[0], below[1], below[2]) || 1;
                 drawLabel(readoutTexture,
                   [below[0] / belowLength, below[1] / belowLength, below[2] / belowLength],
