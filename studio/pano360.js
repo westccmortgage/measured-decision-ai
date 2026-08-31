@@ -855,6 +855,18 @@
      * hold with nothing shown means the drawing. */
     let readoutText = "";
     let readoutTexture = null;
+    /* Which build is actually running, read off this file's own script tag.
+     *
+     * The page revalidates on every load, but a headset browser left open
+     * across a fix does not load anything — and that alone would explain all
+     * three rounds of "shipped, tested, still broken". A version somebody can
+     * read out loud settles in one glance what no amount of further code can. */
+    const buildStamp = (() => {
+      const tag = [...document.querySelectorAll("script[src]")]
+        .find((node) => /pano360\.js/.test(node.getAttribute("src") || ""));
+      const stamp = (tag?.getAttribute("src") || "").split("?v=")[1] || "";
+      return stamp ? stamp.slice(0, 8) : "unstamped";
+    })();
     function bakeReadoutTexture(text) {
       const board = document.createElement("canvas");
       board.width = 512;
@@ -1498,7 +1510,8 @@
                  thing in the room that is meant to be read rather than
                  aimed at, so unlike the menu it follows the head. */
               const held = Math.round((menu.dwellOn ? menu.dwell : 0) * 100);
-              const line = `pins ${xr.markers.length} · aim ${xr.looking ? xr.looking.id : (menu.lookingChip ? "menu" : (panel.lookingClose ? "close" : "—"))}`
+              const line = `${buildStamp} · pins ${xr.markers.length}`
+                + ` · aim ${xr.looking ? xr.looking.id : (menu.lookingChip ? "menu" : (panel.lookingClose ? "close" : "—"))}`
                 + ` · hold ${held}% · ${xr.views} eyes · ${Math.round(xr.fps || 0)}fps`;
               if (line !== readoutText) {
                 readoutText = line;
