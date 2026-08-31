@@ -162,8 +162,9 @@ await context.addInitScript(() => {
     const pose = { views: eyes, transform: { position: window.__xrWhere || { x: 0, y: 0, z: 0 } } };
     const frame = {
       getViewerPose: () => pose,
-      getPose: (space) => (pinchRay && space === pinchSource.targetRaySpace ? poseFor(pinchRay) : null),
+      getPose: (space) => (pinchRay && space === pinchSource.targetRaySpace ? poseFor(wobbled(pinchRay)) : null),
     };
+    wobbleTick += 1;
     const cb = live.queue.shift();
     cb(performance.now(), frame);
     return { frames: 1, queued: live.queue.length };
@@ -200,13 +201,38 @@ await context.addInitScript(() => {
     matrix[15] = 1;
     return { transform: { matrix, position: { x: 0, y: 0, z: 0 } } };
   };
+  /* A held pinch is never perfectly still.
+     A fixture that froze the ray between the press and the release proved
+     nothing: it made every press look deliberate to code that tells a
+     choice from a move by how far the pointer travels. A real hand shakes,
+     and on a headset where the ray IS the gaze the eyes move the instant
+     the fingers do — the reported symptom was total: not one file would
+     open. So the ray wobbles here, about three degrees each way and back
+     again so it never wanders off, and a choice has to survive it. */
+  let wobbleTick = 0;
+  const WOBBLE = 0.05;
+  const wobbled = (dir) => {
+    if (!dir) return dir;
+    const swing = Math.sin(wobbleTick * 1.1) * WOBBLE;
+    const lift = Math.cos(wobbleTick * 0.7) * WOBBLE;
+    const flat = Math.hypot(dir[0], dir[2]) || 1;
+    const side = [-dir[2] / flat, 0, dir[0] / flat];
+    const up = [-dir[1] * side[2], flat, dir[1] * side[0]];
+    const out = [
+      dir[0] + side[0] * swing + up[0] * lift,
+      dir[1] + up[1] * lift,
+      dir[2] + side[2] * swing + up[2] * lift,
+    ];
+    const span = Math.hypot(...out) || 1;
+    return [out[0] / span, out[1] / span, out[2] / span];
+  };
   window.__xrPointAt = (dir) => { pinchRay = dir; };
   window.__xrPinchStart = (dir) => {
     pinchRay = dir;
     live.inputSources = [pinchSource];
     const event = new Event("selectstart");
     event.inputSource = pinchSource;
-    event.frame = { getPose: (space) => (space === pinchSource.targetRaySpace ? poseFor(pinchRay) : null) };
+    event.frame = { getPose: (space) => (space === pinchSource.targetRaySpace ? poseFor(wobbled(pinchRay)) : null) };
     live.dispatchEvent(event);
   };
   window.__xrPinchEnd = (dir) => {
@@ -214,7 +240,7 @@ await context.addInitScript(() => {
     const fire = (name) => {
       const event = new Event(name);
       event.inputSource = pinchSource;
-      event.frame = { getPose: (space) => (space === pinchSource.targetRaySpace ? poseFor(pinchRay) : null) };
+      event.frame = { getPose: (space) => (space === pinchSource.targetRaySpace ? poseFor(wobbled(pinchRay)) : null) };
       live.dispatchEvent(event);
     };
     fire("select");
@@ -1174,11 +1200,16 @@ const pinched = await page.evaluate(async () => {
   const room = open.items.find((item) => !item.exit && item.id !== open.lookingItem)
     || open.items.find((item) => !item.exit);
 
-  /* A pinch that travels is a move, not a choice: take the dot and carry it. */
-  const before = window.__xrMenu().chipDir.slice();
+  /* A pinch that travels is a move, not a choice: take the dot and carry it.
+     With the list up the dot is at the head of the column, not at the
+     resting place it was pinched from — a fixture that kept aiming at the
+     old place was aiming at a row, and mistook the list closing for the
+     list being carried. */
+  const bar = window.__xrMenu().chipDir.slice();
+  const before = bar.slice();
   await apart();
-  window.__xrPinchStart(dot);
-  const carried = [dot[0] + 0.45, dot[1] + 0.2, dot[2]];
+  window.__xrPinchStart(bar);
+  const carried = [bar[0] + 0.45, bar[1] + 0.2, bar[2]];
   window.__xrPointAt(carried);
   run(away, 6);
   out.movedWhileHeld = window.__xrMenu().chipDir.slice();
@@ -1193,12 +1224,18 @@ const pinched = await page.evaluate(async () => {
   /* Nothing under the hand on the way may have been taken. */
   out.chosenWhileCarrying = window.__roomChosen || null;
 
-  /* A pinch that stays still IS a choice. */
+  /* A pinch that stays still IS a choice — and a pinch on a ROW is a choice
+     whatever the hand does, because a row is not something to be carried.
+     Reported from the headset as "not a single file opens". */
   await apart();
   const target = window.__xrMenu().items.find((item) => item.id === room.id);
+  const columnBefore = window.__xrMenu().items[0].dir.slice();
   window.__xrPinchStart(target.dir);
   run(away, 2);
   window.__xrPinchEnd(target.dir);
+  out.columnHeld = window.__xrMenu().items[0]
+    ? window.__xrMenu().items[0].dir.slice() : columnBefore;
+  out.columnBefore = columnBefore;
   run(away, 6);
   out.wanted = room.id;
   out.chosenByPinch = window.__roomChosen || null;
@@ -1233,6 +1270,15 @@ check("but a pinch that stays still chooses what the eyes were on",
   pinched.chosenByPinch === pinched.wanted,
   `wanted ${pinched.wanted}, got ${pinched.chosenByPinch}`);
 check("and the list closes behind that choice", pinched.closedAfterChoosing === false);
+/* The bug behind "not a single file opens": with the list up, every pinch
+   took hold of the menu, a shaking hand made it travel, and travel is never
+   a choice. A row must not be a handle. */
+const shifted = Math.acos(Math.max(-1, Math.min(1,
+  pinched.columnBefore[0] * pinched.columnHeld[0]
+  + pinched.columnBefore[1] * pinched.columnHeld[1]
+  + pinched.columnBefore[2] * pinched.columnHeld[2]))) * 57.3;
+check("pinching a row never drags the list instead of choosing",
+  shifted < 1, `the column moved ${shifted.toFixed(1)}° under the press`);
 check("and the pointer is gone once the fingers open",
   pinched.sourcesLeftBehind === 0);
 /* Carried across the room and then turned away from, it comes back rather
