@@ -1510,9 +1510,24 @@
                  thing in the room that is meant to be read rather than
                  aimed at, so unlike the menu it follows the head. */
               const held = Math.round((menu.dwellOn ? menu.dwell : 0) * 100);
-              const line = `${buildStamp} · pins ${xr.markers.length}`
-                + ` · aim ${xr.looking ? xr.looking.id : (menu.lookingChip ? "menu" : (panel.lookingClose ? "close" : "—"))}`
-                + ` · hold ${held}% · ${xr.views} eyes · ${Math.round(xr.fps || 0)}fps`;
+              /* A line that instructs, not one that reports.
+               *
+               * "aim —" is precise and useless to the person wearing the
+               * thing: it names a state without naming what to do about it,
+               * and the one report it produced could have meant a room with
+               * no pins in it OR an eye on the wrong object. A room with
+               * nothing to press must say so, and a room with something to
+               * press must say how. */
+              const aiming = xr.markers.length === 0
+                ? "This room has no marked points"
+                : xr.looking
+                  ? `Holding ${held}% · ${xr.looking.label || xr.looking.id}`
+                  : menu.lookingChip
+                    ? `Holding ${held}% · rooms`
+                    : panel.lookingClose
+                      ? `Holding ${held}% · close`
+                      : `${xr.markers.length} marked point${xr.markers.length === 1 ? "" : "s"} · put the ring on one and hold`;
+              const line = `${aiming} · ${xr.views} eyes · ${Math.round(xr.fps || 0)}fps · ${buildStamp}`;
               if (line !== readoutText) {
                 readoutText = line;
                 if (readoutTexture) gl.deleteTexture(readoutTexture);
