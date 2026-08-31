@@ -459,7 +459,32 @@
      choose from. One height for both: the list appears exactly where the
      dot was. */
   const MENU_CHIP_PITCH = 0.26;
-  const MENU_ITEM_PITCH = 0.26;
+  /* The list stands as a column to the right, read top to bottom, rather
+     than as a fan the head has to sweep along. A row of entries put the
+     whole list at one height, so choosing meant swinging the head sideways
+     across every other entry on the way — and the entries it swept over
+     were the ones that kept choosing themselves. */
+  const MENU_COLUMN_YAW = 0.50;
+  const MENU_ROW_PITCH = 0.22;
+  /* A column of rows is only a column while it fits in front of a person.
+     Twelve rooms would stand seventy degrees tall — a wall, not a list — so
+     the column is a window on the rooms rather than all of them: the one you
+     are in, its neighbours, and the way out. A building with floors wants
+     grouping by floor, and that is the answer when it arrives; a silent
+     seventy-degree wall is not. */
+  const MENU_MAX_ROOM_ROWS = 4;
+  /* Past the top row or past the bottom one, the column scrolls. Holding a
+     look there keeps it moving, a row at a time, so a list longer than the
+     window is reachable without a controller and without hiding anything.
+     A building with floors will still want grouping by floor; this is what
+     makes the plain list honest until then. */
+  const MENU_SCROLL_SECONDS = 0.5;
+  const MENU_SCROLL_ZONE = 0.30;
+  /* Wide across, narrow up and down: every entry shares one yaw, so
+     sideways precision buys nothing, and it is the vertical distance that
+     has to tell one row from the next. */
+  const MENU_ROW_YAW_CATCH = 0.26;
+  const MENU_ROW_PITCH_CATCH = 0.10;
   /* The menu stays where it was left. It only comes back around when the
      person has turned so far that it is behind them — anything tighter and
      it teleports in front of the eyes on every glance, which is exactly what
@@ -480,8 +505,6 @@
   const STEADY_DEGREES_PER_SECOND = 14;
   const MENU_CHIP_COS = Math.cos(MENU_CHIP_PITCH);
   const MENU_CHIP_SIN = Math.sin(MENU_CHIP_PITCH);
-  const MENU_ITEM_COS = Math.cos(MENU_ITEM_PITCH);
-  const MENU_ITEM_SIN = Math.sin(MENU_ITEM_PITCH);
 
   const SIZE_MIN = 30;
   const SIZE_MAX = 100;
@@ -921,7 +944,14 @@
       const menu = xr.menu;
       for (const item of menu.items) gl.deleteTexture(item.texture);
       if (menu.chipTexture) gl.deleteTexture(menu.chipTexture);
-      menu.items = headsetRooms.map((room) => ({
+      /* The window on the rooms: where the person scrolled it to, held
+         within the list rather than allowed to run off either end. */
+      const lastStart = Math.max(0, headsetRooms.length - MENU_MAX_ROOM_ROWS);
+      const from = Math.max(0, Math.min(lastStart, menu.offset || 0));
+      menu.offset = from;
+      menu.moreAbove = from;
+      menu.moreBelow = Math.max(0, headsetRooms.length - MENU_MAX_ROOM_ROWS - from);
+      menu.items = headsetRooms.slice(from, from + MENU_MAX_ROOM_ROWS).map((room) => ({
         id: room.id,
         current: Boolean(room.current),
         texture: bakeLabelTexture(room.current ? `● ${room.title}` : room.title, Boolean(room.current)),
@@ -938,12 +968,23 @@
         dir: [0, -1, 0],
       });
       menu.chipTexture = bakeDotTexture();
+      /* Only where something is actually there to reach. */
+      if (menu.upTexture) gl.deleteTexture(menu.upTexture);
+      if (menu.downTexture) gl.deleteTexture(menu.downTexture);
+      menu.upTexture = menu.moreAbove > 0
+        ? bakeLabelTexture(`▲ ${menu.moreAbove} more`, false) : null;
+      menu.downTexture = menu.moreBelow > 0
+        ? bakeLabelTexture(`▼ ${menu.moreBelow} more`, false) : null;
     }
 
     function setHeadsetRooms(list) {
       headsetRooms = (Array.isArray(list) ? list : [])
         .filter((room) => room && room.id && room.title)
-        .slice(0, 8);
+        /* The eight-room cap existed because the list was one fan across the
+           view and a ninth room had nowhere to go. A column that scrolls has
+           somewhere to put them; only the visible window is ever baked, so
+           the length costs nothing. */
+        .slice(0, 200);
       rebuildRoomMenu();
       return headsetRooms.length;
     }
@@ -1045,7 +1086,8 @@
              positive radius is somebody's preference about how far the
              walls should feel. */
           sphereRadius: headsetRadius,
-          menu: { open: false, items: [], chipTexture: null, chipDir: [0, -1, 0], heading: null, lookingChip: false, lookingItem: null, approach: 0, dwellOn: null, dwell: 0, dwellFired: false, armed: false },
+          menu: { open: false, items: [], chipTexture: null, chipDir: [0, -1, 0], heading: null, lookingChip: false, lookingItem: null, approach: 0, dwellOn: null, dwell: 0, dwellFired: false, armed: false,
+            offset: 0, moreAbove: 0, moreBelow: 0, scrolling: 0, scrollHeld: 0, upTexture: null, downTexture: null },
           /* What a chosen pin says, parked in the room in front of whoever
              chose it. Empty until somebody holds a look on a pin. */
           panel: { markerId: null, texture: null, closeTexture: null, lines: [], dir: [0, 0, -1], closeDir: [0, -0.3, -0.95], lookingClose: false },
@@ -1057,6 +1099,7 @@
         window.__xrAnchor = () => xr?.anchor || null;
         window.__xrForward = () => (xr ? xr.forward.slice() : null);
         window.__xrSetMarkers = (list) => setHeadsetMarkers(list || []);
+        window.__xrSetRooms = (list) => setHeadsetRooms(list || []);
         window.__xrMenu = () => (xr ? {
           open: xr.menu.open,
           chipDir: xr.menu.chipDir.slice(),
@@ -1064,6 +1107,10 @@
           items: xr.menu.items.map((item) => ({ id: item.id, dir: item.dir.slice(), current: item.current, exit: Boolean(item.exit) })),
           lookingChip: xr.menu.lookingChip,
           lookingItem: xr.menu.lookingItem?.id || null,
+          offset: xr.menu.offset,
+          moreAbove: xr.menu.moreAbove,
+          moreBelow: xr.menu.moreBelow,
+          scrolling: xr.menu.scrolling,
           dwellOn: xr.menu.dwellOn,
           dwell: xr.menu.dwell,
           armed: xr.menu.armed,
@@ -1130,6 +1177,13 @@
             }
             if (menu.lookingChip) {
               menu.open = !menu.open;
+              /* Opening lands the window on the room somebody is standing in;
+                 after that the window is theirs to move. */
+              if (menu.open) {
+                const standing = headsetRooms.findIndex((room) => room.current);
+                menu.offset = Math.max(0, (standing < 0 ? 0 : standing) - Math.floor(MENU_MAX_ROOM_ROWS / 2));
+                rebuildRoomMenu();
+              }
               /* The list opens where the dot was, so an item lands under the
                  gaze that just opened it — and it would start filling at
                  once. Reported from the headset as a file that switches
@@ -1254,31 +1308,54 @@
             }
             const heading = menu.heading;
             menu.chipDir = [heading[0] * MENU_CHIP_COS, -MENU_CHIP_SIN, heading[1] * MENU_CHIP_COS];
-            /* Wide enough apart that each is its own target: neighbours 24
-               degrees apart with an 11.5 degree catch radius cannot both be
-               half-caught, which is what "a very short stretch where it
-               works" was describing. */
-            const spread = 0.46;
-            /* Laid out around the dot with a hole in the middle, so no item
-               ever sits on top of it. An item at the dot's own direction
-               makes the two impossible to tell apart: the list could then
-               only be closed by choosing something out of it. */
+            /* One column, off to the right of where the person faces and
+               centred on the eye line: the first entry sits above it, the
+               last below, and the dot that opened the list is nowhere near
+               any of them. */
+            /* Negated because this rotation turns the heading anticlockwise,
+               and the column was asked for on the right. */
+            const turned = [
+              heading[0] * Math.cos(-MENU_COLUMN_YAW) + heading[1] * Math.sin(-MENU_COLUMN_YAW),
+              heading[1] * Math.cos(-MENU_COLUMN_YAW) - heading[0] * Math.sin(-MENU_COLUMN_YAW),
+            ];
             menu.items.forEach((item, index) => {
-              const side = index % 2 === 0 ? 1 : -1;
-              const step = Math.floor(index / 2) + 0.5;
-              const yaw = side * step * spread;
-              const turned = [
-                heading[0] * Math.cos(yaw) + heading[1] * Math.sin(yaw),
-                heading[1] * Math.cos(yaw) - heading[0] * Math.sin(yaw),
-              ];
-              item.dir = [turned[0] * MENU_ITEM_COS, -MENU_ITEM_SIN, turned[1] * MENU_ITEM_COS];
+              const pitch = (index - (menu.items.length - 1) / 2) * MENU_ROW_PITCH;
+              const flatScale = Math.cos(pitch);
+              item.dir = [turned[0] * flatScale, -Math.sin(pitch), turned[1] * flatScale];
             });
+            /* A column is aimed at by height, not by a cone: measure how far
+               the gaze is round from the column and how far it is above or
+               below the row, and judge each separately. */
             let lookedItem = null;
-            let bestItem = Math.cos(0.20);
             if (menu.open) {
-              for (const item of menu.items) {
-                const dot = item.dir[0] * forward[0] + item.dir[1] * forward[1] + item.dir[2] * forward[2];
-                if (dot > bestItem) { bestItem = dot; lookedItem = item; }
+              const gazeFlat = Math.hypot(forward[0], forward[2]) || 0.0001;
+              const gazePitch = Math.atan2(-forward[1], gazeFlat);
+              const roundness = (turned[0] * forward[0] + turned[1] * forward[2]) / gazeFlat;
+              const yawOff = Math.acos(Math.max(-1, Math.min(1, roundness)));
+              if (yawOff < MENU_ROW_YAW_CATCH) {
+                let bestRow = MENU_ROW_PITCH_CATCH;
+                for (const item of menu.items) {
+                  const rowPitch = Math.asin(Math.max(-1, Math.min(1, -item.dir[1])));
+                  const off = Math.abs(rowPitch - gazePitch);
+                  if (off < bestRow) { bestRow = off; lookedItem = item; }
+                }
+                /* Above the top row and below the bottom one: the column
+                   moves rather than ends. Only where there is something to
+                   scroll to — an edge that does nothing is a lie. */
+                if (!lookedItem) {
+                  const rows = menu.items.map((item) => Math.asin(Math.max(-1, Math.min(1, -item.dir[1]))));
+                  const top = Math.min(...rows);
+                  const bottom = Math.max(...rows);
+                  const above = top - gazePitch;
+                  const below = gazePitch - bottom;
+                  if (menu.moreAbove > 0 && above > MENU_ROW_PITCH_CATCH && above < MENU_SCROLL_ZONE) menu.scrolling = -1;
+                  else if (menu.moreBelow > 0 && below > MENU_ROW_PITCH_CATCH && below < MENU_SCROLL_ZONE) menu.scrolling = 1;
+                  else menu.scrolling = 0;
+                } else {
+                  menu.scrolling = 0;
+                }
+              } else {
+                menu.scrolling = 0;
               }
             }
             menu.lookingItem = lookedItem;
@@ -1299,6 +1376,7 @@
             menu.lookingChip = false;
             menu.lookingItem = null;
             menu.approach = 0;
+            menu.scrolling = 0;
           }
 
           /* The pin nearest to where somebody is looking, and only if they are
@@ -1381,6 +1459,19 @@
             }
           }
           if (!dwellOn) menu.dwell = 0;
+
+          /* Scrolling is its own short hold, repeating while the look is
+             held there, so a long list is walked rather than jumped. */
+          if (menu.open && menu.scrolling !== 0) {
+            menu.scrollHeld += dt;
+            if (menu.scrollHeld >= MENU_SCROLL_SECONDS) {
+              menu.scrollHeld = 0;
+              menu.offset = Math.max(0, menu.offset + menu.scrolling);
+              rebuildRoomMenu();
+            }
+          } else {
+            menu.scrollHeld = 0;
+          }
           xr.lastForward = [forward[0], forward[1], forward[2]];
 
           /* The head's own position, so each eye's offset is measured from
@@ -1503,6 +1594,20 @@
                   const lit = item === menu.lookingItem;
                   drawLabel(item.texture, item.dir, lit ? 1.3 : 1.15, lit ? 0.26 : 0.23, lit, menu.dwellOn === item.id);
                 }
+                /* The ends of the column, when the column has more to give.
+                   They light while the look is on them, which is also while
+                   the list is moving. */
+                const rowDirs = menu.items.map((item) => item.dir);
+                const edge = (edgeTexture, dir, sign) => {
+                  if (!edgeTexture || !dir) return;
+                  const pitch = Math.asin(Math.max(-1, Math.min(1, -dir[1]))) + sign * MENU_ROW_PITCH;
+                  const flat = Math.hypot(dir[0], dir[2]) || 1;
+                  const scaled = Math.cos(pitch) / flat;
+                  drawLabel(edgeTexture, [dir[0] * scaled, -Math.sin(pitch), dir[2] * scaled],
+                    0.78, 0.16, menu.scrolling === sign ? 1 : 0.5, false);
+                };
+                edge(menu.upTexture, rowDirs[0], -1);
+                edge(menu.downTexture, rowDirs[rowDirs.length - 1], 1);
               }
               /* The pin's answer, in the room. Held at reading distance and
                  parked where the person was looking when they chose it, with
@@ -1558,6 +1663,8 @@
         xrSession.addEventListener("end", () => {
           for (const item of xr?.menu.items || []) gl.deleteTexture(item.texture);
           if (xr?.menu.chipTexture) gl.deleteTexture(xr.menu.chipTexture);
+          if (xr?.menu.upTexture) gl.deleteTexture(xr.menu.upTexture);
+          if (xr?.menu.downTexture) gl.deleteTexture(xr.menu.downTexture);
           if (xr?.panel.texture) gl.deleteTexture(xr.panel.texture);
           if (xr?.panel.closeTexture) gl.deleteTexture(xr.panel.closeTexture);
           xr = null;

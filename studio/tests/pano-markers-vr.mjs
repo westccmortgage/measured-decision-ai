@@ -673,7 +673,7 @@ const gazed = await page.evaluate(async () => {
   /* Now hold a look on the room we are not in, and walk back to it. */
   window.__roomChosen = null;
   const target = window.__xrMenu().items.find((item) => item.id === "room-a");
-  run(target.dir, 130);
+  run(target.dir, 220);
   out.chosen = window.__roomChosen || null;
   out.closedAfterChoosing = window.__xrMenu().open;
   await new Promise((resolve) => setTimeout(resolve, 700));
@@ -826,12 +826,18 @@ const listed = await page.evaluate(async () => {
   run(rest.chipDir, 130);
   const open = window.__xrMenu();
   out.opened = open.open;
-  /* The list must arrive at the height the dot was at, not above it. */
-  out.itemPitches = open.items.map((item) => Math.asin(-item.dir[1]) * 57.3);
-  /* And its items must be far enough apart to be separate targets. */
+  /* A column: every row at one bearing off to the side, stepping down. */
   const yaw = (dir) => Math.atan2(dir[0], -dir[2]) * 57.3;
-  const spread = open.items.map((item) => yaw(item.dir)).sort((a, b) => a - b);
-  out.gap = spread.length > 1 ? Math.round(spread[1] - spread[0]) : 0;
+  out.itemPitches = open.items.map((item) => Math.round(Math.asin(-item.dir[1]) * 57.3));
+  out.itemYaws = open.items.map((item) => Math.round(yaw(item.dir)));
+  const pitches = out.itemPitches.slice().sort((a, b) => a - b);
+  out.rowGap = pitches.length > 1 ? Math.round(pitches[1] - pitches[0]) : 0;
+  out.columnYaw = Math.round(yaw(open.items[0].dir));
+  /* And the dot that opened it is nowhere near any row. */
+  out.dotClearOfRows = open.items.every((item) => {
+    const dot = item.dir[0] * rest.chipDir[0] + item.dir[1] * rest.chipDir[1] + item.dir[2] * rest.chipDir[2];
+    return Math.acos(Math.max(-1, Math.min(1, dot))) * 57.3 > 14;
+  });
 
   /* No item may sit on the dot, or the two cannot be told apart and the
      list can only be left by choosing something out of it. */
@@ -880,12 +886,17 @@ check("the list starts down, so the dot is what opens it",
   listed.startedClosed === true);
 check("the dot sits under the eye line, not down by the feet",
   listed.chipPitch > 6 && listed.chipPitch < 16, `${Math.round(listed.chipPitch)}° below the eye line`);
-check("and the list arrives at the same height, where the gaze already is",
+/* Asked for from the headset: a column off to the right, not a line the head
+   has to sweep along. */
+check("the list stands as a column to one side, not a line across the view",
   listed.opened === true
-  && listed.itemPitches.every((pitch) => Math.abs(pitch - listed.chipPitch) < 2),
-  `open=${listed.opened} · chip ${Math.round(listed.chipPitch)}°, items ${listed.itemPitches.map((p) => Math.round(p)).join(", ")}°`);
-check("its items are separate targets, not one smeared band",
-  listed.gap >= 20, `${listed.gap}° apart, each caught within 11.5°`);
+  && listed.itemYaws.every((bearing) => bearing === listed.columnYaw)
+  && listed.columnYaw >= 20,
+  `all rows at ${listed.columnYaw}° round, pitches ${listed.itemPitches.join(", ")}°`);
+check("its rows are spaced far enough to tell one from the next",
+  listed.rowGap >= 11, `${listed.rowGap}° between rows, each caught within 5.7°`);
+check("and the dot that opened it is clear of every row",
+  listed.dotClearOfRows === true);
 /* The one that made the headset unusable: arriving somewhere is not
    choosing it. */
 /* The two halves of "a file switched itself on while I was only looking":
@@ -908,6 +919,81 @@ check("a gaze sweeping across a room chooses nothing on the way past",
 check("while a look off the list and a held look on a room does choose it",
   listed.armedAfterLookingAway === true && listed.closedAfterChoosing === false);
 
+console.log("\n── a long list scrolls rather than hides ──");
+/* Asked for from the headset: a column, and one you can scroll. A window
+   that silently drops rooms is a list that lies about what is in the
+   project. */
+const scrolled = await page.evaluate(async () => {
+  const run = (dir, frames) => { for (let i = 0; i < frames; i += 1) window.__xrFrame(dir); };
+  const out = {};
+  window.__xrSetRooms(Array.from({ length: 9 }, (nothing, index) => ({
+    id: `room-${index}`,
+    title: `Room ${index + 1}`,
+    current: index === 0,
+  })));
+  run([0, 0, -1], 6);
+  if (window.__xrMenu().open) { run([0, 1, 0], 10); run(window.__xrMenu().chipDir, 140); }
+  run([0, 0, -1], 6);
+  const shut = window.__xrMenu().chipDir.slice();
+  run(shut, 140);
+  const open = window.__xrMenu();
+  out.opened = open.open;
+  out.rowsShown = open.items.length;
+  out.moreBelow = open.moreBelow;
+  out.moreAbove = open.moreAbove;
+
+  /* Just under the bottom row, where the column is asked to move. */
+  const pitchOf = (dir) => Math.asin(Math.max(-1, Math.min(1, -dir[1])));
+  const rowDirs = open.items.map((item) => item.dir);
+  const lowest = rowDirs.reduce((a, b) => (pitchOf(a) > pitchOf(b) ? a : b));
+  const belowIt = (extra) => {
+    const pitch = pitchOf(lowest) + extra;
+    const flat = Math.hypot(lowest[0], lowest[2]) || 1;
+    const scale = Math.cos(pitch) / flat;
+    return [lowest[0] * scale, -Math.sin(pitch), lowest[2] * scale];
+  };
+  const under = belowIt(0.18);
+  run(under, 6);
+  out.scrollingDown = window.__xrMenu().scrolling;
+  run(under, 60);
+  const moved = window.__xrMenu();
+  out.offsetAfterHold = moved.offset;
+  out.titlesAfter = moved.items.map((item) => item.id);
+
+  /* Held there, it keeps going — and stops at the end rather than running off. */
+  run(under, 600);
+  const end = window.__xrMenu();
+  out.offsetAtEnd = end.offset;
+  out.moreBelowAtEnd = end.moreBelow;
+  out.moreAboveAtEnd = end.moreAbove;
+
+  /* Away from the edge it stops moving at once. */
+  run([0, 0, -1], 10);
+  out.scrollingAway = window.__xrMenu().scrolling;
+  /* Put the list away and the rooms back: a section that leaves its own
+     state lying around fails the one after it and blames the product. */
+  if (window.__xrMenu().open) { run([0, 1, 0], 10); run(shut, 200); }
+  out.tidied = window.__xrMenu().open;
+  window.__xrSetRooms([
+    { id: "room-a", title: "Family Room", current: true },
+    { id: "room-b", title: "Dining Room" },
+  ]);
+  return out;
+});
+/* Four rooms and the way out: five rows, and five rooms still to come. */
+check("a list longer than the window shows a window on it",
+  scrolled.opened === true && scrolled.rowsShown === 5 && scrolled.moreBelow === 5,
+  JSON.stringify({ rows: scrolled.rowsShown, below: scrolled.moreBelow, above: scrolled.moreAbove }));
+check("looking past the bottom row scrolls the column",
+  scrolled.scrollingDown === 1 && scrolled.offsetAfterHold >= 1,
+  JSON.stringify({ scrolling: scrolled.scrollingDown, offset: scrolled.offsetAfterHold, rows: scrolled.titlesAfter }));
+check("holding there walks it to the end and stops",
+  scrolled.offsetAtEnd === 5 && scrolled.moreBelowAtEnd === 0 && scrolled.moreAboveAtEnd === 5,
+  JSON.stringify({ offset: scrolled.offsetAtEnd, below: scrolled.moreBelowAtEnd, above: scrolled.moreAboveAtEnd }));
+check("and looking away from the edge stops it at once",
+  scrolled.scrollingAway === 0);
+check("and the list is put away behind it", scrolled.tidied === false);
+
 console.log("\n── taking the headset off ──");
 /* The way back rides in the same menu as the rooms — asked for in exactly
    those words. Choosing it fires the same session-end path a system gesture
@@ -921,7 +1007,9 @@ const left = await page.evaluate(async () => {
   run(menu.chipDir, 130);
   menu = window.__xrMenu();
   const exit = menu.items.find((item) => item.exit);
-  if (exit) run(exit.dir, 130);
+  /* An entry asks 1.4 seconds of stillness of a person, and 130 frames is
+     1.44 — closer to the line than a fixture should ever sit. */
+  if (exit) run(exit.dir, 220);
   await new Promise((r) => setTimeout(r, 400));
   const button = document.querySelector("[data-pano-vr]");
   const canvas = document.querySelector(".pano-overlay canvas");
