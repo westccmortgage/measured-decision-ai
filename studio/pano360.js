@@ -469,6 +469,15 @@
      do not reach this page on that device — not for pins, not for the menu.
      A gaze needs no controller, no hand tracking and no permission. */
   const DWELL_SECONDS = 0.9;
+  /* An entry in the list asks for longer than the dot does. The dot is a
+     deliberate act — you went looking for it; an entry is a thing the gaze
+     can simply land on while reading the list, and landing is not choosing. */
+  const ITEM_DWELL_SECONDS = 1.4;
+  /* And a hold only counts while the head is actually still. A gaze crossing
+     a target at speed is passing over it, not resting on it — which is
+     exactly what "my eye fell on a room and it opened" describes. Degrees
+     per second, generous enough for the small drift nobody can suppress. */
+  const STEADY_DEGREES_PER_SECOND = 14;
   const MENU_CHIP_COS = Math.cos(MENU_CHIP_PITCH);
   const MENU_CHIP_SIN = Math.sin(MENU_CHIP_PITCH);
   const MENU_ITEM_COS = Math.cos(MENU_ITEM_PITCH);
@@ -873,66 +882,6 @@
       return baked;
     }
 
-    /* A line of live state, drawn in the room.
-     *
-     * Three fixes for "the pin does nothing" have now passed every test on
-     * this machine and failed on the device. That is not a coding problem,
-     * it is an evidence problem: the tests drive a stand-in session, and a
-     * headset I cannot attach a debugger to has been answering with one
-     * word. So the session says out loud what it knows — how many pins it
-     * holds, what the aim is on, how far the hold has filled, how many eyes
-     * it is drawing and how fast. Whatever is actually wrong, this line
-     * names it: no pins means the room never got them, no aim means the
-     * gaze test misses, a hold that never fills means the clock, and a full
-     * hold with nothing shown means the drawing. */
-    let readoutText = "";
-    let readoutTexture = null;
-    /* Which build is actually running, read off this file's own script tag.
-     *
-     * The page revalidates on every load, but a headset browser left open
-     * across a fix does not load anything — and that alone would explain all
-     * three rounds of "shipped, tested, still broken". A version somebody can
-     * read out loud settles in one glance what no amount of further code can. */
-    const buildStamp = (() => {
-      const tag = [...document.querySelectorAll("script[src]")]
-        .find((node) => /pano360\.js/.test(node.getAttribute("src") || ""));
-      const stamp = (tag?.getAttribute("src") || "").split("?v=")[1] || "";
-      return stamp ? stamp.slice(0, 8) : "unstamped";
-    })();
-    function bakeReadoutTexture(text) {
-      const board = document.createElement("canvas");
-      board.width = 512;
-      board.height = 64;
-      const ink = board.getContext("2d");
-      ink.clearRect(0, 0, 512, 64);
-      ink.fillStyle = "rgba(6, 16, 26, 0.72)";
-      ink.beginPath();
-      ink.moveTo(14, 2);
-      ink.arcTo(510, 2, 510, 62, 14);
-      ink.arcTo(510, 62, 2, 62, 14);
-      ink.arcTo(2, 62, 2, 2, 14);
-      ink.arcTo(2, 2, 510, 2, 14);
-      ink.closePath();
-      ink.fill();
-      ink.textAlign = "center";
-      ink.textBaseline = "middle";
-      ink.fillStyle = "rgba(150, 200, 220, 0.92)";
-      let size = 26;
-      ink.font = `500 ${size}px "IBM Plex Mono", ui-monospace, monospace`;
-      while (size > 15 && ink.measureText(text).width > 476) {
-        size -= 1;
-        ink.font = `500 ${size}px "IBM Plex Mono", ui-monospace, monospace`;
-      }
-      ink.fillText(text, 256, 34);
-      const baked = gl.createTexture();
-      gl.bindTexture(gl.TEXTURE_2D, baked);
-      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
-      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
-      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
-      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
-      gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, board);
-      return baked;
-    }
 
     /* The way out of a pin's answer. Its own texture rather than the menu's
        dot: the same shape for "open the rooms" and "close this" is a riddle,
@@ -989,11 +938,6 @@
         dir: [0, -1, 0],
       });
       menu.chipTexture = bakeDotTexture();
-      /* The words appear only while the dot is aimed at: a held look is not
-         a gesture anybody arrives already knowing, but nobody needs to be
-         told twice, and nobody needs a signboard in their room. */
-      if (menu.hintTexture) gl.deleteTexture(menu.hintTexture);
-      menu.hintTexture = bakeLabelTexture(headsetRooms.length ? "Rooms · keep looking" : "Menu · keep looking", false);
     }
 
     function setHeadsetRooms(list) {
@@ -1101,7 +1045,7 @@
              positive radius is somebody's preference about how far the
              walls should feel. */
           sphereRadius: headsetRadius,
-          menu: { open: false, items: [], chipTexture: null, chipDir: [0, -1, 0], heading: null, lookingChip: false, lookingItem: null, approach: 0, dwellOn: null, dwell: 0, dwellFired: false, hintTexture: null, armed: false },
+          menu: { open: false, items: [], chipTexture: null, chipDir: [0, -1, 0], heading: null, lookingChip: false, lookingItem: null, approach: 0, dwellOn: null, dwell: 0, dwellFired: false, armed: false },
           /* What a chosen pin says, parked in the room in front of whoever
              chose it. Empty until somebody holds a look on a pin. */
           panel: { markerId: null, texture: null, closeTexture: null, lines: [], dir: [0, 0, -1], closeDir: [0, -0.3, -0.95], lookingClose: false },
@@ -1124,7 +1068,6 @@
           dwell: xr.menu.dwell,
           armed: xr.menu.armed,
         } : null);
-        window.__xrReadout = () => readoutText;
         window.__xrPanel = () => (xr?.panel.markerId ? {
           markerId: xr.panel.markerId,
           dir: xr.panel.dir.slice(),
@@ -1419,7 +1362,15 @@
             menu.dwell = 0;
             menu.dwellFired = false;
           } else if (dwellOn && !menu.dwellFired) {
-            menu.dwell = Math.min(1, menu.dwell + dt / DWELL_SECONDS);
+            /* How fast the head is turning right now. Held still, this is
+               near zero; sweeping across the room it is tens of degrees a
+               second, and nothing fills. */
+            const previous = xr.lastForward || forward;
+            const alignment = Math.max(-1, Math.min(1,
+              previous[0] * forward[0] + previous[1] * forward[1] + previous[2] * forward[2]));
+            const turnRate = (Math.acos(alignment) * 57.3) / Math.max(dt, 0.0001);
+            const seconds = menu.lookingItem ? ITEM_DWELL_SECONDS : DWELL_SECONDS;
+            if (turnRate < STEADY_DEGREES_PER_SECOND) menu.dwell = Math.min(1, menu.dwell + dt / seconds);
             if (menu.dwell >= 1) {
               menu.dwellFired = true;
               xr.choose?.();
@@ -1430,6 +1381,7 @@
             }
           }
           if (!dwellOn) menu.dwell = 0;
+          xr.lastForward = [forward[0], forward[1], forward[2]];
 
           /* The head's own position, so each eye's offset is measured from
              the centre of the head rather than from the origin of whatever
@@ -1545,19 +1497,6 @@
                 const dotSize = 0.13 + 0.07 * menu.approach;
                 drawLabel(menu.chipTexture, menu.chipDir, dotSize, dotSize,
                   menu.lookingChip ? 1 : menu.approach * 0.8, menu.dwellOn === "__chip");
-                /* The words, while somebody is aiming at it — and always,
-                   when it is the only thing in the room. A person standing
-                   in a room with no marked points sees exactly one object
-                   and will press it forever; an unlabelled dot in an empty
-                   room is a riddle, and this one was pressed for four
-                   rounds in the belief that it was a marker. */
-                if ((menu.lookingChip || xr.markers.length === 0) && menu.hintTexture) {
-                  const under = [menu.chipDir[0], menu.chipDir[1] - 0.13, menu.chipDir[2]];
-                  const underLength = Math.hypot(under[0], under[1], under[2]) || 1;
-                  drawLabel(menu.hintTexture,
-                    [under[0] / underLength, under[1] / underLength, under[2] / underLength],
-                    0.75, 0.17, false, false);
-                }
               }
               if (menu.open && !panel.markerId) {
                 for (const item of menu.items) {
@@ -1575,40 +1514,6 @@
                   panel.lookingClose ? 1 : 0.55, menu.dwellOn === "__panel-close");
               }
 
-              /* The state line, under the gaze and carried with it — the one
-                 thing in the room that is meant to be read rather than
-                 aimed at, so unlike the menu it follows the head. */
-              const held = Math.round((menu.dwellOn ? menu.dwell : 0) * 100);
-              /* A line that instructs, not one that reports.
-               *
-               * "aim —" is precise and useless to the person wearing the
-               * thing: it names a state without naming what to do about it,
-               * and the one report it produced could have meant a room with
-               * no pins in it OR an eye on the wrong object. A room with
-               * nothing to press must say so, and a room with something to
-               * press must say how. */
-              const aiming = xr.markers.length === 0
-                ? "This room has no marked points"
-                : xr.looking
-                  ? `Holding ${held}% · ${xr.looking.label || xr.looking.id}`
-                  : menu.lookingChip
-                    ? `Holding ${held}% · rooms`
-                    : panel.lookingClose
-                      ? `Holding ${held}% · close`
-                      : `${xr.markers.length} marked point${xr.markers.length === 1 ? "" : "s"} · put the ring on one and hold`;
-              const line = `${aiming} · ${xr.views} eyes · ${Math.round(xr.fps || 0)}fps · ${buildStamp}`;
-              if (line !== readoutText) {
-                readoutText = line;
-                if (readoutTexture) gl.deleteTexture(readoutTexture);
-                readoutTexture = bakeReadoutTexture(line);
-              }
-              if (readoutTexture) {
-                const below = [forward[0], forward[1] - 0.34, forward[2]];
-                const belowLength = Math.hypot(below[0], below[1], below[2]) || 1;
-                drawLabel(readoutTexture,
-                  [below[0] / belowLength, below[1] / belowLength, below[2] / belowLength],
-                  2.00, 0.250, false, false);
-              }
               gl.disable(gl.BLEND);
               /* The sphere's texture unit is shared; leave it bound the way
                  the next frame's video upload expects to find it. */
@@ -1653,10 +1558,8 @@
         xrSession.addEventListener("end", () => {
           for (const item of xr?.menu.items || []) gl.deleteTexture(item.texture);
           if (xr?.menu.chipTexture) gl.deleteTexture(xr.menu.chipTexture);
-          if (xr?.menu.hintTexture) gl.deleteTexture(xr.menu.hintTexture);
           if (xr?.panel.texture) gl.deleteTexture(xr.panel.texture);
           if (xr?.panel.closeTexture) gl.deleteTexture(xr.panel.closeTexture);
-          if (readoutTexture) { gl.deleteTexture(readoutTexture); readoutTexture = null; readoutText = ""; }
           xr = null;
           /* Taking the headset off must give the flat viewer back, not a black
              rectangle where a room used to be. */
