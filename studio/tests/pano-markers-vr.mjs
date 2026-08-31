@@ -95,7 +95,7 @@ await context.addInitScript(() => {
   };
 
   class FakeSession extends EventTarget {
-    constructor() { super(); this.renderState = {}; this.queue = []; this.ended = false; }
+    constructor() { super(); this.renderState = {}; this.queue = []; this.ended = false; this.inputSources = []; }
     updateRenderState(next) { Object.assign(this.renderState, next); }
     async requestReferenceSpace(kind) {
       if (kind !== "local-floor") throw new Error(`${kind} unavailable`);
@@ -160,12 +160,69 @@ await context.addInitScript(() => {
       { eye: "right", projectionMatrix: perspective(), transform: { inverse: { matrix: cant ? lookMatrix(turnFlat(dir, cant)) : matrix }, position: at(1) } },
     ].filter((view) => !only || view.eye === only);
     const pose = { views: eyes, transform: { position: window.__xrWhere || { x: 0, y: 0, z: 0 } } };
-    const frame = { getViewerPose: () => pose };
+    const frame = {
+      getViewerPose: () => pose,
+      getPose: (space) => (pinchRay && space === pinchSource.targetRaySpace ? poseFor(pinchRay) : null),
+    };
     const cb = live.queue.shift();
     cb(performance.now(), frame);
     return { frames: 1, queued: live.queue.length };
   };
   window.__xrSelect = () => { live?.dispatchEvent(new Event("select")); };
+
+  /* A pinch, the way a headset that tracks eyes reports one.
+   *
+   * The source appears with the pinch, carries a ray, and is gone after it —
+   * and the events carry the frame it happened in, which is the only place
+   * that ray can be read. None of this path had a test: every check drove
+   * the head, and the head is exactly what the device replaces. */
+  const pinchSource = { targetRaySpace: { pinch: true }, targetRayMode: "transient-pointer" };
+  let pinchRay = null;
+  /* XRRigidTransform.matrix maps the space's own coordinates INTO the
+     reference space — local to world. lookMatrix builds the other direction,
+     which is what a view's `inverse` wants, so handing it over here pointed
+     the ray somewhere else entirely. Built the right way round: the columns
+     are the pointer's own axes in world terms, and -Z is where it points. */
+  const poseFor = (dir) => {
+    const norm = (v) => { const l = Math.hypot(...v) || 1; return v.map((x) => x / l); };
+    const cross = (a, b) => [a[1] * b[2] - a[2] * b[1], a[2] * b[0] - a[0] * b[2], a[0] * b[1] - a[1] * b[0]];
+    const back = norm([-dir[0], -dir[1], -dir[2]]);
+    let right = cross([0, 1, 0], back);
+    if (Math.hypot(...right) < 1e-6) right = cross([1, 0, 0], back);
+    right = norm(right);
+    const up = cross(back, right);
+    const matrix = new Float32Array(16);
+    [right, up, back].forEach((axis, column) => {
+      matrix[column * 4] = axis[0];
+      matrix[column * 4 + 1] = axis[1];
+      matrix[column * 4 + 2] = axis[2];
+    });
+    matrix[15] = 1;
+    return { transform: { matrix, position: { x: 0, y: 0, z: 0 } } };
+  };
+  window.__xrPointAt = (dir) => { pinchRay = dir; };
+  window.__xrPinchStart = (dir) => {
+    pinchRay = dir;
+    live.inputSources = [pinchSource];
+    const event = new Event("selectstart");
+    event.inputSource = pinchSource;
+    event.frame = { getPose: (space) => (space === pinchSource.targetRaySpace ? poseFor(pinchRay) : null) };
+    live.dispatchEvent(event);
+  };
+  window.__xrPinchEnd = (dir) => {
+    if (dir) pinchRay = dir;
+    const fire = (name) => {
+      const event = new Event(name);
+      event.inputSource = pinchSource;
+      event.frame = { getPose: (space) => (space === pinchSource.targetRaySpace ? poseFor(pinchRay) : null) };
+      live.dispatchEvent(event);
+    };
+    fire("select");
+    fire("selectend");
+    live.inputSources = [];
+    pinchRay = null;
+  };
+  window.__xrPinchSources = () => (live?.inputSources || []).length;
   window.__xrEnd = () => live?.end();
   window.__xrLive = () => Boolean(live && !live.ended);
 });
@@ -719,14 +776,37 @@ const pinned = await page.evaluate(async () => {
   /* How much of the view is the near-black of a card face. The sphere
      fixture is bright, so this separates "a panel is drawn" from "a panel
      exists in a variable". */
-  const cardPixels = () => {
+  /* The card is frosted glass now, not a block of paint, so counting dark
+     pixels no longer says whether it is there — and darkness was never the
+     point. What proves it is drawn is that the view CHANGED where it stands,
+     and what proves the glass is glass is that the room still varies through
+     it instead of going flat. */
+  const view = () => {
     const px = new Uint8Array(512 * 512 * 4);
     gl.readPixels(0, 0, 512, 512, gl.RGBA, gl.UNSIGNED_BYTE, px);
-    let dark = 0;
-    for (let i = 0; i < px.length; i += 4) {
-      if (px[i] < 45 && px[i + 1] < 55 && px[i + 2] < 70) dark += 1;
+    return px;
+  };
+  const changedFrom = (before, after) => {
+    let changed = 0;
+    for (let i = 0; i < before.length; i += 4) {
+      if (Math.abs(before[i] - after[i]) > 12
+        || Math.abs(before[i + 1] - after[i + 1]) > 12
+        || Math.abs(before[i + 2] - after[i + 2]) > 12) changed += 1;
     }
-    return dark;
+    return changed;
+  };
+  /* Across the middle band, where the card stands: a painted plate is one
+     colour, a pane with a room behind it is not. */
+  const variationAcross = (px) => {
+    let low = 255; let high = 0;
+    for (let row = 200; row < 312; row += 1) {
+      for (let col = 140; col < 372; col += 1) {
+        const value = px[(row * 512 + col) * 4 + 1];
+        if (value < low) low = value;
+        if (value > high) high = value;
+      }
+    }
+    return high - low;
   };
   const out = {};
   window.__xrSetMarkers([
@@ -738,7 +818,7 @@ const pinned = await page.evaluate(async () => {
   ]);
 
   run([0, 0, -1], 4);
-  out.beforeDark = cardPixels();
+  const beforeView = view();
   out.beforePanel = window.__xrPanel();
   /* A fifth of a second of looking: aimed, not yet chosen. */
   run([0, 0, -1], 12);
@@ -749,7 +829,9 @@ const pinned = await page.evaluate(async () => {
   run([0, 0, -1], 90);
   out.panel = window.__xrPanel();
   run([0, 0, -1], 4);
-  out.afterDark = cardPixels();
+  const afterView = view();
+  out.changed = changedFrom(beforeView, afterView);
+  out.variation = variationAcross(afterView);
 
   /* The way out of it, by the same held look. */
   const closeDir = out.panel ? out.panel.closeDir : [0, -1, 0];
@@ -758,7 +840,7 @@ const pinned = await page.evaluate(async () => {
   run(closeDir, 130);
   out.closed = window.__xrPanel();
   run([0, 0, -1], 4);
-  out.closedDark = cardPixels();
+  out.closedChanged = changedFrom(beforeView, view());
 
   /* A verdict is a person putting their name on a value. A stare is not
      that, and a headset that let one confirm a reading would launder
@@ -792,13 +874,16 @@ check("and what it opens is the evidence, not a dot",
 /* The fault that made the whole thing look dead: an answer rendered where
    the headset cannot show it. Pixels, not state. */
 check("the answer is actually drawn where the person is standing",
-  pinned.afterDark > pinned.beforeDark + 3000,
-  `${pinned.beforeDark} dark px before, ${pinned.afterDark} after`);
+  pinned.changed > 3000, `${pinned.changed} px of the view changed`);
+/* The reason for the glass: a panel that hides the capture takes away the
+   one thing somebody put the headset on for. */
+check("and the room is still visible through it",
+  pinned.variation > 30, `${pinned.variation} levels of variation across the pane`);
 check("its way out can be aimed at",
   pinned.lookingClose === true);
 check("and a held look on that closes it",
-  pinned.closed === null && pinned.closedDark < pinned.beforeDark + 3000,
-  `${pinned.closedDark} dark px after closing`);
+  pinned.closed === null && pinned.closedChanged < 3000,
+  `${pinned.closedChanged} px still changed after closing`);
 check("and the room is handed back with nothing left open",
   pinned.tidied === null);
 check("staring at a reading never confirms it",
@@ -1049,6 +1134,113 @@ check("and stepping back finds it exactly where it was left",
   stood.rowBack < 0.5, `${stood.rowBack.toFixed(2)}° from where it stood`);
 check("walking around it never closed it", stood.stillOpen === true);
 check("and the list is put away behind this too", stood.tidied === false);
+
+console.log("\n── a pinch chooses what the eyes were on, and a held pinch moves it ──");
+/* The path the person actually uses, and the one nothing tested: a headset
+   that tracks eyes reports a pinch as an input source whose ray IS the gaze.
+   The head is not involved, and here it is deliberately pointed elsewhere
+   the whole time — if the head were still the aim, every check below fails. */
+const pinched = await page.evaluate(async () => {
+  const run = (dir, frames) => { for (let i = 0; i < frames; i += 1) window.__xrFrame(dir); };
+  /* One gesture is not the next one. The code collapses a device that
+     reports a pinch twice in the same breath, so pinches fired back to back
+     inside one evaluate all count as one — and every check after the first
+     would pass without the code doing anything. A real hand takes longer
+     than this between two deliberate pinches. */
+  const apart = () => new Promise((r) => setTimeout(r, 220));
+  const out = {};
+  window.__xrStandAt(0, 0, 0);
+  window.__xrSetMarkers([]);
+  window.__roomChosen = null;
+  run([0, 0, -1], 6);
+  if (window.__xrMenu().open) { run([0, 1, 0], 10); run(window.__xrMenu().chipDir, 220); }
+  run([0, 0, -1], 6);
+  const dot = window.__xrMenu().chipDir.slice();
+
+  /* Head pointed away from the dot for the whole of this. */
+  const away = [0, 0.62, -0.78];
+  run(away, 4);
+  await apart();
+  window.__xrPinchStart(dot);
+  run(away, 2);
+  out.beforePinch = { open: window.__xrMenu().open, chip: window.__xrMenu().lookingChip };
+  window.__xrPinchEnd(dot);
+  out.rightAfterPinch = { open: window.__xrMenu().open, chip: window.__xrMenu().lookingChip };
+  run(away, 4);
+  out.openedByPinch = window.__xrMenu().open;
+  out.headWasElsewhere = true;
+
+  const open = window.__xrMenu();
+  const room = open.items.find((item) => !item.exit && item.id !== open.lookingItem)
+    || open.items.find((item) => !item.exit);
+
+  /* A pinch that travels is a move, not a choice: take the dot and carry it. */
+  const before = window.__xrMenu().chipDir.slice();
+  await apart();
+  window.__xrPinchStart(dot);
+  const carried = [dot[0] + 0.45, dot[1] + 0.2, dot[2]];
+  window.__xrPointAt(carried);
+  run(away, 6);
+  out.movedWhileHeld = window.__xrMenu().chipDir.slice();
+  window.__xrPinchEnd(carried);
+  run(away, 4);
+  const after = window.__xrMenu().chipDir.slice();
+  const angle = (a, b) => Math.acos(Math.max(-1, Math.min(1,
+    a[0] * b[0] + a[1] * b[1] + a[2] * b[2]))) * 57.3;
+  out.dotTravelled = angle(before, after);
+  out.stillOpenAfterMove = window.__xrMenu().open;
+  out.rowsFollowed = angle(open.items[0].dir, window.__xrMenu().items[0].dir);
+  /* Nothing under the hand on the way may have been taken. */
+  out.chosenWhileCarrying = window.__roomChosen || null;
+
+  /* A pinch that stays still IS a choice. */
+  await apart();
+  const target = window.__xrMenu().items.find((item) => item.id === room.id);
+  window.__xrPinchStart(target.dir);
+  run(away, 2);
+  window.__xrPinchEnd(target.dir);
+  run(away, 6);
+  out.wanted = room.id;
+  out.chosenByPinch = window.__roomChosen || null;
+  out.closedAfterChoosing = window.__xrMenu()?.open;
+  out.sourcesLeftBehind = window.__xrPinchSources();
+
+  /* This section carried the menu across the room; the next one expects to
+     find it where it was left the first time. Turning right round leaves it
+     behind and unreachable, and the product's own answer to that is to
+     bring it back to where the person now faces — so the tidy-up here is
+     the shipped behaviour, not a poke at the fixture. */
+  run([0, 0, 1], 20);
+  run([0, 0, -1], 20);
+  out.broughtBack = window.__xrMenu().chipDir.slice();
+  out.tidyOpen = window.__xrMenu().open;
+  return out;
+});
+check("a pinch opens the list while the head is pointed somewhere else",
+  pinched.openedByPinch === true,
+  JSON.stringify({ before: pinched.beforePinch, after: pinched.rightAfterPinch }));
+check("a pinch that travels carries the panel with it",
+  pinched.dotTravelled > 10, `the dot moved ${Math.round(pinched.dotTravelled)}° across the room`);
+check("and the list travels with it as one thing",
+  pinched.rowsFollowed > 10 && pinched.stillOpenAfterMove === true,
+  `rows moved ${Math.round(pinched.rowsFollowed)}°`);
+/* A move is not a choice — otherwise carrying the menu somewhere would open
+   whatever the hand happened to pass over. */
+check("a travelled pinch chooses nothing on the way",
+  pinched.stillOpenAfterMove === true && pinched.chosenWhileCarrying === null,
+  String(pinched.chosenWhileCarrying));
+check("but a pinch that stays still chooses what the eyes were on",
+  pinched.chosenByPinch === pinched.wanted,
+  `wanted ${pinched.wanted}, got ${pinched.chosenByPinch}`);
+check("and the list closes behind that choice", pinched.closedAfterChoosing === false);
+check("and the pointer is gone once the fingers open",
+  pinched.sourcesLeftBehind === 0);
+/* Carried across the room and then turned away from, it comes back rather
+   than being lost behind you. */
+check("a panel carried away and turned from comes back to the person",
+  pinched.tidyOpen === false
+  && Math.abs(pinched.broughtBack[0]) < 0.2 && pinched.broughtBack[2] < -0.9,
+  `dot at ${pinched.broughtBack.map((n) => n.toFixed(2)).join(", ")}`);
 
 console.log("\n── taking the headset off ──");
 /* The way back rides in the same menu as the rooms — asked for in exactly

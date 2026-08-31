@@ -204,6 +204,7 @@
   const LABEL_VERTEX_SHADER = `
     attribute vec2 corner;
     varying vec2 vUv;
+    varying vec3 vWorld;
     uniform mat4 projection;
     uniform mat3 viewRotationInverse;
     uniform vec3 labelDirection;
@@ -216,6 +217,7 @@
       vec3 right = normalize(vec3(viewRotationInverse[0][0], viewRotationInverse[1][0], viewRotationInverse[2][0]));
       vec3 up = normalize(vec3(viewRotationInverse[0][1], viewRotationInverse[1][1], viewRotationInverse[2][1]));
       vec3 world = centre + right * corner.x * labelSize.x + up * corner.y * labelSize.y;
+      vWorld = world;
       gl_Position = projection * vec4(mat3(
         viewRotationInverse[0][0], viewRotationInverse[0][1], viewRotationInverse[0][2],
         viewRotationInverse[1][0], viewRotationInverse[1][1], viewRotationInverse[1][2],
@@ -226,9 +228,12 @@
   const LABEL_FRAGMENT_SHADER = `
     precision mediump float;
     varying vec2 vUv;
+    varying vec3 vWorld;
     uniform sampler2D label;
+    uniform sampler2D room;
     uniform float looking;
     uniform float dwell;
+    uniform float glass;
     void main() {
       vec4 colour = texture2D(label, vUv);
       /* A bar filling along the bottom of the panel while somebody holds
@@ -238,7 +243,32 @@
         gl_FragColor = vec4(0.55, 0.91, 0.95, 1.0);
         return;
       }
-      gl_FragColor = vec4(colour.rgb + vec3(looking * 0.18), colour.a);
+      if (glass < 0.5) {
+        gl_FragColor = vec4(colour.rgb + vec3(looking * 0.18), colour.a);
+        return;
+      }
+      /* Frosted, over the room itself.
+       *
+       * A panel that hides the capture takes away the one thing somebody put
+       * the headset on for. The capture is already in a mipmapped texture,
+       * so what lies behind this fragment can be sampled at a coarse level —
+       * which IS a blur, at no cost — and the plate becomes glass over the
+       * real room rather than a painted imitation of it.
+       *
+       * The baked plate is dark and its lettering is bright, so brightness
+       * alone separates ink from plate: the plate turns to glass, the
+       * lettering stays solid and readable against whatever is behind it. */
+      vec3 look = normalize(vWorld);
+      float u = atan(look.x, -look.z) / 6.2831853 + 0.5;
+      float v = acos(clamp(look.y, -1.0, 1.0)) / 3.14159265;
+      vec3 behind = texture2D(room, vec2(u, v), 5.0).rgb;
+      float ink = smoothstep(0.22, 0.55, max(max(colour.r, colour.g), colour.b));
+      /* Cool and darkened, so white lettering keeps its contrast over a
+         bright wall as well as a dark one. */
+      vec3 frost = mix(behind * 0.55, vec3(0.04, 0.09, 0.14), 0.55);
+      vec3 rgb = mix(frost, colour.rgb + vec3(looking * 0.18), ink);
+      float alpha = colour.a * mix(0.62, 1.0, ink);
+      gl_FragColor = vec4(rgb, alpha);
     }`;
 
   function invert4(m) {
@@ -1086,6 +1116,8 @@
           label: gl.getUniformLocation(labelProgram, "label"),
           looking: gl.getUniformLocation(labelProgram, "looking"),
           dwell: gl.getUniformLocation(labelProgram, "dwell"),
+          room: gl.getUniformLocation(labelProgram, "room"),
+          glass: gl.getUniformLocation(labelProgram, "glass"),
           labelDistance: gl.getUniformLocation(labelProgram, "labelDistance"),
           eyeOffset: gl.getUniformLocation(labelProgram, "eyeOffset"),
         };
@@ -1395,6 +1427,72 @@
           return null;
         }
 
+        /* Taking hold of a panel and putting it somewhere else.
+         *
+         * Asked for in the words that describe every spatial system worth
+         * copying: bring the menu up, move it with your hands, put it on the
+         * wall you want it on. A press that stays still is a choice; a press
+         * that travels is a move. One gesture, told apart by whether the
+         * hand went anywhere — which is how it works on a headset that has
+         * no separate grab button either. */
+        const GRAB_ANGLE = 0.06;
+        function beginGrab(ray) {
+          if (!xr || !ray) return;
+          const menu = xr.menu;
+          const panel = xr.panel;
+          aimEverything(ray);
+          const holding = panel.markerId && !panel.lookingClose ? "panel"
+            : (menu.lookingChip || menu.open ? "menu" : null);
+          xr.grab = holding ? { what: holding, from: ray.dir.slice(), moved: false } : null;
+        }
+
+        function continueGrab(ray) {
+          const grab = xr?.grab;
+          if (!grab || !ray) return;
+          const was = grab.from;
+          const now = ray.dir;
+          const span = Math.hypot(now[0], now[1], now[2]) || 1;
+          const dir = [now[0] / span, now[1] / span, now[2] / span];
+          const turned = Math.acos(Math.max(-1, Math.min(1,
+            was[0] * dir[0] + was[1] * dir[1] + was[2] * dir[2])));
+          if (!grab.moved && turned < GRAB_ANGLE) return;
+          grab.moved = true;
+          /* Carried at the distance it was already standing at, so a panel
+             does not fly towards or away from the person while being moved. */
+          const menu = xr.menu;
+          const panel = xr.panel;
+          const carry = (world, distance) => ({
+            x: ray.origin[0] + dir[0] * distance,
+            y: ray.origin[1] + dir[1] * distance,
+            z: ray.origin[2] + dir[2] * distance,
+          });
+          if (grab.what === "panel" && panel.world) {
+            const before = panel.world;
+            const moved = carry(before, panel.distance || PANEL_DISTANCE);
+            const shift = [moved.x - before.x, moved.y - before.y, moved.z - before.z];
+            panel.world = moved;
+            panel.closeWorld = {
+              x: panel.closeWorld.x + shift[0],
+              y: panel.closeWorld.y + shift[1],
+              z: panel.closeWorld.z + shift[2],
+            };
+          } else if (grab.what === "menu" && menu.anchor) {
+            const before = menu.anchor;
+            const moved = carry(before, menu.chipDistance || PANEL_DISTANCE);
+            const shift = [moved.x - before.x, moved.y - before.y, moved.z - before.z];
+            menu.anchor = moved;
+            /* The rows are placed against the same origin, so the whole
+               assembly travels as one thing rather than coming apart. */
+            menu.origin = {
+              x: menu.origin.x + shift[0],
+              y: menu.origin.y + shift[1],
+              z: menu.origin.z + shift[2],
+            };
+            menu.rowsPlaced = false;
+          }
+          grab.from = dir;
+        }
+
         /* Devices disagree about which gesture they report — a pinch, a
            trigger, a grip — so both completion events are heard. Only the
            completion ones: pairing these with their *start twins would fire
@@ -1418,10 +1516,21 @@
             xr.pointerIsDevice = true;
             aimEverything(ray);
           }
+          /* A press that travelled was a move, and a move is not a choice. */
+          if (xr?.grab?.moved) return;
           chooseWhatIsLookedAt();
         };
         for (const name of ["select", "squeeze"]) {
           xrSession.addEventListener(name, chooseOnce);
+        }
+        const rayOfEvent = (event) => (event?.inputSource?.targetRaySpace && event.frame
+          ? rayOf(event.frame.getPose(event.inputSource.targetRaySpace, reference))
+          : null);
+        for (const name of ["selectstart", "squeezestart"]) {
+          xrSession.addEventListener(name, (event) => beginGrab(rayOfEvent(event)));
+        }
+        for (const name of ["selectend", "squeezeend"]) {
+          xrSession.addEventListener(name, () => { if (xr) xr.grab = null; });
         }
 
         xrSession.requestAnimationFrame(function xrFrame(time, frame) {
@@ -1575,6 +1684,10 @@
             origin: [headPosition.x, headPosition.y, headPosition.z],
             dir: [forward[0], forward[1], forward[2]],
           };
+          /* A press being held moves what it took hold of, before anything
+             is judged: the aim follows the panel rather than the panel
+             sliding out from under the aim. */
+          if (devicePointer) continueGrab(devicePointer);
           aimEverything(xr.pointer);
           const looked = xr.looking;
           /* How close the aim is to the nearest pin, so a pin answers an
@@ -1765,6 +1878,12 @@
               gl.uniform1f(labelUniforms.labelDistance, menuDistance);
               gl.uniform3f(labelUniforms.eyeOffset, offset[0], offset[1], offset[2]);
               gl.uniform1i(labelUniforms.label, 0);
+              /* The capture itself, on its own unit, so a panel can show
+                 what is behind it rather than covering it. */
+              gl.activeTexture(gl.TEXTURE1);
+              gl.bindTexture(gl.TEXTURE_2D, texture);
+              gl.uniform1i(labelUniforms.room, 1);
+              gl.uniform1f(labelUniforms.glass, 1);
               gl.activeTexture(gl.TEXTURE0);
               const labelScale = menuDistance / 6.0;
               /* `lit` is a level, not a flag: a control part-way to being
