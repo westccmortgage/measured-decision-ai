@@ -480,6 +480,16 @@
      makes the plain list honest until then. */
   const MENU_SCROLL_SECONDS = 0.5;
   const MENU_SCROLL_ZONE = 0.30;
+  /* Panels stand in the room, at a place, not at a direction from the head.
+     Hung on a direction they travel with the person: step sideways and the
+     list steps with you, which is the difference between a heads-up display
+     and a browser window in a room. Asked for in exactly those words — the
+     window stays, the keyboard stays, and you walk around them. */
+  const PANEL_DISTANCE = 2.4;
+  /* It can never be lost, though: turn right round, or walk out of the room
+     it was left in, and it comes to where you now are. */
+  const PANEL_RECENTRE_ANGLE = 2.2;
+  const PANEL_RECENTRE_METRES = 4.0;
   /* Wide across, narrow up and down: every entry shares one yaw, so
      sideways precision buys nothing, and it is the vertical distance that
      has to tell one row from the next. */
@@ -951,6 +961,7 @@
       menu.offset = from;
       menu.moreAbove = from;
       menu.moreBelow = Math.max(0, headsetRooms.length - MENU_MAX_ROOM_ROWS - from);
+      menu.rowsPlaced = false;
       menu.items = headsetRooms.slice(from, from + MENU_MAX_ROOM_ROWS).map((room) => ({
         id: room.id,
         current: Boolean(room.current),
@@ -1087,10 +1098,12 @@
              walls should feel. */
           sphereRadius: headsetRadius,
           menu: { open: false, items: [], chipTexture: null, chipDir: [0, -1, 0], heading: null, lookingChip: false, lookingItem: null, approach: 0, dwellOn: null, dwell: 0, dwellFired: false, armed: false,
-            offset: 0, moreAbove: 0, moreBelow: 0, scrolling: 0, scrollHeld: 0, upTexture: null, downTexture: null },
+            offset: 0, moreAbove: 0, moreBelow: 0, scrolling: 0, scrollHeld: 0, upTexture: null, downTexture: null,
+            anchor: null, origin: null, chipDistance: PANEL_DISTANCE, rowsPlaced: false },
           /* What a chosen pin says, parked in the room in front of whoever
              chose it. Empty until somebody holds a look on a pin. */
-          panel: { markerId: null, texture: null, closeTexture: null, lines: [], dir: [0, 0, -1], closeDir: [0, -0.3, -0.95], lookingClose: false },
+          panel: { markerId: null, texture: null, closeTexture: null, lines: [], dir: [0, 0, -1], closeDir: [0, -0.3, -0.95], lookingClose: false,
+            world: null, closeWorld: null, distance: PANEL_DISTANCE, closeDistance: PANEL_DISTANCE },
         };
         rebuildRoomMenu();
         /* Test hooks: the lazy remap centre, the pin list, and the room menu —
@@ -1139,11 +1152,27 @@
           if (!panel.closeTexture) panel.closeTexture = bakeCloseTexture();
           panel.lines = [marker.standing || "Read by AI · not confirmed", marker.label || "Marked point",
             marker.detail || "", marker.source ? `Seen in ${marker.source}` : ""].filter(Boolean);
+          /* Put where the person was standing when they chose the pin, and
+             left there: a card that travels with the head is a card nobody
+             can step around to read. */
           const forward = xr.forward;
-          panel.dir = [forward[0], forward[1], forward[2]];
+          const head = xr.headPosition || { x: 0, y: 0, z: 0 };
           const under = [forward[0], forward[1] - 0.34, forward[2]];
           const length = Math.hypot(under[0], under[1], under[2]) || 1;
+          panel.world = {
+            x: head.x + forward[0] * PANEL_DISTANCE,
+            y: head.y + forward[1] * PANEL_DISTANCE,
+            z: head.z + forward[2] * PANEL_DISTANCE,
+          };
+          panel.closeWorld = {
+            x: head.x + (under[0] / length) * PANEL_DISTANCE,
+            y: head.y + (under[1] / length) * PANEL_DISTANCE,
+            z: head.z + (under[2] / length) * PANEL_DISTANCE,
+          };
+          panel.dir = [forward[0], forward[1], forward[2]];
           panel.closeDir = [under[0] / length, under[1] / length, under[2] / length];
+          panel.distance = PANEL_DISTANCE;
+          panel.closeDistance = PANEL_DISTANCE;
           panel.lookingClose = false;
         }
 
@@ -1290,38 +1319,78 @@
              the headset as "the word Rooms is on the ceiling and pinching
              does nothing". Frozen while looked at, and while the list is
              open, it is a thing in the room that can be aimed at. */
+          /* The head's own position: everything below is placed against it
+             once and then left alone, and each eye's offset is measured from
+             the centre of the head rather than from the origin of whatever
+             reference space the device handed back. */
+          const headPosition = pose.transform?.position || { x: 0, y: 0, z: 0 };
+          xr.headPosition = headPosition;
+          /* Where a thing standing at a world point is from here, and how
+             far — the two numbers the shaders want. */
+          const aimAt = (world) => {
+            const dx = world.x - headPosition.x;
+            const dy = world.y - headPosition.y;
+            const dz = world.z - headPosition.z;
+            const length = Math.hypot(dx, dy, dz) || 0.0001;
+            return { dir: [dx / length, dy / length, dz / length], distance: length };
+          };
           const menu = xr.menu;
           const panel = xr.panel;
           if (menu.items.length && !panel.markerId) {
+            /* Placed once, in the room, and then left where it was put.
+               Only two things move it: turning right round, so it is behind
+               you and unreachable, or walking out of the room it was left
+               in. Both bring it to where you now are — it can be left, but
+               it can never be lost. */
             const flat = Math.hypot(forward[0], forward[2]);
-            /* Looking straight up or down says nothing about which way the
-               person is facing; the last good heading does. */
-            if (flat > 0.35) {
-              const gazeHeading = [forward[0] / flat, forward[2] / flat];
-              const settled = menu.heading || gazeHeading;
-              const turnedAway = settled[0] * gazeHeading[0] + settled[1] * gazeHeading[1] < Math.cos(MENU_HOLD_ANGLE);
-              /* Reaching for the menu holds it still; turning well away from
-                 it brings it back around to where the person now faces. */
-              if (!menu.heading || (!menu.open && !menu.lookingChip && turnedAway)) menu.heading = gazeHeading;
-            } else if (!menu.heading) {
-              menu.heading = [0, -1];
+            const facing = flat > 0.35 ? [forward[0] / flat, forward[2] / flat] : (menu.heading || [0, -1]);
+            let place = !menu.anchor;
+            if (menu.anchor && !menu.open && !menu.lookingChip) {
+              const standing = aimAt(menu.anchor);
+              const behind = standing.dir[0] * forward[0] + standing.dir[1] * forward[1] + standing.dir[2] * forward[2]
+                < Math.cos(PANEL_RECENTRE_ANGLE);
+              if (behind || standing.distance > PANEL_RECENTRE_METRES) place = true;
             }
+            if (place) {
+              menu.heading = facing;
+              const put = [facing[0] * MENU_CHIP_COS, -MENU_CHIP_SIN, facing[1] * MENU_CHIP_COS];
+              menu.anchor = {
+                x: headPosition.x + put[0] * PANEL_DISTANCE,
+                y: headPosition.y + put[1] * PANEL_DISTANCE,
+                z: headPosition.z + put[2] * PANEL_DISTANCE,
+              };
+              menu.origin = { x: headPosition.x, y: headPosition.y, z: headPosition.z };
+              menu.rowsPlaced = false;
+            }
+            const standingAt = aimAt(menu.anchor);
+            menu.chipDir = standingAt.dir;
+            menu.chipDistance = standingAt.distance;
+
+            /* One column, off to the right of where the person faced when it
+               was placed, centred on the eye line — and standing at its own
+               points in the room, so walking past it walks past it. */
             const heading = menu.heading;
-            menu.chipDir = [heading[0] * MENU_CHIP_COS, -MENU_CHIP_SIN, heading[1] * MENU_CHIP_COS];
-            /* One column, off to the right of where the person faces and
-               centred on the eye line: the first entry sits above it, the
-               last below, and the dot that opened the list is nowhere near
-               any of them. */
-            /* Negated because this rotation turns the heading anticlockwise,
-               and the column was asked for on the right. */
             const turned = [
               heading[0] * Math.cos(-MENU_COLUMN_YAW) + heading[1] * Math.sin(-MENU_COLUMN_YAW),
               heading[1] * Math.cos(-MENU_COLUMN_YAW) - heading[0] * Math.sin(-MENU_COLUMN_YAW),
             ];
-            menu.items.forEach((item, index) => {
-              const pitch = (index - (menu.items.length - 1) / 2) * MENU_ROW_PITCH;
-              const flatScale = Math.cos(pitch);
-              item.dir = [turned[0] * flatScale, -Math.sin(pitch), turned[1] * flatScale];
+            if (!menu.rowsPlaced) {
+              menu.items.forEach((item, index) => {
+                const pitch = (index - (menu.items.length - 1) / 2) * MENU_ROW_PITCH;
+                const flatScale = Math.cos(pitch);
+                const rowDir = [turned[0] * flatScale, -Math.sin(pitch), turned[1] * flatScale];
+                item.world = {
+                  x: menu.origin.x + rowDir[0] * PANEL_DISTANCE,
+                  y: menu.origin.y + rowDir[1] * PANEL_DISTANCE,
+                  z: menu.origin.z + rowDir[2] * PANEL_DISTANCE,
+                };
+              });
+              menu.rowsPlaced = true;
+            }
+            menu.items.forEach((item) => {
+              const at = aimAt(item.world);
+              item.dir = at.dir;
+              item.distance = at.distance;
             });
             /* A column is aimed at by height, not by a cone: measure how far
                the gaze is round from the column and how far it is above or
@@ -1414,6 +1483,16 @@
           xr.fps = xr.fps ? xr.fps * 0.9 + (1 / dt) * 0.1 : 1 / dt;
 
           if (panel.markerId) {
+            /* Read from where the person is now, not from where they were
+               when they opened it. */
+            if (panel.world) {
+              const at = aimAt(panel.world);
+              panel.dir = at.dir;
+              panel.distance = at.distance;
+              const closeAt = aimAt(panel.closeWorld);
+              panel.closeDir = closeAt.dir;
+              panel.closeDistance = closeAt.distance;
+            }
             const closeDot = panel.closeDir[0] * forward[0] + panel.closeDir[1] * forward[1] + panel.closeDir[2] * forward[2];
             panel.lookingClose = closeDot > Math.cos(0.24);
           } else {
@@ -1474,10 +1553,6 @@
           }
           xr.lastForward = [forward[0], forward[1], forward[2]];
 
-          /* The head's own position, so each eye's offset is measured from
-             the centre of the head rather than from the origin of whatever
-             reference space the device handed back. */
-          const headPosition = pose.transform?.position || { x: 0, y: 0, z: 0 };
 
           for (const eyeView of pose.views) {
             const viewport = layer.getViewport(eyeView);
@@ -1573,10 +1648,17 @@
               const labelScale = menuDistance / 6.0;
               /* `lit` is a level, not a flag: a control part-way to being
                  aimed at should look part-way there. */
-              const drawLabel = (labelTexture, dir, width, height, lit, filling) => {
+              const drawLabel = (labelTexture, dir, width, height, lit, filling, atDistance) => {
+                /* A thing standing in the room is a different distance away
+                   from wherever the person is now standing, so its size on
+                   screen is that distance's business rather than one number
+                   shared by everything. */
+                const distance = atDistance || menuDistance;
+                const scale = distance / 6.0;
+                gl.uniform1f(labelUniforms.labelDistance, distance);
                 gl.bindTexture(gl.TEXTURE_2D, labelTexture);
                 gl.uniform3f(labelUniforms.labelDirection, dir[0], dir[1], dir[2]);
-                gl.uniform2f(labelUniforms.labelSize, width * labelScale, height * labelScale);
+                gl.uniform2f(labelUniforms.labelSize, width * scale, height * scale);
                 gl.uniform1f(labelUniforms.looking, typeof lit === "number" ? lit : (lit ? 1 : 0));
                 gl.uniform1f(labelUniforms.dwell, filling ? menu.dwell : 0);
                 gl.drawArrays(gl.TRIANGLES, 0, 6);
@@ -1587,36 +1669,37 @@
                    reticle is the only instruction anybody gets. */
                 const dotSize = 0.13 + 0.07 * menu.approach;
                 drawLabel(menu.chipTexture, menu.chipDir, dotSize, dotSize,
-                  menu.lookingChip ? 1 : menu.approach * 0.8, menu.dwellOn === "__chip");
+                  menu.lookingChip ? 1 : menu.approach * 0.8, menu.dwellOn === "__chip",
+                  menu.chipDistance);
               }
               if (menu.open && !panel.markerId) {
                 for (const item of menu.items) {
                   const lit = item === menu.lookingItem;
-                  drawLabel(item.texture, item.dir, lit ? 1.3 : 1.15, lit ? 0.26 : 0.23, lit, menu.dwellOn === item.id);
+                  drawLabel(item.texture, item.dir, lit ? 1.3 : 1.15, lit ? 0.26 : 0.23, lit,
+                    menu.dwellOn === item.id, item.distance);
                 }
                 /* The ends of the column, when the column has more to give.
                    They light while the look is on them, which is also while
                    the list is moving. */
-                const rowDirs = menu.items.map((item) => item.dir);
-                const edge = (edgeTexture, dir, sign) => {
-                  if (!edgeTexture || !dir) return;
-                  const pitch = Math.asin(Math.max(-1, Math.min(1, -dir[1]))) + sign * MENU_ROW_PITCH;
-                  const flat = Math.hypot(dir[0], dir[2]) || 1;
+                const edge = (edgeTexture, row, sign) => {
+                  if (!edgeTexture || !row) return;
+                  const pitch = Math.asin(Math.max(-1, Math.min(1, -row.dir[1]))) + sign * MENU_ROW_PITCH;
+                  const flat = Math.hypot(row.dir[0], row.dir[2]) || 1;
                   const scaled = Math.cos(pitch) / flat;
-                  drawLabel(edgeTexture, [dir[0] * scaled, -Math.sin(pitch), dir[2] * scaled],
-                    0.78, 0.16, menu.scrolling === sign ? 1 : 0.5, false);
+                  drawLabel(edgeTexture, [row.dir[0] * scaled, -Math.sin(pitch), row.dir[2] * scaled],
+                    0.78, 0.16, menu.scrolling === sign ? 1 : 0.5, false, row.distance);
                 };
-                edge(menu.upTexture, rowDirs[0], -1);
-                edge(menu.downTexture, rowDirs[rowDirs.length - 1], 1);
+                edge(menu.upTexture, menu.items[0], -1);
+                edge(menu.downTexture, menu.items[menu.items.length - 1], 1);
               }
               /* The pin's answer, in the room. Held at reading distance and
                  parked where the person was looking when they chose it, with
                  its own way out underneath — because a panel somebody cannot
                  dismiss is worse than one that never opened. */
               if (panel.markerId && panel.texture) {
-                drawLabel(panel.texture, panel.dir, 1.62, 0.91, false, false);
+                drawLabel(panel.texture, panel.dir, 1.62, 0.91, false, false, panel.distance);
                 drawLabel(panel.closeTexture, panel.closeDir, 0.15, 0.15,
-                  panel.lookingClose ? 1 : 0.55, menu.dwellOn === "__panel-close");
+                  panel.lookingClose ? 1 : 0.55, menu.dwellOn === "__panel-close", panel.closeDistance);
               }
 
               gl.disable(gl.BLEND);

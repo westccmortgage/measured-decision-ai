@@ -141,6 +141,10 @@ await context.addInitScript(() => {
     const c = Math.cos(radians); const sn = Math.sin(radians);
     return [dir[0] * c + dir[2] * sn, dir[1], dir[2] * c - dir[0] * sn];
   };
+  /* Where the head is standing, so a panel that claims to stand in the room
+     can be walked around. Without this the stand-in reported one position
+     for ever, and "it stays where you left it" was untestable. */
+  window.__xrStandAt = (x, y, z) => { window.__xrWhere = { x, y, z }; };
   window.__xrFrame = (dir, only, cant = 0) => {
     if (!live || !live.queue.length) return { frames: 0 };
     const matrix = lookMatrix(dir);
@@ -155,7 +159,7 @@ await context.addInitScript(() => {
       { eye: "left", projectionMatrix: perspective(), transform: { inverse: { matrix: cant ? lookMatrix(turnFlat(dir, -cant)) : matrix }, position: at(-1) } },
       { eye: "right", projectionMatrix: perspective(), transform: { inverse: { matrix: cant ? lookMatrix(turnFlat(dir, cant)) : matrix }, position: at(1) } },
     ].filter((view) => !only || view.eye === only);
-    const pose = { views: eyes, transform: { position: { x: 0, y: 0, z: 0 } } };
+    const pose = { views: eyes, transform: { position: window.__xrWhere || { x: 0, y: 0, z: 0 } } };
     const frame = { getViewerPose: () => pose };
     const cb = live.queue.shift();
     cb(performance.now(), frame);
@@ -993,6 +997,56 @@ check("holding there walks it to the end and stops",
 check("and looking away from the edge stops it at once",
   scrolled.scrollingAway === 0);
 check("and the list is put away behind it", scrolled.tidied === false);
+
+console.log("\n── the list stands in the room, and you walk around it ──");
+/* Asked for from the headset: the same feeling as a browser window in VR —
+   the window stays, the keyboard stays, and you walk and look around them.
+   Hung on a direction from the head, a panel travels with the person: step
+   sideways and the list steps too. Hung at a place, it stays. */
+const stood = await page.evaluate(async () => {
+  const run = (dir, frames) => { for (let i = 0; i < frames; i += 1) window.__xrFrame(dir); };
+  const out = {};
+  window.__xrStandAt(0, 0, 0);
+  run([0, 0, -1], 6);
+  if (window.__xrMenu().open) { run([0, 1, 0], 10); run(window.__xrMenu().chipDir, 200); }
+  run([0, 0, -1], 6);
+  const shut = window.__xrMenu().chipDir.slice();
+  run(shut, 200);
+  const open = window.__xrMenu();
+  out.opened = open.open;
+  out.rowBefore = open.items[0].dir.slice();
+  out.chipBefore = open.chipDir.slice();
+
+  /* One long step to the right, without turning the head at all. */
+  window.__xrStandAt(1.2, 0, 0);
+  run([0, 0, -1], 4);
+  const after = window.__xrMenu();
+  out.rowAfter = after.items[0].dir.slice();
+  out.chipAfter = after.chipDir.slice();
+  const angleBetween = (a, b) => Math.acos(Math.max(-1, Math.min(1,
+    a[0] * b[0] + a[1] * b[1] + a[2] * b[2]))) * 57.3;
+  out.rowMoved = angleBetween(out.rowBefore, out.rowAfter);
+  out.chipMoved = angleBetween(out.chipBefore, out.chipAfter);
+
+  /* Step back, and it is exactly where it was. */
+  window.__xrStandAt(0, 0, 0);
+  run([0, 0, -1], 4);
+  out.rowBack = angleBetween(out.rowBefore, window.__xrMenu().items[0].dir);
+  out.stillOpen = window.__xrMenu().open;
+  window.__xrStandAt(0, 0, 0);
+  if (window.__xrMenu().open) { run([0, 1, 0], 10); run(shut, 200); }
+  out.tidied = window.__xrMenu().open;
+  return out;
+});
+/* A panel carried on the head would sit at the same bearing after the step;
+   one standing in the room cannot. */
+check("stepping sideways moves the room list in view, because it stayed put",
+  stood.opened === true && stood.rowMoved > 8 && stood.chipMoved > 8,
+  `row shifted ${Math.round(stood.rowMoved)}°, dot ${Math.round(stood.chipMoved)}° after a 1.2 m step`);
+check("and stepping back finds it exactly where it was left",
+  stood.rowBack < 0.5, `${stood.rowBack.toFixed(2)}° from where it stood`);
+check("walking around it never closed it", stood.stillOpen === true);
+check("and the list is put away behind this too", stood.tidied === false);
 
 console.log("\n── taking the headset off ──");
 /* The way back rides in the same menu as the rooms — asked for in exactly
