@@ -823,8 +823,9 @@ check("and the room is handed back with nothing left open",
 /* Three fixes have now passed on this machine and failed on the device.
    So the session says what it knows, in the room, where the only person who
    can see that device is standing. */
-check("the room says what it knows out loud",
-  /^pins 2 · aim /.test(pinned.readout || "")
+check("the room says what it knows out loud, starting with which build it is",
+  /^[0-9a-f]{8}|^unstamped/.test(pinned.readout || "")
+  && / · pins 2 · aim /.test(pinned.readout || "")
   && /hold \d+% · 2 eyes · \d+fps/.test(pinned.readout || ""),
   pinned.readout || "(no readout)");
 /* Big enough to read, not merely present. A row of the 512-px eye is about
