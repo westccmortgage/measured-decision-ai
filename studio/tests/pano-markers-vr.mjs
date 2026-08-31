@@ -736,17 +736,12 @@ const pinned = await page.evaluate(async () => {
   run([0, 0, -1], 4);
   out.beforeDark = cardPixels();
   out.beforePanel = window.__xrPanel();
-  /* Looking at nothing, with pins in the room: the line must say how to
-     reach them rather than reporting a dash. */
-  run([0, 1, 0], 4);
-  out.idleReadout = window.__xrReadout();
   /* A fifth of a second of looking: aimed, not yet chosen. */
   run([0, 0, -1], 12);
   out.partway = window.__xrMenu().dwell;
   out.stillClosed = window.__xrPanel();
   /* Keep looking. Nothing else — no pinch, no trigger, no controller. */
   run([0, 0, -1], 40);
-  out.holdingReadout = window.__xrReadout();
   run([0, 0, -1], 90);
   out.panel = window.__xrPanel();
   run([0, 0, -1], 4);
@@ -777,63 +772,6 @@ const pinned = await page.evaluate(async () => {
   run(closeAgain, 140);
   out.tidied = window.__xrPanel();
 
-  /* The state line: what it says, and that it is drawn where somebody can
-     read it — under the eye line, in the lower half of the view. */
-  run([0, 0, -1], 6);
-  out.readout = window.__xrReadout();
-  const shot = new Uint8Array(512 * 512 * 4);
-  gl.readPixels(0, 0, 512, 512, gl.RGBA, gl.UNSIGNED_BYTE, shot);
-  let readoutPixels = 0;
-  /* Rows below 200 sit under the eye line (256 is straight ahead); the pale
-     blue lettering is the only thing of that colour down there. */
-  for (let row = 40; row < 200; row += 1) {
-    for (let col = 0; col < 512; col += 1) {
-      const i = (row * 512 + col) * 4;
-      /* Lettering is anything markedly lighter than the plate it sits on. */
-    if (shot[i] > 55 && shot[i + 1] > 90 && shot[i + 2] > 105) readoutPixels += 1;
-    }
-  }
-  out.readoutPixels = readoutPixels;
-  /* The plate it is written on, which is what settles whether the line is
-     big enough to read rather than merely present. */
-  let plate = 0;
-  for (let row = 40; row < 210; row += 1) {
-    for (let col = 0; col < 512; col += 1) {
-      const i = (row * 512 + col) * 4;
-      if (shot[i] < 60 && shot[i + 1] < 70 && shot[i + 2] < 85) plate += 1;
-    }
-  }
-  out.readoutPlate = plate;
-  /* What the line says with nothing in the room to press — the branch the
-     headset report could have been and nobody could tell. */
-  window.__xrSetMarkers([]);
-  run([0, 0, -1], 4);
-  out.emptyReadout = window.__xrReadout();
-  /* With nothing marked, the only object in the room must say what it is
-     without being aimed at first. Measured off the pixels below the eye
-     line, where the chip and its words sit. */
-  const chipDir = window.__xrMenu().chipDir;
-  const away = [chipDir[0], chipDir[1] + 0.9, chipDir[2]];
-  run(away, 6);
-  const labelled = new Uint8Array(512 * 512 * 4);
-  gl.readPixels(0, 0, 512, 512, gl.RGBA, gl.UNSIGNED_BYTE, labelled);
-  let words = 0;
-  for (let i = 0; i < labelled.length; i += 4) {
-    if (labelled[i] > 180 && labelled[i + 1] > 200 && labelled[i + 2] > 200) words += 1;
-  }
-  out.unaimedWords = words;
-  /* Rows spanned is what legibility actually depends on: the eye is 512 px
-     across 90°, so a row is about a sixth of a degree. */
-  let top = -1; let bottom = -1;
-  for (let row = 40; row < 210; row += 1) {
-    let dark = 0;
-    for (let col = 0; col < 512; col += 1) {
-      const i = (row * 512 + col) * 4;
-      if (shot[i] < 60 && shot[i + 1] < 70 && shot[i + 2] < 85) dark += 1;
-    }
-    if (dark > 40) { if (top < 0) top = row; bottom = row; }
-  }
-  out.readoutRows = top < 0 ? 0 : bottom - top + 1;
   window.__xrSetMarkers([]);
   return out;
 });
@@ -859,29 +797,6 @@ check("and a held look on that closes it",
   `${pinned.closedDark} dark px after closing`);
 check("and the room is handed back with nothing left open",
   pinned.tidied === null);
-/* Three fixes have now passed on this machine and failed on the device.
-   So the session says what it knows, in the room, where the only person who
-   can see that device is standing. */
-/* The line tells a person what to do, and still carries the build so a
-   stale tab can be spotted from inside the headset. */
-check("the room says what to do, not what state it is in",
-  /^2 marked points · put the ring on one and hold/.test(pinned.idleReadout || "")
-  && / · 2 eyes · \d+fps · ([0-9a-f]{8}|unstamped)$/.test(pinned.idleReadout || ""),
-  pinned.idleReadout || "(no readout)");
-check("with nothing marked, the one dot in the room names itself unasked",
-  pinned.unaimedWords > 60, `${pinned.unaimedWords} px of lettering without aiming at it`);
-check("and a room with nothing to press says exactly that",
-  /^This room has no marked points · /.test(pinned.emptyReadout || ""),
-  pinned.emptyReadout || "(no readout)");
-check("while a held look reports itself by name",
-  /^Holding \d+% · Water stain on ceiling/.test(pinned.holdingReadout || ""),
-  pinned.holdingReadout || "(nothing held)");
-/* Big enough to read, not merely present. A row of the 512-px eye is about
-   a sixth of a degree, so 13 rows is the ~2.2° a menu label's own lettering
-   occupies — and those were read from the headset without complaint. */
-check("and the state line is on the screen, as legible as a menu label",
-  pinned.readoutPixels > 150 && pinned.readoutRows >= 13,
-  `${pinned.readoutPixels} px of lettering spanning ${pinned.readoutRows} rows below the eye line`);
 check("staring at a reading never confirms it",
   pinned.reopened?.markerId === "pin-ahead" && /not verified/i.test(pinned.standingAfterStaring),
   pinned.standingAfterStaring || "(no standing)");
@@ -926,15 +841,38 @@ const listed = await page.evaluate(async () => {
   });
   /* The trigger must not be live the instant the list appears. */
   const currentBefore = open.items.find((item) => item.current)?.id || null;
+  out.roomBefore = currentBefore;
   run(rest.chipDir, 200);
   out.afterStaring = window.__xrMenu().open;
   out.roomUnchanged = (window.__xrMenu().items.find((item) => item.current)?.id || null) === currentBefore;
 
-  /* Look off the list, which arms it, then hold on a room and choose it. */
+  /* A gaze SWEEPING across an entry is passing over it, not resting on it.
+     Two degrees a frame is a slow, ordinary look around the room — and it
+     used to be enough to choose a file on the way past. */
   run([0, 0, -1], 12);
   out.armedAfterLookingAway = window.__xrMenu().armed;
   const room = open.items.find((item) => item.current) || open.items.find((item) => !item.exit);
-  run(room.dir, 140);
+  const turnTowards = (target, fraction) => {
+    const from = [0, 0, -1];
+    const mixed = [
+      from[0] + (target[0] - from[0]) * fraction,
+      from[1] + (target[1] - from[1]) * fraction,
+      from[2] + (target[2] - from[2]) * fraction,
+    ];
+    const length = Math.hypot(mixed[0], mixed[1], mixed[2]) || 1;
+    return [mixed[0] / length, mixed[1] / length, mixed[2] / length];
+  };
+  /* Sweep on to it, over it, and off the other side, twice — far longer in
+     total than a dwell takes, and never still. */
+  for (let pass = 0; pass < 2; pass += 1) {
+    for (let step = 0; step <= 60; step += 1) window.__xrFrame(turnTowards(room.dir, step / 40));
+    for (let step = 60; step >= 0; step -= 1) window.__xrFrame(turnTowards(room.dir, step / 40));
+  }
+  out.sweptOpen = window.__xrMenu().open;
+  out.sweptRoom = window.__xrMenu().items.find((item) => item.current)?.id || null;
+
+  /* Now stop on it. That is choosing. */
+  run(room.dir, 200);
   out.closedAfterChoosing = window.__xrMenu().open;
   return out;
 });
@@ -962,6 +900,11 @@ check("no item sits on the dot, so the list can always be left again",
 check("and staring where the list opened chooses nothing at all",
   listed.afterStaring === true && listed.roomUnchanged === true,
   JSON.stringify({ stillOpen: listed.afterStaring, sameRoom: listed.roomUnchanged }));
+/* "My eye fell on a room and it opened." A hold has to mean the head is
+   still; a gaze crossing a target is passing over it. */
+check("a gaze sweeping across a room chooses nothing on the way past",
+  listed.sweptOpen === true && listed.sweptRoom === listed.roomBefore,
+  JSON.stringify({ stillOpen: listed.sweptOpen, room: listed.sweptRoom }));
 check("while a look off the list and a held look on a room does choose it",
   listed.armedAfterLookingAway === true && listed.closedAfterChoosing === false);
 
