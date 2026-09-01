@@ -95,5 +95,31 @@ for (const name of functions) {
     links.every((url) => url.startsWith(`https://${prime}/`)), links.join(", "));
 }
 
+/* The layer that is not in this repository, and broke because of it.
+   The browser PUTs upload parts straight to S3 and loads capture video into a
+   crossOrigin canvas for keyframes; a bucket that does not name the site's
+   origin refuses both, and the browser reports the refusal as a network
+   error and an undecodable video. The bucket lives in the AWS console, so
+   this cannot check the live policy — but it can refuse to let the file that
+   must be applied to it fall behind the prime domain. */
+const corsFile = "infra/s3-evidence-cors.json";
+if (!fs.existsSync(corsFile)) {
+  check("the evidence bucket's CORS policy is written down", false, `${corsFile} is missing`);
+} else {
+  const rules = JSON.parse(fs.readFileSync(corsFile, "utf8"));
+  const origins = rules.flatMap((rule) => rule.AllowedOrigins || []);
+  check("the bucket policy admits the prime domain",
+    origins.includes(`https://${prime}`), origins.join(", "));
+  const methods = rules.flatMap((rule) => rule.AllowedMethods || []);
+  check("and allows the browser to upload a part and read a capture",
+    ["GET", "HEAD", "PUT"].every((verb) => methods.includes(verb)), methods.join(", "));
+  /* A part upload that succeeds is still a failed upload if the page cannot
+     read the ETag back, and seeking through a video needs range headers. */
+  const exposed = rules.flatMap((rule) => rule.ExposeHeaders || []);
+  check("and exposes what the page has to read back",
+    ["ETag", "Content-Range", "Accept-Ranges"].every((header) => exposed.includes(header)),
+    exposed.join(", "));
+}
+
 console.log(bad ? `\n${bad} FAILURES` : "\nALL OK");
 process.exit(bad ? 1 : 0);
