@@ -5017,7 +5017,15 @@ async function startCaptureMachine() {
     }
   } catch (error) {
     console.error(error);
-    notify("The 360 machine could not be reached. The capture is safe and still queued.");
+    /* Why it could not be reached belongs on the screen, not only in a console
+       nobody in a hard hat is going to open. For a month this button answered
+       "could not be reached" while the real reason was that the site had moved
+       to a domain the function did not admit — a sentence that named the
+       failure would have found that in a minute instead of a month. */
+    const why = error?.message || String(error || "");
+    notify(`The 360 machine could not be reached${why ? ` — ${why}` : ""}. The capture is safe and still queued.`, 9000);
+    $("#focus-processing-copy").textContent =
+      `The 360 machine could not be reached${why ? ` — ${why}` : ""}. Nothing was lost: the originals are untouched and the capture stays in the queue.`;
   }
   button.disabled = false;
   button.textContent = "Start the 360 machine";
