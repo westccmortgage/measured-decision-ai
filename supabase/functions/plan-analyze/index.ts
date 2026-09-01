@@ -8,6 +8,8 @@ import { openAITransport } from "../_shared/openai-transport.ts";
 import { CHUNK_BYTE_LIMIT, mergeChunkAnalyses, planChunks } from "./chunking.js";
 
 const allowedOrigins = new Set([
+  "https://measureddecision.ai",
+  "https://www.measureddecision.ai",
   "https://measureddecision.com",
   "https://www.measureddecision.com",
   "http://localhost:8080",
@@ -19,7 +21,7 @@ function corsHeaders(request: Request) {
   return {
     "Access-Control-Allow-Origin": allowedOrigins.has(origin)
       ? origin
-      : "https://measureddecision.com",
+      : "https://measureddecision.ai",
     "Access-Control-Allow-Headers": "authorization, x-client-info, apikey, content-type",
     "Access-Control-Allow-Methods": "POST, OPTIONS",
     Vary: "Origin",

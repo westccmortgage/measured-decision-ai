@@ -1,7 +1,7 @@
 import { safeError } from "../_shared/safe-error.ts";
 import { createClient } from "npm:@supabase/supabase-js@2";
-const origins=new Set(["https://measureddecision.com","https://www.measureddecision.com","http://localhost:8080","http://127.0.0.1:8080"]);
-function cors(r:Request){const o=r.headers.get("origin")||"";return{"Access-Control-Allow-Origin":origins.has(o)?o:"https://measureddecision.com","Access-Control-Allow-Headers":"authorization, x-client-info, apikey, content-type","Access-Control-Allow-Methods":"POST, OPTIONS",Vary:"Origin"}}
+const origins=new Set(["https://measureddecision.ai","https://www.measureddecision.ai","https://measureddecision.com","https://www.measureddecision.com","http://localhost:8080","http://127.0.0.1:8080"]);
+function cors(r:Request){const o=r.headers.get("origin")||"";return{"Access-Control-Allow-Origin":origins.has(o)?o:"https://measureddecision.ai","Access-Control-Allow-Headers":"authorization, x-client-info, apikey, content-type","Access-Control-Allow-Methods":"POST, OPTIONS",Vary:"Origin"}}
 function json(r:Request,b:unknown,s=200){return new Response(JSON.stringify(b),{status:s,headers:{...cors(r),"Content-Type":"application/json","Cache-Control":"no-store"}})}
 function fail(m:string,s=400):never{throw Object.assign(new Error(m),{status:s})}
 function clean(v:unknown,n=120){return typeof v==="string"?v.trim().replace(/\s+/g," ").slice(0,n):""}

@@ -2,8 +2,8 @@ import { createClient } from "npm:@supabase/supabase-js@2";
 import { AGENT_CONTRACT_VERSION } from "../_shared/agent-contracts.ts";
 import { signedObjectReadUrl } from "../_shared/aws-object-store.ts";
 
-const allowedOrigins = new Set(["https://measureddecision.com", "https://www.measureddecision.com", "http://localhost:8080", "http://127.0.0.1:8080"]);
-function cors(request: Request) { const origin=request.headers.get("origin")||""; return { "Access-Control-Allow-Origin":allowedOrigins.has(origin)?origin:"https://measureddecision.com", "Access-Control-Allow-Headers":"authorization, x-client-info, apikey, content-type", "Access-Control-Allow-Methods":"POST, OPTIONS", Vary:"Origin" }; }
+const allowedOrigins = new Set(["https://measureddecision.ai", "https://www.measureddecision.ai", "https://measureddecision.com", "https://www.measureddecision.com", "http://localhost:8080", "http://127.0.0.1:8080"]);
+function cors(request: Request) { const origin=request.headers.get("origin")||""; return { "Access-Control-Allow-Origin":allowedOrigins.has(origin)?origin:"https://measureddecision.ai", "Access-Control-Allow-Headers":"authorization, x-client-info, apikey, content-type", "Access-Control-Allow-Methods":"POST, OPTIONS", Vary:"Origin" }; }
 function json(request:Request,body:unknown,status=200){return new Response(JSON.stringify(body),{status,headers:{...cors(request),"Content-Type":"application/json","Cache-Control":"no-store"}})}
 function fail(message:string,status=400):never{throw Object.assign(new Error(message),{status})}
 function isUuid(value:unknown){return /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(String(value||""))}

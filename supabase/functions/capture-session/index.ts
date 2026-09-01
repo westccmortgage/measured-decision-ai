@@ -2,6 +2,8 @@ import { safeError } from "../_shared/safe-error.ts";
 import { createClient } from "npm:@supabase/supabase-js@2";
 
 const allowedOrigins = new Set([
+  "https://measureddecision.ai",
+  "https://www.measureddecision.ai",
   "https://measureddecision.com",
   "https://www.measureddecision.com",
   "http://localhost:8080",
@@ -11,7 +13,7 @@ const allowedOrigins = new Set([
 function cors(request: Request) {
   const origin = request.headers.get("origin") || "";
   return {
-    "Access-Control-Allow-Origin": allowedOrigins.has(origin) ? origin : "https://measureddecision.com",
+    "Access-Control-Allow-Origin": allowedOrigins.has(origin) ? origin : "https://measureddecision.ai",
     "Access-Control-Allow-Headers": "authorization, x-client-info, apikey, content-type",
     "Access-Control-Allow-Methods": "POST, OPTIONS",
     Vary: "Origin",
@@ -149,7 +151,7 @@ Deno.serve(async (request) => {
       }).select("*").single();
       if (error || !session) throw error || new Error("Capture session could not be created");
 
-      const portal = Deno.env.get("CAPTURE_PORTAL_URL") || "https://measureddecision.com/capture/";
+      const portal = Deno.env.get("CAPTURE_PORTAL_URL") || "https://measureddecision.ai/capture/";
       const link = `${portal}?session=${encodeURIComponent(session.id)}&token=${encodeURIComponent(token)}`;
       const resendKey = Deno.env.get("RESEND_API_KEY");
       const emailFrom = Deno.env.get("FIELD_EMAIL_FROM");
