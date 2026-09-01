@@ -1,0 +1,22 @@
+[
+  {
+    "AllowedOrigins": [
+      "https://measureddecision.ai",
+      "https://www.measureddecision.ai",
+      "https://measureddecision.com",
+      "https://www.measureddecision.com",
+      "http://localhost:8080",
+      "http://127.0.0.1:8080"
+    ],
+    "AllowedMethods": ["GET", "HEAD", "PUT"],
+    "AllowedHeaders": ["*"],
+    "ExposeHeaders": [
+      "ETag",
+      "Content-Length",
+      "Content-Type",
+      "Content-Range",
+      "Accept-Ranges"
+    ],
+    "MaxAgeSeconds": 3000
+  }
+]
