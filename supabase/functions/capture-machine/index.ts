@@ -14,6 +14,8 @@ import { createClient } from "npm:@supabase/supabase-js@2";
 import { wake360Machine } from "../_shared/wake-360-machine.ts";
 
 const allowedOrigins = new Set([
+  "https://measureddecision.ai",
+  "https://www.measureddecision.ai",
   "https://measureddecision.com",
   "https://www.measureddecision.com",
   "http://localhost:8080",
@@ -23,7 +25,7 @@ const allowedOrigins = new Set([
 function corsHeaders(request: Request) {
   const origin = request.headers.get("origin") || "";
   return {
-    "Access-Control-Allow-Origin": allowedOrigins.has(origin) ? origin : "https://measureddecision.com",
+    "Access-Control-Allow-Origin": allowedOrigins.has(origin) ? origin : "https://measureddecision.ai",
     "Access-Control-Allow-Headers": "authorization, x-client-info, apikey, content-type",
     "Access-Control-Allow-Methods": "POST, OPTIONS",
     "Vary": "Origin",

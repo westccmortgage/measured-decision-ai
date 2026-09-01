@@ -62,6 +62,14 @@ const seedRooms = [
 const STORAGE_KEY = "mdai-spatial-studio-v2";
 const JOBS_KEY = "mdai-studio-jobs-v1";
 let rooms = loadRooms();
+/* Every evidence item this project holds, room or no room.
+ *
+ * The rooms each keep the files filed into them, which means a file the
+ * record has NOT placed in a room lives in no room's list — and the file
+ * list, which reads the project rather than the rooms, offered an Open
+ * button that could never find it. Reported from the studio as "I open any
+ * file and nothing happens". A file with no room is still a file. */
+let allEvidence = [];
 let jobs = loadJobs();
 /* Stitching happens on a machine nobody can see. Without this the Studio says
    "no playable export yet" for twenty minutes and gives no sign of life, which
@@ -193,13 +201,22 @@ function insta360CaptureKey(item) {
  * guessed at. */
 function tileFor(evidenceId) {
   if (!evidenceId) return { item: null, room: null };
-  for (const room of rooms) {
-    const item = (room.evidence || []).find(
-      (entry) => entry.id === evidenceId || (entry.sourceIds || []).includes(evidenceId),
-    );
-    if (item) return { item, room };
-  }
-  return { item: null, room: null };
+  /* Every file the record holds, looked through once.
+   *
+   * It used to look through the ROOMS, which meant a file the record had not
+   * placed in a room could not be found at all — and the file list, which
+   * reads the project rather than the rooms, offered an Open button for it
+   * anyway. Reported from the studio as "I open any file and nothing
+   * happens". A file with no room is still a file; it opens, and it opens
+   * without a room name, because inventing one would file evidence somewhere
+   * nobody chose. */
+  const everything = allEvidence.length
+    ? allEvidence
+    : rooms.flatMap((room) => room.evidence || []);
+  const item = everything.find(
+    (entry) => entry.id === evidenceId || (entry.sourceIds || []).includes(evidenceId),
+  );
+  return item ? { item, room: roomOf(item) } : { item: null, room: null };
 }
 
 function roomOf(item) {
@@ -1954,6 +1971,8 @@ async function hydrateCloudRecord() {
       sourceMetadata: item.source_metadata || {},
     })),
   ));
+
+  allEvidence = evidenceWithUrls;
 
   rooms = (spaceRows || []).map((space) => ({
     id: space.id,
@@ -4101,7 +4120,17 @@ function renderFileList() {
     select.addEventListener("change", () => moveFileToRoom(select.dataset.fileRoom, select.value, select));
   });
   list.querySelectorAll("[data-file-open]").forEach((button) => {
-    button.addEventListener("click", () => openFileFromList(button.dataset.fileOpen));
+    /* Nothing here is allowed to fail quietly. The handler is async all the
+       way down, and an unhandled rejection inside it looks to a person
+       exactly like a button that does nothing. */
+    button.addEventListener("click", async () => {
+      try {
+        await openFileFromList(button.dataset.fileOpen);
+      } catch (error) {
+        console.error("open file", error);
+        notify(`${error?.message || "That file could not be opened"} — the file itself is untouched.`, 6000);
+      }
+    });
   });
 }
 
@@ -4134,7 +4163,7 @@ function masterCaptureKey(item) {
   return stem ? stem.replace(/-vr-master$/, "") : null;
 }
 
-function openFileFromList(evidenceId) {
+async function openFileFromList(evidenceId) {
   const row = fileList.rows.find((entry) => entry.id === evidenceId);
   const { item, room } = tileFor(evidenceId);
   if (!item) {
@@ -4152,7 +4181,7 @@ function openFileFromList(evidenceId) {
     if (master) opening = master;
   }
   closeFileList();
-  openEvidenceViewer(opening, room);
+  await openEvidenceViewer(opening, room);
 }
 
 async function moveFileToRoom(evidenceId, spaceId, select) {
@@ -4278,7 +4307,11 @@ async function openEvidenceViewer(item, room, focusMarkerId = null) {
   });
   /* Renewed before the file is opened, not read out of whatever was signed
      when the page loaded. */
-  const source = await freshEvidenceSrc(item);
+  /* Signed once; and if that came back empty, once more with the cache
+     ignored — a signature that expired mid-session is the ordinary case, and
+     it should never reach a person as a blank screen. */
+  let source = await freshEvidenceSrc(item);
+  if (!source) source = await freshEvidenceSrc(item, { force: true });
   if (!window.MDAIPano360) {
     if (source) window.open(source, "_blank", "noopener");
     return;
@@ -4417,6 +4450,27 @@ async function openEvidenceViewer(item, room, focusMarkerId = null) {
       onRoomChosen: chooseRoom,
     });
   };
+
+  /* The private cloud would not hand back a link.
+   *
+   * Every path to a signature swallows its own failure and answers with an
+   * empty string, so the viewer used to open on nothing at all: a black
+   * rectangle, no words, no way forward. Reported from the studio as "I open
+   * a file and nothing happens" — which is exactly what it looked like. The
+   * file is not lost and the original is untouched; the sentence says so,
+   * and the press offers the next thing to try. */
+  if (!source) {
+    window.MDAIPano360.open({
+      src: "",
+      title: item.name || "Evidence",
+      subtitle: `${roomName} · The record holds this file, but the private cloud would not sign a link for it just now. The original is untouched — this is the link, not the file.`,
+      actions: [
+        { label: "Try again", primary: true, onSelect: () => { window.MDAIPano360.close(); openEvidenceViewer(item, room, focusMarkerId); } },
+        room ? { label: `Back to ${roomName}`, onSelect: () => { window.MDAIPano360.close(); openFocusSheet(room.id, focusStage); } } : null,
+      ].filter(Boolean),
+    });
+    return;
+  }
 
   window.MDAIPano360.open({
     src: source,

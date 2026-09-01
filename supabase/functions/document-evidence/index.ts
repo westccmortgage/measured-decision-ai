@@ -17,6 +17,8 @@ import { signedObjectReadUrl } from "../_shared/aws-object-store.ts";
 import { AGENT_CONTRACT_VERSION } from "../_shared/agent-contracts.ts";
 
 const allowedOrigins = new Set([
+  "https://measureddecision.ai",
+  "https://www.measureddecision.ai",
   "https://measureddecision.com",
   "https://www.measureddecision.com",
   "http://localhost:8000",
@@ -26,7 +28,7 @@ const allowedOrigins = new Set([
 function corsHeaders(request: Request) {
   const origin = request.headers.get("origin") || "";
   return {
-    "Access-Control-Allow-Origin": allowedOrigins.has(origin) ? origin : "https://measureddecision.com",
+    "Access-Control-Allow-Origin": allowedOrigins.has(origin) ? origin : "https://measureddecision.ai",
     "Access-Control-Allow-Headers": "authorization, x-client-info, apikey, content-type",
     "Access-Control-Allow-Methods": "POST, OPTIONS",
     Vary: "Origin",

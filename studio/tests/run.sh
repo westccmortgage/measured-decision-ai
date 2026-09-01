@@ -28,6 +28,8 @@ run "what the room count says"        studio/tests/room-picker-note.mjs
 run "an upload keeps its room"        studio/tests/upload-room-key.mjs
 run "a capture keeps its room"        studio/tests/capture-room.mjs
 run "every file, and its room"        studio/tests/project-files.mjs
+run "every file opens"                studio/tests/file-opens.mjs
+run "the prime domain reaches AWS"    studio/tests/prime-domain-reaches-the-cloud.mjs
 run "the create-project form"         studio/tests/create-project-form.mjs
 run "the drop box has a way onward"   studio/tests/intake-dead-end.mjs
 run "the two doors are told apart"    studio/tests/two-doors.mjs

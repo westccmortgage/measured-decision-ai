@@ -13,6 +13,8 @@ const MAX_VIDEO_FRAMES = 8;
 const MAX_FRAME_BYTES = 1_500_000;
 
 const allowedOrigins = new Set([
+  "https://measureddecision.ai",
+  "https://www.measureddecision.ai",
   "https://measureddecision.com",
   "https://www.measureddecision.com",
   "http://localhost:8080",
@@ -56,7 +58,7 @@ function corsHeaders(request: Request) {
   return {
     "Access-Control-Allow-Origin": allowedOrigins.has(origin)
       ? origin
-      : "https://measureddecision.com",
+      : "https://measureddecision.ai",
     "Access-Control-Allow-Headers":
       "authorization, x-client-info, apikey, content-type",
     "Access-Control-Allow-Methods": "POST, OPTIONS",
