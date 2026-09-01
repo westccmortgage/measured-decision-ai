@@ -395,6 +395,7 @@
   let scaleInput = null;
   let scaleValue = null;
   let markerButton = null;
+  let roomButton = null;
   let playback = null;
   let trimNote = null;
   /* The live sphere, reachable by swapRoom: choosing another room from
@@ -428,6 +429,12 @@
         <button class="pano-icon" type="button" data-pano-close aria-label="Close viewer">← Back</button>
         <div class="pano-titles"><strong data-pano-title>Evidence</strong><small data-pano-subtitle></small></div>
         <button class="pano-icon" type="button" data-pano-markers hidden>◎ Mark</button>
+        <!-- The rooms of this project, on the screen. The headset has had this
+             menu since it was built; the browser never did, so changing rooms
+             on a laptop meant closing the capture, going back to the project
+             and opening another one — the very dead end the headset menu was
+             made to remove, still sitting on the desk. -->
+        <button class="pano-icon" type="button" data-pano-rooms hidden>⌂ Rooms</button>
         <button class="pano-icon" type="button" data-pano-gyro aria-pressed="false" hidden>Look around</button>
         <!-- Only ever shown once the headset has said it can do this. A button
              that fails when pressed is worse than one that was never there. -->
@@ -458,6 +465,8 @@
     scaleValue = root.querySelector("[data-pano-scale-value]");
     markerButton = root.querySelector("[data-pano-markers]");
     markerButton.addEventListener("click", openMarkerList);
+    roomButton = root.querySelector("[data-pano-rooms]");
+    roomButton.addEventListener("click", openRoomList);
     root.querySelector("[data-pano-close]").addEventListener("click", close);
     document.addEventListener("keydown", (event) => {
       if (event.key === "Escape" && !root.hidden) close();
@@ -2511,6 +2520,62 @@
     });
   }
 
+  /* Which rooms this project has, and how to walk to one — the same two facts
+     the headset menu is built from, kept here for the screen. */
+  const roomState = { list: [], choose: null };
+
+  function setViewerRooms(list, choose) {
+    roomState.list = Array.isArray(list) ? list.filter((room) => room && room.id && room.title) : [];
+    roomState.choose = typeof choose === "function" ? choose : null;
+    updateRoomButton();
+  }
+
+  function updateRoomButton() {
+    if (!roomButton) return;
+    /* One room is not a choice, and a list that cannot be acted on is a
+       decoration. */
+    const usable = roomState.list.length > 1 && Boolean(roomState.choose);
+    roomButton.hidden = !usable;
+    if (!usable) return;
+    const here = roomState.list.find((room) => room.current);
+    roomButton.textContent = `⌂ ${roomState.list.length} rooms`;
+    roomButton.setAttribute(
+      "aria-label",
+      here ? `Walk to another room — you are in ${here.title}` : "Walk to another room",
+    );
+  }
+
+  function openRoomList() {
+    clearMarkerPanels();
+    const panel = document.createElement("div");
+    panel.className = "pano-list";
+    const rows = roomState.list
+      .map(
+        (room) =>
+          `<button class="row" type="button" data-room-go="${escapeText(room.id)}"${room.current ? ' aria-current="true"' : ""}>
+             <span>${escapeText(room.title)}</span>
+             ${room.current ? '<em class="pano-chip">You are here</em>' : ""}
+           </button>`,
+      )
+      .join("");
+    panel.innerHTML = `
+      <button class="pano-card-close" type="button" data-room-close aria-label="Close">✕</button>
+      <h3>${roomState.list.length} rooms in this project</h3>
+      ${rows}`;
+    stage.appendChild(panel);
+    panel.querySelector("[data-room-close]").addEventListener("click", clearMarkerPanels);
+    panel.querySelectorAll("[data-room-go]").forEach((button) => {
+      button.addEventListener("click", () => {
+        const room = roomState.list.find((entry) => entry.id === button.dataset.roomGo);
+        clearMarkerPanels();
+        /* Choosing the room you are already standing in is not a journey, and
+           reloading the same capture under somebody would look like a fault. */
+        if (!room || room.current) return;
+        roomState.choose?.(room.id);
+      });
+    });
+  }
+
   function openMarkerList() {
     clearMarkerPanels();
     const panel = document.createElement("div");
@@ -2813,12 +2878,21 @@
 
   function close() {
     teardown();
+    /* A list of rooms belongs to the capture it was opened with. Left behind,
+       it would offer the next capture a walk to somewhere in a project it is
+       not part of. */
+    setViewerRooms([], null);
     root.hidden = true;
     // A surface underneath may still own the scroll lock, so restore what it set.
     document.body.style.overflow = restoreOverflow;
   }
 
+  /* What the viewer was last opened with, so a room change that cannot be a
+     swap can still be an open without losing the actions along the bottom. */
+  let lastOpen = null;
+
   function open(options = {}) {
+    lastOpen = options;
     const {
       src,
       mediaType = "",
@@ -2830,6 +2904,16 @@
     } = options;
     if (!root) build();
     teardown();
+    /* The rooms of this project, before anything else is attempted.
+     *
+     * This belongs to the capture being opened, not to the sphere that draws
+     * it — and it is set here rather than inside the sphere's own start
+     * because that start waits for the video to load. A capture whose file
+     * will not play would otherwise lock somebody in the room it belongs to,
+     * with no way out but closing the viewer: a broken file taking the rest
+     * of the project down with it. The same list, and the same way through
+     * it, as the headset gets. */
+    setViewerRooms(options.rooms, options.onRoomChosen);
     titleNode.textContent = title;
     subtitleNode.textContent = subtitle;
     renderFooter(actions);
@@ -3005,9 +3089,19 @@
      the person in the headset sees the old room until the new one exists,
      never a black void. The XR session is untouched throughout. */
   function swapRoom(options = {}) {
-    if (!activeSphere) return false;
     const { src, mediaType = "", title = "Evidence", subtitle = "", trim = null } = options;
     if (!src) return false;
+    /* No live sphere to swap the media inside of — the capture on screen never
+       started, because its file would not load. Walking to another room is
+       exactly what somebody in that position wants, and refusing here left
+       them shut in a room by a broken file, with no way out but closing the
+       viewer. So the room is opened outright instead, carrying the footer and
+       everything else the first open was given. */
+    if (!activeSphere) {
+      if (!lastOpen) return false;
+      open({ ...lastOpen, ...options });
+      return true;
+    }
     const kind = String(mediaType || "").toLowerCase();
     const nextIsVideo = kind.startsWith("video") || /\.(mp4|mov|m4v|webm)$/i.test(String(src || ""));
     const nextMedia = document.createElement(nextIsVideo ? "video" : "img");
@@ -3044,7 +3138,12 @@
       updateMarkerButton();
       renderMarkerAction();
       syncHeadsetMarkers();
-      if (Array.isArray(options.rooms)) sphere.setHeadsetRooms(options.rooms);
+      if (Array.isArray(options.rooms)) {
+        sphere.setHeadsetRooms(options.rooms);
+        /* After a swap the list says a different room is the one you are in,
+           and the menu has to say so too. */
+        setViewerRooms(options.rooms, roomState.choose);
+      }
       playback?.remove();
       playback = null;
       trimNote?.remove();
