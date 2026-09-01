@@ -74,3 +74,15 @@
   to = "https://measureddecision.ai/:splat"
   status = 301
   force = true
+
+[[redirects]]
+  from = "https://measureddecisionai.com/*"
+  to = "https://measureddecision.ai/:splat"
+  status = 301
+  force = true
+
+[[redirects]]
+  from = "https://www.measureddecisionai.com/*"
+  to = "https://measureddecision.ai/:splat"
+  status = 301
+  force = true

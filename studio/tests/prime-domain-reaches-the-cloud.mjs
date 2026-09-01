@@ -26,9 +26,39 @@ const check = (label, ok, detail = "") => {
 /* Where the site actually lives, read from the redirects rather than typed
    here — the two would drift apart otherwise, which is this whole bug. */
 const netlify = fs.readFileSync("netlify.toml", "utf8");
-const primeMatch = netlify.match(/to\s*=\s*"https:\/\/([a-z0-9.-]+)\/:splat"/i);
-const prime = primeMatch?.[1];
-check("the redirects name one prime domain", Boolean(prime), prime || "(none found)");
+const targets = [...netlify.matchAll(/to\s*=\s*"https:\/\/([a-z0-9.-]+)\/:splat"/gi)].map((m) => m[1]);
+const prime = targets[0];
+check("the redirects name a prime domain", Boolean(prime), prime || "(none found)");
+/* Two prime domains is no prime domain: whichever one a person lands on is
+   the one the cloud has to admit, and only one of them ever will. */
+check("and only one of them", new Set(targets).size === 1, [...new Set(targets)].join(", "));
+
+/* Every domain this site answers on must send people to the prime one.
+   measureddecisionai.com served the whole site at 200 for a while — a second
+   live copy on an origin no function admits, which is the "nothing opens"
+   failure waiting to happen to whoever found that address. */
+const sources = [...netlify.matchAll(/from\s*=\s*"https:\/\/([a-z0-9.-]+)\/\*"/gi)].map((m) => m[1]);
+check("every other domain redirects to it",
+  sources.length > 0 && !sources.includes(prime), sources.join(", "));
+for (const host of sources) {
+  const rule = netlify.slice(netlify.indexOf(`from = "https://${host}/*"`));
+  check(`${host} is a forced permanent redirect`,
+    /status\s*=\s*301/.test(rule.slice(0, 200)) && /force\s*=\s*true/.test(rule.slice(0, 200)),
+    rule.split("[[redirects]]")[0].trim().replace(/\s+/g, " "));
+}
+
+/* A social card scraper does not follow redirects the way a browser does, so
+   an absolute link to the old domain is a broken card, not a slow one. */
+for (const page of ["index.html", "investors/index.html", "film-production/index.html",
+  "team/index.html", "security/index.html", "construction-owner-oversight/index.html"]) {
+  if (!fs.existsSync(page)) continue;
+  const html = fs.readFileSync(page, "utf8");
+  const links = [...html.matchAll(/(?:og:image|og:url|canonical)[^>]*?"(https:\/\/[a-z0-9.-]+)[^"]*"/gi)]
+    .map((m) => m[1]);
+  if (!links.length) continue;
+  check(`${page} names the prime domain in its card`,
+    links.every((url) => url === `https://${prime}`), links.join(", "));
+}
 
 const dir = "supabase/functions";
 const functions = fs.readdirSync(dir)
