@@ -670,6 +670,11 @@
       aspect: gl.getUniformLocation(program, "aspect"),
     };
 
+    /* One hundred degrees across, at the widest. Wider than a camera lens
+       anybody would call normal, because looking around a room wants some
+       periphery — and well inside the angle where a flat projection starts
+       to distort what it shows. */
+    const WIDEST_ACROSS_TAN = Math.tan(1.75 / 2);
     const view = { yaw: 0, pitch: 0, fov: 1.4 };
     const state = { alive: true, dragging: false, gyro: false, frame: 0, textureReady: false, videoFrameDirty: true, uploadedTime: -1 };
 
@@ -744,13 +749,31 @@
       gl.bindTexture(gl.TEXTURE_2D, texture);
       gl.uniform1f(uniforms.yaw, view.yaw);
       gl.uniform1f(uniforms.pitch, view.pitch);
-      gl.uniform1f(uniforms.tanHalfFov, Math.tan(view.fov / 2));
       const aspect = canvas.width / Math.max(1, canvas.height);
+      /* The angle actually drawn, which is not always the angle asked for.
+       *
+       * fov is the angle up and down, and the shader widens it by the aspect
+       * to get the angle left and right. In a window that is far wider than
+       * it is tall — and this viewer fills the width of a laptop while
+       * standing about a third as tall — that multiplication ran away with
+       * it: 80° up and down became about 127° across. A rectilinear
+       * projection that wide is stretched by construction; the corners are
+       * pulled hard, the floor in front swells, and straight joists bow.
+       * Reported from the studio as a room that looked stretched, and it was.
+       *
+       * So the sideways angle is capped, and the up-and-down angle gives way
+       * to keep it. This only ever narrows a view that had gone too wide —
+       * on a square or tall window nothing changes at all. */
+      const drawnFov = Math.min(view.fov, 2 * Math.atan(WIDEST_ACROSS_TAN / Math.max(0.0001, aspect)));
+      gl.uniform1f(uniforms.tanHalfFov, Math.tan(drawnFov / 2));
       gl.uniform1f(uniforms.aspect, aspect);
       gl.drawArrays(gl.TRIANGLES, 0, 3);
       // The marker layer is positioned from the very same view the shader just
       // drew, in the same frame, so a pin can never lag the sphere by a frame.
-      onFrame?.({ yaw: view.yaw, pitch: view.pitch, fov: view.fov, aspect });
+      // It is handed the angle that was DRAWN, not the one that was asked for
+      // — the two differ on a wide window, and a pin projected from the other
+      // one would sit beside the thing it points at.
+      onFrame?.({ yaw: view.yaw, pitch: view.pitch, fov: drawnFov, aspect });
     }
 
     /* Standing in the room rather than looking at it.

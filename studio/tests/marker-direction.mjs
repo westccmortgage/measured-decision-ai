@@ -104,5 +104,50 @@ const separation = Math.acos(a[0] * b[0] + a[1] * b[1] + a[2] * b[2]);
 check("a degree of u is a degree of arc", Math.abs(separation - oneDegree) < 1e-6,
   `${(separation * 180 / Math.PI).toFixed(4)}°`);
 
+/* How wide the room is drawn, and the pin that has to agree with it.
+ *
+ * fov is the angle up and down; the shader multiplies it by the aspect to get
+ * the angle across. This viewer fills the width of a laptop while standing
+ * about a third as tall, so 80° up and down became roughly 127° across — and a
+ * flat projection that wide stretches by construction: corners pulled, the
+ * floor in front swollen, straight joists bowed. Reported from the studio as a
+ * stretched room.
+ *
+ * Two things have to hold. The sideways angle is capped. And whatever angle is
+ * actually drawn is the same angle the pins are projected from — if the shader
+ * narrows and the pins do not, every marker slides off the thing it names.
+ */
+{
+  const src = fs.readFileSync("studio/pano360.js", "utf8");
+  const across = (fov, aspect) => 2 * Math.atan(Math.tan(fov / 2) * aspect);
+  const capMatch = src.match(/WIDEST_ACROSS_TAN = Math\.tan\(([\d.]+) \/ 2\)/);
+  const cap = capMatch ? Number(capMatch[1]) : null;
+  check("the viewer states how wide it will ever draw", cap !== null, String(cap));
+  check("and it is not a stretched angle", cap !== null && cap <= 1.8 && cap >= 1.2,
+    `${cap} rad = ${cap ? Math.round(cap * 57.3) : "?"}°`);
+
+  /* The shipped rule, run over the shapes a window actually takes. */
+  const drawn = (fov, aspect) => Math.min(fov, 2 * Math.atan(Math.tan(cap / 2) / aspect));
+  for (const [label, aspect] of [["a laptop viewer", 2.39], ["a wide desktop", 3.0], ["a squarish window", 1.3], ["a phone held upright", 0.55]]) {
+    const wide = across(drawn(1.4, aspect), aspect);
+    check(`${label} is never drawn wider than the cap`,
+      wide <= cap + 0.001, `${Math.round(wide * 57.3)}° across`);
+  }
+  /* The old default, at the shape that was reported, was the bug. */
+  check("the shape that was reported would have been stretched without this",
+    across(1.4, 2.39) > 2.1, `${Math.round(across(1.4, 2.39) * 57.3)}° across before the cap`);
+  /* A window that was never too wide is left exactly alone. */
+  check("a tall window is not narrowed for no reason",
+    Math.abs(drawn(1.4, 0.55) - 1.4) < 1e-9, `${drawn(1.4, 0.55)} rad`);
+
+  /* The pins are handed the drawn angle, not the asked-for one. */
+  check("the pins are projected from the angle that was drawn",
+    /onFrame\?\.\(\{ yaw: view\.yaw, pitch: view\.pitch, fov: drawnFov, aspect \}\)/.test(src),
+    "onFrame must carry drawnFov");
+  check("and the shader is given that same angle",
+    /uniforms\.tanHalfFov, Math\.tan\(drawnFov \/ 2\)/.test(src),
+    "the shader must use drawnFov");
+}
+
 console.log(bad ? `\n${bad} FAILURES` : "\nALL OK");
 process.exit(bad ? 1 : 0);
