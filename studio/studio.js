@@ -4899,6 +4899,23 @@ function offerMoneyQuestions() {
    that turns that evidence into something a model can read.
 
    Returns null when the room is ready. */
+/* Is this room waiting on the 360 machine, asked of the record rather than of
+   the sentence the screen happens to be showing.
+
+   The headline used to be chosen by running /360 machine/ over the paragraph
+   beneath it. A title pattern-matched out of prose drifts the moment somebody
+   rewords the prose — and the panel then announces a wait that is not
+   happening, which is exactly how this screen came to say two opposite things
+   at once. A room waits on the machine when it holds a complete pair of camera
+   originals and nothing playable has been stitched from them yet. */
+function roomAwaitsStitch(room) {
+  const evidence = room?.evidence || [];
+  if (evidence.some(focusIsSpatial)) return false;
+  return evidence
+    .filter(focusIsCameraOriginal)
+    .some((item) => (item.sourceIds?.length || 0) >= 2);
+}
+
 function analysisBlocker(room) {
   const evidence = room?.evidence || [];
   if (evidence.some((item) => isImage(item) || isVideo(item))) return null;
@@ -4950,7 +4967,7 @@ function analysisBlocker(room) {
    without waiting for anything of ours. */
 function showBlockedProcessing(room, blocked) {
   showFocusStage("process");
-  const waitingForMachine = !machineStatus().awake && /360 machine/.test(blocked);
+  const waitingForMachine = !machineStatus().awake && roomAwaitsStitch(room);
   $("#focus-processing-title").textContent = waitingForMachine
     ? "Waiting for the 360 machine"
     : "The AI cannot read this room yet";
@@ -4998,16 +5015,28 @@ async function startCaptureMachine() {
     const { data, error } = await cloud.client.functions.invoke("capture-machine", { body: {} });
     if (error) throw error;
     if (data?.error) throw new Error(data.error);
-    const said = {
-      started: "The 360 machine is starting. It takes a couple of minutes to come up, then it works the queue in order.",
-      already_awake: "The 360 machine is already running — it takes the queue in order.",
-      nothing_queued: "Nothing is waiting to be stitched, so the machine was left alone.",
-      too_soon: "The machine was started a few minutes ago and is still coming up.",
-      not_configured: "No 360 machine is connected to this deployment yet, so nothing could be started.",
-      failed: "The 360 machine could not be started. The capture is safe and still queued.",
-    }[data?.outcome] || data?.detail || "The machine was asked to start.";
+    /* The headline travels with the sentence.
+     *
+     * This wrote the copy and left the title alone, so a press that started
+     * nothing sat under "Waiting for the 360 machine" in large type while the
+     * line beneath it said the machine had been left alone. Reported from the
+     * studio as a screen saying two opposite things at once — and it is the
+     * same fault the processing headline was already written to prevent: a
+     * panel updated in pieces by whoever touched it last. */
+    const answers = {
+      started: ["The 360 machine is starting", "It takes a couple of minutes to come up, then it works the queue in order."],
+      already_awake: ["The 360 machine is already running", "It takes the queue in order."],
+      nothing_queued: ["Nothing is waiting to be stitched", "The machine was left alone. A capture reaches the queue once both halves of its pair are in the same room."],
+      too_soon: ["The 360 machine is still coming up", "It was started a few minutes ago. Nothing was started twice."],
+      not_configured: ["No 360 machine is connected", "Nothing is connected to this deployment yet, so nothing could be started."],
+      failed: ["The 360 machine could not be started", "The capture is safe and still queued."],
+    };
+    const [title, copy] = answers[data?.outcome]
+      || ["The machine was asked to start", data?.detail || ""];
+    const said = copy ? `${title}. ${copy}` : title;
     notify(said, 9000);
-    $("#focus-processing-copy").textContent = said;
+    $("#focus-processing-title").textContent = title;
+    $("#focus-processing-copy").textContent = copy || title;
     /* A machine that is coming up will report in on its own; the screen catches
        up the next time the record is read rather than guessing at it here. */
     if (data?.outcome === "started" || data?.outcome === "already_awake") {
@@ -5024,8 +5053,9 @@ async function startCaptureMachine() {
        failure would have found that in a minute instead of a month. */
     const why = error?.message || String(error || "");
     notify(`The 360 machine could not be reached${why ? ` — ${why}` : ""}. The capture is safe and still queued.`, 9000);
+    $("#focus-processing-title").textContent = "The 360 machine could not be reached";
     $("#focus-processing-copy").textContent =
-      `The 360 machine could not be reached${why ? ` — ${why}` : ""}. Nothing was lost: the originals are untouched and the capture stays in the queue.`;
+      `${why ? `${why}. ` : ""}Nothing was lost: the originals are untouched and the capture stays in the queue.`;
   }
   button.disabled = false;
   button.textContent = "Start the 360 machine";

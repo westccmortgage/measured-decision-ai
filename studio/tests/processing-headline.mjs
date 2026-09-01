@@ -73,5 +73,39 @@ if (mod.stitchProgressPercent(mod.stitchSummary()) !== 60) { console.log("FAIL: 
 mod.set([], [{ state: "processing", progress: null }]);
 if (mod.stitchProgressPercent(mod.stitchSummary()) !== 0) { console.log("FAIL: a missing progress is not a number"); bad++; }
 
+/* The headline is not only chosen well — it must not be left behind.
+ *
+ * A press that started nothing wrote its sentence into the copy and left the
+ * title alone, so "Nothing is waiting to be stitched, so the machine was left
+ * alone" sat under "Waiting for the 360 machine" in large type. Two opposite
+ * statements on one panel, which is the very thing this file was written to
+ * stop — the earlier version just did not think a button could do it too.
+ *
+ * So: anywhere in the Studio that writes this panel's copy must write its
+ * title in the same breath. */
+const PANEL_COPY = /\$\("#focus-processing-copy"\)\.textContent/g;
+const PANEL_TITLE = /\$\("#focus-processing-title"\)\.textContent/g;
+const copyWrites = (src.match(PANEL_COPY) || []).length;
+const titleWrites = (src.match(PANEL_TITLE) || []).length;
+if (copyWrites !== titleWrites) {
+  console.log(`\nFAIL: ${copyWrites} place(s) write the processing copy but ${titleWrites} write its title — a panel that says two things`);
+  bad++;
+}
+/* And the machine's own answers must each carry both halves. */
+const machine = grab("startCaptureMachine");
+for (const outcome of ["started", "already_awake", "nothing_queued", "too_soon", "not_configured", "failed"]) {
+  if (!new RegExp(`${outcome}:\\s*\\[`).test(machine)) {
+    console.log(`\nFAIL: the machine answer "${outcome}" has no headline of its own`);
+    bad++;
+  }
+}
+/* The regex that guessed a headline out of the prose beneath it. A title
+   derived by pattern-matching a paragraph drifts the moment the paragraph is
+   reworded, which is how this went wrong the first time. */
+if (/\/360 machine\/\.test\(/.test(src)) {
+  console.log("\nFAIL: a headline is still being guessed from the body text");
+  bad++;
+}
+
 console.log(bad ? `\n${bad} FAILURES` : "\nALL OK");
 process.exit(bad ? 1 : 0);
