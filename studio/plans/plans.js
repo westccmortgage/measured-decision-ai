@@ -807,10 +807,20 @@ function renderDocuments() {
             .map(([kind, count]) => `${count} ${PAGE_KIND_LABELS[kind] || kind} page${count === 1 ? "" : "s"}`)
             .join(" · "))}</small>`
       : "";
+    /* Why it failed, on the screen.
+     *
+     * The reason the reader gave lived in a title attribute — a tooltip, and
+     * only for somebody with a mouse who thought to hover a red word. What a
+     * person saw was FAILED and nothing else, and the answer was in the
+     * record the whole time. That is the same failure as a black rectangle
+     * where a video should be: the system knew, and did not say. */
+    const whyItFailed = document.status === "failed" && document.processing_error
+      ? `<small class="document-why">${escapeHtml(document.processing_error)}</small>`
+      : "";
     return `
     <article class="document-row">
       <label class="document-choice" title="${escapeHtml(choiceTitle)}"><input type="checkbox" data-document-select="${document.id}" ${state.selectedDocumentIds.has(document.id) ? "checked" : ""} ${selectable ? "" : "disabled"}><span class="document-icon">PDF</span></label>
-      <div class="document-name"><strong title="${escapeHtml(document.original_filename)}">${escapeHtml(document.original_filename)}</strong><small>${document.byte_size ? `${(document.byte_size / 1048576).toFixed(1)} MB` : "Private source"}</small>${classifiedLine}</div>
+      <div class="document-name"><strong title="${escapeHtml(document.original_filename)}">${escapeHtml(document.original_filename)}</strong><small>${document.byte_size ? `${(document.byte_size / 1048576).toFixed(1)} MB` : "Private source"}</small>${classifiedLine}${whyItFailed}</div>
       <div class="document-cell"><span>Discipline</span><strong>${escapeHtml(label(document.document_type))}</strong></div>
       <div class="document-cell"><span>Revision</span><strong>${escapeHtml(display(document.revision_label, "Not stated"))}</strong></div>
       ${paperwork

@@ -477,6 +477,10 @@ select:focus, input:focus { border-color: var(--cyan); box-shadow: 0 0 0 2px var
 .document-status.ready { color: var(--green); }
 .document-status.processing { color: var(--cyan); }
 .document-status.failed { color: var(--red); }
+/* The reader's own words about why it could not read this. It used to be a
+   tooltip, which is to say invisible to anybody who did not already suspect
+   there was something to find. */
+.document-why { display: block; margin-top: 4px; color: var(--red); max-width: 52ch; }
 .document-delete { min-height: 34px; padding: 0 9px; border: 1px solid var(--drgba-255-112-112-45); border-radius: 5px; background: transparent; color: var(--dff8a8a); font: inherit; font-size: 9px; text-transform: uppercase; letter-spacing: .05em; cursor: pointer; }
 .document-delete:hover { border-color: var(--red); background: var(--drgba-255-92-92-09); color: var(--dffb1b1); }
 .document-delete:disabled { opacity: .28; cursor: not-allowed; }
