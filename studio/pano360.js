@@ -807,6 +807,17 @@
     let headsetRooms = [];
     let onRoomChosen = null;
     function whenRoomChosen(handler) { onRoomChosen = handler; }
+    /* Asking the page for the rooms, rather than painting them.
+     *
+     * Inside an immersive session everything this file draws is pixels in a
+     * WebGL canvas, and a headset's own gaze-and-pinch cannot land on a
+     * painted pixel — the system aims at ELEMENTS, which is why the same
+     * gesture that works on every button in the browser did nothing at all on
+     * a room in this column. Reported from the headset over and over, and the
+     * answer is not a better crosshair: it is to hand the list to the thing
+     * that already does this properly. */
+    let onRoomsWanted = null;
+    function whenRoomsWanted(handler) { onRoomsWanted = handler; }
 
     /* A sentence that appears under the list when a press did nothing, and
        leaves on its own. Not a status line — those were clutter and were
@@ -1294,6 +1305,15 @@
               return true;
             }
             if (menu.lookingChip) {
+              /* In the headset the dot hands over to a real window. One
+                 target that a head can hold is achievable; twenty rows that
+                 a head has to chase are not, and the system will not aim at
+                 them for us. */
+              if (xrSession && onRoomsWanted) {
+                menu.open = false;
+                onRoomsWanted();
+                return true;
+              }
               menu.open = !menu.open;
               /* Opening lands the window on the room somebody is standing in;
                  after that the window is theirs to move. */
@@ -2345,7 +2365,7 @@
     return {
       dispose, lookAt, view, canvas, enterVR, exitVR, setMedia,
       setHeadsetMarkers, setHeadsetRooms, setRoomSize, roomRadius,
-      whenMarkerChosen, whenRoomChosen,
+      whenMarkerChosen, whenRoomChosen, whenRoomsWanted,
       /* One card, two surfaces: dismissing the evidence on the flat pane
          dismisses it in the room as well. */
       closeHeadsetPanel: () => Boolean(xr?.closePanel?.()),
@@ -2601,11 +2621,12 @@
 
   /* Which rooms this project has, and how to walk to one — the same two facts
      the headset menu is built from, kept here for the screen. */
-  const roomState = { list: [], choose: null };
+  const roomState = { list: [], choose: null, fromHeadset: false };
 
   function setViewerRooms(list, choose) {
     roomState.list = Array.isArray(list) ? list.filter((room) => room && room.id && room.title) : [];
     roomState.choose = typeof choose === "function" ? choose : null;
+    roomState.fromHeadset = false;
     updateRoomButton();
   }
 
@@ -2646,9 +2667,14 @@
     panel.querySelectorAll("[data-room-go]").forEach((button) => {
       button.addEventListener("click", () => {
         const room = roomState.list.find((entry) => entry.id === button.dataset.roomGo);
+        const returning = roomState.fromHeadset;
+        roomState.fromHeadset = false;
         clearMarkerPanels();
         /* Choosing the room you are already standing in is not a journey, and
-           reloading the same capture under somebody would look like a fault. */
+           reloading the same capture under somebody would look like a fault.
+           Coming from the headset it still means "put me back", so the way
+           back in is taken either way. */
+        if (returning) activeSphere?.enterVR?.();
         if (!room || room.current) return;
         roomState.choose?.(room.id);
       });
@@ -3055,6 +3081,15 @@
         if (Array.isArray(options.rooms) && options.rooms.length && typeof options.onRoomChosen === "function") {
           sphere.setHeadsetRooms(options.rooms);
           sphere.whenRoomChosen(options.onRoomChosen);
+          /* The headset asks for the rooms; the page answers with a window.
+             Stepping out of the immersive session is what makes the list a
+             thing the system can aim at — inside it, it is only paint. The
+             way back in rides on the choice itself. */
+          sphere.whenRoomsWanted(() => {
+            roomState.fromHeadset = true;
+            sphere.exitVR();
+            openRoomList();
+          });
         }
         session = {
           dispose: () => {
