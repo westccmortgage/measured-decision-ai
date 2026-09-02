@@ -2195,30 +2195,39 @@
                first. Said from inside the glasses: "I see a round mark and a
                cross, they are apart, and I have to drive one to the other."
                Nothing to drive when there is nothing drawn. */
-            if (xr.everHadPointer) return;
-            gl.useProgram(markerProgram);
-            gl.bindBuffer(gl.ARRAY_BUFFER, markerQuad);
-            gl.enableVertexAttribArray(markerCorner);
-            gl.vertexAttribPointer(markerCorner, 2, gl.FLOAT, false, 0, 0);
-            gl.enable(gl.BLEND);
-            gl.blendFunc(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA);
-            gl.uniformMatrix4fv(markerUniforms.projection, false, eyeView.projectionMatrix);
-            gl.uniformMatrix3fv(markerUniforms.viewRotationInverse, false, rotation);
-            gl.uniform1f(markerUniforms.markerDistance, 1.6);
-            gl.uniform3f(markerUniforms.eyeOffset, offset[0], offset[1], offset[2]);
-            gl.uniform3f(markerUniforms.markerDirection, forward[0], forward[1], forward[2]);
-            gl.uniform1f(markerUniforms.looking, 0);
-            gl.uniform1f(markerUniforms.reticle, 1);
-            const aiming = Boolean(menu.lookingChip || menu.lookingItem || looked || panel.lookingClose);
-            /* A dark halo first, then the bright ring inside it. */
-            gl.uniform1f(markerUniforms.markerSize, 0.075);
-            gl.uniform4f(markerUniforms.markerColour, 0.02, 0.06, 0.10, 0.75);
-            gl.drawArrays(gl.TRIANGLES, 0, 6);
-            gl.uniform1f(markerUniforms.markerSize, 0.058);
-            gl.uniform4f(markerUniforms.markerColour,
-              aiming ? 0.55 : 1, aiming ? 0.91 : 1, aiming ? 0.95 : 1, 0.95);
-            gl.drawArrays(gl.TRIANGLES, 0, 6);
-            gl.disable(gl.BLEND);
+            /* Skipped with a block, never with a return.
+             *
+             * This was `if (xr.everHadPointer) return;` — and this is the last
+             * thing in the loop that draws each eye, so returning left the
+             * frame entirely on the FIRST eye and the second was never drawn
+             * at all. Reported from the headset within the hour: one eye no
+             * longer sees the room. Skipping what should not be drawn must
+             * never skip the eye it would have been drawn in. */
+            if (!xr.everHadPointer) {
+              gl.useProgram(markerProgram);
+              gl.bindBuffer(gl.ARRAY_BUFFER, markerQuad);
+              gl.enableVertexAttribArray(markerCorner);
+              gl.vertexAttribPointer(markerCorner, 2, gl.FLOAT, false, 0, 0);
+              gl.enable(gl.BLEND);
+              gl.blendFunc(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA);
+              gl.uniformMatrix4fv(markerUniforms.projection, false, eyeView.projectionMatrix);
+              gl.uniformMatrix3fv(markerUniforms.viewRotationInverse, false, rotation);
+              gl.uniform1f(markerUniforms.markerDistance, 1.6);
+              gl.uniform3f(markerUniforms.eyeOffset, offset[0], offset[1], offset[2]);
+              gl.uniform3f(markerUniforms.markerDirection, forward[0], forward[1], forward[2]);
+              gl.uniform1f(markerUniforms.looking, 0);
+              gl.uniform1f(markerUniforms.reticle, 1);
+              const aiming = Boolean(menu.lookingChip || menu.lookingItem || looked || panel.lookingClose);
+              /* A dark halo first, then the bright ring inside it. */
+              gl.uniform1f(markerUniforms.markerSize, 0.075);
+              gl.uniform4f(markerUniforms.markerColour, 0.02, 0.06, 0.10, 0.75);
+              gl.drawArrays(gl.TRIANGLES, 0, 6);
+              gl.uniform1f(markerUniforms.markerSize, 0.058);
+              gl.uniform4f(markerUniforms.markerColour,
+                aiming ? 0.55 : 1, aiming ? 0.91 : 1, aiming ? 0.95 : 1, 0.95);
+              gl.drawArrays(gl.TRIANGLES, 0, 6);
+              gl.disable(gl.BLEND);
+            }
           }
         });
 
