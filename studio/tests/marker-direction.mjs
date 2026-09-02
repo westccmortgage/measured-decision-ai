@@ -149,5 +149,50 @@ check("a degree of u is a degree of arc", Math.abs(separation - oneDegree) < 1e-
     "the shader must use drawnFov");
 }
 
+/* Nothing may leave the frame from inside the loop that draws the eyes.
+ *
+ * A guard written as `if (…) return;` sat at the end of that loop, so on the
+ * FIRST eye it left the whole frame and the second eye was never drawn — one
+ * eye simply stopped seeing the room. Reported from a Vision Pro within the
+ * hour of shipping it. Skipping what should not be drawn must never skip the
+ * eye it would have been drawn in, so the way to skip is a block. */
+{
+  const src = fs.readFileSync("studio/pano360.js", "utf8");
+  /* There is more than one such loop in the file; the one that matters is the
+     one that draws — it is the one carrying the reticle. */
+  const marker = "for (const eyeView of pose.views) {";
+  let start = -1;
+  for (let at = src.indexOf(marker); at >= 0; at = src.indexOf(marker, at + 1)) {
+    const after = src.slice(at, at + 14000);
+    if (after.includes("markerUniforms.reticle")) { start = at; break; }
+  }
+  check("the loop that draws each eye is where it is expected", start > 0, `index ${start}`);
+  let depth = 0;
+  let end = -1;
+  for (let i = src.indexOf("{", start); i < src.length; i += 1) {
+    if (src[i] === "{") depth += 1;
+    else if (src[i] === "}") { depth -= 1; if (!depth) { end = i; break; } }
+  }
+  const body = src.slice(start, end);
+  /* A return inside a nested function of its own is fine — those return from
+     themselves. Only a return at the loop's own statement level leaves the
+     frame, and at this file's indentation that is twelve or fourteen spaces. */
+  const escapes = body.split("\n").filter((line) => {
+    const indent = line.length - line.trimStart().length;
+    if (indent < 12 || indent > 16) return false;
+    const text = line.trim();
+    /* Both shapes that leave: a bare return, and the guard form that hides
+       one at the end of a condition — which is exactly how it got in. */
+    return /^return\b/.test(text) || /^if\s*\(.*\)\s*return\b/.test(text);
+  }).map((line) => line.trim());
+  check("and nothing inside it returns out of the frame",
+    escapes.length === 0, `${escapes.length} early return(s) in the eye loop`);
+  /* The eye's own matrices must be used, which is what proves the two eyes
+     are one object seen twice rather than two objects. */
+  check("each eye is drawn with its own projection and offset",
+    /eyeView\.projectionMatrix/.test(body) && /eyeOffset/.test(body),
+    "the loop must use eyeView.projectionMatrix and eyeOffset");
+}
+
 console.log(bad ? `\n${bad} FAILURES` : "\nALL OK");
 process.exit(bad ? 1 : 0);
