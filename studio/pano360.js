@@ -808,6 +808,22 @@
     let onRoomChosen = null;
     function whenRoomChosen(handler) { onRoomChosen = handler; }
 
+    /* A sentence that appears under the list when a press did nothing, and
+       leaves on its own. Not a status line — those were clutter and were
+       taken out. This one only exists in the moment somebody is asking
+       "why did that not work". */
+    let noteTexture = null;
+    let noteUntil = 0;
+    /* Readable from a test, because the sentence itself is the thing being
+       checked and a baked texture cannot be read back as words. */
+    let lastNote = "";
+    function sayNothingHappened(text) {
+      if (noteTexture) gl.deleteTexture(noteTexture);
+      noteTexture = bakeLabelTexture(text, false);
+      noteUntil = performance.now() + 6000;
+      lastNote = text;
+    }
+
     function bakeLabelTexture(text, current) {
       const board = document.createElement("canvas");
       board.width = 512;
@@ -1185,6 +1201,7 @@
         window.__xrForward = () => (xr ? xr.forward.slice() : null);
         window.__xrSetMarkers = (list) => setHeadsetMarkers(list || []);
         window.__xrSetRooms = (list) => setHeadsetRooms(list || []);
+        window.__xrNote = () => lastNote;
         window.__xrMenu = () => (xr ? {
           open: xr.menu.open,
           chipDir: xr.menu.chipDir.slice(),
@@ -1384,14 +1401,40 @@
               const columnFlat = Math.hypot(columnAt[0], columnAt[2]) || 0.0001;
               const roundness = (columnAt[0] * dir[0] + columnAt[2] * dir[2]) / (columnFlat * aimFlat);
               const yawOff = Math.acos(Math.max(-1, Math.min(1, roundness)));
+              /* How far the aim was from the list, kept whether or not it hit
+                 anything. A press that chooses nothing has to be able to say
+                 why, and in a headset there is no console to say it into. */
+              menu.columnOff = yawOff;
+              menu.rowOff = rowAim.length
+                ? Math.min(...rowAim.map((row) => Math.abs(pitchOf(row.at) - aimPitch)))
+                : Infinity;
               if (yawOff < MENU_ROW_YAW_CATCH) {
-                let bestRow = MENU_ROW_PITCH_CATCH;
-                for (const row of rowAim) {
-                  const off = Math.abs(pitchOf(row.at) - aimPitch);
-                  if (off < bestRow) { bestRow = off; lookedItem = row.item; }
+                /* The column is one target, not a row of small ones.
+                 *
+                 * Each row used to catch only within 5.7° of its own centre
+                 * while the rows stand 12.6° apart — so between every pair of
+                 * rows lay a dead band about 7° wide where the aim was inside
+                 * the list and selected nothing at all. Close to half the
+                 * column did nothing. Reported from the headset in exactly
+                 * those words: the rooms are there, one is highlighted, and
+                 * looking at the others does not open them.
+                 *
+                 * Anywhere down the column now belongs to the nearest row,
+                 * the way a list on a screen has no gaps between its lines.
+                 * Half a row-step past each end is still the list, so the
+                 * first and last are as easy to hit as the middle. */
+                const pitches = rowAim.map((row) => pitchOf(row.at));
+                const highest = Math.min(...pitches);
+                const lowest = Math.max(...pitches);
+                const reach = MENU_ROW_PITCH / 2;
+                if (aimPitch >= highest - reach && aimPitch <= lowest + reach) {
+                  let bestRow = Infinity;
+                  for (const row of rowAim) {
+                    const off = Math.abs(pitchOf(row.at) - aimPitch);
+                    if (off < bestRow) { bestRow = off; lookedItem = row.item; }
+                  }
                 }
                 if (!lookedItem) {
-                  const pitches = rowAim.map((row) => pitchOf(row.at));
                   const above = Math.min(...pitches) - aimPitch;
                   const below = aimPitch - Math.max(...pitches);
                   if (menu.moreAbove > 0 && above > MENU_ROW_PITCH_CATCH && above < MENU_SCROLL_ZONE) menu.scrolling = -1;
@@ -1591,7 +1634,26 @@
           }
           /* A press that travelled was a move, and a move is not a choice. */
           if (xr?.grab?.moved) return;
-          chooseWhatIsLookedAt();
+          if (chooseWhatIsLookedAt()) return;
+          /* And a press that chose nothing says why.
+           *
+           * In a headset there is no console, no status bar and no way for
+           * the person wearing it to tell anybody what happened except "it
+           * does not work". Three rounds of this went by on exactly that
+           * sentence. So the press answers for itself: whether the device
+           * sent a ray of its own or the head was standing in for one, and
+           * how far the aim was from the nearest room. */
+          const menu = xr?.menu;
+          const from = ray ? "the device's own ray" : "your head — this device sent no ray";
+          let missed = "nothing was under the aim";
+          if (menu?.open && Number.isFinite(menu.columnOff)) {
+            missed = menu.columnOff > MENU_ROW_YAW_CATCH
+              ? `${Math.round(menu.columnOff * 57.3)}° to the side of the list`
+              : `${Math.round((menu.rowOff || 0) * 57.3)}° from the nearest room`;
+          } else if (!menu?.open) {
+            missed = "the list was not open";
+          }
+          sayNothingHappened(`Pinch heard · ${from} · ${missed}`);
         };
         for (const name of ["select", "squeeze"]) {
           xrSession.addEventListener(name, chooseOnce);
@@ -1992,6 +2054,21 @@
                 gl.uniform1f(labelUniforms.dwell, filling ? menu.dwell : 0);
                 gl.drawArrays(gl.TRIANGLES, 0, 6);
               };
+              /* The note sits below the dot, at the same bearing, so it is
+                 where the eyes already are when somebody has just pressed
+                 and nothing happened. */
+              if (noteTexture && performance.now() < noteUntil) {
+                const flat = Math.hypot(menu.chipDir[0], menu.chipDir[2]) || 0.0001;
+                const drop = 0.30;
+                const under = [
+                  menu.chipDir[0] / flat * Math.cos(drop),
+                  menu.chipDir[1] - Math.sin(drop),
+                  menu.chipDir[2] / flat * Math.cos(drop),
+                ];
+                const span = Math.hypot(...under) || 1;
+                drawLabel(noteTexture, [under[0] / span, under[1] / span, under[2] / span],
+                  1.5, 0.28, false, false, menu.chipDistance);
+              }
               if (!panel.markerId && menu.chipTexture) {
                 /* Small, and growing as the aim closes on it — the dot is the
                    whole of the closed menu, and its answer to an approaching
@@ -2074,7 +2151,9 @@
 
         xrSession.addEventListener("end", () => {
           for (const item of xr?.menu.items || []) gl.deleteTexture(item.texture);
-          if (xr?.menu.chipTexture) gl.deleteTexture(xr.menu.chipTexture);
+          if (noteTexture) gl.deleteTexture(noteTexture);
+      noteTexture = null;
+      if (xr?.menu.chipTexture) gl.deleteTexture(xr.menu.chipTexture);
           if (xr?.menu.upTexture) gl.deleteTexture(xr.menu.upTexture);
           if (xr?.menu.downTexture) gl.deleteTexture(xr.menu.downTexture);
           if (xr?.panel.texture) gl.deleteTexture(xr.panel.texture);

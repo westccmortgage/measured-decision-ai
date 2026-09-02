@@ -1283,6 +1283,36 @@ check("and the pointer is gone once the fingers open",
   pinched.sourcesLeftBehind === 0);
 /* Carried across the room and then turned away from, it comes back rather
    than being lost behind you. */
+console.log("\n── a press that chooses nothing says why ──");
+/* In a headset there is no console and no status bar. Three rounds went by on
+   the sentence "it does not work", because that is the only sentence the
+   person wearing it can produce. A press that lands on nothing now answers
+   for itself, and the answer names the two things I would otherwise have to
+   guess: whether the device sent a ray of its own, and how far the aim was. */
+const silent = await page.evaluate(async () => {
+  const run = (dir, frames) => { for (let i = 0; i < frames; i += 1) window.__xrFrame(dir); };
+  const apart = () => new Promise((r) => setTimeout(r, 220));
+  window.__xrStandAt(0, 0, 0);
+  run([0, 0, -1], 6);
+  if (window.__xrMenu().open) { run([0, 1, 0], 10); run(window.__xrMenu().chipDir, 220); }
+  run([0, 0, -1], 6);
+  const before = window.__xrPixels ? null : null;
+  /* Straight up: nothing of the menu is there at all. */
+  await apart();
+  window.__xrPinchStart([0, 1, 0]);
+  run([0, 0, -1], 2);
+  window.__xrPinchEnd([0, 1, 0]);
+  run([0, 0, -1], 8);
+  return { note: window.__xrNote ? window.__xrNote() : null, before };
+});
+check("a pinch on nothing leaves a sentence behind",
+  typeof silent.note === "string" && silent.note.length > 0, String(silent.note));
+check("and it says where the aim was",
+  /list was not open|from the nearest room|to the side of the list|nothing was under/.test(silent.note || ""),
+  String(silent.note));
+check("and whether the device gave a ray of its own",
+  /device's own ray|sent no ray/.test(silent.note || ""), String(silent.note));
+
 check("a panel carried away and turned from comes back to the person",
   pinched.tidyOpen === false
   && Math.abs(pinched.broughtBack[0]) < 0.2 && pinched.broughtBack[2] < -0.9,
