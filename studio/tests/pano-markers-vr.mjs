@@ -571,9 +571,11 @@ const parked = await page.evaluate(() => {
     behindDot: dot(followed.chipDir, behind),
   };
 });
-check("the chip sits in front of the person, a glance below the eye line",
-  parked.aheadDot > 0.9 && parked.restY < -0.2 && parked.restY > -0.6,
-  `dot with gaze ${parked.aheadDot.toFixed(3)}, height ${parked.restY.toFixed(3)}`);
+/* Where a window goes, asked for in those words: a small frame up and to the
+   right, out of the way of the room, not underfoot and not across the view. */
+check("the frame sits up and to the right, where a window goes",
+  parked.aheadDot > 0.85 && parked.restY > 0.05 && parked.restY < 0.35,
+  `dot with gaze ${parked.aheadDot.toFixed(3)}, height ${parked.restY.toFixed(3)} (above the eye line, off to one side)`);
 check("looking straight at it lights it up",
   parked.lookingChip === true);
 check("and it holds still instead of running from the eye",
@@ -583,7 +585,7 @@ check("chasing it downwards never flips it overhead",
 check("a quarter turn to look around leaves it exactly where it was left",
   parked.glancedDot > 0.999, `moved by ${(Math.acos(Math.min(1, parked.glancedDot)) * 57.3).toFixed(2)}°`);
 check("but turning right round brings it back to where the person now faces",
-  parked.behindDot > 0.9, `dot with the new facing ${parked.behindDot.toFixed(3)}`);
+  parked.behindDot > 0.82, `dot with the new facing ${parked.behindDot.toFixed(3)}`);
 
 /* Direction maths agreeing with itself is not the same as a chip a person can
    see. This looks at the drawn frame: the chip's dark panel must be on screen,
@@ -646,8 +648,8 @@ check("the reticle is big enough to steer by",
   `${reticle.bright} bright px across ${reticle.span} of 512 in the centre row`);
 
 check("and a person looking straight ahead can actually see it",
-  chipOnScreen.count > 20 && chipOnScreen.highest < 256 && chipOnScreen.lowest > 40,
-  `${chipOnScreen.count} px, rows ${chipOnScreen.lowest}-${chipOnScreen.highest} (256 is the eye line, 0 the floor of the view)`);
+  chipOnScreen.count > 8 && chipOnScreen.lowest > 256,
+  `${chipOnScreen.count} px, rows ${chipOnScreen.lowest}-${chipOnScreen.highest} (256 is the eye line; above it is up)`);
 /* A dot, not a signboard: the closed menu must be a small thing in the
    room. The banner it replaced covered seventeen degrees of the view and
    was reported from the headset as annoying. */
@@ -972,19 +974,27 @@ const listed = await page.evaluate(async () => {
 });
 check("the list starts down, so the dot is what opens it",
   listed.startedClosed === true);
-check("the dot sits under the eye line, not down by the feet",
-  listed.chipPitch > 6 && listed.chipPitch < 16, `${Math.round(listed.chipPitch)}° below the eye line`);
-/* Asked for from the headset: a column off to the right, not a line the head
-   has to sweep along. */
-check("the list stands as a column in front, not a line across the view",
+check("the frame sits above the eye line, out of the way of the room",
+  listed.chipPitch < -4 && listed.chipPitch > -16,
+  `${Math.round(-listed.chipPitch)}° above the eye line`);
+/* Asked for from inside the headset, after a list that opened across the whole
+   space: "I cannot reach them, I tilt my head up and it switches somewhere I
+   cannot even see." A panel is a few lines you can take in at once. */
+check("the list is a panel off to one side, not a wall across the room",
   listed.opened === true
-  && listed.itemYaws.every((bearing) => Math.abs(bearing) <= 2)
+  && (Math.max(...listed.itemYaws) - Math.min(...listed.itemYaws)) <= 2
+  && Math.abs(listed.columnYaw) >= 18 && Math.abs(listed.columnYaw) <= 32
   && listed.itemPitches.length > 1,
   `all rows at ${listed.columnYaw}° round, pitches ${listed.itemPitches.join(", ")}°`);
-check("its rows are spaced far enough to tell one from the next",
-  listed.rowGap >= 11, `${listed.rowGap}° between rows, each caught within 5.7°`);
-check("and the dot is not a target while the list covers it",
-  listed.dotIsNotATargetWhileOpen === true);
+/* Rows close together are only readable because the column is one continuous
+   target: anywhere down it belongs to the nearest row, so there is no gap to
+   fall into between them. */
+check("its rows sit within reach of one another, in one small panel",
+  listed.rowGap >= 3 && listed.rowGap <= 8
+  && (Math.max(...listed.itemPitches) - Math.min(...listed.itemPitches)) <= 26,
+  `${listed.rowGap}° between rows, ${Math.max(...listed.itemPitches) - Math.min(...listed.itemPitches)}° tall in all`);
+check("and the dot stays the handle the panel hangs from",
+  listed.dotIsNotATargetWhileOpen === false);
 /* The one that made the headset unusable: arriving somewhere is not
    choosing it. */
 /* The two halves of "a file switched itself on while I was only looking":
@@ -1069,13 +1079,13 @@ const scrolled = await page.evaluate(async () => {
 });
 /* Four rooms and the way out: five rows, and five rooms still to come. */
 check("a list longer than the window shows a window on it",
-  scrolled.opened === true && scrolled.rowsShown === 5 && scrolled.moreBelow === 5,
+  scrolled.opened === true && scrolled.rowsShown === 6 && scrolled.moreBelow === 4,
   JSON.stringify({ rows: scrolled.rowsShown, below: scrolled.moreBelow, above: scrolled.moreAbove }));
 check("looking past the bottom row scrolls the column",
   scrolled.scrollingDown === 1 && scrolled.offsetAfterHold >= 1,
   JSON.stringify({ scrolling: scrolled.scrollingDown, offset: scrolled.offsetAfterHold, rows: scrolled.titlesAfter }));
 check("holding there walks it to the end and stops",
-  scrolled.offsetAtEnd === 5 && scrolled.moreBelowAtEnd === 0 && scrolled.moreAboveAtEnd === 5,
+  scrolled.offsetAtEnd === 4 && scrolled.moreBelowAtEnd === 0 && scrolled.moreAboveAtEnd === 4,
   JSON.stringify({ offset: scrolled.offsetAtEnd, below: scrolled.moreBelowAtEnd, above: scrolled.moreAboveAtEnd }));
 check("and looking away from the edge stops it at once",
   scrolled.scrollingAway === 0);

@@ -497,7 +497,11 @@
      files you have to look at your own feet to summon and cannot then
      choose from. One height for both: the list appears exactly where the
      dot was. */
-  const MENU_CHIP_PITCH = 0.26;
+  /* Up and to the right, where a window goes — not underfoot, and not in
+     front of the room. Asked for exactly so: "a small frame, in the top right
+     corner, that does not follow my head." */
+  const MENU_CHIP_PITCH = -0.17;
+  const MENU_CHIP_YAW = 0.42;
   /* The list stands as a column to the right, read top to bottom, rather
      than as a fan the head has to sweep along. A row of entries put the
      whole list at one height, so choosing meant swinging the head sideways
@@ -508,15 +512,20 @@
      from the headset as having to turn ninety degrees and then not being
      able to see the thing being aimed at. A list stands in front of the
      person who asked for it. */
-  const MENU_COLUMN_YAW = 0;
-  const MENU_ROW_PITCH = 0.22;
+  const MENU_COLUMN_YAW = 0.42;
+  /* A panel, not a wall. Rows twelve degrees apart spread eight rooms across
+     a hundred degrees of sky — more than a person can reach without craning,
+     and the report was exactly that: "it opens across the whole space, I
+     cannot reach them, I tilt my head up and it switches somewhere I cannot
+     even see." Five degrees apart puts five rooms inside twenty. */
+  const MENU_ROW_PITCH = 0.088;
   /* A column of rows is only a column while it fits in front of a person.
      Twelve rooms would stand seventy degrees tall — a wall, not a list — so
      the column is a window on the rooms rather than all of them: the one you
      are in, its neighbours, and the way out. A building with floors wants
      grouping by floor, and that is the answer when it arrives; a silent
      seventy-degree wall is not. */
-  const MENU_MAX_ROOM_ROWS = 4;
+  const MENU_MAX_ROOM_ROWS = 5;
   /* Past the top row or past the bottom one, the column scrolls. Holding a
      look there keeps it moving, a row at a time, so a list longer than the
      window is reachable without a controller and without hiding anything.
@@ -1813,7 +1822,14 @@
             }
             if (place) {
               menu.heading = facing;
-              const put = [facing[0] * MENU_CHIP_COS, -MENU_CHIP_SIN, facing[1] * MENU_CHIP_COS];
+              /* Off to the right by the same bearing the column stands on, so
+                 the frame is the head of its own panel rather than a mark
+                 floating somewhere else. */
+              const aside = [
+                facing[0] * Math.cos(-MENU_CHIP_YAW) + facing[1] * Math.sin(-MENU_CHIP_YAW),
+                facing[1] * Math.cos(-MENU_CHIP_YAW) - facing[0] * Math.sin(-MENU_CHIP_YAW),
+              ];
+              const put = [aside[0] * MENU_CHIP_COS, -MENU_CHIP_SIN, aside[1] * MENU_CHIP_COS];
               menu.anchor = {
                 x: headPosition.x + put[0] * PANEL_DISTANCE,
                 y: headPosition.y + put[1] * PANEL_DISTANCE,
@@ -2120,7 +2136,7 @@
                 /* Small, and growing as the aim closes on it — the dot is the
                    whole of the closed menu, and its answer to an approaching
                    reticle is the only instruction anybody gets. */
-                const dotSize = (menu.open ? 0.10 : 0.13) + 0.07 * menu.approach;
+                const dotSize = (menu.open ? 0.09 : 0.11) + 0.04 * menu.approach;
                 drawLabel(menu.chipTexture, menu.chipDir, dotSize, dotSize,
                   menu.lookingChip ? 1 : menu.approach * 0.8, menu.dwellOn === "__chip",
                   menu.chipDistance);
@@ -2128,7 +2144,9 @@
               if (menu.open && !panel.markerId) {
                 for (const item of menu.items) {
                   const lit = item === menu.lookingItem;
-                  drawLabel(item.texture, item.dir, lit ? 1.3 : 1.15, lit ? 0.26 : 0.23, lit,
+                  /* Panel-sized. A row that was 27 degrees wide and 6 tall is
+                     a billboard; these are lines in a small window. */
+                  drawLabel(item.texture, item.dir, lit ? 0.80 : 0.74, lit ? 0.17 : 0.155, lit,
                     menu.dwellOn === item.id, item.distance);
                 }
                 /* The ends of the column, when the column has more to give.
@@ -2170,6 +2188,14 @@
                technically present, practically invisible, and a person with
                no visible aim has no way to learn that aiming is the gesture.
                Reported from the headset as a dot that would not press. */
+            /* And on a headset that hands over an aim of its own, it is not
+               drawn at all. It marks where the HEAD points, which is a
+               stand-in for an aim, not an aim — and on a device that pinches
+               it is a second thing in the room to chase and line up with the
+               first. Said from inside the glasses: "I see a round mark and a
+               cross, they are apart, and I have to drive one to the other."
+               Nothing to drive when there is nothing drawn. */
+            if (xr.everHadPointer) return;
             gl.useProgram(markerProgram);
             gl.bindBuffer(gl.ARRAY_BUFFER, markerQuad);
             gl.enableVertexAttribArray(markerCorner);
