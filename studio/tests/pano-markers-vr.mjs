@@ -683,89 +683,7 @@ check("aim lands on the nose, not on one lens",
 check("so a dot stared straight at still lights up on a canted headset",
   canted.lookingChip === true);
 
-console.log("\n── the rooms are handed to a window the system can aim at ──");
-/* The ask, and the thing three rounds of crosshair work could never buy.
- *
- * Inside an immersive session everything this file draws is pixels in a WebGL
- * canvas, and a headset's own gaze-and-pinch cannot land on a painted pixel —
- * the system aims at ELEMENTS. That is why the same gesture that works on
- * every button in the browser did nothing whatsoever on a room in the painted
- * column, and why widening the catch was never going to be the answer.
- * Reported from inside the headset in the plainest terms: "I cannot pinch
- * anything, I can move my head like crazy trying to find the angle."
- *
- * So the dot hands over. One target a head can hold is achievable; twenty
- * rows a head must chase are not. The session steps out, the rooms come up as
- * the ordinary list — which the headset drives natively, exactly the way it
- * drives the browser this was reported from — and the choice carries the way
- * back in.
- */
-const walked = await page.evaluate(async () => {
-  const run = (dir, frames) => { for (let i = 0; i < frames; i += 1) window.__xrFrame(dir); };
-  const apart = () => new Promise((r) => setTimeout(r, 220));
-  const out = {};
-  window.__xrStandAt(0, 0, 0);
-  run([0, 0, -1], 6);
-  if (window.__xrMenu()?.open) { run([0, 1, 0], 10); run(window.__xrMenu().chipDir, 220); }
-  run([0, 0, -1], 6);
-  out.closed = window.__xrMenu();
-  out.liveBefore = window.__xrLive();
-  const dot = out.closed.chipDir.slice();
-
-  /* Head pointed away throughout: the dot is chosen from the device's ray. */
-  await apart();
-  window.__xrPinchStart(dot);
-  run([0, 0.62, -0.78], 2);
-  window.__xrPinchEnd(dot);
-  await new Promise((r) => setTimeout(r, 600));
-  const panel = document.querySelector(".pano-list");
-  out.windowUp = Boolean(panel);
-  out.heading = panel?.querySelector("h3")?.textContent || "";
-  const rows = [...(panel?.querySelectorAll("[data-room-go]") || [])];
-  out.rows = rows.length;
-  out.marked = rows.filter((row) => row.getAttribute("aria-current") === "true").length;
-  out.liveDuring = window.__xrLive();
-  out.painted = window.__xrMenu()?.open ?? false;
-
-  /* And the way back: choosing a room in the window returns to the room. */
-  const other = rows.find((row) => row.getAttribute("aria-current") !== "true");
-  out.wanted = other?.querySelector("span")?.textContent.trim() || "";
-  other?.click();
-  await new Promise((r) => setTimeout(r, 900));
-  out.chosen = window.__roomChosen || null;
-  out.liveAfter = window.__xrLive();
-  /* A session that has just been re-entered has not drawn a frame yet, so it
-     has no menu to speak of. Warm it, the way a real headset does in the
-     moment it takes to fade back in. */
-  for (let i = 0; i < 12 && !window.__xrMenu(); i += 1) run([0, 0, -1], 1);
-  run([0, 0, -1], 6);
-  out.menuBack = Boolean(window.__xrMenu());
-  return out;
-});
-/* The dot stays a head target, because one big target is a thing a head can
-   actually hold — it is the list of many that could never work this way. */
-check("the dot waits just below the eye line, not on the floor or the ceiling",
-  walked.closed?.open === false
-    && walked.closed.chipDir[1] < -0.2 && walked.closed.chipDir[1] > -0.6,
-  `chip y ${walked.closed?.chipDir[1].toFixed(3)} (want between -0.2 and -0.6)`);
-check("the session was running first", walked.liveBefore === true);
-check("choosing the dot brings the rooms up as a real window",
-  walked.windowUp === true && walked.rows > 1, `${walked.rows} rows`);
-check("and it is the project's rooms", /rooms in this project/.test(walked.heading), walked.heading);
-check("with the room you were standing in marked",
-  walked.marked === 1, `${walked.marked} marked`);
-/* Stepping out is what makes the list aimable. Inside the session it would be
-   paint again, and unaimable again. */
-check("the immersive session steps out of the way", walked.liveDuring === false);
-check("and the painted column is not left up behind it", walked.painted === false);
-check("choosing a room in the window asks for that room",
-  Boolean(walked.chosen), `wanted ${walked.wanted}, asked for ${walked.chosen}`);
-/* Coming from the headset, the choice is also the way back into it. */
-check("and the headset is put back on for you", walked.liveAfter === true);
-check("with the room's own menu waiting again", walked.menuBack === true);
-
-
-console.log("\n── with no gesture at all, a held look does the same ──");
+console.log("\n── a headset that hands over nothing gets a window instead ──");
 /* Twice from the headset: pinches never reach this page on that device — not
    for pins, not for the menu. A gaze needs no controller, no hand tracking
    and no permission, so holding a look has to work on its own. Not one select
@@ -779,6 +697,7 @@ const gazed = await page.evaluate(async () => {
   run([0, 0, -1], 30);
   if (window.__xrMenu()?.open) { run([0, 1, 0], 10); }
   run([0, 0, -1], 6);
+  window.__xrForgetPointer();
   const chip = window.__xrMenu().chipDir.slice();
   run(chip, 20);
   out.partway = window.__xrMenu().dwell;
@@ -952,6 +871,388 @@ check("staring at a reading never confirms it",
   pinned.reopened?.markerId === "pin-ahead" && /not verified/i.test(pinned.standingAfterStaring),
   pinned.standingAfterStaring || "(no standing)");
 
+/* These four sections drive the list that stays IN the headset — the one a
+   device with a real pointer can pinch. The handover to a window is for a
+   device that has given nothing at all, so each of these establishes first
+   that this one has: one pinch, and the session knows. */
+const warmUpPointer = async () => {
+  await page.evaluate(async () => {
+    const run = (dir, frames) => { for (let i = 0; i < frames; i += 1) window.__xrFrame(dir); };
+    window.__xrPinchStart([0, 1, 0]);
+    run([0, 0, -1], 2);
+    window.__xrPinchEnd([0, 1, 0]);
+    run([0, 0, -1], 4);
+  });
+};
+await warmUpPointer();
+
+console.log("\n── the list opens where the dot was, and chooses nothing by itself ──");
+/* Reported from the headset: the line of files only appears if you look
+   almost at your own feet, sits in a very short stretch where it works at
+   all, and then a file switches itself on while you are only looking at it.
+   Three faults in the same geometry. */
+const listed = await page.evaluate(async () => {
+  const run = (dir, frames) => { for (let i = 0; i < frames; i += 1) window.__xrFrame(dir); };
+  const out = {};
+  window.__xrSetMarkers([]);
+  run([0, 0, -1], 6);
+  /* Start from a closed list, whatever an earlier section left behind. */
+  if (window.__xrMenu().open) {
+    const shut = window.__xrMenu().chipDir;
+    run([0, 1, 0], 10);
+    run(shut, 130);
+  }
+  run([0, 0, -1], 6);
+  const rest = window.__xrMenu();
+  out.startedClosed = window.__xrMenu().open === false;
+  /* How far below the eye line a person must look to reach the dot. */
+  out.chipPitch = Math.asin(-rest.chipDir[1]) * 57.3;
+
+  run(rest.chipDir, 130);
+  const open = window.__xrMenu();
+  out.opened = open.open;
+  /* A column: every row at one bearing off to the side, stepping down. */
+  const yaw = (dir) => Math.atan2(dir[0], -dir[2]) * 57.3;
+  out.itemPitches = open.items.map((item) => Math.round(Math.asin(-item.dir[1]) * 57.3));
+  out.itemYaws = open.items.map((item) => Math.round(yaw(item.dir)));
+  const pitches = out.itemPitches.slice().sort((a, b) => a - b);
+  out.rowGap = pitches.length > 1 ? Math.round(pitches[1] - pitches[0]) : 0;
+  out.columnYaw = Math.round(yaw(open.items[0].dir));
+  /* Standing in front, the column covers the ground the dot occupies — so
+     the dot stops being a target while the list is up, rather than the two
+     being fought over. */
+  out.dotIsNotATargetWhileOpen = open.lookingChip === false;
+
+  /* No item may sit on the dot, or the two cannot be told apart and the
+     list can only be left by choosing something out of it. */
+  out.itemOnTheDot = open.items.some((item) => {
+    const dot = item.dir[0] * rest.chipDir[0] + item.dir[1] * rest.chipDir[1] + item.dir[2] * rest.chipDir[2];
+    return dot > Math.cos(0.20);
+  });
+  /* The trigger must not be live the instant the list appears. */
+  const currentBefore = open.items.find((item) => item.current)?.id || null;
+  out.roomBefore = currentBefore;
+  run(rest.chipDir, 200);
+  out.afterStaring = window.__xrMenu().open;
+  out.roomUnchanged = (window.__xrMenu().items.find((item) => item.current)?.id || null) === currentBefore;
+
+  /* A gaze SWEEPING across an entry is passing over it, not resting on it.
+     Two degrees a frame is a slow, ordinary look around the room — and it
+     used to be enough to choose a file on the way past. */
+  run([0, 0, -1], 12);
+  out.armedAfterLookingAway = window.__xrMenu().armed;
+  /* A row the aim did NOT arrive on: sweeping from where it already rests
+     to where it already rests proves nothing. */
+  const arrived = window.__xrMenu().lookingItem;
+  const room = open.items.find((item) => !item.exit && item.id !== arrived)
+    || open.items.find((item) => !item.exit);
+  const turnTowards = (target, fraction) => {
+    const from = [0, 0, -1];
+    const mixed = [
+      from[0] + (target[0] - from[0]) * fraction,
+      from[1] + (target[1] - from[1]) * fraction,
+      from[2] + (target[2] - from[2]) * fraction,
+    ];
+    const length = Math.hypot(mixed[0], mixed[1], mixed[2]) || 1;
+    return [mixed[0] / length, mixed[1] / length, mixed[2] / length];
+  };
+  /* Sweep on to it, over it, and off the other side, twice — far longer in
+     total than a dwell takes, and never still. */
+  for (let pass = 0; pass < 2; pass += 1) {
+    for (let step = 0; step <= 60; step += 1) window.__xrFrame(turnTowards(room.dir, step / 40));
+    for (let step = 60; step >= 0; step -= 1) window.__xrFrame(turnTowards(room.dir, step / 40));
+  }
+  out.sweptOpen = window.__xrMenu().open;
+  out.sweptRoom = window.__xrMenu().items.find((item) => item.current)?.id || null;
+
+  /* Now stop on it. That is choosing. */
+  run(room.dir, 200);
+  out.closedAfterChoosing = window.__xrMenu().open;
+  return out;
+});
+check("the list starts down, so the dot is what opens it",
+  listed.startedClosed === true);
+check("the dot sits under the eye line, not down by the feet",
+  listed.chipPitch > 6 && listed.chipPitch < 16, `${Math.round(listed.chipPitch)}° below the eye line`);
+/* Asked for from the headset: a column off to the right, not a line the head
+   has to sweep along. */
+check("the list stands as a column in front, not a line across the view",
+  listed.opened === true
+  && listed.itemYaws.every((bearing) => Math.abs(bearing) <= 2)
+  && listed.itemPitches.length > 1,
+  `all rows at ${listed.columnYaw}° round, pitches ${listed.itemPitches.join(", ")}°`);
+check("its rows are spaced far enough to tell one from the next",
+  listed.rowGap >= 11, `${listed.rowGap}° between rows, each caught within 5.7°`);
+check("and the dot is not a target while the list covers it",
+  listed.dotIsNotATargetWhileOpen === true);
+/* The one that made the headset unusable: arriving somewhere is not
+   choosing it. */
+/* The two halves of "a file switched itself on while I was only looking":
+   nothing sits where the gaze already is, and the trigger is not live at the
+   moment the list appears. */
+
+/* Held for more than twice a dwell at the spot the list appeared at:
+   nothing is caught, so nothing is chosen and no room changes underfoot.
+   The arming flag guards the same thing from the other side, for any layout
+   where an item could land under the gaze. */
+check("and staring where the list opened chooses nothing at all",
+  listed.afterStaring === true && listed.roomUnchanged === true,
+  JSON.stringify({ stillOpen: listed.afterStaring, sameRoom: listed.roomUnchanged }));
+/* "My eye fell on a room and it opened." A hold has to mean the head is
+   still; a gaze crossing a target is passing over it. */
+check("a gaze sweeping across a room chooses nothing on the way past",
+  listed.sweptOpen === true && listed.sweptRoom === listed.roomBefore,
+  JSON.stringify({ stillOpen: listed.sweptOpen, room: listed.sweptRoom }));
+check("while a look off the list and a held look on a room does choose it",
+  listed.armedAfterLookingAway === true && listed.closedAfterChoosing === false);
+
+console.log("\n── a long list scrolls rather than hides ──");
+/* Asked for from the headset: a column, and one you can scroll. A window
+   that silently drops rooms is a list that lies about what is in the
+   project. */
+const scrolled = await page.evaluate(async () => {
+  const run = (dir, frames) => { for (let i = 0; i < frames; i += 1) window.__xrFrame(dir); };
+  const out = {};
+  window.__xrSetRooms(Array.from({ length: 9 }, (nothing, index) => ({
+    id: `room-${index}`,
+    title: `Room ${index + 1}`,
+    current: index === 0,
+  })));
+  run([0, 0, -1], 6);
+  if (window.__xrMenu().open) { run([0, 1, 0], 10); run(window.__xrMenu().chipDir, 140); }
+  run([0, 0, -1], 6);
+  const shut = window.__xrMenu().chipDir.slice();
+  run(shut, 140);
+  const open = window.__xrMenu();
+  out.opened = open.open;
+  out.rowsShown = open.items.length;
+  out.moreBelow = open.moreBelow;
+  out.moreAbove = open.moreAbove;
+
+  /* Just under the bottom row, where the column is asked to move. */
+  const pitchOf = (dir) => Math.asin(Math.max(-1, Math.min(1, -dir[1])));
+  const rowDirs = open.items.map((item) => item.dir);
+  const lowest = rowDirs.reduce((a, b) => (pitchOf(a) > pitchOf(b) ? a : b));
+  const belowIt = (extra) => {
+    const pitch = pitchOf(lowest) + extra;
+    const flat = Math.hypot(lowest[0], lowest[2]) || 1;
+    const scale = Math.cos(pitch) / flat;
+    return [lowest[0] * scale, -Math.sin(pitch), lowest[2] * scale];
+  };
+  const under = belowIt(0.18);
+  run(under, 6);
+  out.scrollingDown = window.__xrMenu().scrolling;
+  run(under, 60);
+  const moved = window.__xrMenu();
+  out.offsetAfterHold = moved.offset;
+  out.titlesAfter = moved.items.map((item) => item.id);
+
+  /* Held there, it keeps going — and stops at the end rather than running off. */
+  run(under, 600);
+  const end = window.__xrMenu();
+  out.offsetAtEnd = end.offset;
+  out.moreBelowAtEnd = end.moreBelow;
+  out.moreAboveAtEnd = end.moreAbove;
+
+  /* Away from the edge it stops moving at once. */
+  run([0, 0, -1], 10);
+  out.scrollingAway = window.__xrMenu().scrolling;
+  /* Put the list away and the rooms back: a section that leaves its own
+     state lying around fails the one after it and blames the product. */
+  if (window.__xrMenu().open) { run([0, 1, 0], 10); run(shut, 200); }
+  out.tidied = window.__xrMenu().open;
+  window.__xrSetRooms([
+    { id: "room-a", title: "Family Room", current: true },
+    { id: "room-b", title: "Dining Room" },
+  ]);
+  return out;
+});
+/* Four rooms and the way out: five rows, and five rooms still to come. */
+check("a list longer than the window shows a window on it",
+  scrolled.opened === true && scrolled.rowsShown === 5 && scrolled.moreBelow === 5,
+  JSON.stringify({ rows: scrolled.rowsShown, below: scrolled.moreBelow, above: scrolled.moreAbove }));
+check("looking past the bottom row scrolls the column",
+  scrolled.scrollingDown === 1 && scrolled.offsetAfterHold >= 1,
+  JSON.stringify({ scrolling: scrolled.scrollingDown, offset: scrolled.offsetAfterHold, rows: scrolled.titlesAfter }));
+check("holding there walks it to the end and stops",
+  scrolled.offsetAtEnd === 5 && scrolled.moreBelowAtEnd === 0 && scrolled.moreAboveAtEnd === 5,
+  JSON.stringify({ offset: scrolled.offsetAtEnd, below: scrolled.moreBelowAtEnd, above: scrolled.moreAboveAtEnd }));
+check("and looking away from the edge stops it at once",
+  scrolled.scrollingAway === 0);
+check("and the list is put away behind it", scrolled.tidied === false);
+
+console.log("\n── the list stands in the room, and you walk around it ──");
+/* Asked for from the headset: the same feeling as a browser window in VR —
+   the window stays, the keyboard stays, and you walk and look around them.
+   Hung on a direction from the head, a panel travels with the person: step
+   sideways and the list steps too. Hung at a place, it stays. */
+const stood = await page.evaluate(async () => {
+  const run = (dir, frames) => { for (let i = 0; i < frames; i += 1) window.__xrFrame(dir); };
+  const out = {};
+  window.__xrStandAt(0, 0, 0);
+  run([0, 0, -1], 6);
+  if (window.__xrMenu().open) { run([0, 1, 0], 10); run(window.__xrMenu().chipDir, 200); }
+  run([0, 0, -1], 6);
+  const shut = window.__xrMenu().chipDir.slice();
+  run(shut, 200);
+  const open = window.__xrMenu();
+  out.opened = open.open;
+  out.rowBefore = open.items[0].dir.slice();
+  out.chipBefore = open.chipDir.slice();
+
+  /* One long step to the right, without turning the head at all. */
+  window.__xrStandAt(1.2, 0, 0);
+  run([0, 0, -1], 4);
+  const after = window.__xrMenu();
+  out.rowAfter = after.items[0].dir.slice();
+  out.chipAfter = after.chipDir.slice();
+  const angleBetween = (a, b) => Math.acos(Math.max(-1, Math.min(1,
+    a[0] * b[0] + a[1] * b[1] + a[2] * b[2]))) * 57.3;
+  out.rowMoved = angleBetween(out.rowBefore, out.rowAfter);
+  out.chipMoved = angleBetween(out.chipBefore, out.chipAfter);
+
+  /* Step back, and it is exactly where it was. */
+  window.__xrStandAt(0, 0, 0);
+  run([0, 0, -1], 4);
+  out.rowBack = angleBetween(out.rowBefore, window.__xrMenu().items[0].dir);
+  out.stillOpen = window.__xrMenu().open;
+  window.__xrStandAt(0, 0, 0);
+  if (window.__xrMenu().open) { run([0, 1, 0], 10); run(shut, 200); }
+  out.tidied = window.__xrMenu().open;
+  return out;
+});
+/* A panel carried on the head would sit at the same bearing after the step;
+   one standing in the room cannot. */
+check("stepping sideways moves the room list in view, because it stayed put",
+  stood.opened === true && stood.rowMoved > 8 && stood.chipMoved > 8,
+  `row shifted ${Math.round(stood.rowMoved)}°, dot ${Math.round(stood.chipMoved)}° after a 1.2 m step`);
+check("and stepping back finds it exactly where it was left",
+  stood.rowBack < 0.5, `${stood.rowBack.toFixed(2)}° from where it stood`);
+check("walking around it never closed it", stood.stillOpen === true);
+check("and the list is put away behind this too", stood.tidied === false);
+
+console.log("\n── a pinch chooses what the eyes were on, and a held pinch moves it ──");
+/* The path the person actually uses, and the one nothing tested: a headset
+   that tracks eyes reports a pinch as an input source whose ray IS the gaze.
+   The head is not involved, and here it is deliberately pointed elsewhere
+   the whole time — if the head were still the aim, every check below fails. */
+const pinched = await page.evaluate(async () => {
+  const run = (dir, frames) => { for (let i = 0; i < frames; i += 1) window.__xrFrame(dir); };
+  /* One gesture is not the next one. The code collapses a device that
+     reports a pinch twice in the same breath, so pinches fired back to back
+     inside one evaluate all count as one — and every check after the first
+     would pass without the code doing anything. A real hand takes longer
+     than this between two deliberate pinches. */
+  const apart = () => new Promise((r) => setTimeout(r, 220));
+  const out = {};
+  window.__xrStandAt(0, 0, 0);
+  window.__xrSetMarkers([]);
+  window.__roomChosen = null;
+  run([0, 0, -1], 6);
+  if (window.__xrMenu().open) { run([0, 1, 0], 10); run(window.__xrMenu().chipDir, 220); }
+  run([0, 0, -1], 6);
+  const dot = window.__xrMenu().chipDir.slice();
+
+  /* Head pointed away from the dot for the whole of this. */
+  const away = [0, 0.62, -0.78];
+  run(away, 4);
+  await apart();
+  window.__xrPinchStart(dot);
+  run(away, 2);
+  out.beforePinch = { open: window.__xrMenu().open, chip: window.__xrMenu().lookingChip };
+  window.__xrPinchEnd(dot);
+  out.rightAfterPinch = { open: window.__xrMenu().open, chip: window.__xrMenu().lookingChip };
+  run(away, 4);
+  out.openedByPinch = window.__xrMenu().open;
+  out.headWasElsewhere = true;
+
+  const open = window.__xrMenu();
+  const room = open.items.find((item) => !item.exit && item.id !== open.lookingItem)
+    || open.items.find((item) => !item.exit);
+
+  /* A pinch that travels is a move, not a choice: take the dot and carry it.
+     With the list up the dot is at the head of the column, not at the
+     resting place it was pinched from — a fixture that kept aiming at the
+     old place was aiming at a row, and mistook the list closing for the
+     list being carried. */
+  const bar = window.__xrMenu().chipDir.slice();
+  const before = bar.slice();
+  await apart();
+  window.__xrPinchStart(bar);
+  const carried = [bar[0] + 0.45, bar[1] + 0.2, bar[2]];
+  window.__xrPointAt(carried);
+  run(away, 6);
+  out.movedWhileHeld = window.__xrMenu().chipDir.slice();
+  window.__xrPinchEnd(carried);
+  run(away, 4);
+  const after = window.__xrMenu().chipDir.slice();
+  const angle = (a, b) => Math.acos(Math.max(-1, Math.min(1,
+    a[0] * b[0] + a[1] * b[1] + a[2] * b[2]))) * 57.3;
+  out.dotTravelled = angle(before, after);
+  out.stillOpenAfterMove = window.__xrMenu().open;
+  out.rowsFollowed = angle(open.items[0].dir, window.__xrMenu().items[0].dir);
+  /* Nothing under the hand on the way may have been taken. */
+  out.chosenWhileCarrying = window.__roomChosen || null;
+
+  /* A pinch that stays still IS a choice — and a pinch on a ROW is a choice
+     whatever the hand does, because a row is not something to be carried.
+     Reported from the headset as "not a single file opens". */
+  await apart();
+  const target = window.__xrMenu().items.find((item) => item.id === room.id);
+  const columnBefore = window.__xrMenu().items[0].dir.slice();
+  window.__xrPinchStart(target.dir);
+  run(away, 2);
+  window.__xrPinchEnd(target.dir);
+  out.columnHeld = window.__xrMenu().items[0]
+    ? window.__xrMenu().items[0].dir.slice() : columnBefore;
+  out.columnBefore = columnBefore;
+  run(away, 6);
+  out.wanted = room.id;
+  out.chosenByPinch = window.__roomChosen || null;
+  out.closedAfterChoosing = window.__xrMenu()?.open;
+  out.sourcesLeftBehind = window.__xrPinchSources();
+
+  /* This section carried the menu across the room; the next one expects to
+     find it where it was left the first time. Turning right round leaves it
+     behind and unreachable, and the product's own answer to that is to
+     bring it back to where the person now faces — so the tidy-up here is
+     the shipped behaviour, not a poke at the fixture. */
+  run([0, 0, 1], 20);
+  run([0, 0, -1], 20);
+  out.broughtBack = window.__xrMenu().chipDir.slice();
+  out.tidyOpen = window.__xrMenu().open;
+  return out;
+});
+check("a pinch opens the list while the head is pointed somewhere else",
+  pinched.openedByPinch === true,
+  JSON.stringify({ before: pinched.beforePinch, after: pinched.rightAfterPinch }));
+check("a pinch that travels carries the panel with it",
+  pinched.dotTravelled > 10, `the dot moved ${Math.round(pinched.dotTravelled)}° across the room`);
+check("and the list travels with it as one thing",
+  pinched.rowsFollowed > 10 && pinched.stillOpenAfterMove === true,
+  `rows moved ${Math.round(pinched.rowsFollowed)}°`);
+/* A move is not a choice — otherwise carrying the menu somewhere would open
+   whatever the hand happened to pass over. */
+check("a travelled pinch chooses nothing on the way",
+  pinched.stillOpenAfterMove === true && pinched.chosenWhileCarrying === null,
+  String(pinched.chosenWhileCarrying));
+check("but a pinch that stays still chooses what the eyes were on",
+  pinched.chosenByPinch === pinched.wanted,
+  `wanted ${pinched.wanted}, got ${pinched.chosenByPinch}`);
+check("and the list closes behind that choice", pinched.closedAfterChoosing === false);
+/* The bug behind "not a single file opens": with the list up, every pinch
+   took hold of the menu, a shaking hand made it travel, and travel is never
+   a choice. A row must not be a handle. */
+const shifted = Math.acos(Math.max(-1, Math.min(1,
+  pinched.columnBefore[0] * pinched.columnHeld[0]
+  + pinched.columnBefore[1] * pinched.columnHeld[1]
+  + pinched.columnBefore[2] * pinched.columnHeld[2]))) * 57.3;
+check("pinching a row never drags the list instead of choosing",
+  shifted < 1, `the column moved ${shifted.toFixed(1)}° under the press`);
+check("and the pointer is gone once the fingers open",
+  pinched.sourcesLeftBehind === 0);
+/* Carried across the room and then turned away from, it comes back rather
+   than being lost behind you. */
 console.log("\n── a press that chooses nothing says why ──");
 /* In a headset there is no console and no status bar. Three rounds went by on
    the sentence "it does not work", because that is the only sentence the
