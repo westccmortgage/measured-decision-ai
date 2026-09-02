@@ -1102,8 +1102,19 @@
       if (!navigator.xr) return { ok: false, why: "This browser cannot open an immersive view." };
       let xrSession;
       try {
+        /* Ask for the hands.
+         *
+         * This asked for the floor and nothing else — and a headset does not
+         * hand over what it was not asked for. With no input feature
+         * requested, inputSources stayed empty for the whole session, not one
+         * select event ever arrived, and every aim fell back to the head.
+         * Which is precisely the report, three rounds running: "I cannot
+         * pinch anything, I can only move my head like crazy."
+         *
+         * All optional, so a device without one of them still opens rather
+         * than refusing outright. */
         xrSession = await navigator.xr.requestSession("immersive-vr", {
-          optionalFeatures: ["local-floor"],
+          optionalFeatures: ["local-floor", "hand-tracking"],
         });
       } catch (error) {
         /* The name and message the device gave. A generic sentence here is what
@@ -1213,6 +1224,9 @@
         window.__xrSetMarkers = (list) => setHeadsetMarkers(list || []);
         window.__xrSetRooms = (list) => setHeadsetRooms(list || []);
         window.__xrNote = () => lastNote;
+        /* A headset that has handed over nothing at all — the condition the
+           window exists for, and the only way a test can stand in one. */
+        window.__xrForgetPointer = () => { if (xr) xr.everHadPointer = false; };
         window.__xrMenu = () => (xr ? {
           open: xr.menu.open,
           chipDir: xr.menu.chipDir.slice(),
@@ -1309,7 +1323,15 @@
                  target that a head can hold is achievable; twenty rows that
                  a head has to chase are not, and the system will not aim at
                  them for us. */
-              if (xrSession && onRoomsWanted) {
+              /* Where the headset gives an aim of its own, the rooms stay
+                 in the room: a painted list can be pinched when there is a
+                 real ray to pinch with, and being pulled out of the glasses
+                 to change rooms is its own kind of dead end — said plainly
+                 from inside them: "you are out of your glasses, you cannot
+                 do anything in your glasses."
+                 Where it gives nothing, paint cannot be aimed at by anybody,
+                 and the list has to become elements the system can drive. */
+              if (xrSession && onRoomsWanted && !xr.everHadPointer) {
                 menu.open = false;
                 onRoomsWanted();
                 return true;
@@ -1527,7 +1549,12 @@
           for (const source of xrSession.inputSources || []) {
             if (!source?.targetRaySpace) continue;
             const ray = rayOf(frame.getPose(source.targetRaySpace, reference));
-            if (ray) return ray;
+            /* Whether this headset ever hands over an aim of its own is the
+               fact everything else turns on, and it is a fact rather than a
+               guess: either a pointer arrived or it did not. Remembered for
+               the session, because a transient one is gone between pinches
+               and its absence in this frame proves nothing. */
+            if (ray) { if (xr) xr.everHadPointer = true; return ray; }
           }
           return null;
         }
