@@ -1311,6 +1311,110 @@ check("and it says where the aim was",
 check("and whether the device gave a ray of its own",
   /device's own ray|sent no ray/.test(silent.note || ""), String(silent.note));
 
+console.log("\n── a room that is missed is still a room ──");
+/* Reported from an Apple Vision Pro, after the panel itself was working:
+   "no cross, panel opens with pinch to the Rooms, but you cannot choose the
+   rooms". Two things made that sentence possible and neither was the aim.
+   A press with the panel up that landed on no row PUT THE PANEL AWAY and
+   reported success, so the line that says how far the aim missed by was
+   never reached — the panel vanished, the room did not change, and there was
+   nothing to read. And a row caught only two and a half degrees past the end
+   of the column, which is not a target for a ray that is somebody's gaze.
+   Both are pinned here. */
+const missed = await page.evaluate(async () => {
+  const run = (dir, frames) => { for (let i = 0; i < frames; i += 1) window.__xrFrame(dir); };
+  const tap = async (dir) => {
+    await new Promise((r) => setTimeout(r, 240));
+    window.__xrPinchStart(dir);
+    run(dir, 2);
+    window.__xrPinchEnd(dir);
+    run(dir, 6);
+  };
+  /* Down by `by` radians, and round by `by` radians, from a given aim. */
+  const lower = (dir, by) => {
+    const flat = Math.hypot(dir[0], dir[2]) || 0.0001;
+    const pitch = Math.asin(Math.max(-1, Math.min(1, -dir[1]))) + by;
+    const c = Math.cos(pitch);
+    return [dir[0] / flat * c, -Math.sin(pitch), dir[2] / flat * c];
+  };
+  const sideways = (dir, by) => [
+    dir[0] * Math.cos(by) + dir[2] * Math.sin(by),
+    dir[1],
+    dir[2] * Math.cos(by) - dir[0] * Math.sin(by),
+  ];
+  const out = {};
+  const away = [0, 0.62, -0.78];
+  window.__xrStandAt(0, 0, 0);
+  window.__xrSetMarkers([]);
+  window.__xrSetRooms([
+    { id: "room-a", title: "Family Room", current: true },
+    { id: "room-b", title: "Dining Room" },
+    { id: "room-c", title: "Hallway" },
+  ]);
+  run([0, 0, -1], 8);
+  for (let i = 0; i < 3 && window.__xrMenu().open; i += 1) await tap(window.__xrMenu().chipDir.slice());
+  run([0, 0, -1], 6);
+  await tap(window.__xrMenu().chipDir.slice());
+  run(away, 6);
+  out.opened = window.__xrMenu().open;
+
+  /* Wide of the column altogether. */
+  window.__roomChosen = null;
+  const rows = window.__xrMenu().items;
+  const middle = rows[Math.floor(rows.length / 2)].dir.slice();
+  await tap(sideways(middle, -0.40));
+  run(away, 6);
+  out.stillOpenAfterMiss = window.__xrMenu().open;
+  out.nothingChosenByMiss = window.__roomChosen;
+  out.missNote = window.__xrNote();
+
+  /* Past the bottom of the column by most of a row-step: still that row. */
+  const last = window.__xrMenu().items[window.__xrMenu().items.length - 1];
+  out.wanted = last.id;
+  await tap(lower(last.dir.slice(), 0.075));
+  run(away, 6);
+  out.chosenPastTheEnd = window.__roomChosen;
+  out.openingNote = window.__xrNote();
+
+  /* And the Rooms button is still a target with the column standing open —
+     the rows now reach well past their own ends, towards where it sits. */
+  for (let i = 0; i < 3 && window.__xrMenu().open; i += 1) await tap(window.__xrMenu().chipDir.slice());
+  await tap(window.__xrMenu().chipDir.slice());
+  run(away, 6);
+  out.reopened = window.__xrMenu().open;
+  window.__roomChosen = null;
+  await tap(window.__xrMenu().chipDir.slice());
+  run(away, 6);
+  out.shutByButton = window.__xrMenu().open;
+  out.nothingChosenByButton = window.__roomChosen;
+
+  /* Anything outside the sphere can put a sentence in front of the person
+     wearing the headset — a room that will not load has nowhere else to
+     say so. */
+  window.MDAIPano360.say("The Dining Room could not be opened");
+  run(away, 2);
+  out.saidFromOutside = window.__xrNote();
+  return out;
+});
+check("a press that lands on nothing leaves the panel standing",
+  missed.opened === true && missed.stillOpenAfterMiss === true);
+check("and chooses nothing", missed.nothingChosenByMiss === null,
+  String(missed.nothingChosenByMiss));
+check("and says how far to the side it went",
+  /to the side of the list|from the nearest room/.test(missed.missNote || ""),
+  String(missed.missNote));
+check("a press most of a row-step past the last room still opens that room",
+  missed.chosenPastTheEnd === missed.wanted,
+  `wanted ${missed.wanted}, got ${missed.chosenPastTheEnd}`);
+check("and the room says it heard, while the file is still on its way",
+  /^Opening /.test(missed.openingNote || ""), String(missed.openingNote));
+check("the Rooms button still shuts the panel with the panel open",
+  missed.reopened === true && missed.shutByButton === false
+  && missed.nothingChosenByButton === null);
+check("and anything outside the sphere can speak into the room",
+  missed.saidFromOutside === "The Dining Room could not be opened",
+  String(missed.saidFromOutside));
+
 console.log("\n── taking the headset off ──");
 /* The way out used to be a row in the painted list. That list is gone from
    the headset — the system cannot aim at paint, which is the whole reason the

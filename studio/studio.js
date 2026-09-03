@@ -4423,15 +4423,31 @@ async function openEvidenceViewer(item, room, focusMarkerId = null) {
     }));
   const chooseRoom = async (roomId) => {
     const choice = roomChoices.find((entry) => entry.id === roomId);
-    if (!choice) return;
+    /* Every dead end on this path used to be a bare return. From inside a
+       headset that is indistinguishable from a press that never registered,
+       and it was reported in exactly those words: the rooms cannot be
+       chosen. The room the person is standing in is where the sentence has
+       to appear, so each one says what stopped it. */
+    if (!choice) {
+      window.MDAIPano360.say?.("That room is no longer in this project's list — you are still where you were.");
+      return;
+    }
     /* A swap is a person opening evidence, exactly as the first open was. */
     recordClientEvent("evidence.opened", {
       evidence_id: choice.item.id,
       filename: choice.item.name || null,
       space_id: choice.id,
     });
-    const nextSource = await freshEvidenceSrc(choice.item);
-    if (!nextSource) return;
+    let nextSource = "";
+    try {
+      nextSource = await freshEvidenceSrc(choice.item);
+    } catch (error) {
+      nextSource = "";
+    }
+    if (!nextSource) {
+      window.MDAIPano360.say?.(`${choice.title} could not be opened — the private cloud would not sign a link for its capture. The file is untouched; you are still where you were.`);
+      return;
+    }
     window.MDAIPano360.swapRoom({
       src: nextSource,
       mediaType: choice.item.mimeType || "",

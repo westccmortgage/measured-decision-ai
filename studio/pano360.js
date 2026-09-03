@@ -512,11 +512,26 @@
      longer than the window scrolls; nothing here assumes a particular number
      of rooms. */
   const MENU_ROW_PITCH = 0.088;
+  /* How far past the first and last row the column still answers. Half a
+     row-step — 2.5 degrees — was the whole of it, and 2.5 degrees is not a
+     target for a ray that is somebody's gaze: the eye settles near a thing,
+     the hand pinches, and the ray arrives wherever the eye was at that
+     instant. Eight degrees is a margin the hand can actually hit. Nothing is
+     hidden behind it: a press further out than this is still answered, in
+     degrees, under the panel. */
+  const MENU_ROW_REACH = MENU_ROW_PITCH * 1.6;
   const MENU_MAX_ROOM_ROWS = 5;
   /* The two furnishings of the panel, placed relative to its rows: a close
      mark level with the top row and off its right end, and a bar under the
      bottom row that the whole panel is carried by. */
-  const MENU_CLOSE_YAW = 0.145;
+  /* Clear of the top row's right edge rather than sitting on it. A row is
+     0.74 wide at 2.4 away, so its edge is 0.154 out; the mark used to stand
+     at 0.145, inside the row it is meant to sit beside — printed over the
+     row and, worse, claiming presses that were aimed at it. */
+  const MENU_CLOSE_YAW = 0.205;
+  /* And the name of the panel on the other side of the same line. Further
+     out than the close mark because the word is wider than the mark. */
+  const MENU_CHIP_OPEN_YAW = 0.34;
   /* Well clear of the scroll edge below the last row, so a pinch meant for
      one is never taken by the other. */
   const MENU_BAR_PITCH = 0.30;
@@ -525,14 +540,19 @@
   const MENU_ROW_HEIGHT = 0.155;
   const MENU_CHIP_WIDTH = 0.42;
   const MENU_CHIP_HEIGHT = 0.125;
-  const MENU_BAR_WIDTH = 0.34;
-  const MENU_BAR_HEIGHT = 0.045;
-  const MENU_CLOSE_SIZE = 0.10;
+  const MENU_BAR_WIDTH = 0.40;
+  const MENU_BAR_HEIGHT = 0.06;
+  const MENU_CLOSE_SIZE = 0.12;
   /* How near the pinch's own ray has to pass to count as landing on the close
      mark or the bar. Generous, because the ray is handed over once per pinch
      and there is no second chance to correct it. */
-  const MENU_CLOSE_CATCH = 0.075;
-  const MENU_BAR_CATCH = 0.085;
+  /* Both were sized to the mark rather than to the eye. The bar is a degree
+     tall and the close mark two and a half, and a gaze does not settle
+     inside two and a half degrees — which is why the panel could be neither
+     put away nor picked up without several tries. Now that nearest-wins
+     settles overlaps, a generous catch on either cannot steal a room. */
+  const MENU_CLOSE_CATCH = 0.10;
+  const MENU_BAR_CATCH = 0.11;
   /* Past the top row or past the bottom one, the column scrolls. Holding a
      look there keeps it moving, a row at a time, so a list longer than the
      window is reachable without a controller and without hiding anything.
@@ -555,7 +575,6 @@
      has to tell one row from the next. */
   const MENU_CHIP_CATCH = 0.13;
   const MENU_ROW_YAW_CATCH = 0.26;
-  const MENU_ROW_PITCH_CATCH = 0.10;
   /* The menu stays where it was left. It only comes back around when the
      person has turned so far that it is behind them — anything tighter and
      it teleports in front of the eyes on every glance, which is exactly what
@@ -830,10 +849,15 @@
     /* Readable from a test, because the sentence itself is the thing being
        checked and a baked texture cannot be read back as words. */
     let lastNote = "";
-    function sayNothingHappened(text) {
+    /* Also the only way anything OUTSIDE the sphere can say a word to the
+       person wearing the headset. A room that will not load, a link that
+       will not renew — all of it used to go to a toast on a page nobody in a
+       headset can see, so from inside the room a failed swap and a missed
+       press looked the same: nothing. */
+    function sayInHeadset(text, forMilliseconds) {
       if (noteTexture) gl.deleteTexture(noteTexture);
       noteTexture = bakeLabelTexture(text, false);
-      noteUntil = performance.now() + 6000;
+      noteUntil = performance.now() + (forMilliseconds || 6000);
       lastNote = text;
     }
 
@@ -1398,7 +1422,18 @@
               const chosen = menu.lookingItem;
               menu.open = false;
               if (chosen.exit) exitVR();
-              else if (!chosen.current) onRoomChosen?.(chosen.id);
+              else if (chosen.current) sayInHeadset(`You are already in ${chosen.title}`);
+              else {
+                /* The list goes down the instant a room is chosen, and what
+                   happens next is a signed link, a download and a texture —
+                   seconds, sometimes, and every one of them looked exactly
+                   like a press that did nothing. Reported as "you cannot
+                   choose the rooms", which was indistinguishable from a
+                   miss. The room says it heard, and the opener replaces this
+                   line with what became of it. */
+                sayInHeadset(`Opening ${chosen.title}…`, 30000);
+                onRoomChosen?.(chosen.id);
+              }
               return true;
             }
             if (menu.lookingChip) {
@@ -1425,10 +1460,17 @@
               menu.arrivedOn = null;
               return true;
             }
-            if (menu.open) {
-              menu.open = false;
-              return true;
-            }
+            /* A press with the list up that landed on nothing.
+             *
+             * It used to put the list away and report success, which meant
+             * the one press that most needed explaining was the only one
+             * that could not explain itself: the panel vanished, the room
+             * stayed, and the line that says how far the aim missed by was
+             * never reached. Three rounds from the headset went by on that.
+             * Now the list stays where it is and the press answers. Nothing
+             * behind the panel is reachable while it is up, either — the
+             * pins are under it, and a miss must not open one. */
+            if (menu.open) return false;
           }
           const marker = xr?.looking;
           if (!marker) return false;
@@ -1534,8 +1576,23 @@
                 const pitches = rowAim.map((row) => pitchOf(row.at));
                 const highest = Math.min(...pitches);
                 const lowest = Math.max(...pitches);
-                const reach = MENU_ROW_PITCH / 2;
-                if (aimPitch >= highest - reach && aimPitch <= lowest + reach) {
+                /* A whole row-step past each end, not half of one.
+                 *
+                 * Half a step is 2.5 degrees, and 2.5 degrees is not a
+                 * target on a device where the ray IS the gaze: eyes settle
+                 * near a thing rather than on it, and there is no hover mark
+                 * to say how near. Reported from the headset as rooms that
+                 * could not be chosen at all. Past that margin the press is
+                 * still answered — it says how far it missed by — so a wide
+                 * margin costs nothing and a narrow one cost the feature. */
+                /* Generous into empty space, and no further than that.
+                   Where the list has more to give, the edge that says so is
+                   drawn a row-step out and is a target in its own right, so
+                   the last row stops half-way to it as any two neighbouring
+                   rows do. */
+                const roomAbove = menu.moreAbove > 0 ? MENU_ROW_PITCH / 2 : MENU_ROW_REACH;
+                const roomBelow = menu.moreBelow > 0 ? MENU_ROW_PITCH / 2 : MENU_ROW_REACH;
+                if (aimPitch >= highest - roomAbove && aimPitch <= lowest + roomBelow) {
                   let bestRow = Infinity;
                   for (const row of rowAim) {
                     const off = Math.abs(pitchOf(row.at) - aimPitch);
@@ -1545,8 +1602,10 @@
                 if (!lookedItem) {
                   const above = Math.min(...pitches) - aimPitch;
                   const below = aimPitch - Math.max(...pitches);
-                  if (menu.moreAbove > 0 && above > MENU_ROW_PITCH_CATCH && above < MENU_SCROLL_ZONE) menu.scrolling = -1;
-                  else if (menu.moreBelow > 0 && below > MENU_ROW_PITCH_CATCH && below < MENU_SCROLL_ZONE) menu.scrolling = 1;
+                  /* Where the rows stop is where the edge begins: the two
+                     meet half-way, with nothing dead between them. */
+                  if (menu.moreAbove > 0 && above > MENU_ROW_PITCH / 2 && above < MENU_SCROLL_ZONE) menu.scrolling = -1;
+                  else if (menu.moreBelow > 0 && below > MENU_ROW_PITCH / 2 && below < MENU_SCROLL_ZONE) menu.scrolling = 1;
                   else menu.scrolling = 0;
                 } else {
                   menu.scrolling = 0;
@@ -1557,28 +1616,56 @@
             } else {
               menu.scrolling = 0;
             }
+            /* One aim, four things it could be on, and one rule for
+               settling it: whichever is nearest is what was meant.
+             *
+             * Asking about them one at a time in a fixed order is what broke
+             * this. The rows own a wide band down the column, and the close
+             * mark and the Rooms button both stand INSIDE that band by
+             * construction — beside the top row and just above it. Asked
+             * first, they took presses that were aimed squarely at a room;
+             * asked last, the rows would take every press aimed at them.
+             * There is no order that is right, because the question is not
+             * "which one is in range" but "which one is closest". */
+            const offBy = (world) => Math.acos(Math.max(-1, Math.min(1, alignment(towards(world)))));
+            const chipOff = offBy(menu.chipWorld || menu.anchor);
+            const closeOff = menu.open && menu.closeWorld ? offBy(menu.closeWorld) : Infinity;
+            const barOff = menu.open && menu.barWorld ? offBy(menu.barWorld) : Infinity;
+            const itemOff = lookedItem ? offBy(lookedItem.world) : Infinity;
+            /* In range, before nearest is asked. */
+            let onChip = chipOff < MENU_CHIP_CATCH;
+            let onClose = Boolean(menu.open && menu.closeDir && closeOff < MENU_CLOSE_CATCH);
+            let onBar = Boolean(menu.open && menu.barDir && barOff < MENU_BAR_CATCH);
+            const nearest = Math.min(
+              onChip ? chipOff : Infinity,
+              onClose ? closeOff : Infinity,
+              onBar ? barOff : Infinity,
+              itemOff,
+            );
+            if (Number.isFinite(nearest)) {
+              if (onChip && chipOff > nearest) onChip = false;
+              if (onClose && closeOff > nearest) onClose = false;
+              if (onBar && barOff > nearest) onBar = false;
+              if (lookedItem && itemOff > nearest) lookedItem = null;
+            }
             menu.lookingItem = lookedItem;
-            const chipAt = towards(menu.chipWorld || menu.anchor);
-            const chipDot = alignment(chipAt);
-            /* Whether the aim is ON the dot is a question about geometry, and
-               it has an answer whether the list is up or down — the dot is
-               the handle the list is carried by, and a handle that cannot be
-               taken hold of while the thing is open is no handle at all. */
-            menu.chipAim = !lookedItem && chipDot > Math.cos(MENU_CHIP_CATCH);
-            /* And the dot answers whether the list is up or down. It used to
-               be ignored while the list was open, for the good reason that
-               it sat UNDER the column where nobody could see it — which
-               left no way to put the list away except to choose something
-               out of it, so a person who only wanted to close it changed
-               rooms instead. At the head of the column it is visible, and it
-               is the way out: look at it, or pinch it, and the list goes
-               down without anything being chosen. */
-            menu.lookingChip = menu.chipAim;
-            /* The panel's furnishings answer the same ray the rows do. */
-            menu.lookingClose = Boolean(menu.open && menu.closeDir
-              && alignment(towards(menu.closeWorld)) > Math.cos(MENU_CLOSE_CATCH));
-            menu.lookingBar = Boolean(menu.open && menu.barDir
-              && alignment(towards(menu.barWorld)) > Math.cos(MENU_BAR_CATCH));
+            /* Whether the aim is ON the button is a question about geometry,
+               and it has an answer whether the list is up or down — the
+               button is the handle the list is carried by, and a handle that
+               cannot be taken hold of while the thing is open is no handle
+               at all. It is also the way out: at the head of the column it
+               is visible, and pinching it puts the list down without
+               anything being chosen. */
+            menu.chipAim = onChip;
+            menu.lookingChip = onChip;
+            menu.lookingClose = onClose;
+            menu.lookingBar = onBar;
+            /* The scroll edges are a band rather than a thing, so they take
+               no part in nearest-wins — but a press that landed on the
+               panel's own furniture was never a press on the edge beyond
+               it. Without this the button, sitting past the top of the
+               column, scrolled the list instead of putting it away. */
+            if (onChip || onClose || onBar) menu.scrolling = 0;
 
           } else {
             menu.lookingChip = false;
@@ -1772,7 +1859,7 @@
           } else if (!menu?.open) {
             missed = "the list was not open";
           }
-          sayNothingHappened(`Pinch heard · ${from} · ${missed}`);
+          sayInHeadset(`Pinch heard · ${from} · ${missed}`);
         };
         for (const name of ["select", "squeeze"]) {
           xrSession.addEventListener(name, chooseOnce);
@@ -1910,28 +1997,41 @@
               heading[0] * Math.cos(-MENU_COLUMN_YAW) + heading[1] * Math.sin(-MENU_COLUMN_YAW),
               heading[1] * Math.cos(-MENU_COLUMN_YAW) - heading[0] * Math.sin(-MENU_COLUMN_YAW),
             ];
-            /* The dot with the list up.
-               *
-               * Down, it rests below the eye line and IS the whole menu. Up,
-               * that place is under the column — a handle nobody can see or
-               * reach, which is how carrying an open list came to be
-               * impossible. So it moves to the head of the column, one row
-               * above the first, and reads as the bar the list hangs from. */
-            const chipPitch = menu.open
-              ? (-1 - (menu.items.length - 1) / 2) * MENU_ROW_PITCH
-              : MENU_CHIP_PITCH;
-            const chipFlat = Math.cos(chipPitch);
-            menu.chipWorld = menu.open && menu.origin ? {
-              x: menu.origin.x + turned[0] * chipFlat * PANEL_DISTANCE,
-              y: menu.origin.y - Math.sin(chipPitch) * PANEL_DISTANCE,
-              z: menu.origin.z + turned[1] * chipFlat * PANEL_DISTANCE,
-            } : menu.anchor;
+            /* Everything that is not a row, placed against the same origin
+               the rows stand on, so the panel travels as one thing.
+             *
+             * All three used to be scattered: the button under the column
+             * where nobody could see it, then two row-steps above it where
+             * it fought the "more above" edge for every press between them.
+             * The panel reads as a window now — its name on one side of the
+             * top line, the way to shut it on the other, and the bar it is
+             * carried by along the bottom — and nothing stands in the
+             * column's own way above or below. */
+            const spread = (menu.items.length - 1) / 2;
+            const furnish = (pitch, yaw) => {
+              const swung = [
+                turned[0] * Math.cos(-yaw) + turned[1] * Math.sin(-yaw),
+                turned[1] * Math.cos(-yaw) - turned[0] * Math.sin(-yaw),
+              ];
+              const flatScale = Math.cos(pitch);
+              return {
+                x: menu.origin.x + swung[0] * flatScale * PANEL_DISTANCE,
+                y: menu.origin.y - Math.sin(pitch) * PANEL_DISTANCE,
+                z: menu.origin.z + swung[1] * flatScale * PANEL_DISTANCE,
+              };
+            };
+            /* With the list down the button IS the whole menu and rests below
+               the eye line. With it up the button is the panel's name, on the
+               top line, clear of the rows' own width. */
+            menu.chipWorld = menu.open && menu.origin
+              ? furnish(-spread * MENU_ROW_PITCH, MENU_CHIP_OPEN_YAW)
+              : menu.anchor;
             const standingAt = aimAt(menu.chipWorld);
             menu.chipDir = standingAt.dir;
             menu.chipDistance = standingAt.distance;
             if (!menu.rowsPlaced) {
               menu.items.forEach((item, index) => {
-                const pitch = (index - (menu.items.length - 1) / 2) * MENU_ROW_PITCH;
+                const pitch = (index - spread) * MENU_ROW_PITCH;
                 const flatScale = Math.cos(pitch);
                 const rowDir = [turned[0] * flatScale, -Math.sin(pitch), turned[1] * flatScale];
                 item.world = {
@@ -1940,23 +2040,6 @@
                   z: menu.origin.z + rowDir[2] * PANEL_DISTANCE,
                 };
               });
-              /* The panel's own two furnishings, placed with the rows and
-                 carried with them: a close mark level with the top row and
-                 off its right end, and a bar under the bottom row that the
-                 whole panel is moved by. */
-              const spread = (menu.items.length - 1) / 2;
-              const furnish = (pitch, yaw) => {
-                const swung = [
-                  turned[0] * Math.cos(-yaw) + turned[1] * Math.sin(-yaw),
-                  turned[1] * Math.cos(-yaw) - turned[0] * Math.sin(-yaw),
-                ];
-                const flatScale = Math.cos(pitch);
-                return {
-                  x: menu.origin.x + swung[0] * flatScale * PANEL_DISTANCE,
-                  y: menu.origin.y - Math.sin(pitch) * PANEL_DISTANCE,
-                  z: menu.origin.z + swung[1] * flatScale * PANEL_DISTANCE,
-                };
-              };
               menu.closeWorld = furnish(-spread * MENU_ROW_PITCH, -MENU_CLOSE_YAW);
               menu.barWorld = furnish(spread * MENU_ROW_PITCH + MENU_BAR_PITCH, 0);
               menu.rowsPlaced = true;
@@ -2176,16 +2259,22 @@
                  where the eyes already are when somebody has just pressed
                  and nothing happened. */
               if (noteTexture && performance.now() < noteUntil) {
-                const flat = Math.hypot(menu.chipDir[0], menu.chipDir[2]) || 0.0001;
-                const drop = 0.30;
+                /* Below whatever is on screen: below the button with the
+                   list down, below the bar with the list up. Hung off the
+                   button in both cases, it landed in the middle of the open
+                   column and covered the rooms it was explaining. */
+                const hangsFrom = menu.open && menu.barDir ? menu.barDir : menu.chipDir;
+                const flat = Math.hypot(hangsFrom[0], hangsFrom[2]) || 0.0001;
+                const drop = menu.open ? 0.12 : 0.30;
                 const under = [
-                  menu.chipDir[0] / flat * Math.cos(drop),
-                  menu.chipDir[1] - Math.sin(drop),
-                  menu.chipDir[2] / flat * Math.cos(drop),
+                  hangsFrom[0] / flat * Math.cos(drop),
+                  hangsFrom[1] - Math.sin(drop),
+                  hangsFrom[2] / flat * Math.cos(drop),
                 ];
                 const span = Math.hypot(...under) || 1;
                 drawLabel(noteTexture, [under[0] / span, under[1] / span, under[2] / span],
-                  1.5, 0.28, false, false, menu.chipDistance);
+                  1.5, 0.28, false, false,
+                  (menu.open && menu.barDir ? menu.barDistance : menu.chipDistance));
               }
               if (!panel.markerId && menu.chipTexture) {
                 /* A button that says what it is. It was a dot that grew as a
@@ -2444,7 +2533,7 @@
     return {
       dispose, lookAt, view, canvas, enterVR, exitVR, setMedia,
       setHeadsetMarkers, setHeadsetRooms, setRoomSize, roomRadius,
-      whenMarkerChosen, whenRoomChosen,
+      whenMarkerChosen, whenRoomChosen, sayInHeadset,
       /* One card, two surfaces: dismissing the evidence on the flat pane
          dismisses it in the room as well. */
       closeHeadsetPanel: () => Boolean(xr?.closePanel?.()),
@@ -2459,7 +2548,16 @@
      reaching for anything in the bar. Pressing the button then looked exactly
      like pressing a dead button, which is the complaint this was meant to
      prevent. */
-  function announce(text, tone) {
+  function announce(text, tone, options) {
+    /* Said on the pane and, when it matters, inside the room as well.
+     *
+     * Somebody in a headset cannot see this pane at all, and everything that
+     * goes wrong with a room change is announced here: a link that would not
+     * renew, a capture that would not load. From inside the room all of it
+     * looked identical to a press that did nothing, which is exactly how
+     * "you cannot choose the rooms" was reported. Anything that went wrong
+     * follows them in; the rest is offered a way to. */
+    if (text && (options?.inHeadset ?? tone === "bad")) activeSphere?.sayInHeadset?.(text);
     let node = root.querySelector("[data-pano-say]");
     if (!node) {
       node = document.createElement("p");
@@ -3339,15 +3437,34 @@
         seekToWindowStart(nextMedia, window360);
         nextMedia.play().catch(() => {});
       }
-      announce(`Now in ${title}`, "good");
+      /* And this is what replaces "Opening …" inside the headset. */
+      announce(`Now in ${title}`, "good", { inHeadset: true });
     };
     if (nextIsVideo) nextMedia.addEventListener("loadeddata", arrive, { once: true });
     else nextMedia.addEventListener("load", arrive, { once: true });
+    /* A capture that neither loads nor fails — a stalled fetch, a signature
+       that expired mid-flight — left "Opening …" standing in the room for
+       half a minute and then nothing. A wait that has gone on too long is
+       itself an answer, and the person is told rather than left guessing. */
+    let stillWaiting = window.setTimeout(() => {
+      announce(`${title} is taking a long time to load — you are still in the room you were in.`, "bad");
+    }, 20000);
+    const settled = () => { window.clearTimeout(stillWaiting); stillWaiting = 0; };
+    nextMedia.addEventListener(nextIsVideo ? "loadeddata" : "load", settled, { once: true });
     nextMedia.addEventListener("error", () => {
+      settled();
       announce("That room could not be loaded — you are still in the previous one.", "bad");
     }, { once: true });
     return true;
   }
 
-  window.MDAIPano360 = { open, close, swapRoom };
+  /* The one door anything outside this file has into the headset. Without it
+     a caller that hits a dead end can only speak to a screen the person is
+     not looking at. */
+  const say = (text) => {
+    if (!text || !activeSphere?.sayInHeadset) return false;
+    activeSphere.sayInHeadset(text);
+    return true;
+  };
+  window.MDAIPano360 = { open, close, swapRoom, say };
 })();
