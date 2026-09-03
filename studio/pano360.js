@@ -497,35 +497,42 @@
      files you have to look at your own feet to summon and cannot then
      choose from. One height for both: the list appears exactly where the
      dot was. */
-  /* Up and to the right, where a window goes — not underfoot, and not in
-     front of the room. Asked for exactly so: "a small frame, in the top right
-     corner, that does not follow my head." */
-  const MENU_CHIP_PITCH = -0.17;
-  const MENU_CHIP_YAW = 0.42;
-  /* The list stands as a column to the right, read top to bottom, rather
-     than as a fan the head has to sweep along. A row of entries put the
-     whole list at one height, so choosing meant swinging the head sideways
-     across every other entry on the way — and the entries it swept over
-     were the ones that kept choosing themselves. */
-  /* Straight ahead. Set off to one side, the column could only be aimed at
-     by turning the head far enough that the column left the view — reported
-     from the headset as having to turn ninety degrees and then not being
-     able to see the thing being aimed at. A list stands in front of the
-     person who asked for it. */
-  const MENU_COLUMN_YAW = 0.42;
-  /* A panel, not a wall. Rows twelve degrees apart spread eight rooms across
-     a hundred degrees of sky — more than a person can reach without craning,
-     and the report was exactly that: "it opens across the whole space, I
-     cannot reach them, I tilt my head up and it switches somewhere I cannot
-     even see." Five degrees apart puts five rooms inside twenty. */
+  /* ── The in-room menu, in one place so it can be adjusted after a headset
+        pass without hunting through the file. Angles are radians. ──
+
+     The Rooms button sits below the direction the person was facing when the
+     room opened: in easy reach, out of the way of the room itself. The panel
+     opens in front of them at eye level. Both stand at a point in the world
+     and stay there — they do not follow the head, and they do not follow the
+     eyes. */
+  const MENU_CHIP_PITCH = 0.30;
+  const MENU_CHIP_YAW = 0;
+  const MENU_COLUMN_YAW = 0;
+  /* How far apart the rows stand, and how many are shown at once. A list
+     longer than the window scrolls; nothing here assumes a particular number
+     of rooms. */
   const MENU_ROW_PITCH = 0.088;
-  /* A column of rows is only a column while it fits in front of a person.
-     Twelve rooms would stand seventy degrees tall — a wall, not a list — so
-     the column is a window on the rooms rather than all of them: the one you
-     are in, its neighbours, and the way out. A building with floors wants
-     grouping by floor, and that is the answer when it arrives; a silent
-     seventy-degree wall is not. */
   const MENU_MAX_ROOM_ROWS = 5;
+  /* The two furnishings of the panel, placed relative to its rows: a close
+     mark level with the top row and off its right end, and a bar under the
+     bottom row that the whole panel is carried by. */
+  const MENU_CLOSE_YAW = 0.145;
+  /* Well clear of the scroll edge below the last row, so a pinch meant for
+     one is never taken by the other. */
+  const MENU_BAR_PITCH = 0.30;
+  /* Sizes, in the same world units the rows are drawn in. */
+  const MENU_ROW_WIDTH = 0.74;
+  const MENU_ROW_HEIGHT = 0.155;
+  const MENU_CHIP_WIDTH = 0.42;
+  const MENU_CHIP_HEIGHT = 0.125;
+  const MENU_BAR_WIDTH = 0.34;
+  const MENU_BAR_HEIGHT = 0.045;
+  const MENU_CLOSE_SIZE = 0.10;
+  /* How near the pinch's own ray has to pass to count as landing on the close
+     mark or the bar. Generous, because the ray is handed over once per pinch
+     and there is no second chance to correct it. */
+  const MENU_CLOSE_CATCH = 0.075;
+  const MENU_BAR_CATCH = 0.085;
   /* Past the top row or past the bottom one, the column scrolls. Holding a
      look there keeps it moving, a row at a time, so a list longer than the
      window is reachable without a controller and without hiding anything.
@@ -557,16 +564,13 @@
   /* Holding a look is the way in. Reported twice from the headset: pinches
      do not reach this page on that device — not for pins, not for the menu.
      A gaze needs no controller, no hand tracking and no permission. */
-  const DWELL_SECONDS = 0.9;
   /* An entry in the list asks for longer than the dot does. The dot is a
      deliberate act — you went looking for it; an entry is a thing the gaze
      can simply land on while reading the list, and landing is not choosing. */
-  const ITEM_DWELL_SECONDS = 1.4;
   /* And a hold only counts while the head is actually still. A gaze crossing
      a target at speed is passing over it, not resting on it — which is
      exactly what "my eye fell on a room and it opened" describes. Degrees
      per second, generous enough for the small drift nobody can suppress. */
-  const STEADY_DEGREES_PER_SECOND = 14;
   const MENU_CHIP_COS = Math.cos(MENU_CHIP_PITCH);
   const MENU_CHIP_SIN = Math.sin(MENU_CHIP_PITCH);
 
@@ -816,17 +820,6 @@
     let headsetRooms = [];
     let onRoomChosen = null;
     function whenRoomChosen(handler) { onRoomChosen = handler; }
-    /* Asking the page for the rooms, rather than painting them.
-     *
-     * Inside an immersive session everything this file draws is pixels in a
-     * WebGL canvas, and a headset's own gaze-and-pinch cannot land on a
-     * painted pixel — the system aims at ELEMENTS, which is why the same
-     * gesture that works on every button in the browser did nothing at all on
-     * a room in this column. Reported from the headset over and over, and the
-     * answer is not a better crosshair: it is to hand the list to the thing
-     * that already does this properly. */
-    let onRoomsWanted = null;
-    function whenRoomsWanted(handler) { onRoomsWanted = handler; }
 
     /* A sentence that appears under the list when a press did nothing, and
        leaves on its own. Not a status line — those were clutter and were
@@ -992,22 +985,71 @@
        sat in the middle of the room and was, in the headset's own words,
        annoying; the menu it opens is the thing worth showing, and only
        once it is asked for. */
-    function bakeDotTexture() {
+    /* The Rooms button, and the two furnishings of the panel it opens.
+     *
+     * The button was a bare dot: a circle with a smaller circle inside, which
+     * says nothing about what it does and which a person reasonably read as a
+     * target to be lined up with. It is a button now, and it says Rooms. */
+    function bakeChromeTexture(text, { round = false } = {}) {
       const board = document.createElement("canvas");
-      board.width = 128;
-      board.height = 128;
+      board.width = round ? 128 : 384;
+      board.height = round ? 128 : 116;
       const ink = board.getContext("2d");
-      ink.clearRect(0, 0, 128, 128);
+      ink.clearRect(0, 0, board.width, board.height);
+      ink.fillStyle = "rgba(7, 20, 33, 0.86)";
+      ink.strokeStyle = "rgba(140, 232, 243, 0.9)";
+      ink.lineWidth = round ? 5 : 4;
+      if (round) {
+        ink.beginPath();
+        ink.arc(64, 64, 52, 0, Math.PI * 2);
+        ink.fill();
+        ink.stroke();
+      } else {
+        const r = 26;
+        const w = board.width - 8;
+        const h = board.height - 8;
+        ink.beginPath();
+        ink.moveTo(4 + r, 4);
+        ink.arcTo(4 + w, 4, 4 + w, 4 + h, r);
+        ink.arcTo(4 + w, 4 + h, 4, 4 + h, r);
+        ink.arcTo(4, 4 + h, 4, 4, r);
+        ink.arcTo(4, 4, 4 + w, 4, r);
+        ink.closePath();
+        ink.fill();
+        ink.stroke();
+      }
+      ink.textAlign = "center";
+      ink.textBaseline = "middle";
+      ink.fillStyle = "rgba(233, 245, 250, 0.98)";
+      ink.font = `600 ${round ? 58 : 46}px Inter, system-ui, sans-serif`;
+      ink.fillText(text, board.width / 2, board.height / 2 + 2);
+      const baked = gl.createTexture();
+      gl.bindTexture(gl.TEXTURE_2D, baked);
+      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
+      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
+      gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, board);
+      return baked;
+    }
+
+    /* A bar is drawn rather than written: a grip, not a word. */
+    function bakeBarTexture() {
+      const board = document.createElement("canvas");
+      board.width = 256;
+      board.height = 48;
+      const ink = board.getContext("2d");
+      ink.clearRect(0, 0, 256, 48);
+      ink.fillStyle = "rgba(7, 20, 33, 0.86)";
+      ink.strokeStyle = "rgba(140, 232, 243, 0.55)";
+      ink.lineWidth = 3;
       ink.beginPath();
-      ink.arc(64, 64, 40, 0, Math.PI * 2);
-      ink.fillStyle = "rgba(7, 20, 33, 0.82)";
+      ink.roundRect ? ink.roundRect(3, 3, 250, 42, 20) : ink.rect(3, 3, 250, 42);
       ink.fill();
-      ink.lineWidth = 8;
-      ink.strokeStyle = "rgba(140, 232, 243, 0.95)";
       ink.stroke();
+      ink.fillStyle = "rgba(180, 240, 250, 0.85)";
       ink.beginPath();
-      ink.arc(64, 64, 13, 0, Math.PI * 2);
-      ink.fillStyle = "rgba(140, 232, 243, 0.95)";
+      ink.roundRect ? ink.roundRect(88, 20, 80, 8, 4) : ink.rect(88, 20, 80, 8);
       ink.fill();
       const baked = gl.createTexture();
       gl.bindTexture(gl.TEXTURE_2D, baked);
@@ -1058,6 +1100,8 @@
       const menu = xr.menu;
       for (const item of menu.items) gl.deleteTexture(item.texture);
       if (menu.chipTexture) gl.deleteTexture(menu.chipTexture);
+      if (menu.closeTexture) gl.deleteTexture(menu.closeTexture);
+      if (menu.barTexture) gl.deleteTexture(menu.barTexture);
       /* The window on the rooms: where the person scrolled it to, held
          within the list rather than allowed to run off either end. */
       const lastStart = Math.max(0, headsetRooms.length - MENU_MAX_ROOM_ROWS);
@@ -1068,6 +1112,10 @@
       menu.rowsPlaced = false;
       menu.items = headsetRooms.slice(from, from + MENU_MAX_ROOM_ROWS).map((room) => ({
         id: room.id,
+        /* Carried alongside the baked label so the row can be named without
+           reading pixels back — the project's own name for the room, never
+           an invented one. */
+        title: room.title,
         current: Boolean(room.current),
         texture: bakeLabelTexture(room.current ? `● ${room.title}` : room.title, Boolean(room.current)),
         dir: [0, -1, 0],
@@ -1084,7 +1132,9 @@
         texture: bakeLabelTexture("◉ Back to the screen", false),
         dir: [0, -1, 0],
       });
-      menu.chipTexture = bakeDotTexture();
+      menu.chipTexture = bakeChromeTexture("Rooms");
+      menu.closeTexture = bakeChromeTexture("✕", { round: true });
+      menu.barTexture = bakeBarTexture();
       /* Only where something is actually there to reach. */
       if (menu.upTexture) gl.deleteTexture(menu.upTexture);
       if (menu.downTexture) gl.deleteTexture(menu.downTexture);
@@ -1216,7 +1266,9 @@
              positive radius is somebody's preference about how far the
              walls should feel. */
           sphereRadius: headsetRadius,
-          menu: { open: false, items: [], chipTexture: null, chipDir: [0, -1, 0], heading: null, lookingChip: false, lookingItem: null, approach: 0, dwellOn: null, dwell: 0, dwellFired: false, armed: false,
+          menu: { open: false, items: [], chipTexture: null, chipDir: [0, -1, 0], heading: null, lookingChip: false, lookingItem: null,
+            closeTexture: null, barTexture: null, closeDir: null, barDir: null, closeWorld: null, barWorld: null,
+            closeDistance: PANEL_DISTANCE, barDistance: PANEL_DISTANCE, lookingClose: false, lookingBar: false,
             offset: 0, moreAbove: 0, moreBelow: 0, scrolling: 0, scrollHeld: 0, upTexture: null, downTexture: null, arrivedOn: null, justOpened: false,
             anchor: null, origin: null, chipWorld: null, chipAim: false, chipDistance: PANEL_DISTANCE, rowsPlaced: false },
           /* What a chosen pin says, parked in the room in front of whoever
@@ -1239,16 +1291,19 @@
         window.__xrMenu = () => (xr ? {
           open: xr.menu.open,
           chipDir: xr.menu.chipDir.slice(),
+          barDir: xr.menu.barDir ? xr.menu.barDir.slice() : null,
+          closeDir: xr.menu.closeDir ? xr.menu.closeDir.slice() : null,
+          lookingBar: xr.menu.lookingBar,
+          lookingClose: xr.menu.lookingClose,
           heading: xr.menu.heading ? xr.menu.heading.slice() : null,
-          items: xr.menu.items.map((item) => ({ id: item.id, dir: item.dir.slice(), current: item.current, exit: Boolean(item.exit) })),
+          items: xr.menu.items.map((item) => ({
+            title: item.title || null, id: item.id, dir: item.dir.slice(), current: item.current, exit: Boolean(item.exit) })),
           lookingChip: xr.menu.lookingChip,
           lookingItem: xr.menu.lookingItem?.id || null,
           offset: xr.menu.offset,
           moreAbove: xr.menu.moreAbove,
           moreBelow: xr.menu.moreBelow,
           scrolling: xr.menu.scrolling,
-          dwellOn: xr.menu.dwellOn,
-          dwell: xr.menu.dwell,
           armed: xr.menu.armed,
         } : null);
         window.__xrPanel = () => (xr?.panel.markerId ? {
@@ -1320,6 +1375,25 @@
           }
           const menu = xr?.menu;
           if (menu?.items.length) {
+            /* The close mark and the bar are asked about before the rows,
+               because both sit at the panel's edge where a row would
+               otherwise claim the nearest-row rule. The bar answers a press
+               that did not travel by doing nothing at all: carrying is a
+               press that moves, and that is handled while it is held. */
+            if (menu.open && menu.lookingClose) {
+              menu.open = false;
+              return true;
+            }
+            if (menu.open && menu.lookingBar) return true;
+            /* Past the top row or past the bottom one, a pinch walks the
+               window along by one. Held looks used to do this; with the held
+               look gone a long list would otherwise have rows that could
+               never be reached at all. */
+            if (menu.open && menu.scrolling !== 0) {
+              menu.offset = Math.max(0, menu.offset + menu.scrolling);
+              rebuildRoomMenu();
+              return true;
+            }
             if (menu.lookingItem) {
               const chosen = menu.lookingItem;
               menu.open = false;
@@ -1328,23 +1402,6 @@
               return true;
             }
             if (menu.lookingChip) {
-              /* In the headset the dot hands over to a real window. One
-                 target that a head can hold is achievable; twenty rows that
-                 a head has to chase are not, and the system will not aim at
-                 them for us. */
-              /* Where the headset gives an aim of its own, the rooms stay
-                 in the room: a painted list can be pinched when there is a
-                 real ray to pinch with, and being pulled out of the glasses
-                 to change rooms is its own kind of dead end — said plainly
-                 from inside them: "you are out of your glasses, you cannot
-                 do anything in your glasses."
-                 Where it gives nothing, paint cannot be aimed at by anybody,
-                 and the list has to become elements the system can drive. */
-              if (xrSession && onRoomsWanted && !xr.everHadPointer) {
-                menu.open = false;
-                onRoomsWanted();
-                return true;
-              }
               menu.open = !menu.open;
               /* Opening lands the window on the room somebody is standing in;
                  after that the window is theirs to move. */
@@ -1517,13 +1574,18 @@
                is the way out: look at it, or pinch it, and the list goes
                down without anything being chosen. */
             menu.lookingChip = menu.chipAim;
-            menu.approach = Math.max(0, Math.min(1,
-              (chipDot - Math.cos(0.55)) / Math.max(0.0001, Math.cos(MENU_CHIP_CATCH) - Math.cos(0.55))));
+            /* The panel's furnishings answer the same ray the rows do. */
+            menu.lookingClose = Boolean(menu.open && menu.closeDir
+              && alignment(towards(menu.closeWorld)) > Math.cos(MENU_CLOSE_CATCH));
+            menu.lookingBar = Boolean(menu.open && menu.barDir
+              && alignment(towards(menu.barWorld)) > Math.cos(MENU_BAR_CATCH));
+
           } else {
             menu.lookingChip = false;
             menu.chipAim = false;
+            menu.lookingClose = false;
+            menu.lookingBar = false;
             menu.lookingItem = null;
-            menu.approach = 0;
             menu.scrolling = 0;
           }
 
@@ -1596,13 +1658,14 @@
            * travel is a move rather than a choice. Nothing could ever be
            * chosen while the list was up.
            *
-           * A row is a thing to choose and is never a handle. The handle is
-           * the dot, the way a window is carried by its bar and not by its
-           * text — and the panel is carried by its body, but not by the mark
-           * that closes it. */
+           * A row is a thing to choose and is never a handle. The panel is
+           * carried by the bar along its bottom edge and by nothing else —
+           * asked for in those words — and with the panel down, by the Rooms
+           * button itself. The pin panel keeps its body as its handle, but
+           * never the mark that closes it. */
           const holding = panel.markerId
             ? (panel.lookingClose ? null : "panel")
-            : (menu.chipAim ? "menu" : null);
+            : ((menu.open && menu.lookingBar) || (!menu.open && menu.chipAim) ? "menu" : null);
           const held = holding === "panel" ? panel.world : (menu.chipWorld || menu.anchor);
           xr.grab = holding && held
             ? { what: holding, from: ray.dir.slice(), world: held, moved: false }
@@ -1877,6 +1940,25 @@
                   z: menu.origin.z + rowDir[2] * PANEL_DISTANCE,
                 };
               });
+              /* The panel's own two furnishings, placed with the rows and
+                 carried with them: a close mark level with the top row and
+                 off its right end, and a bar under the bottom row that the
+                 whole panel is moved by. */
+              const spread = (menu.items.length - 1) / 2;
+              const furnish = (pitch, yaw) => {
+                const swung = [
+                  turned[0] * Math.cos(-yaw) + turned[1] * Math.sin(-yaw),
+                  turned[1] * Math.cos(-yaw) - turned[0] * Math.sin(-yaw),
+                ];
+                const flatScale = Math.cos(pitch);
+                return {
+                  x: menu.origin.x + swung[0] * flatScale * PANEL_DISTANCE,
+                  y: menu.origin.y - Math.sin(pitch) * PANEL_DISTANCE,
+                  z: menu.origin.z + swung[1] * flatScale * PANEL_DISTANCE,
+                };
+              };
+              menu.closeWorld = furnish(-spread * MENU_ROW_PITCH, -MENU_CLOSE_YAW);
+              menu.barWorld = furnish(spread * MENU_ROW_PITCH + MENU_BAR_PITCH, 0);
               menu.rowsPlaced = true;
             }
             menu.items.forEach((item) => {
@@ -1884,6 +1966,16 @@
               item.dir = at.dir;
               item.distance = at.distance;
             });
+            if (menu.closeWorld) {
+              const at = aimAt(menu.closeWorld);
+              menu.closeDir = at.dir;
+              menu.closeDistance = at.distance;
+            }
+            if (menu.barWorld) {
+              const at = aimAt(menu.barWorld);
+              menu.barDir = at.dir;
+              menu.barDistance = at.distance;
+            }
             /* Aiming happens in aimEverything, from whatever ray the
                device gave us. Nothing is judged here. */
           }
@@ -1958,47 +2050,10 @@
             menu.justOpened = false;
             menu.armed = false;
           } else if (!menu.lookingItem || menu.lookingItem.id !== menu.arrivedOn) menu.armed = true;
-          const dwellOn = (menu.armed ? menu.lookingItem?.id : null)
-            || (menu.lookingChip ? "__chip" : null)
-            || (panel.lookingClose ? "__panel-close" : null)
-            || (looked ? `pin:${looked.id}` : null);
-          if (dwellOn !== menu.dwellOn) {
-            menu.dwellOn = dwellOn;
-            menu.dwell = 0;
-            menu.dwellFired = false;
-          } else if (dwellOn && !menu.dwellFired) {
-            /* How fast the head is turning right now. Held still, this is
-               near zero; sweeping across the room it is tens of degrees a
-               second, and nothing fills. */
-            const previous = xr.lastForward || forward;
-            const alignment = Math.max(-1, Math.min(1,
-              previous[0] * forward[0] + previous[1] * forward[1] + previous[2] * forward[2]));
-            const turnRate = (Math.acos(alignment) * 57.3) / Math.max(dt, 0.0001);
-            const seconds = menu.lookingItem ? ITEM_DWELL_SECONDS : DWELL_SECONDS;
-            if (turnRate < STEADY_DEGREES_PER_SECOND) menu.dwell = Math.min(1, menu.dwell + dt / seconds);
-            if (menu.dwell >= 1) {
-              menu.dwellFired = true;
-              xr.choose?.();
-              /* Choosing can end the session — the way out lives in this
-                 very list — and the rest of this frame would then be drawing
-                 into a room that no longer exists. */
-              if (!xr?.session) return;
-            }
-          }
-          if (!dwellOn) menu.dwell = 0;
-
-          /* Scrolling is its own short hold, repeating while the look is
-             held there, so a long list is walked rather than jumped. */
-          if (menu.open && menu.scrolling !== 0) {
-            menu.scrollHeld += dt;
-            if (menu.scrollHeld >= MENU_SCROLL_SECONDS) {
-              menu.scrollHeld = 0;
-              menu.offset = Math.max(0, menu.offset + menu.scrolling);
-              rebuildRoomMenu();
-            }
-          } else {
-            menu.scrollHeld = 0;
-          }
+          /* Nothing is chosen by looking. A pinch chooses, and only a
+             pinch — the held look that used to fire on its own is gone, with
+             the crosshair it needed and the growing dot that tried to
+             announce it. Asked for in one line: look, pinch, select. */
           xr.lastForward = [forward[0], forward[1], forward[2]];
 
 
@@ -2060,7 +2115,7 @@
                    and "done" is a control nobody can learn — which is how a
                    pin that could only be opened by an absent pinch felt from
                    inside the headset: dead. */
-                const holding = menu.dwellOn === `pin:${marker.id}` ? menu.dwell : 0;
+                const holding = 0;
                 const idle = 0.32 + 0.10 * xr.pinApproach;
                 gl.uniform1f(markerUniforms.markerSize,
                   (isLooked ? 0.46 + 0.20 * holding : idle) * pinScale);
@@ -2114,7 +2169,7 @@
                 gl.uniform3f(labelUniforms.labelDirection, dir[0], dir[1], dir[2]);
                 gl.uniform2f(labelUniforms.labelSize, width * scale, height * scale);
                 gl.uniform1f(labelUniforms.looking, typeof lit === "number" ? lit : (lit ? 1 : 0));
-                gl.uniform1f(labelUniforms.dwell, filling ? menu.dwell : 0);
+                gl.uniform1f(labelUniforms.dwell, 0);
                 gl.drawArrays(gl.TRIANGLES, 0, 6);
               };
               /* The note sits below the dot, at the same bearing, so it is
@@ -2133,21 +2188,30 @@
                   1.5, 0.28, false, false, menu.chipDistance);
               }
               if (!panel.markerId && menu.chipTexture) {
-                /* Small, and growing as the aim closes on it — the dot is the
-                   whole of the closed menu, and its answer to an approaching
-                   reticle is the only instruction anybody gets. */
-                const dotSize = (menu.open ? 0.09 : 0.11) + 0.04 * menu.approach;
-                drawLabel(menu.chipTexture, menu.chipDir, dotSize, dotSize,
-                  menu.lookingChip ? 1 : menu.approach * 0.8, menu.dwellOn === "__chip",
-                  menu.chipDistance);
+                /* A button that says what it is. It was a dot that grew as a
+                   crosshair neared it, which only made sense while there was
+                   a crosshair. */
+                drawLabel(menu.chipTexture, menu.chipDir, MENU_CHIP_WIDTH, MENU_CHIP_HEIGHT,
+                  false, false, menu.chipDistance);
               }
               if (menu.open && !panel.markerId) {
+                /* The panel's own two furnishings, drawn as world objects
+                   like everything else here: one geometry, seen twice, once
+                   per eye. */
+                if (menu.closeTexture && menu.closeDir) {
+                  drawLabel(menu.closeTexture, menu.closeDir, MENU_CLOSE_SIZE, MENU_CLOSE_SIZE,
+                    menu.lookingClose, false, menu.closeDistance);
+                }
+                if (menu.barTexture && menu.barDir) {
+                  drawLabel(menu.barTexture, menu.barDir, MENU_BAR_WIDTH, MENU_BAR_HEIGHT,
+                    menu.lookingBar, false, menu.barDistance);
+                }
                 for (const item of menu.items) {
                   const lit = item === menu.lookingItem;
                   /* Panel-sized. A row that was 27 degrees wide and 6 tall is
                      a billboard; these are lines in a small window. */
-                  drawLabel(item.texture, item.dir, lit ? 0.80 : 0.74, lit ? 0.17 : 0.155, lit,
-                    menu.dwellOn === item.id, item.distance);
+                  drawLabel(item.texture, item.dir, MENU_ROW_WIDTH, MENU_ROW_HEIGHT, lit,
+                    false, item.distance);
                 }
                 /* The ends of the column, when the column has more to give.
                    They light while the look is on them, which is also while
@@ -2170,7 +2234,7 @@
               if (panel.markerId && panel.texture) {
                 drawLabel(panel.texture, panel.dir, 1.62, 0.91, false, false, panel.distance);
                 drawLabel(panel.closeTexture, panel.closeDir, 0.15, 0.15,
-                  panel.lookingClose ? 1 : 0.55, menu.dwellOn === "__panel-close", panel.closeDistance);
+                  panel.lookingClose ? 1 : 0.55, false, panel.closeDistance);
               }
 
               gl.disable(gl.BLEND);
@@ -2179,55 +2243,6 @@
               gl.bindTexture(gl.TEXTURE_2D, texture);
             }
 
-            /* The reticle, drawn last so nothing can cover it, and drawn
-               twice so it reads against a bright wall as well as a dark one.
-
-               It marks where the HEAD points, which is the aim this page can
-               actually measure — eyes moving behind a still head steer
-               nothing. The first version of it was under two degrees across:
-               technically present, practically invisible, and a person with
-               no visible aim has no way to learn that aiming is the gesture.
-               Reported from the headset as a dot that would not press. */
-            /* And on a headset that hands over an aim of its own, it is not
-               drawn at all. It marks where the HEAD points, which is a
-               stand-in for an aim, not an aim — and on a device that pinches
-               it is a second thing in the room to chase and line up with the
-               first. Said from inside the glasses: "I see a round mark and a
-               cross, they are apart, and I have to drive one to the other."
-               Nothing to drive when there is nothing drawn. */
-            /* Skipped with a block, never with a return.
-             *
-             * This was `if (xr.everHadPointer) return;` — and this is the last
-             * thing in the loop that draws each eye, so returning left the
-             * frame entirely on the FIRST eye and the second was never drawn
-             * at all. Reported from the headset within the hour: one eye no
-             * longer sees the room. Skipping what should not be drawn must
-             * never skip the eye it would have been drawn in. */
-            if (!xr.everHadPointer) {
-              gl.useProgram(markerProgram);
-              gl.bindBuffer(gl.ARRAY_BUFFER, markerQuad);
-              gl.enableVertexAttribArray(markerCorner);
-              gl.vertexAttribPointer(markerCorner, 2, gl.FLOAT, false, 0, 0);
-              gl.enable(gl.BLEND);
-              gl.blendFunc(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA);
-              gl.uniformMatrix4fv(markerUniforms.projection, false, eyeView.projectionMatrix);
-              gl.uniformMatrix3fv(markerUniforms.viewRotationInverse, false, rotation);
-              gl.uniform1f(markerUniforms.markerDistance, 1.6);
-              gl.uniform3f(markerUniforms.eyeOffset, offset[0], offset[1], offset[2]);
-              gl.uniform3f(markerUniforms.markerDirection, forward[0], forward[1], forward[2]);
-              gl.uniform1f(markerUniforms.looking, 0);
-              gl.uniform1f(markerUniforms.reticle, 1);
-              const aiming = Boolean(menu.lookingChip || menu.lookingItem || looked || panel.lookingClose);
-              /* A dark halo first, then the bright ring inside it. */
-              gl.uniform1f(markerUniforms.markerSize, 0.075);
-              gl.uniform4f(markerUniforms.markerColour, 0.02, 0.06, 0.10, 0.75);
-              gl.drawArrays(gl.TRIANGLES, 0, 6);
-              gl.uniform1f(markerUniforms.markerSize, 0.058);
-              gl.uniform4f(markerUniforms.markerColour,
-                aiming ? 0.55 : 1, aiming ? 0.91 : 1, aiming ? 0.95 : 1, 0.95);
-              gl.drawArrays(gl.TRIANGLES, 0, 6);
-              gl.disable(gl.BLEND);
-            }
           }
         });
 
@@ -2236,6 +2251,8 @@
           if (noteTexture) gl.deleteTexture(noteTexture);
       noteTexture = null;
       if (xr?.menu.chipTexture) gl.deleteTexture(xr.menu.chipTexture);
+      if (xr?.menu.closeTexture) gl.deleteTexture(xr.menu.closeTexture);
+      if (xr?.menu.barTexture) gl.deleteTexture(xr.menu.barTexture);
           if (xr?.menu.upTexture) gl.deleteTexture(xr.menu.upTexture);
           if (xr?.menu.downTexture) gl.deleteTexture(xr.menu.downTexture);
           if (xr?.panel.texture) gl.deleteTexture(xr.panel.texture);
@@ -2427,7 +2444,7 @@
     return {
       dispose, lookAt, view, canvas, enterVR, exitVR, setMedia,
       setHeadsetMarkers, setHeadsetRooms, setRoomSize, roomRadius,
-      whenMarkerChosen, whenRoomChosen, whenRoomsWanted,
+      whenMarkerChosen, whenRoomChosen,
       /* One card, two surfaces: dismissing the evidence on the flat pane
          dismisses it in the room as well. */
       closeHeadsetPanel: () => Boolean(xr?.closePanel?.()),
@@ -3143,15 +3160,6 @@
         if (Array.isArray(options.rooms) && options.rooms.length && typeof options.onRoomChosen === "function") {
           sphere.setHeadsetRooms(options.rooms);
           sphere.whenRoomChosen(options.onRoomChosen);
-          /* The headset asks for the rooms; the page answers with a window.
-             Stepping out of the immersive session is what makes the list a
-             thing the system can aim at — inside it, it is only paint. The
-             way back in rides on the choice itself. */
-          sphere.whenRoomsWanted(() => {
-            roomState.fromHeadset = true;
-            sphere.exitVR();
-            openRoomList();
-          });
         }
         session = {
           dispose: () => {
