@@ -159,12 +159,12 @@ check("a degree of u is a degree of arc", Math.abs(separation - oneDegree) < 1e-
 {
   const src = fs.readFileSync("studio/pano360.js", "utf8");
   /* There is more than one such loop in the file; the one that matters is the
-     one that draws — it is the one carrying the reticle. */
+     one that draws — it is the one that binds each eye's own projection. */
   const marker = "for (const eyeView of pose.views) {";
   let start = -1;
   for (let at = src.indexOf(marker); at >= 0; at = src.indexOf(marker, at + 1)) {
     const after = src.slice(at, at + 14000);
-    if (after.includes("markerUniforms.reticle")) { start = at; break; }
+    if (after.includes("markerUniforms.projection")) { start = at; break; }
   }
   check("the loop that draws each eye is where it is expected", start > 0, `index ${start}`);
   let depth = 0;

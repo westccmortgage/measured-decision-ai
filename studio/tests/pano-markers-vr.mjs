@@ -638,11 +638,14 @@ const reticle = await page.evaluate(() => {
   const centreGap = !(px[middle] > 200 && px[middle + 1] > 200 && px[middle + 2] > 200);
   return { bright, span: right - left + 1, centrePixel, centreGap };
 });
-/* A sight, not a target. Drawn as the same ring the pins are, the one
-   object that can never be pressed was the most button-like thing in the
-   room — and it was pressed for four rounds by somebody following the
-   instructions exactly. An open centre is what tells them apart. */
-check("the aim is a sight, with nothing pressable at its centre",
+/* Nothing is drawn at the centre of the view at all any more, and this is
+   what holds that: a head-locked mark is the one object that can never be
+   pressed, because it follows the head and so can never be aimed at. Drawn
+   as the same ring the pins are, it was the most button-like thing in the
+   room and was pressed for four rounds by somebody following the
+   instructions exactly. The shader that knew how to draw it is gone; this
+   check is what notices if it comes back by any other route. */
+check("nothing head-locked sits at the centre of the view",
   reticle.centreGap === true,
   `centre pixel ${String(reticle.centrePixel)} against the sphere`);
 check("and a person looking straight ahead can actually see it",

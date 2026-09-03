@@ -162,39 +162,15 @@
     varying vec2 vCorner;
     uniform vec4 markerColour;
     uniform float looking;
-    uniform float reticle;
     void main() {
       float radius = length(vCorner);
-      if (reticle > 0.5) {
-        /* A sight, not a target.
-         *
-         * The aim used to be drawn by this same shader as the same ring the
-         * pins are: identical shape, brighter, and parked in the middle of
-         * the view. So the most button-like object in the room was the one
-         * thing that can never be pressed — it follows the head, so it can
-         * never be aimed at — and it was pressed for four rounds by somebody
-         * doing exactly what they had been told to do. Four ticks and an
-         * open centre cannot be mistaken for a thing in the room. */
-        float ax = abs(vCorner.x);
-        float ay = abs(vCorner.y);
-        float arm = 0.19;
-        float gap = 0.34;
-        float horizontal = smoothstep(arm, arm * 0.55, ay)
-          * smoothstep(gap * 0.8, gap, ax) * smoothstep(1.0, 0.9, ax);
-        float vertical = smoothstep(arm, arm * 0.55, ax)
-          * smoothstep(gap * 0.8, gap, ay) * smoothstep(1.0, 0.9, ay);
-        float mark = max(horizontal, vertical);
-        if (mark <= 0.01) discard;
-        gl_FragColor = vec4(markerColour.rgb, markerColour.a * mark);
-      } else {
-        if (radius > 1.0) discard;
-        /* A ring rather than a blob: it has to be visible against timber and
-           daylight alike without hiding what it points at. */
-        float edge = smoothstep(1.0, 0.86, radius);
-        float hole = smoothstep(0.52, 0.66, radius);
-        float alpha = edge * mix(hole, 1.0, looking * 0.55);
-        gl_FragColor = vec4(markerColour.rgb, markerColour.a * alpha);
-      }
+      if (radius > 1.0) discard;
+      /* A ring rather than a blob: it has to be visible against timber and
+         daylight alike without hiding what it points at. */
+      float edge = smoothstep(1.0, 0.86, radius);
+      float hole = smoothstep(0.52, 0.66, radius);
+      float alpha = edge * mix(hole, 1.0, looking * 0.55);
+      gl_FragColor = vec4(markerColour.rgb, markerColour.a * alpha);
     }`;
 
   /* The room menu: text baked to a canvas, carried into the scene as a quad
@@ -232,17 +208,9 @@
     uniform sampler2D label;
     uniform sampler2D room;
     uniform float looking;
-    uniform float dwell;
     uniform float glass;
     void main() {
       vec4 colour = texture2D(label, vUv);
-      /* A bar filling along the bottom of the panel while somebody holds
-         their gaze on it. Without it, waiting is indistinguishable from a
-         control that does nothing — which is how the pinch felt. */
-      if (dwell > 0.0 && vUv.y > 0.86 && vUv.x < dwell) {
-        gl_FragColor = vec4(0.55, 0.91, 0.95, 1.0);
-        return;
-      }
       if (glass < 0.5) {
         gl_FragColor = vec4(colour.rgb + vec3(looking * 0.18), colour.a);
         return;
@@ -553,12 +521,10 @@
      settles overlaps, a generous catch on either cannot steal a room. */
   const MENU_CLOSE_CATCH = 0.10;
   const MENU_BAR_CATCH = 0.11;
-  /* Past the top row or past the bottom one, the column scrolls. Holding a
-     look there keeps it moving, a row at a time, so a list longer than the
-     window is reachable without a controller and without hiding anything.
-     A building with floors will still want grouping by floor; this is what
-     makes the plain list honest until then. */
-  const MENU_SCROLL_SECONDS = 0.5;
+  /* Past the top row or past the bottom one, the column scrolls: a pinch
+     out there walks the window along by one. A building with floors will
+     still want grouping by floor; this is what makes the plain list honest
+     until then. */
   const MENU_SCROLL_ZONE = 0.30;
   /* Panels stand in the room, at a place, not at a direction from the head.
      Hung on a direction they travel with the person: step sideways and the
@@ -575,21 +541,6 @@
      has to tell one row from the next. */
   const MENU_CHIP_CATCH = 0.13;
   const MENU_ROW_YAW_CATCH = 0.26;
-  /* The menu stays where it was left. It only comes back around when the
-     person has turned so far that it is behind them — anything tighter and
-     it teleports in front of the eyes on every glance, which is exactly what
-     the headset reported: "however you move your head, it runs with you". */
-  const MENU_HOLD_ANGLE = 2.2;
-  /* Holding a look is the way in. Reported twice from the headset: pinches
-     do not reach this page on that device — not for pins, not for the menu.
-     A gaze needs no controller, no hand tracking and no permission. */
-  /* An entry in the list asks for longer than the dot does. The dot is a
-     deliberate act — you went looking for it; an entry is a thing the gaze
-     can simply land on while reading the list, and landing is not choosing. */
-  /* And a hold only counts while the head is actually still. A gaze crossing
-     a target at speed is passing over it, not resting on it — which is
-     exactly what "my eye fell on a room and it opened" describes. Degrees
-     per second, generous enough for the small drift nobody can suppress. */
   const MENU_CHIP_COS = Math.cos(MENU_CHIP_PITCH);
   const MENU_CHIP_SIN = Math.sin(MENU_CHIP_PITCH);
 
@@ -1240,7 +1191,6 @@
           markerSize: gl.getUniformLocation(markerProgram, "markerSize"),
           markerColour: gl.getUniformLocation(markerProgram, "markerColour"),
           looking: gl.getUniformLocation(markerProgram, "looking"),
-          reticle: gl.getUniformLocation(markerProgram, "reticle"),
           markerDistance: gl.getUniformLocation(markerProgram, "markerDistance"),
           eyeOffset: gl.getUniformLocation(markerProgram, "eyeOffset"),
         };
@@ -1268,7 +1218,6 @@
           labelSize: gl.getUniformLocation(labelProgram, "labelSize"),
           label: gl.getUniformLocation(labelProgram, "label"),
           looking: gl.getUniformLocation(labelProgram, "looking"),
-          dwell: gl.getUniformLocation(labelProgram, "dwell"),
           room: gl.getUniformLocation(labelProgram, "room"),
           glass: gl.getUniformLocation(labelProgram, "glass"),
           labelDistance: gl.getUniformLocation(labelProgram, "labelDistance"),
@@ -1293,7 +1242,7 @@
           menu: { open: false, items: [], chipTexture: null, chipDir: [0, -1, 0], heading: null, lookingChip: false, lookingItem: null,
             closeTexture: null, barTexture: null, closeDir: null, barDir: null, closeWorld: null, barWorld: null,
             closeDistance: PANEL_DISTANCE, barDistance: PANEL_DISTANCE, lookingClose: false, lookingBar: false,
-            offset: 0, moreAbove: 0, moreBelow: 0, scrolling: 0, scrollHeld: 0, upTexture: null, downTexture: null, arrivedOn: null, justOpened: false,
+            offset: 0, moreAbove: 0, moreBelow: 0, scrolling: 0, upTexture: null, downTexture: null,
             anchor: null, origin: null, chipWorld: null, chipAim: false, chipDistance: PANEL_DISTANCE, rowsPlaced: false },
           /* What a chosen pin says, parked in the room in front of whoever
              chose it. Empty until somebody holds a look on a pin. */
@@ -1309,9 +1258,6 @@
         window.__xrSetMarkers = (list) => setHeadsetMarkers(list || []);
         window.__xrSetRooms = (list) => setHeadsetRooms(list || []);
         window.__xrNote = () => lastNote;
-        /* A headset that has handed over nothing at all — the condition the
-           window exists for, and the only way a test can stand in one. */
-        window.__xrForgetPointer = () => { if (xr) xr.everHadPointer = false; };
         window.__xrMenu = () => (xr ? {
           open: xr.menu.open,
           chipDir: xr.menu.chipDir.slice(),
@@ -1328,7 +1274,6 @@
           moreAbove: xr.menu.moreAbove,
           moreBelow: xr.menu.moreBelow,
           scrolling: xr.menu.scrolling,
-          armed: xr.menu.armed,
         } : null);
         window.__xrPanel = () => (xr?.panel.markerId ? {
           markerId: xr.panel.markerId,
@@ -1445,19 +1390,6 @@
                 menu.offset = Math.max(0, (standing < 0 ? 0 : standing) - Math.floor(MENU_MAX_ROOM_ROWS / 2));
                 rebuildRoomMenu();
               }
-              /* The list opens where the dot was, so an item lands under the
-                 gaze that just opened it — and it would start filling at
-                 once. Reported from the headset as a file that switches
-                 itself on while you are only looking. Nothing may be chosen
-                 until the gaze has left every item once: arriving somewhere
-                 is not choosing it. */
-              menu.armed = false;
-              /* Which row the aim lands on cannot be known yet: the rows are
-                 judged against a list that was closed a moment ago, so
-                 lookingItem is null here and "different from null" would arm
-                 the trigger instantly. The next frame knows, and records it. */
-              menu.justOpened = true;
-              menu.arrivedOn = null;
               return true;
             }
             /* A press with the list up that landed on nothing.
@@ -1707,12 +1639,7 @@
           for (const source of xrSession.inputSources || []) {
             if (!source?.targetRaySpace) continue;
             const ray = rayOf(frame.getPose(source.targetRaySpace, reference));
-            /* Whether this headset ever hands over an aim of its own is the
-               fact everything else turns on, and it is a fact rather than a
-               guess: either a pointer arrived or it did not. Remembered for
-               the session, because a transient one is gone between pinches
-               and its absence in this frame proves nothing. */
-            if (ray) { if (xr) xr.everHadPointer = true; return ray; }
+            if (ray) return ray;
           }
           return null;
         }
@@ -2079,8 +2006,8 @@
           if (devicePointer) continueGrab(devicePointer);
           aimEverything(xr.pointer);
           const looked = xr.looking;
-          /* How close the aim is to the nearest pin, so a pin answers an
-             approaching reticle exactly as the menu dot does. */
+          /* How close the aim is to the nearest pin, so a pin grows a little
+             as the aim nears it and is worth aiming at from further off. */
           let pinApproach = 0;
           if (!menu.open && !panel.markerId) {
             for (const marker of xr.markers) {
@@ -2111,28 +2038,6 @@
             panel.lookingClose = false;
           }
 
-          /* Holding a look is choosing — of a menu item, of the way out, and
-             of a pin in the room. The gaze must leave and come back before the
-             same thing fires again, so opening the list does not instantly
-             close it under a gaze that has not moved yet. */
-          /* Armed by looking away from the list while the list is up. While
-             it is down there is nothing to arm, and leaving the flag true
-             across a close would hand the next opening a live trigger —
-             which is exactly how a file chose itself: the list appeared
-             under a gaze that was already armed from before it existed. */
-          /* Armed by moving off whatever the aim happened to land on when
-             the list appeared. Requiring the aim to leave the list entirely
-             was too strict the moment the list stood in front of the person:
-             moving straight from one row to another never passes through
-             nothing, so nothing could ever be chosen. */
-          if (!menu.open) { menu.armed = false; menu.arrivedOn = null; menu.justOpened = false; }
-          else if (menu.justOpened) {
-            /* The first frame with rows in it: whatever the aim is on now is
-               where it arrived, and arriving is not choosing. */
-            menu.arrivedOn = menu.lookingItem?.id || "__nothing";
-            menu.justOpened = false;
-            menu.armed = false;
-          } else if (!menu.lookingItem || menu.lookingItem.id !== menu.arrivedOn) menu.armed = true;
           /* Nothing is chosen by looking. A pinch chooses, and only a
              pinch — the held look that used to fire on its own is gone, with
              the crosshair it needed and the growing dot that tried to
@@ -2186,22 +2091,18 @@
               gl.uniformMatrix3fv(markerUniforms.viewRotationInverse, false, rotation);
               gl.uniform1f(markerUniforms.markerDistance, surfaceDistance);
               gl.uniform3f(markerUniforms.eyeOffset, offset[0], offset[1], offset[2]);
-              gl.uniform1f(markerUniforms.reticle, 0);
               for (const marker of xr.markers) {
                 const isLooked = marker === looked;
                 gl.uniform3f(markerUniforms.markerDirection, marker.dir[0], marker.dir[1], marker.dir[2]);
                 /* A pin drawn at half the distance must be half the size, or
                    a smaller room silently grows its pins. */
                 const pinScale = surfaceDistance / 6.0;
-                /* Aimed at, it is bigger; held, it keeps growing while the
-                   dwell fills. A control that shows nothing between "not yet"
-                   and "done" is a control nobody can learn — which is how a
-                   pin that could only be opened by an absent pinch felt from
-                   inside the headset: dead. */
-                const holding = 0;
+                /* Aimed at, it is bigger. A control that looks the same
+                   whether or not the aim is on it is a control nobody can
+                   learn — which is how a pin felt from inside the headset
+                   before it answered anything at all: dead. */
                 const idle = 0.32 + 0.10 * xr.pinApproach;
-                gl.uniform1f(markerUniforms.markerSize,
-                  (isLooked ? 0.46 + 0.20 * holding : idle) * pinScale);
+                gl.uniform1f(markerUniforms.markerSize, (isLooked ? 0.46 : idle) * pinScale);
                 gl.uniform1f(markerUniforms.looking, isLooked ? 1 : 0);
                 /* Confirmed by a person and seen only by the AI are different
                    things, and a pin is exactly where that distinction gets lost
@@ -2252,7 +2153,6 @@
                 gl.uniform3f(labelUniforms.labelDirection, dir[0], dir[1], dir[2]);
                 gl.uniform2f(labelUniforms.labelSize, width * scale, height * scale);
                 gl.uniform1f(labelUniforms.looking, typeof lit === "number" ? lit : (lit ? 1 : 0));
-                gl.uniform1f(labelUniforms.dwell, 0);
                 gl.drawArrays(gl.TRIANGLES, 0, 6);
               };
               /* The note sits below the dot, at the same bearing, so it is
