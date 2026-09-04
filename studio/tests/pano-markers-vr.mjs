@@ -947,13 +947,13 @@ const scrolled = await page.evaluate(async () => {
 });
 /* Four rooms and the way out: five rows, and five rooms still to come. */
 check("a list longer than the window shows a window on it",
-  scrolled.opened === true && scrolled.rowsShown === 6 && scrolled.moreBelow === 4,
+  scrolled.opened === true && scrolled.rowsShown === 5 && scrolled.moreBelow === 5,
   JSON.stringify({ rows: scrolled.rowsShown, below: scrolled.moreBelow, above: scrolled.moreAbove }));
 check("a pinch past the bottom row scrolls the column",
   scrolled.scrollingDown === 1 && scrolled.offsetAfterHold >= 1,
   JSON.stringify({ scrolling: scrolled.scrollingDown, offset: scrolled.offsetAfterHold, rows: scrolled.titlesAfter }));
 check("pinching on walks it to the end and stops",
-  scrolled.offsetAtEnd === 4 && scrolled.moreBelowAtEnd === 0 && scrolled.moreAboveAtEnd === 4,
+  scrolled.offsetAtEnd === 5 && scrolled.moreBelowAtEnd === 0 && scrolled.moreAboveAtEnd === 5,
   JSON.stringify({ offset: scrolled.offsetAtEnd, below: scrolled.moreBelowAtEnd, above: scrolled.moreAboveAtEnd }));
 check("and away from the edge nothing is scrolling",
   scrolled.scrollingAway === 0);
@@ -1165,6 +1165,7 @@ console.log("\n── the Rooms menu, inside the room ──");
  */
 const rooms = await page.evaluate(async () => {
   const run = (dir, frames) => { for (let i = 0; i < frames; i += 1) window.__xrFrame(dir); };
+  const guard = { where: "start" };
   const tap = async (dir) => {
     await new Promise((r) => setTimeout(r, 240));
     window.__xrPinchStart(dir);
@@ -1310,6 +1311,252 @@ check("and it says where the aim was",
   String(silent.note));
 check("and whether the device gave a ray of its own",
   /device's own ray|sent no ray/.test(silent.note || ""), String(silent.note));
+
+console.log("\n── every row of the real panel, chosen through its real plane ──");
+/* The pure function against a made-up panel proves the arithmetic. This
+   proves the arithmetic is wired to the panel that is actually on screen:
+   the transform comes out of the running sphere, a ray is fired at each row
+   through it, and the room the product asks for is compared with the room
+   the row is named after. */
+const everyRow = await page.evaluate(async () => {
+  const run = (dir, frames) => { for (let i = 0; i < frames; i += 1) window.__xrFrame(dir); };
+  const tap = async (ray) => {
+    await new Promise((r) => setTimeout(r, 240));
+    window.__xrPinchStart(ray);
+    run(ray, 2);
+    window.__xrPinchEnd(ray);
+    run(ray, 6);
+  };
+  const out = { rows: [], ends: [], endNotes: [] };
+  const away = [0, 0.62, -0.78];
+  window.__xrStandAt(0, 0, 0);
+  window.__xrSetMarkers([]);
+  window.__xrSetRooms([
+    { id: "room-a", title: "Family Room", current: true },
+    { id: "room-b", title: "Dining Room" },
+    { id: "room-c", title: "Hallway" },
+    { id: "room-d", title: "Garage" },
+  ]);
+  run([0, 0, -1], 8);
+  for (let i = 0; i < 3 && window.__xrMenu().open; i += 1) await tap(window.__xrMenu().chipDir.slice());
+  run([0, 0, -1], 6);
+
+  /* Between rooms the fixture hands the sphere a different list — that is
+     what the studio does after a swap — so the four rooms are put back and
+     the panel reopened before each aim. */
+  const freshPanel = async () => {
+    /* The fixture replaces the room list when a room is chosen, exactly as
+       the studio does after a swap, and it does it after an await. Let that
+       land before putting the four rooms back, or the panel under test is
+       the one the last swap left behind. */
+    await new Promise((r) => setTimeout(r, 80));
+    /* Put the panel back within arm's reach first. Earlier sections carry it
+       across the room and leave it there, which is the panel behaving
+       correctly — but a panel four metres off turns the same three-degree
+       wander into twice the miss, and then this section would be measuring
+       how far away the last test left it rather than whether a row can be
+       chosen. Walking out of the room it stands in brings it to where you
+       now are, so that is what happens here. */
+    for (let i = 0; i < 3 && window.__xrMenu().open; i += 1) {
+      await tap(window.__xrMenu().chipDir.slice());
+      run([0, 0, -1], 4);
+    }
+    window.__xrStandAt(0, 0, 40); run([0, 0, -1], 6);
+    window.__xrStandAt(0, 0, 0); run([0, 0, -1], 6);
+    window.__xrSetRooms([
+      { id: "room-a", title: "Family Room", current: true },
+      { id: "room-b", title: "Dining Room" },
+      { id: "room-c", title: "Hallway" },
+      { id: "room-d", title: "Garage" },
+    ]);
+    run([0, 0, -1], 6);
+    /* Toggling blind lands on the wrong side half the time; press until the
+       panel is actually up, and no further. */
+    for (let i = 0; i < 4 && !window.__xrMenu().open; i += 1) {
+      await tap(window.__xrMenu().chipDir.slice());
+      run(away, 4);
+    }
+    run(away, 4);
+    return window.__xrPanelPlane();
+  };
+  /* A ray from the head to a point (u across, v up) on the panel's plane. */
+  const rayTo = (plane, u, v) => {
+    const head = window.__xrHead();
+    const target = [
+      plane.centre.x + plane.right[0] * u + plane.up[0] * v,
+      plane.centre.y + plane.right[1] * u + plane.up[1] * v,
+      plane.centre.z + plane.right[2] * u + plane.up[2] * v,
+    ];
+    return [target[0] - head.x, target[1] - head.y, target[2] - head.z];
+  };
+
+  const first = await freshPanel();
+  out.plane = Boolean(first);
+  out.rowNames = first ? first.rows.map((row) => row.title) : [];
+
+  /* Every room row in turn, aimed at its own centre. The room you are
+     already standing in is not a room you can walk to, so it is left out. */
+  for (const wanted of ["room-b", "room-c", "room-d"]) {
+    const standing = await freshPanel();
+    const row = standing?.rows.find((r) => r.id === wanted);
+    if (!row) { out.rows.push({ wanted, got: "not on the panel" }); continue; }
+    window.__roomChosen = null;
+    window.MDAIPano360.say("—");
+    await tap(rayTo(standing, row.u, row.v));
+    run(away, 6);
+    out.rows.push({ wanted, got: window.__roomChosen, shut: window.__xrMenu().open === false,
+      note: window.__xrNote() });
+  }
+
+  /* The same row from its far left and far right ends. */
+  for (const side of [-0.7, 0.7]) {
+    const standing = await freshPanel();
+    const row = standing?.rows.find((r) => r.id === "room-c");
+    if (!row) { out.ends.push(`no row-c: ${JSON.stringify(standing?.rows.map((r) => r.id) || null)}`); continue; }
+    window.__roomChosen = null;
+    await tap(rayTo(standing, row.u + row.halfWidth * side, row.v));
+    run(away, 6);
+    out.ends.push(window.__roomChosen);
+    out.endNotes.push(window.__xrNote());
+  }
+
+  /* Between two rows, and off the panel entirely: nothing chosen, and the
+     panel is still standing so the person can simply try again. */
+  const gaps = await freshPanel();
+  /* On the real panel the rows TILE: the ink of each is drawn a little
+     shorter than its cell, with clear space above and below it, but that
+     space belongs to a row rather than to nothing. A dead band between rows
+     is measurably a bottom row that cannot be chosen — the wander is wider
+     than the space. That a gap, where a panel has one, chooses nothing is
+     settled exactly by the pure function above; here what matters is that
+     the cells meet and that the panel still ends where it ends. */
+  out.tiling = {
+    step: Math.abs(gaps.rows[0].v - gaps.rows[1].v),
+    cell: gaps.rows[0].halfHeight * 2,
+    stillOpen: window.__xrMenu().open,
+  };
+  const wide = await freshPanel();
+  window.__roomChosen = null;
+  window.MDAIPano360.say("—");
+  /* Off the side, not below: below the bottom row is where the bar the
+     panel is carried by stands, and that is not "off the panel". */
+  await tap(rayTo(wide, wide.rows[0].halfWidth * 4, 0));
+  run(away, 6);
+  out.offPanel = { chosen: window.__roomChosen, stillOpen: window.__xrMenu().open, note: window.__xrNote() };
+  return out;
+});
+check("the panel publishes the transform it is drawn with",
+  everyRow.plane === true && everyRow.rowNames.includes("Dining Room"),
+  JSON.stringify(everyRow.rowNames));
+check("every room row, aimed at its centre, opens that room",
+  everyRow.rows.length > 0 && everyRow.rows.every((row) => row.got === row.wanted),
+  JSON.stringify(everyRow.rows.map((row) => `${row.wanted}→${row.got} · ${row.note}`)));
+check("and the panel closes behind each one",
+  everyRow.rows.every((row) => row.shut === true));
+check("the far ends of a row are the row",
+  everyRow.ends.length === 2 && everyRow.ends.every((id) => id === "room-c"),
+  JSON.stringify(everyRow.ends));
+check("the rows of the real panel meet, with no dead band between them",
+  Math.abs(everyRow.tiling.step - everyRow.tiling.cell) < 0.001
+  && everyRow.tiling.stillOpen === true,
+  `rows ${(everyRow.tiling.step * 100).toFixed(1)} cm apart, each cell ${(everyRow.tiling.cell * 100).toFixed(1)} cm`);
+check("off the panel nothing is chosen, the panel stays up, and it says so",
+  everyRow.offPanel.chosen === null && everyRow.offPanel.stillOpen === true
+  && /from the nearest room/.test(everyRow.offPanel.note || ""),
+  JSON.stringify(everyRow.offPanel));
+
+console.log("\n── which row a ray lands on ──");
+/* The one piece of this that is pure: a ray in, a panel in, a row or null
+   out. Everything the headset could not tell us about — where the eyes
+   really were, how the device builds its pinch ray — is out of the way here,
+   and what is left is the arithmetic that decides a room. It is exported so
+   these can call the shipping function, not a copy of it. */
+const geometry = await page.evaluate(() => {
+  const pick = window.MDAIPano360.rowUnderRay;
+  /* A panel two and a half metres away, facing back down -Z at a person
+     standing at the origin: three rows a third of a metre apart, each a
+     third of a metre wide and a tenth tall. Round numbers on purpose. */
+  const panel = {
+    centre: { x: 0, y: 1.6, z: -2.5 },
+    normal: [0, 0, 1],
+    right: [1, 0, 0],
+    up: [0, 1, 0],
+    rows: [
+      { id: "top", u: 0, v: 0.30, halfWidth: 0.33, halfHeight: 0.10 },
+      { id: "middle", u: 0, v: 0.00, halfWidth: 0.33, halfHeight: 0.10 },
+      { id: "bottom", u: 0, v: -0.30, halfWidth: 0.33, halfHeight: 0.10 },
+    ],
+  };
+  const eye = [0, 1.6, 0];
+  /* A ray from the eye to a point on the panel. */
+  const at = (u, v) => {
+    const to = [u - eye[0], 1.6 + v - eye[1], -2.5 - eye[2]];
+    return { origin: eye.slice(), dir: to };
+  };
+  const idOf = (ray) => pick(ray, panel)?.id || null;
+  return {
+    centres: panel.rows.map((row) => idOf(at(row.u, row.v))),
+    /* Everywhere across a row, not just its middle. */
+    leftEnd: idOf(at(-0.31, 0.30)),
+    rightEnd: idOf(at(0.31, 0.30)),
+    /* Between two rows: 0.15 up is 0.05 clear of both. */
+    betweenRows: idOf(at(0, 0.15)),
+    /* Off the ends of the panel, and off its sides. */
+    aboveAll: idOf(at(0, 0.55)),
+    belowAll: idOf(at(0, -0.55)),
+    besideIt: idOf(at(0.60, 0)),
+    /* Behind the person: the panel is at -Z, this ray goes to +Z. */
+    behind: idOf({ origin: eye.slice(), dir: [0, 0, 1] }),
+    /* Along the panel's own face, never reaching it. */
+    edgeOn: idOf({ origin: eye.slice(), dir: [1, 0, 0] }),
+    /* The same aim, from a hand half a metre below and to the side of the
+       eye — which is where this device's pinch ray actually starts. */
+    fromTheHand: (() => {
+      const hand = [0.25, 1.1, -0.2];
+      const to = [0 - hand[0], 1.6 + 0.30 - hand[1], -2.5 - hand[2]];
+      return pick({ origin: hand, dir: to }, panel)?.id || null;
+    })(),
+    /* And the panel moved: the SAME ray must now answer differently. */
+    afterItMoves: (() => {
+      const moved = { ...panel, centre: { x: 1.4, y: 1.6, z: -2.5 } };
+      return {
+        oldPlace: pick(at(0, 0), panel)?.id || null,
+        newPlace: pick(at(0, 0), moved)?.id || null,
+        aimedAtTheNewPlace: pick({ origin: eye.slice(), dir: [1.4, 0, -2.5] }, moved)?.id || null,
+      };
+    })(),
+    empty: pick(at(0, 0), { ...panel, rows: [] }),
+    noRay: pick(null, panel),
+  };
+});
+check("the centre of each row chooses that row",
+  JSON.stringify(geometry.centres) === JSON.stringify(["top", "middle", "bottom"]),
+  JSON.stringify(geometry.centres));
+check("and the whole width of a row is the row",
+  geometry.leftEnd === "top" && geometry.rightEnd === "top",
+  `${geometry.leftEnd} / ${geometry.rightEnd}`);
+check("the space between two rows chooses nothing",
+  geometry.betweenRows === null, String(geometry.betweenRows));
+check("and so does everywhere off the panel",
+  geometry.aboveAll === null && geometry.belowAll === null && geometry.besideIt === null,
+  JSON.stringify([geometry.aboveAll, geometry.belowAll, geometry.besideIt]));
+check("a panel behind the ray is never hit",
+  geometry.behind === null && geometry.edgeOn === null,
+  `${geometry.behind} / ${geometry.edgeOn}`);
+/* This is the case the headset is actually in. The pinch ray does not start
+   at the eye — it starts at the hand — and a test that only ever fires from
+   the eye proves nothing about the device it is meant to run on. */
+check("a ray from the hand, aimed at a row, still lands on that row",
+  geometry.fromTheHand === "top", String(geometry.fromTheHand));
+/* The panel can be carried. A hit test that kept the coordinates it was
+   built with would go on answering about where the panel used to be. */
+check("the panel's CURRENT place is what answers, not where it was",
+  geometry.afterItMoves.oldPlace === "middle"
+  && geometry.afterItMoves.newPlace === null
+  && geometry.afterItMoves.aimedAtTheNewPlace === "middle",
+  JSON.stringify(geometry.afterItMoves));
+check("and nothing throws on an empty or absent panel",
+  geometry.empty === null && geometry.noRay === null);
 
 console.log("\n── a room that is missed is still a room ──");
 /* Reported from an Apple Vision Pro, after the panel itself was working:
