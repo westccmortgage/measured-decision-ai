@@ -505,22 +505,92 @@
      opens in front of them at eye level. Both stand at a point in the world
      and stay there — they do not follow the head, and they do not follow the
      eyes. */
+  /* WHICH ROW A RAY LANDS ON.
+   *
+   * The panel is a flat rectangle standing at a point in the room. Its rows
+   * are rectangles on that rectangle. So the question "which row did they
+   * pinch" has one honest answer: put the ray through the panel's plane and
+   * see which rectangle the hole is in.
+   *
+   * It used to be asked a different way — compare the ray's world pitch
+   * against each row's world pitch, and its world yaw against the column's,
+   * each within a window picked by hand. Angles are not rectangles, the
+   * windows were not derived from anything the panel is drawn with, and the
+   * vertical one came out at five degrees. The Rooms button catches within
+   * seven degrees and opens on the first try every time; that is the only
+   * measurement anybody has of how accurate this device's pinch ray is, and
+   * a five-degree window is inside it. Rays that visibly went through a room
+   * name chose nothing, and the press fell through to a branch that put the
+   * panel away and called it a success.
+   *
+   * Pure on purpose: a ray and a panel in, a row or null out, no state and
+   * no drawing. It is the one piece of this that a test can pin exactly.
+   *
+   *   ray   { origin: [x,y,z], dir: [x,y,z] }   in the reference space
+   *   panel { centre, normal, right, up, rows: [{ ..., u, v, halfWidth,
+   *           halfHeight }] }  — the transform the panel is DRAWN with
+   *
+   * Returns the row object, or null for the gaps between rows, for anywhere
+   * off the panel, and for a panel behind the ray. */
+  function rowUnderRay(ray, panel, report) {
+    if (!ray || !panel || !Array.isArray(panel.rows) || !panel.rows.length) return null;
+    const dot = (a, b) => a[0] * b[0] + a[1] * b[1] + a[2] * b[2];
+    const span = Math.hypot(ray.dir[0], ray.dir[1], ray.dir[2]);
+    if (!span) return null;
+    const dir = [ray.dir[0] / span, ray.dir[1] / span, ray.dir[2] / span];
+    const facing = dot(dir, panel.normal);
+    /* Edge-on or from behind there is no hole to be in. */
+    if (Math.abs(facing) < 1e-6) return null;
+    const toPanel = [
+      panel.centre.x - ray.origin[0],
+      panel.centre.y - ray.origin[1],
+      panel.centre.z - ray.origin[2],
+    ];
+    const along = dot(toPanel, panel.normal) / facing;
+    if (!(along > 0)) return null;
+    const hit = [
+      ray.origin[0] + dir[0] * along - panel.centre.x,
+      ray.origin[1] + dir[1] * along - panel.centre.y,
+      ray.origin[2] + dir[2] * along - panel.centre.z,
+    ];
+    const u = dot(hit, panel.right);
+    const v = dot(hit, panel.up);
+    /* Where on the panel the ray actually went through, for whoever has to
+       explain a press that chose nothing. */
+    if (report) { report.u = u; report.v = v; }
+    for (const row of panel.rows) {
+      /* The whole width of the row, which is what a list means. */
+      if (Math.abs(u - row.u) <= row.halfWidth && Math.abs(v - row.v) <= row.halfHeight) return row;
+    }
+    return null;
+  }
+
   const MENU_CHIP_PITCH = 0.30;
   const MENU_CHIP_YAW = 0;
   const MENU_COLUMN_YAW = 0;
   /* How far apart the rows stand, and how many are shown at once. A list
      longer than the window scrolls; nothing here assumes a particular number
-     of rooms. */
-  const MENU_ROW_PITCH = 0.088;
-  /* How far past the first and last row the column still answers. Half a
-     row-step — 2.5 degrees — was the whole of it, and 2.5 degrees is not a
-     target for a ray that is somebody's gaze: the eye settles near a thing,
-     the hand pinches, and the ray arrives wherever the eye was at that
-     instant. Eight degrees is a margin the hand can actually hit. Nothing is
-     hidden behind it: a press further out than this is still answered, in
-     degrees, under the panel. */
-  const MENU_ROW_REACH = MENU_ROW_PITCH * 1.6;
-  const MENU_MAX_ROOM_ROWS = 5;
+     of rooms.
+
+     Ten degrees apart, and each row eight and a half degrees tall. It was
+     five apart and three tall.
+
+     Three degrees is smaller than the aim is accurate. Two measurements say
+     so and they agree: the Rooms button catches within seven degrees and
+     opens on the first try every time, while the rows caught within two and
+     a half and could not be chosen at all. The harness fires its pinches
+     through a ray that wanders by up to three degrees for the same reason —
+     a hand pinches, and the eyes are somewhere near the thing rather than
+     on it — and against a three-degree row that wander is the difference
+     between a hit and a miss.
+
+     A row is now half again as tall as the worst wander, so an aim at the
+     middle of a room name lands on that room whatever the hand does. Four
+     rooms are shown at a time rather than five, which is what keeps the
+     panel the size of a small window; the rest scroll, as they already
+     did. */
+  const MENU_ROW_PITCH = 0.173;
+  const MENU_MAX_ROOM_ROWS = 4;
   /* The two furnishings of the panel, placed relative to its rows: a close
      mark level with the top row and off its right end, and a bar under the
      bottom row that the whole panel is carried by. */
@@ -533,11 +603,13 @@
      out than the close mark because the word is wider than the mark. */
   const MENU_CHIP_OPEN_YAW = 0.34;
   /* Well clear of the scroll edge below the last row, so a pinch meant for
-     one is never taken by the other. */
-  const MENU_BAR_PITCH = 0.30;
+     one is never taken by the other. Taller rows pushed the edge further
+     down and the bar's catch swallowed it: a press meant to scroll the list
+     took hold of the panel instead. */
+  const MENU_BAR_PITCH = 0.42;
   /* Sizes, in the same world units the rows are drawn in. */
   const MENU_ROW_WIDTH = 0.74;
-  const MENU_ROW_HEIGHT = 0.155;
+  const MENU_ROW_HEIGHT = 0.45;
   const MENU_CHIP_WIDTH = 0.42;
   const MENU_CHIP_HEIGHT = 0.125;
   const MENU_BAR_WIDTH = 0.40;
@@ -574,7 +646,6 @@
      sideways precision buys nothing, and it is the vertical distance that
      has to tell one row from the next. */
   const MENU_CHIP_CATCH = 0.13;
-  const MENU_ROW_YAW_CATCH = 0.26;
   /* The menu stays where it was left. It only comes back around when the
      person has turned so far that it is behind them — anything tighter and
      it teleports in front of the eyes on every glance, which is exactly what
@@ -1309,6 +1380,22 @@
         window.__xrSetMarkers = (list) => setHeadsetMarkers(list || []);
         window.__xrSetRooms = (list) => setHeadsetRooms(list || []);
         window.__xrNote = () => lastNote;
+        /* The panel exactly as it stands right now — the transform the rows
+           are drawn with — so a test can put a ray through it and check the
+           answer against the thing on screen rather than against a copy. */
+        /* Where the head is standing, so a test can aim from where a person
+           actually is rather than from the origin. */
+        window.__xrHead = () => (xr?.headPosition ? { ...xr.headPosition } : { x: 0, y: 0, z: 0 });
+        window.__xrPanelPlane = () => (xr?.menu.open && xr.menu.plane ? {
+          centre: { ...xr.menu.plane.centre },
+          normal: xr.menu.plane.normal.slice(),
+          right: xr.menu.plane.right.slice(),
+          up: xr.menu.plane.up.slice(),
+          rows: xr.menu.plane.rows.map((row) => ({
+            id: row.id, title: row.title, u: row.u, v: row.v,
+            halfWidth: row.halfWidth, halfHeight: row.halfHeight,
+          })),
+        } : null);
         /* A headset that has handed over nothing at all — the condition the
            window exists for, and the only way a test can stand in one. */
         window.__xrForgetPointer = () => { if (xr) xr.everHadPointer = false; };
@@ -1328,6 +1415,8 @@
           moreAbove: xr.menu.moreAbove,
           moreBelow: xr.menu.moreBelow,
           scrolling: xr.menu.scrolling,
+          hit: xr.menu.hit ? { ...xr.menu.hit } : null,
+          lastMiss: xr.menu.lastMiss ? { ...xr.menu.lastMiss } : null,
           armed: xr.menu.armed,
         } : null);
         window.__xrPanel = () => (xr?.panel.markerId ? {
@@ -1539,123 +1628,105 @@
 
           let lookedItem = null;
           if (menu.items.length && !panel.markerId && menu.anchor) {
-            if (menu.open) {
-              const rowAim = menu.items.map((item) => ({ item, at: towards(item.world) }));
-              const pitchOf = (v) => Math.asin(Math.max(-1, Math.min(1, -v[1])));
-              const aimPitch = pitchOf(dir);
-              const aimFlat = Math.hypot(dir[0], dir[2]) || 0.0001;
-              /* A column is aimed at by height: wide across, because every
-                 row shares one bearing, and narrow up and down, because that
-                 is what tells one row from the next. */
-              const columnAt = rowAim[0].at;
-              const columnFlat = Math.hypot(columnAt[0], columnAt[2]) || 0.0001;
-              const roundness = (columnAt[0] * dir[0] + columnAt[2] * dir[2]) / (columnFlat * aimFlat);
-              const yawOff = Math.acos(Math.max(-1, Math.min(1, roundness)));
-              /* How far the aim was from the list, kept whether or not it hit
-                 anything. A press that chooses nothing has to be able to say
-                 why, and in a headset there is no console to say it into. */
-              menu.columnOff = yawOff;
-              menu.rowOff = rowAim.length
-                ? Math.min(...rowAim.map((row) => Math.abs(pitchOf(row.at) - aimPitch)))
-                : Infinity;
-              if (yawOff < MENU_ROW_YAW_CATCH) {
-                /* The column is one target, not a row of small ones.
-                 *
-                 * Each row used to catch only within 5.7° of its own centre
-                 * while the rows stand 12.6° apart — so between every pair of
-                 * rows lay a dead band about 7° wide where the aim was inside
-                 * the list and selected nothing at all. Close to half the
-                 * column did nothing. Reported from the headset in exactly
-                 * those words: the rooms are there, one is highlighted, and
-                 * looking at the others does not open them.
-                 *
-                 * Anywhere down the column now belongs to the nearest row,
-                 * the way a list on a screen has no gaps between its lines.
-                 * Half a row-step past each end is still the list, so the
-                 * first and last are as easy to hit as the middle. */
-                const pitches = rowAim.map((row) => pitchOf(row.at));
-                const highest = Math.min(...pitches);
-                const lowest = Math.max(...pitches);
-                /* A whole row-step past each end, not half of one.
-                 *
-                 * Half a step is 2.5 degrees, and 2.5 degrees is not a
-                 * target on a device where the ray IS the gaze: eyes settle
-                 * near a thing rather than on it, and there is no hover mark
-                 * to say how near. Reported from the headset as rooms that
-                 * could not be chosen at all. Past that margin the press is
-                 * still answered — it says how far it missed by — so a wide
-                 * margin costs nothing and a narrow one cost the feature. */
-                /* Generous into empty space, and no further than that.
-                   Where the list has more to give, the edge that says so is
-                   drawn a row-step out and is a target in its own right, so
-                   the last row stops half-way to it as any two neighbouring
-                   rows do. */
-                const roomAbove = menu.moreAbove > 0 ? MENU_ROW_PITCH / 2 : MENU_ROW_REACH;
-                const roomBelow = menu.moreBelow > 0 ? MENU_ROW_PITCH / 2 : MENU_ROW_REACH;
-                if (aimPitch >= highest - roomAbove && aimPitch <= lowest + roomBelow) {
-                  let bestRow = Infinity;
-                  for (const row of rowAim) {
-                    const off = Math.abs(pitchOf(row.at) - aimPitch);
-                    if (off < bestRow) { bestRow = off; lookedItem = row.item; }
-                  }
-                }
-                if (!lookedItem) {
-                  const above = Math.min(...pitches) - aimPitch;
-                  const below = aimPitch - Math.max(...pitches);
-                  /* Where the rows stop is where the edge begins: the two
-                     meet half-way, with nothing dead between them. */
-                  if (menu.moreAbove > 0 && above > MENU_ROW_PITCH / 2 && above < MENU_SCROLL_ZONE) menu.scrolling = -1;
-                  else if (menu.moreBelow > 0 && below > MENU_ROW_PITCH / 2 && below < MENU_SCROLL_ZONE) menu.scrolling = 1;
-                  else menu.scrolling = 0;
-                } else {
-                  menu.scrolling = 0;
-                }
+            if (menu.open && menu.planeCentre) {
+              /* THE PANEL IS ASKED FIRST, AND IT IS ASKED AS A PANEL.
+               *
+               * One question — where does this ray go through the panel —
+               * answered against the transform the panel is drawn with, and
+               * the rectangle each row is drawn as. Everything else about
+               * the panel is asked afterwards, and only if no row was hit. */
+              menu.plane = {
+                centre: menu.planeCentre,
+                normal: menu.planeNormal,
+                right: menu.planeRight,
+                up: menu.planeUp,
+                rows: menu.items.map((item) => ({
+                  id: item.id,
+                  title: item.title || item.id,
+                  item,
+                  u: item.across || 0,
+                  v: item.up || 0,
+                  /* Across: exactly the width it is drawn at, which is
+                     what "the whole row is the row" means.
+
+                     Down: half a row-step, so the rows TILE. The ink of a
+                     row is drawn a little shorter than that, with a gap
+                     above and below it — the way a list on a screen is set —
+                     but the gap belongs to a row rather than to nothing.
+                     Measured: a ray that wanders three degrees lands up to
+                     22 cm off on this panel, because a flat panel seen from
+                     its middle is oblique at its ends and the same angle is
+                     a longer step there. That is wider than the ink, so a
+                     dead band between rows is a bottom row that cannot be
+                     chosen. Nothing is hidden by this: past the first and
+                     last row the panel simply ends. */
+                  halfWidth: MENU_ROW_WIDTH * PANEL_DISTANCE / 6.0,
+                  halfHeight: PANEL_DISTANCE * Math.tan(MENU_ROW_PITCH) / 2,
+                })),
+              };
+              menu.hit = { u: null, v: null };
+              lookedItem = rowUnderRay({ origin: from, dir }, menu.plane, menu.hit)?.item || null;
+              /* How far the aim was from the panel, kept whether or not it
+                 hit anything: a press that chooses nothing has to be able to
+                 say why, and in a headset there is no console to say it in. */
+              const nearestRow = menu.items.reduce((best, item) => {
+                const off = Math.acos(Math.max(-1, Math.min(1, alignment(towards(item.world)))));
+                return off < best ? off : best;
+              }, Infinity);
+              menu.rowOff = nearestRow;
+              menu.columnOff = nearestRow;
+              if (!lookedItem) {
+                /* Past the ends of the list, where the edges that say how
+                   much more there is are drawn. */
+                const pitchOf = (v) => Math.asin(Math.max(-1, Math.min(1, -v[1])));
+                const pitches = menu.items.map((item) => pitchOf(towards(item.world)));
+                const aimPitch = pitchOf(dir);
+                const above = Math.min(...pitches) - aimPitch;
+                const below = aimPitch - Math.max(...pitches);
+                if (menu.moreAbove > 0 && above > MENU_ROW_PITCH / 2 && above < MENU_SCROLL_ZONE) menu.scrolling = -1;
+                else if (menu.moreBelow > 0 && below > MENU_ROW_PITCH / 2 && below < MENU_SCROLL_ZONE) menu.scrolling = 1;
+                else menu.scrolling = 0;
               } else {
                 menu.scrolling = 0;
               }
             } else {
               menu.scrolling = 0;
             }
-            /* One aim, four things it could be on, and one rule for
-               settling it: whichever is nearest is what was meant.
-             *
-             * Asking about them one at a time in a fixed order is what broke
-             * this. The rows own a wide band down the column, and the close
-             * mark and the Rooms button both stand INSIDE that band by
-             * construction — beside the top row and just above it. Asked
-             * first, they took presses that were aimed squarely at a room;
-             * asked last, the rows would take every press aimed at them.
-             * There is no order that is right, because the question is not
-             * "which one is in range" but "which one is closest". */
+            /* A row wins outright. It was decided by the panel's own
+               geometry — the ray went through that rectangle — and nothing
+               that is merely NEAR the aim outranks something the aim
+               actually went through. The button and the close mark stand on
+               the same top line as the first row and used to take presses
+               aimed squarely at it.
+
+               Only when no row was hit are the three round targets asked,
+               and among those the nearest wins, because their catches
+               overlap by construction. */
             const offBy = (world) => Math.acos(Math.max(-1, Math.min(1, alignment(towards(world)))));
             const chipOff = offBy(menu.chipWorld || menu.anchor);
             const closeOff = menu.open && menu.closeWorld ? offBy(menu.closeWorld) : Infinity;
             const barOff = menu.open && menu.barWorld ? offBy(menu.barWorld) : Infinity;
-            const itemOff = lookedItem ? offBy(lookedItem.world) : Infinity;
-            /* In range, before nearest is asked. */
-            let onChip = chipOff < MENU_CHIP_CATCH;
-            let onClose = Boolean(menu.open && menu.closeDir && closeOff < MENU_CLOSE_CATCH);
-            let onBar = Boolean(menu.open && menu.barDir && barOff < MENU_BAR_CATCH);
+            let onChip = !lookedItem && chipOff < MENU_CHIP_CATCH;
+            let onClose = Boolean(!lookedItem && menu.open && menu.closeDir && closeOff < MENU_CLOSE_CATCH);
+            let onBar = Boolean(!lookedItem && menu.open && menu.barDir && barOff < MENU_BAR_CATCH);
             const nearest = Math.min(
               onChip ? chipOff : Infinity,
               onClose ? closeOff : Infinity,
               onBar ? barOff : Infinity,
-              itemOff,
             );
             if (Number.isFinite(nearest)) {
               if (onChip && chipOff > nearest) onChip = false;
               if (onClose && closeOff > nearest) onClose = false;
               if (onBar && barOff > nearest) onBar = false;
-              if (lookedItem && itemOff > nearest) lookedItem = null;
             }
             menu.lookingItem = lookedItem;
             /* Whether the aim is ON the button is a question about geometry,
                and it has an answer whether the list is up or down — the
                button is the handle the list is carried by, and a handle that
                cannot be taken hold of while the thing is open is no handle
-               at all. It is also the way out: at the head of the column it
-               is visible, and pinching it puts the list down without
-               anything being chosen. */
+               at all. It is also the way out: on the panel's top line it is
+               visible, and pinching it puts the list down without anything
+               being chosen. */
             menu.chipAim = onChip;
             menu.lookingChip = onChip;
             menu.lookingClose = onClose;
@@ -1853,12 +1924,14 @@
           const from = ray ? "the device's own ray" : "your head — this device sent no ray";
           let missed = "nothing was under the aim";
           if (menu?.open && Number.isFinite(menu.columnOff)) {
-            missed = menu.columnOff > MENU_ROW_YAW_CATCH
-              ? `${Math.round(menu.columnOff * 57.3)}° to the side of the list`
-              : `${Math.round((menu.rowOff || 0) * 57.3)}° from the nearest room`;
+            missed = `${Math.round((menu.rowOff || 0) * 57.3)}° from the nearest room`;
           } else if (!menu?.open) {
             missed = "the list was not open";
           }
+          /* Kept as numbers as well as words: the sentence is for the person
+             wearing the headset, and these are for whoever has to work out
+             why a press that looked right went nowhere. */
+          if (menu) menu.lastMiss = { ...(menu.hit || {}), rowOff: menu.rowOff, open: menu.open };
           sayInHeadset(`Pinch heard · ${from} · ${missed}`);
         };
         for (const name of ["select", "squeeze"]) {
@@ -2008,40 +2081,55 @@
              * carried by along the bottom — and nothing stands in the
              * column's own way above or below. */
             const spread = (menu.items.length - 1) / 2;
-            const furnish = (pitch, yaw) => {
-              const swung = [
-                turned[0] * Math.cos(-yaw) + turned[1] * Math.sin(-yaw),
-                turned[1] * Math.cos(-yaw) - turned[0] * Math.sin(-yaw),
-              ];
-              const flatScale = Math.cos(pitch);
-              return {
-                x: menu.origin.x + swung[0] * flatScale * PANEL_DISTANCE,
-                y: menu.origin.y - Math.sin(pitch) * PANEL_DISTANCE,
-                z: menu.origin.z + swung[1] * flatScale * PANEL_DISTANCE,
-              };
-            };
             /* With the list down the button IS the whole menu and rests below
                the eye line. With it up the button is the panel's name, on the
-               top line, clear of the rows' own width. */
-            menu.chipWorld = menu.open && menu.origin
-              ? furnish(-spread * MENU_ROW_PITCH, MENU_CHIP_OPEN_YAW)
-              : menu.anchor;
+               top line, clear of the rows' own width — and on the panel's own
+               plane with everything else, so it travels with it. */
+            menu.chipWorld = menu.open && menu.planeCentre ? {
+              x: menu.planeCentre.x + menu.planeRight[0] * menu.chipAcross,
+              y: menu.planeCentre.y + menu.chipUp,
+              z: menu.planeCentre.z + menu.planeRight[2] * menu.chipAcross,
+            } : menu.anchor;
             const standingAt = aimAt(menu.chipWorld);
             menu.chipDir = standingAt.dir;
             menu.chipDistance = standingAt.distance;
             if (!menu.rowsPlaced) {
+              /* The rows stand on ONE FLAT PANEL, not on an arc.
+               *
+               * They used to be points on a sphere at equal angles, which is
+               * a different shape from the rectangles they are drawn as —
+               * and a hit test cannot be right about a shape the thing is
+               * not. Equal steps up a plane, at the same distance and to
+               * within a millimetre of the same places, and now the panel
+               * has a transform: a centre, a normal, a right and an up. */
+              const rowStep = PANEL_DISTANCE * Math.tan(MENU_ROW_PITCH);
+              menu.planeCentre = {
+                x: menu.origin.x + turned[0] * PANEL_DISTANCE,
+                y: menu.origin.y,
+                z: menu.origin.z + turned[1] * PANEL_DISTANCE,
+              };
+              menu.planeNormal = [-turned[0], 0, -turned[1]];
+              menu.planeRight = [turned[1], 0, -turned[0]];
+              menu.planeUp = [0, 1, 0];
               menu.items.forEach((item, index) => {
-                const pitch = (index - spread) * MENU_ROW_PITCH;
-                const flatScale = Math.cos(pitch);
-                const rowDir = [turned[0] * flatScale, -Math.sin(pitch), turned[1] * flatScale];
+                item.up = (spread - index) * rowStep;
+                item.across = 0;
                 item.world = {
-                  x: menu.origin.x + rowDir[0] * PANEL_DISTANCE,
-                  y: menu.origin.y + rowDir[1] * PANEL_DISTANCE,
-                  z: menu.origin.z + rowDir[2] * PANEL_DISTANCE,
+                  x: menu.planeCentre.x,
+                  y: menu.planeCentre.y + item.up,
+                  z: menu.planeCentre.z,
                 };
               });
-              menu.closeWorld = furnish(-spread * MENU_ROW_PITCH, -MENU_CLOSE_YAW);
-              menu.barWorld = furnish(spread * MENU_ROW_PITCH + MENU_BAR_PITCH, 0);
+              const aside = (across, up) => ({
+                x: menu.planeCentre.x + menu.planeRight[0] * across,
+                y: menu.planeCentre.y + up,
+                z: menu.planeCentre.z + menu.planeRight[2] * across,
+              });
+              const topRow = spread * rowStep;
+              menu.closeWorld = aside(-PANEL_DISTANCE * Math.tan(MENU_CLOSE_YAW), topRow);
+              menu.barWorld = aside(0, -topRow - PANEL_DISTANCE * Math.tan(MENU_BAR_PITCH));
+              menu.chipAcross = PANEL_DISTANCE * Math.tan(MENU_CHIP_OPEN_YAW);
+              menu.chipUp = topRow;
               menu.rowsPlaced = true;
             }
             menu.items.forEach((item) => {
@@ -2240,13 +2328,23 @@
               const labelScale = menuDistance / 6.0;
               /* `lit` is a level, not a flag: a control part-way to being
                  aimed at should look part-way there. */
-              const drawLabel = (labelTexture, dir, width, height, lit, filling, atDistance) => {
+              const drawLabel = (labelTexture, dir, width, height, lit, filling, atDistance, sizedAt) => {
                 /* A thing standing in the room is a different distance away
-                   from wherever the person is now standing, so its size on
-                   screen is that distance's business rather than one number
-                   shared by everything. */
+                   from wherever the person is now standing. How far away it
+                   is decides where it is drawn; how big it IS decides how
+                   big it looks.
+                   *
+                   * Those were the same number, which made every label a
+                   * fixed number of degrees across however far off it stood
+                   * — a head-up display rather than an object. It also made
+                   * the rows of the panel grow as the person walked away
+                   * from it until they overlapped each other, and a row that
+                   * overlaps its neighbour has no honest hit test. The panel
+                   * is sized once, at the distance it was put at, and after
+                   * that walking towards it makes it bigger the way walking
+                   * towards anything does. */
                 const distance = atDistance || menuDistance;
-                const scale = distance / 6.0;
+                const scale = (sizedAt || distance) / 6.0;
                 gl.uniform1f(labelUniforms.labelDistance, distance);
                 gl.bindTexture(gl.TEXTURE_2D, labelTexture);
                 gl.uniform3f(labelUniforms.labelDirection, dir[0], dir[1], dir[2]);
@@ -2281,7 +2379,7 @@
                    crosshair neared it, which only made sense while there was
                    a crosshair. */
                 drawLabel(menu.chipTexture, menu.chipDir, MENU_CHIP_WIDTH, MENU_CHIP_HEIGHT,
-                  false, false, menu.chipDistance);
+                  false, false, menu.chipDistance, PANEL_DISTANCE);
               }
               if (menu.open && !panel.markerId) {
                 /* The panel's own two furnishings, drawn as world objects
@@ -2289,18 +2387,21 @@
                    per eye. */
                 if (menu.closeTexture && menu.closeDir) {
                   drawLabel(menu.closeTexture, menu.closeDir, MENU_CLOSE_SIZE, MENU_CLOSE_SIZE,
-                    menu.lookingClose, false, menu.closeDistance);
+                    menu.lookingClose, false, menu.closeDistance, PANEL_DISTANCE);
                 }
                 if (menu.barTexture && menu.barDir) {
                   drawLabel(menu.barTexture, menu.barDir, MENU_BAR_WIDTH, MENU_BAR_HEIGHT,
-                    menu.lookingBar, false, menu.barDistance);
+                    menu.lookingBar, false, menu.barDistance, PANEL_DISTANCE);
                 }
                 for (const item of menu.items) {
                   const lit = item === menu.lookingItem;
                   /* Panel-sized. A row that was 27 degrees wide and 6 tall is
                      a billboard; these are lines in a small window. */
+                  /* Sized once, at the distance the panel was put at — the
+                     same number the hit test measures the row with, so what
+                     is drawn and what answers a pinch are one rectangle. */
                   drawLabel(item.texture, item.dir, MENU_ROW_WIDTH, MENU_ROW_HEIGHT, lit,
-                    false, item.distance);
+                    false, item.distance, PANEL_DISTANCE);
                 }
                 /* The ends of the column, when the column has more to give.
                    They light while the look is on them, which is also while
@@ -2311,7 +2412,7 @@
                   const flat = Math.hypot(row.dir[0], row.dir[2]) || 1;
                   const scaled = Math.cos(pitch) / flat;
                   drawLabel(edgeTexture, [row.dir[0] * scaled, -Math.sin(pitch), row.dir[2] * scaled],
-                    0.78, 0.16, menu.scrolling === sign ? 1 : 0.5, false, row.distance);
+                    0.78, 0.16, menu.scrolling === sign ? 1 : 0.5, false, row.distance, PANEL_DISTANCE);
                 };
                 edge(menu.upTexture, menu.items[0], -1);
                 edge(menu.downTexture, menu.items[menu.items.length - 1], 1);
@@ -3466,5 +3567,5 @@
     activeSphere.sayInHeadset(text);
     return true;
   };
-  window.MDAIPano360 = { open, close, swapRoom, say };
+  window.MDAIPano360 = { open, close, swapRoom, say, rowUnderRay };
 })();
