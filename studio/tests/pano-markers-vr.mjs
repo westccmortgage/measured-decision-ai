@@ -530,13 +530,22 @@ check("one quick turn leaves the room's centre where it was",
 check("and a settled gaze re-centres it within moments",
   anchored.settled > 0.99, `dot with the new gaze: ${anchored.settled.toFixed(5)}`);
 
-console.log("\n── the menu stays where it can be reached ──");
-/* Reported from the headset: "the word Rooms is on the ceiling, and pinching
-   does nothing". The chip was carried on the lazily-followed gaze, so looking
-   towards it pushed it further away, and chasing it down collapsed the
-   heading it was built from — it flipped overhead and could never be aimed
-   at. It must sit in front, a glance below the eye line, and hold still the
-   moment somebody turns towards it. */
+console.log("\n── the button holds still, and comes when it is left behind ──");
+/* Two failures, opposite to each other, and this section is where the line
+   between them is drawn.
+ *
+ * "The word Rooms is on the ceiling, and pinching does nothing" — the button
+ * was carried on the lazily-followed gaze, so looking towards it pushed it
+ * further away and chasing it down flipped it overhead. It must hold still
+ * the moment somebody looks at it.
+ *
+ * "Was working one time, returned me to the rooms and then not working
+ * anymore" — it was pinned to a point in the room and only came back after a
+ * hundred and twenty-six degrees of turn, so an ordinary look around left the
+ * only way out of the headset behind a shoulder. It must come when it has
+ * been left behind.
+ *
+ * Both, therefore: still under a look, and never further off than a glance. */
 const parked = await page.evaluate(() => {
   const dot = (a, b) => a[0] * b[0] + a[1] * b[1] + a[2] * b[2];
   const ahead = [0, 0, -1];
@@ -551,13 +560,12 @@ const parked = await page.evaluate(() => {
   /* Chase downwards, where the old code's heading collapsed. */
   run([0, -0.97, -0.24], 30);
   const chased = window.__xrMenu();
-  /* An ordinary look around the room — a quarter turn — must leave the menu
-     exactly where it was left. It used to jump in front of the eyes every
-     fifty degrees, which in the headset read as "however you move your head
-     it runs with you". */
+  /* An ordinary look around the room — a quarter turn. It comes across, and
+     it comes across smoothly: what must never happen is the jump that read
+     from the headset as "however you move your head it runs with you". */
   run([1, 0, 0], 30);
   const glanced = window.__xrMenu();
-  /* Turn right round: only then does it come back to where the person faces. */
+  /* Turn right round. */
   const behind = [0, 0, 1];
   run(behind, 30);
   const followed = window.__xrMenu();
@@ -566,8 +574,8 @@ const parked = await page.evaluate(() => {
     restY: rest.chipDir[1],
     drift: dot(rest.chipDir, held.chipDir),
     lookingChip: held.lookingChip,
-    chasedDot: dot(chased.chipDir, held.chipDir),
-    glancedDot: dot(glanced.chipDir, held.chipDir),
+    chasedY: chased.chipDir[1],
+    glancedDot: dot(glanced.chipDir, [1, 0, 0]),
     behindDot: dot(followed.chipDir, behind),
   };
 });
@@ -582,11 +590,13 @@ check("looking straight at it lights it up",
   parked.lookingChip === true);
 check("and it holds still instead of running from the eye",
   parked.drift > 0.999, `moved by ${(Math.acos(Math.min(1, parked.drift)) * 57.3).toFixed(2)}°`);
+/* Chased downwards it must not flip overhead — it follows the gaze down and
+   settles below it, which is the failure this check was written for. */
 check("chasing it downwards never flips it overhead",
-  parked.chasedDot > 0.999, `moved by ${(Math.acos(Math.min(1, parked.chasedDot)) * 57.3).toFixed(2)}°`);
-check("a quarter turn to look around leaves it exactly where it was left",
-  parked.glancedDot > 0.999, `moved by ${(Math.acos(Math.min(1, parked.glancedDot)) * 57.3).toFixed(2)}°`);
-check("but turning right round brings it back to where the person now faces",
+  parked.chasedY < 0, `it settled at height ${parked.chasedY.toFixed(3)}`);
+check("a quarter turn to look around brings it with you",
+  parked.glancedDot > 0.82, `dot with the new facing ${parked.glancedDot.toFixed(3)}`);
+check("and so does turning right round",
   parked.behindDot > 0.82, `dot with the new facing ${parked.behindDot.toFixed(3)}`);
 
 /* Direction maths agreeing with itself is not the same as a chip a person can
@@ -882,10 +892,12 @@ const wayOut = await page.evaluate(async () => {
   out.keys = Object.keys(resting).sort().join(",");
   out.stillThere = Boolean(window.__xrLive());
 
-  /* The head pointed deliberately elsewhere, so only the device's own ray
-     can be doing the choosing. */
+  /* The head pointed deliberately elsewhere and left there long enough for
+     the button to settle where it now belongs. The aim is then read off the
+     button and handed to the device's own ray, so nothing but that ray can
+     be doing the choosing. */
   const away = [0, 0.62, -0.78];
-  run(away, 6);
+  run(away, 40);
   const aim = window.__xrMenu().chipDir.slice();
   await new Promise((r) => setTimeout(r, 240));
   window.__xrPinchStart(aim);
@@ -899,7 +911,7 @@ const wayOut = await page.evaluate(async () => {
   out.flatViewerAlive = Boolean(document.querySelector(".pano-overlay canvas"));
   return out;
 });
-check("one button stands in the room, below the eye line and in front",
+check("one button stands a glance below where the eyes are, and in front",
   wayOut.pitch > 10 && wayOut.pitch < 25 && wayOut.inFront === true,
   `${wayOut.pitch.toFixed(1)}° below the eye line`);
 check("and it knows how many rooms are waiting on the screen",
@@ -934,6 +946,125 @@ const backIn = await page.evaluate(async () => {
 check("choosing a room there asks for that room",
   backIn.chosen === "room-b" || backIn.chosen === "room-c", String(backIn.chosen));
 check("and the list closes behind the choice", backIn.listGone === true);
+
+console.log("\n── the way out is never behind you ──");
+/* THE BUG THIS SECTION EXISTS FOR.
+ *
+ * The button stood at a fixed point in the room and only came back to the
+ * person once they had turned more than 126 degrees from it. That is right
+ * for a panel you put somewhere and walk around. It is wrong for the only
+ * way out of the headset: turn sixty degrees to look at a wall and the exit
+ * is behind your shoulder, off-screen, with nothing to say where it went.
+ * Reported as "was working one time, returned me to the rooms and then not
+ * working anymore" — which is what an exit you cannot find looks like from
+ * inside.
+ *
+ * Every earlier check drove the head a little and then aimed. None turned
+ * the head the way a person inspecting a room turns it, and then looked for
+ * the way out. */
+const findable = await page.evaluate(async () => {
+  const run = (dir, frames) => { for (let i = 0; i < frames; i += 1) window.__xrFrame(dir); };
+  const angle = (a, b) => Math.acos(Math.max(-1, Math.min(1,
+    a[0] * b[0] + a[1] * b[1] + a[2] * b[2]))) * 57.3;
+  if (!window.__xrLive()) {
+    document.querySelector("[data-pano-vr]")?.click();
+    await new Promise((r) => setTimeout(r, 500));
+  }
+  window.__xrStandAt(0, 0, 0);
+  run([0, 0, -1], 20);
+  const out = { turns: [] };
+  /* A quarter turn, a half turn, a look up at the ceiling, a look down at
+     the floor, and right round — all ordinary things to do in a room you
+     are inspecting. After each, the button has to be somewhere a person
+     looking ahead can see, and it has to still answer a pinch. */
+  const looks = [
+    { name: "a quarter turn", dir: [1, 0, 0] },
+    { name: "a half turn", dir: [0, 0, 1] },
+    { name: "up at the ceiling", dir: [0, 0.8, -0.6] },
+    { name: "down at the floor", dir: [0, -0.8, -0.6] },
+    { name: "right round again", dir: [-1, 0, -0.2] },
+  ];
+  for (const look of looks) {
+    const facing = (() => { const l = Math.hypot(...look.dir); return look.dir.map((v) => v / l); })();
+    /* Long enough for a lazy follow to settle, and no longer. */
+    run(facing, 60);
+    const seen = window.__xrMenu();
+    const fromView = angle(seen.chipDir, facing);
+    /* Pinch it where it now stands. */
+    await new Promise((r) => setTimeout(r, 240));
+    const aim = seen.chipDir.slice();
+    window.__xrPinchStart(aim);
+    run(aim, 2);
+    window.__xrPinchEnd(aim);
+    await new Promise((r) => setTimeout(r, 400));
+    const left = !window.__xrLive();
+    out.turns.push({ name: look.name, fromView, left });
+    if (left) {
+      document.querySelector("[data-room-close]")?.click();
+      document.querySelector("[data-pano-vr]")?.click();
+      await new Promise((r) => setTimeout(r, 500));
+      run([0, 0, -1], 20);
+    }
+  }
+  return out;
+});
+/* Within a glance of straight ahead. A control the eyes have to hunt for is
+   a control that is not there. */
+check("after any ordinary turn of the head the button is still in view",
+  findable.turns.every((t) => t.fromView < 35),
+  findable.turns.map((t) => `${t.name}: ${t.fromView.toFixed(0)}° off centre`).join(" · "));
+check("and it still leaves the headset from wherever it now stands",
+  findable.turns.every((t) => t.left === true),
+  JSON.stringify(findable.turns.map((t) => `${t.name}: ${t.left}`)));
+
+console.log("\n── and again, and again ──");
+/* Reported from the headset: "was working one time, returned me to the rooms
+   and then not working anymore". Once is not working. Every earlier check
+   drove one session and stopped, so the whole exit-choose-return-press cycle
+   — the one a person actually repeats — had never been driven twice. */
+const again = await page.evaluate(async () => {
+  const run = (dir, frames) => { for (let i = 0; i < frames; i += 1) window.__xrFrame(dir); };
+  const away = [0, 0.62, -0.78];
+  const rounds = [];
+  for (let round = 0; round < 3; round += 1) {
+    /* Back in, however we left. */
+    if (!window.__xrLive()) {
+      document.querySelector("[data-pano-vr]")?.click();
+      await new Promise((r) => setTimeout(r, 500));
+    }
+    run([0, 0, -1], 12);
+    const entered = window.__xrLive();
+    /* Turn away FIRST and let the button settle, then aim at where it now
+       is. A direction read before the head moved is a direction the button
+       has since left — the button follows, which is the whole point of it. */
+    run(away, 40);
+    const menu = window.__xrMenu();
+    const aim = menu ? menu.chipDir.slice() : [0, -1, 0];
+    await new Promise((r) => setTimeout(r, 240));
+    window.__xrPinchStart(aim);
+    run(aim, 2);
+    window.__xrPinchEnd(aim);
+    await new Promise((r) => setTimeout(r, 400));
+    const list = document.querySelector(".pano-list");
+    rounds.push({
+      entered,
+      hadButton: Boolean(menu && menu.chipTexture !== false),
+      left: !window.__xrLive(),
+      listShown: Boolean(list),
+      note: window.__xrNote(),
+    });
+    /* And walk to a room from the list, which is what a person does next. */
+    const other = list ? [...list.querySelectorAll("[data-room-go]")].find((b) => !b.getAttribute("aria-current")) : null;
+    if (other) { other.click(); await new Promise((r) => setTimeout(r, 700)); }
+  }
+  return rounds;
+});
+check("the button leaves the headset on every round, not just the first",
+  again.length === 3 && again.every((r) => r.left === true),
+  JSON.stringify(again));
+check("and puts the room list up on every round",
+  again.every((r) => r.listShown === true),
+  JSON.stringify(again.map((r) => r.listShown)));
 
 console.log("\n── a press that chooses nothing says why ──");
 /* In a headset there is no console and no status bar. Three rounds went by on
