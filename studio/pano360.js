@@ -535,9 +535,23 @@
      button steps with you, which is the difference between a heads-up
      display and something standing in a room. */
   const PANEL_DISTANCE = 2.4;
-  /* It can never be lost, though: turn right round, or walk out of the room
-     it was left in, and it comes to where you now are. */
-  const PANEL_RECENTRE_ANGLE = 2.2;
+  /* THE WAY OUT MUST NEVER BE BEHIND YOU.
+   *
+   * The button used to stand at a fixed point in the room and come back to
+   * the person only once they had turned more than 126 degrees away from it.
+   * That was right for a panel: something you put somewhere and walk around.
+   * It is wrong for the only way out of the headset. Turn sixty degrees to
+   * look at a wall — an ordinary thing to do in a room you are inspecting —
+   * and the exit is behind your shoulder, off-screen, with nothing to say
+   * where it went. Reported in exactly the shape that produces: "was working
+   * one time, returned me to the rooms and then not working anymore."
+   *
+   * So it follows, lazily. It holds still while the head moves a little, and
+   * eases across when the head has moved a lot — never a jump, which is what
+   * made an earlier version read as "however you move your head it runs with
+   * you", and never further away than a glance. */
+  const MENU_FOLLOW_SLACK = 0.20;
+  const MENU_FOLLOW_RATE = 0.10;
   const PANEL_RECENTRE_METRES = 4.0;
   /* How near the pinch's own ray has to pass to count as landing on the
      button. Seven degrees. This is the number that works — it is the only
@@ -982,7 +996,7 @@
       ink.clearRect(0, 0, board.width, board.height);
       ink.fillStyle = "rgba(7, 20, 33, 0.86)";
       ink.strokeStyle = "rgba(140, 232, 243, 0.9)";
-      ink.lineWidth = round ? 5 : 4;
+      ink.lineWidth = round ? 5 : 9;
       if (round) {
         ink.beginPath();
         ink.arc(64, 64, 52, 0, Math.PI * 2);
@@ -1273,6 +1287,13 @@
           /* The one control. Look at it, pinch, and the headset is left with
              the room list on the screen behind it. */
           if (menu?.lookingChip) {
+            /* Said before anything is torn down, and it outlives the session
+               it was written in: it is drawn on the flat pane too. If a press
+               lands and this appears but the headset stays on, the press was
+               heard and the leaving is what broke — which is a different
+               fault from a press that never registered, and from inside a
+               headset those two are otherwise the same nothing. */
+            sayInHeadset("Leaving for the room list…");
             leaveForRooms();
             return true;
           }
@@ -1643,32 +1664,55 @@
           const menu = xr.menu;
           const panel = xr.panel;
           if (!panel.markerId) {
-            /* Placed once, in the room, and then left where it was put.
-               Only two things move it: turning right round, so it is behind
-               you and unreachable, or walking out of the room it was left
-               in. Both bring it to where you now are — it can be left, but
-               it can never be lost. */
+            /* Where the button belongs right now: a glance below whatever
+               the head is facing, at arm's length and a half. */
             const flat = Math.hypot(forward[0], forward[2]);
-            const facing = flat > 0.35 ? [forward[0] / flat, forward[2] / flat] : (menu.heading || [0, -1]);
-            let place = !menu.anchor;
-            if (menu.anchor && !menu.lookingChip) {
+            const facing = flat > 0.2 ? [forward[0] / flat, forward[2] / flat] : (menu.heading || [0, -1]);
+            menu.heading = facing;
+            const aside = [
+              facing[0] * Math.cos(-MENU_CHIP_YAW) + facing[1] * Math.sin(-MENU_CHIP_YAW),
+              facing[1] * Math.cos(-MENU_CHIP_YAW) - facing[0] * Math.sin(-MENU_CHIP_YAW),
+            ];
+            /* A glance below where the eyes actually are, not below the
+               horizon. Hung off the horizon it sat seventy degrees under
+               somebody looking at a ceiling — which in a room being
+               inspected is most of the time. Held short of straight down so
+               it never folds under the floor. */
+            const gazePitch = Math.asin(Math.max(-1, Math.min(1, forward[1])));
+            const restPitch = Math.max(-1.25, gazePitch - MENU_CHIP_PITCH);
+            const restFlat = Math.cos(restPitch);
+            const rest = [aside[0] * restFlat, Math.sin(restPitch), aside[1] * restFlat];
+            const restingPlace = () => ({
+              x: headPosition.x + rest[0] * PANEL_DISTANCE,
+              y: headPosition.y + rest[1] * PANEL_DISTANCE,
+              z: headPosition.z + rest[2] * PANEL_DISTANCE,
+            });
+            if (!menu.anchor) menu.anchor = restingPlace();
+            else if (!menu.lookingChip) {
+              /* How far it has drifted from where it belongs. Inside the
+                 slack it is left alone, so small head movements do not drag
+                 it about. Once it is outside, it eases the WHOLE way home
+                 rather than stopping at the edge of the slack — otherwise it
+                 comes to rest anywhere within a slack of where it belongs,
+                 and where the one control sits stops being a fact. */
               const standing = aimAt(menu.anchor);
-              const behind = standing.dir[0] * forward[0] + standing.dir[1] * forward[1] + standing.dir[2] * forward[2]
-                < Math.cos(PANEL_RECENTRE_ANGLE);
-              if (behind || standing.distance > PANEL_RECENTRE_METRES) place = true;
-            }
-            if (place) {
-              menu.heading = facing;
-              const aside = [
-                facing[0] * Math.cos(-MENU_CHIP_YAW) + facing[1] * Math.sin(-MENU_CHIP_YAW),
-                facing[1] * Math.cos(-MENU_CHIP_YAW) - facing[0] * Math.sin(-MENU_CHIP_YAW),
-              ];
-              const put = [aside[0] * MENU_CHIP_COS, -MENU_CHIP_SIN, aside[1] * MENU_CHIP_COS];
-              menu.anchor = {
-                x: headPosition.x + put[0] * PANEL_DISTANCE,
-                y: headPosition.y + put[1] * PANEL_DISTANCE,
-                z: headPosition.z + put[2] * PANEL_DISTANCE,
-              };
+              const off = Math.acos(Math.max(-1, Math.min(1,
+                standing.dir[0] * rest[0] + standing.dir[1] * rest[1] + standing.dir[2] * rest[2])));
+              if (off > MENU_FOLLOW_SLACK || standing.distance > PANEL_RECENTRE_METRES) menu.chasing = true;
+              if (off < 0.01) menu.chasing = false;
+              if (menu.chasing) {
+                const eased = [
+                  standing.dir[0] + (rest[0] - standing.dir[0]) * MENU_FOLLOW_RATE,
+                  standing.dir[1] + (rest[1] - standing.dir[1]) * MENU_FOLLOW_RATE,
+                  standing.dir[2] + (rest[2] - standing.dir[2]) * MENU_FOLLOW_RATE,
+                ];
+                const span = Math.hypot(eased[0], eased[1], eased[2]) || 1;
+                menu.anchor = {
+                  x: headPosition.x + eased[0] / span * PANEL_DISTANCE,
+                  y: headPosition.y + eased[1] / span * PANEL_DISTANCE,
+                  z: headPosition.z + eased[2] / span * PANEL_DISTANCE,
+                };
+              }
             }
             menu.chipWorld = menu.anchor;
             const standingAt = aimAt(menu.chipWorld);
