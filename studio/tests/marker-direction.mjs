@@ -159,21 +159,26 @@ check("a degree of u is a degree of arc", Math.abs(separation - oneDegree) < 1e-
 {
   const src = fs.readFileSync("studio/pano360.js", "utf8");
   /* There is more than one such loop in the file; the one that matters is the
-     one that draws — it is the one carrying the reticle. */
+     one that draws. Its OWN body has to bind each eye's projection — looking
+     a fixed distance ahead in the file instead picked up whichever loop came
+     first once the file got shorter, which is a guard that quietly stops
+     guarding. */
   const marker = "for (const eyeView of pose.views) {";
+  const bodyAt = (from) => {
+    let depth = 0;
+    for (let i = src.indexOf("{", from); i < src.length; i += 1) {
+      if (src[i] === "{") depth += 1;
+      else if (src[i] === "}") { depth -= 1; if (!depth) return src.slice(from, i); }
+    }
+    return "";
+  };
   let start = -1;
+  let body = "";
   for (let at = src.indexOf(marker); at >= 0; at = src.indexOf(marker, at + 1)) {
-    const after = src.slice(at, at + 14000);
-    if (after.includes("markerUniforms.reticle")) { start = at; break; }
+    const candidate = bodyAt(at);
+    if (candidate.includes("markerUniforms.projection")) { start = at; body = candidate; break; }
   }
   check("the loop that draws each eye is where it is expected", start > 0, `index ${start}`);
-  let depth = 0;
-  let end = -1;
-  for (let i = src.indexOf("{", start); i < src.length; i += 1) {
-    if (src[i] === "{") depth += 1;
-    else if (src[i] === "}") { depth -= 1; if (!depth) { end = i; break; } }
-  }
-  const body = src.slice(start, end);
   /* A return inside a nested function of its own is fine — those return from
      themselves. Only a return at the loop's own statement level leaves the
      frame, and at this file's indentation that is twelve or fourteen spaces. */
