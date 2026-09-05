@@ -182,7 +182,7 @@ export const SIX_AGENT_OPERATING_MODEL = [
  * "installed", or "visible" into "compliant", is the failure this whole
  * record exists to prevent — an invoice is a purchase, a photograph is a
  * sighting, and neither is a person's confirmation. */
-export const PROJECT_SEARCH_CONTRACT_VERSION = "2026-09-05.1";
+export const PROJECT_SEARCH_CONTRACT_VERSION = "2026-09-05.2";
 
 export const PROJECT_SEARCH_INSTRUCTIONS = [
   "You answer one question about ONE construction project, for the people who run it, contract version " + PROJECT_SEARCH_CONTRACT_VERSION + ".",

@@ -10,7 +10,7 @@
  * a door.
  */
 (function askProjectModule() {
-  const state = { client: null, propertyId: null, open: (() => {}) };
+  const state = { client: null, propertyId: null, lastQuestion: null, open: (() => {}) };
 
   const $ = (id) => document.getElementById(id);
 
@@ -28,6 +28,7 @@
     const parts = [];
     if (citation.label) parts.push(citation.label);
     if (citation.sheet_ref) parts.push(citation.sheet_ref);
+    if (citation.opens === "document" && !Number.isInteger(citation.page_number)) parts.push("Whole document · page not recorded");
     if (Number.isFinite(citation.page_number)) parts.push(`Page ${citation.page_number}`);
     if (citation.room_name && !String(citation.label || "").includes(citation.room_name)) {
       parts.push(citation.room_name);
@@ -114,7 +115,10 @@
     const text = $("ask-answer-text");
     /* One press, one question. The worker refuses a duplicate anyway; this
        only spares the round trip and the flicker. */
+    if (options.force && !window.MDAIAiUsage?.confirmReanalyze()) return;
     if (window.MDAIAiUsage?.isBusy("ask-project")) return;
+    state.lastQuestion = question;
+    const askedProperty = state.propertyId;
     submit.disabled = true;
     const previousLabel = submit.textContent;
     submit.textContent = "Asking…";
@@ -128,11 +132,12 @@
     try {
       const payload = await window.MDAIAiUsage.once("ask-project", async () => {
         const { data, error } = await state.client.functions.invoke("project-search", {
-          body: { property_id: state.propertyId, question, force: Boolean(options.force) },
+          body: { property_id: askedProperty, question, force: Boolean(options.force) },
         });
         if (error) throw error;
         return data;
       });
+      if (state.propertyId !== askedProperty) return;
       if (payload?.skipped === "in_flight") return;
       if (payload?.error) {
         text.textContent = payload.error;
@@ -144,6 +149,7 @@
       }
       renderAnswer(payload);
     } catch (error) {
+      if (state.propertyId !== askedProperty) return;
       text.textContent = "The question could not be answered just now. The project record is untouched.";
       console.warn("project-search", error);
     } finally {
@@ -153,6 +159,11 @@
   }
 
   function mount({ client, propertyId, openSource }) {
+    if (state.propertyId !== propertyId) {
+      state.lastQuestion = null;
+      if ($("ask-answer")) $("ask-answer").hidden = true;
+      if ($("ask-question")) $("ask-question").value = "";
+    }
     state.client = client;
     state.propertyId = propertyId;
     if (typeof openSource === "function") state.open = openSource;
@@ -161,6 +172,10 @@
     block.hidden = !propertyId;
     if (block.dataset.wired) return;
     block.dataset.wired = "1";
+
+    $("ask-again")?.addEventListener("click", () => {
+      if (state.lastQuestion) void ask(state.lastQuestion, { force: true });
+    });
 
     $("ask-form").addEventListener("submit", (event) => {
       event.preventDefault();
