@@ -3641,3 +3641,37 @@ dialog textarea { min-height:78px; resize:vertical; }
 .owner-grant-row small { color: var(--drgba-255-255-255-5); }
 .owner-grant-row .text-button { margin-left: auto; }
 .owner-view-access > small { color: var(--drgba-255-255-255-45); line-height: 1.5; }
+
+/* ASK THIS PROJECT — a compact block, not a chat.
+   The answer leads; the sources under it are the part that can be checked,
+   so they are set as a list of real controls rather than decoration. */
+.ask-project { margin: 18px 0; padding: 16px; border: 1px solid var(--line); border-radius: 12px; background: var(--drgba-72-211-232-09, rgba(72, 211, 232, .04)); }
+.ask-form { display: flex; gap: 8px; margin: 8px 0 10px; }
+.ask-form input { flex: 1 1 auto; min-width: 0; }
+.ask-button { flex: 0 0 auto; min-width: 92px; min-height: 38px; }
+.ask-form input { min-height: 38px; }
+.ask-examples { list-style: none; margin: 0 0 4px; padding: 0; display: flex; flex-wrap: wrap; gap: 6px; }
+.ask-examples button { border: 1px solid var(--line); border-radius: 999px; background: transparent; color: var(--d8399aa, #8399aa); font: inherit; font-size: 11px; padding: 5px 11px; cursor: pointer; }
+.ask-examples button:hover { color: var(--text); }
+.ask-answer { margin-top: 14px; }
+.ask-answer-text { margin: 0; font-size: 14px; line-height: 1.55; color: var(--text); }
+.ask-limitations { margin: 8px 0 0; font-size: 12px; color: var(--amber, #d8a24a); }
+.ask-sources-head { margin-top: 14px; }
+.ask-sources { margin: 6px 0 0; padding-left: 18px; display: grid; gap: 8px; }
+.ask-source { font-size: 12px; }
+/* Padding here is not decoration: a citation is the thing this whole feature
+   exists to be pressed, and an underlined 12px line is a target a thumb
+   misses. */
+.ask-source-link { display: block; text-align: left; padding: 5px 0; border: 0; background: none; color: var(--cyan, #48d3e8); font: inherit; font-size: 12px; text-decoration: underline; cursor: pointer; }
+.ask-source-why { display: block; margin-top: 2px; color: var(--d8399aa, #8399aa); }
+.ask-note { margin: 12px 0 0; font-size: 11px; color: var(--d8399aa, #8399aa); }
+@media (max-width: 520px) {
+  .ask-form { flex-direction: column; }
+  .ask-button { width: 100%; }
+  .ask-examples button { font-size: 12px; padding: 7px 12px; }
+  /* On a phone every one of these is pressed with a thumb, so nothing here is
+     smaller than a thumb. */
+  .ask-form input, .ask-button { min-height: 46px; }
+  .ask-sources { gap: 4px; }
+  .ask-source-link { font-size: 13px; padding: 9px 0; }
+}
