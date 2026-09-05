@@ -5716,9 +5716,19 @@ async function analyzeFocusRoom(room, onStatus, options = {}) {
   try {
     onStatus(`AI is reviewing ${room.name}`);
     const { data, error } = await cloud.client.functions.invoke(config.aiFunctionName, {
-      body: { job_id: jobRow.id, video_frames: frames },
+      body: { job_id: jobRow.id, video_frames: frames, force: Boolean(options.force) },
     });
     if (error) throw await functionInvocationError(error);
+    /* The worker refused to spend: either this exact reading is already
+       running, or it already exists. Neither is a failure and neither costs
+       anything — the person is told which, and offered the result. */
+    const refused = window.MDAIAiUsage?.skippedVerdict(data);
+    if (refused) {
+      localJob.status = refused === "running" ? "Already running" : "Up to date";
+      saveJobs();
+      return { warnings, analyzed: false, upToDate: refused === "reused", running: refused === "running",
+        message: window.MDAIAiUsage.skippedMessage(refused), evidenceIds };
+    }
     if (!data?.analysis) throw new Error(data?.error || "AI returned no result");
     localJob.status = "Completed";
     if (options.apply !== false) applyAnalysisResult(room, data.analysis, data.suggestion_id);
@@ -6642,6 +6652,21 @@ $("#request-analysis").addEventListener("click", async () => {
     return;
   }
 
+  /* Analysis already bought for this room. Pressing again is a purchase, so
+     it is asked for in those words before anything is sent. Declining costs
+     nothing and changes nothing. */
+  const alreadyRead = jobs.some(
+    (job) => job.roomId === room.id && ["Completed", "Up to date"].includes(job.status),
+  );
+  let force = false;
+  if (alreadyRead) {
+    if (!window.MDAIAiUsage.confirmReanalyze()) {
+      notify("Analysis up to date — nothing was re-run");
+      return;
+    }
+    force = true;
+  }
+
   analysisRoomsInFlight.add(room.id);
   button.disabled = true;
   const queuedJob = jobs.find(
@@ -6716,10 +6741,18 @@ $("#request-analysis").addEventListener("click", async () => {
         body: {
           job_id: jobId,
           video_frames: frames,
+          force,
         },
       },
     );
     if (error) throw await functionInvocationError(error);
+    const refused = window.MDAIAiUsage?.skippedVerdict(data);
+    if (refused) {
+      localJob.status = refused === "running" ? "Already running" : "Up to date";
+      saveJobs();
+      return { analyzed: false, upToDate: refused === "reused", running: refused === "running",
+        message: window.MDAIAiUsage.skippedMessage(refused) };
+    }
     if (!data?.analysis) throw new Error(data?.error || "AI returned no result");
 
     localJob.status = "Completed";

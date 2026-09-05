@@ -62,6 +62,11 @@ const elements = {
   documentList: $("#document-list"),
   documentEmpty: $("#document-empty"),
   analyze: $("#analyze-plans"),
+  freshness: $("#analysis-freshness"),
+  freshnessState: $("#freshness-state"),
+  viewResults: $("#view-results"),
+  reanalyze: $("#reanalyze-plans"),
+  aiUsageLine: $("#ai-usage-line"),
   message: $("#action-message"),
   analysisProgress: $("#analysis-progress"),
   analysisProgressStatus: $("#analysis-progress-status"),
@@ -667,6 +672,9 @@ async function openProperty(propertyId) {
     ? "Plan analysis continues in the background"
     : `Cloud connected · ${state.role}`;
   void ensureIntelligenceChain("open");
+
+  /* The ledger line, refreshed whenever the project is opened. */
+  void refreshAiUsageLine();
 }
 
 /* The chain runs itself.
@@ -2690,7 +2698,14 @@ async function savePendingFiles() {
       for (const savedId of uploadedDocumentIds) {
         client.functions.invoke("document-evidence", { body: { document_id: savedId } })
           .then(({ data, error }) => {
-            if (error || data?.error) {
+            const refused = window.MDAIAiUsage?.skippedVerdict(data);
+            if (refused) {
+              /* Both doors into this worker — a declared invoice and a
+                 classified page range — can reach the same document. The
+                 second one is told the reading exists rather than buying it
+                 again, and that is not an error to shout about. */
+              notify(window.MDAIAiUsage.skippedMessage(refused));
+            } else if (error || data?.error) {
               notify(data?.error || "The delivery document could not be read — it stays preserved in the record", "error");
             } else {
               notify(`Delivery recorded: ${data.lines_recorded} line${data.lines_recorded === 1 ? "" : "s"} — the Delivered column of the comparison is updated. Installation stays not-yet-evidenced until capture shows it.`);
@@ -2759,7 +2774,10 @@ async function classifyUploadedDocument(documentId) {
     if (documentsRoute.pages.length < totalPages) body.pages = documentsRoute.pages;
     client.functions.invoke("document-evidence", { body })
       .then(({ data: readerData, error: readerError }) => {
-        if (readerError || readerData?.error) {
+        const refused = window.MDAIAiUsage?.skippedVerdict(readerData);
+        if (refused) {
+          notify(window.MDAIAiUsage.skippedMessage(refused));
+        } else if (readerError || readerData?.error) {
           notify(readerData?.error || "The delivery pages could not be read — the file stays preserved in the record", "error");
         } else {
           notify(`Delivery recorded from the classified pages: ${readerData.lines_recorded} line${readerData.lines_recorded === 1 ? "" : "s"} — the Delivered column of the comparison is updated. Installation stays not-yet-evidenced until capture shows it.`);
@@ -2852,13 +2870,40 @@ async function monitorAnalysisJob(jobId, options = {}) {
   }
 }
 
-async function analyzePlans() {
+/* The three states of a reading that already exists.
+ *
+ * Primary is that it is current — a person opening this page is not here to
+ * spend money, they are here to see what the plans said. Running it again is
+ * possible, secondary, and asked for in words that name the cost. */
+function renderAnalysisFreshness(verdict) {
+  if (!elements.freshness) return;
+  const known = verdict === "reused" || verdict === "running";
+  elements.freshness.hidden = !known;
+  if (!known) return;
+  elements.freshnessState.textContent = verdict === "running"
+    ? "Analysis already running"
+    : "Analysis up to date";
+  if (elements.reanalyze) elements.reanalyze.disabled = verdict === "running";
+  if (elements.analyze) elements.analyze.hidden = true;
+}
+
+async function refreshAiUsageLine() {
+  if (!window.MDAIAiUsage || !elements.aiUsageLine || !state.property?.id) return;
+  const line = await window.MDAIAiUsage.usageLine(client, state.property.id);
+  window.MDAIAiUsage.renderUsage(elements.aiUsageLine, line);
+}
+
+async function analyzePlans(options = {}) {
   const eligibility = analyzeSelectionState();
   if (eligibility.disabled) {
     if (eligibility.message) setMessage(eligibility.message, eligibility.kind);
     return;
   }
+  /* One press, one job, however fast the finger. The database refuses a
+     second identical reading regardless; this only spares the round trip. */
+  if (window.MDAIAiUsage?.isBusy("plan-analyze")) return;
   const activeDocuments = selectedDocuments();
+  if (elements.freshness) elements.freshness.hidden = true;
   startAnalysisProgress();
   setBusy(true, "AI is reading the plan set…");
 
@@ -2895,8 +2940,16 @@ async function analyzePlans() {
     if (jobError) throw jobError;
     state.activeAnalysisJob = { id: job.id, state: "queued", progress_stage: "queued", progress_percent: 4 };
     const { data, error } = await client.functions.invoke("plan-analyze", {
-      body: { action: "start", job_id: job.id },
+      body: { action: "start", job_id: job.id, force: Boolean(options.force) },
     });
+    const refused = window.MDAIAiUsage?.skippedVerdict(data);
+    if (refused) {
+      state.activeAnalysisJob = null;
+      setBusy(false);
+      setMessage(window.MDAIAiUsage.skippedMessage(refused), refused === "reused" ? "success" : "");
+      renderAnalysisFreshness(refused);
+      return;
+    }
     if (error) {
       console.warn("Analysis start response interrupted; checking the saved job", error);
       setMessage("The start response was interrupted. The job is saved; Studio is checking its status…");
@@ -3003,6 +3056,21 @@ elements.analyze.addEventListener("click", () => {
     return;
   }
   void analyzePlans();
+});
+/* View results is the primary action on a current analysis: it goes to the
+   baseline that was already bought, and spends nothing. */
+elements.viewResults?.addEventListener("click", () => {
+  elements.freshness.hidden = true;
+  if (elements.analyze) elements.analyze.hidden = false;
+  $("#baseline-section")?.scrollIntoView({ behavior: "smooth", block: "start" });
+});
+/* Reanalyze is the only path that buys a second reading of unchanged inputs,
+   and it never happens without the sentence that names the cost. */
+elements.reanalyze?.addEventListener("click", () => {
+  if (!window.MDAIAiUsage.confirmReanalyze()) return;
+  elements.freshness.hidden = true;
+  if (elements.analyze) elements.analyze.hidden = false;
+  void analyzePlans({ force: true });
 });
 $("#approve-baseline").addEventListener("click", approveBaseline);
 $("#divergence-approve").addEventListener("click", () => {

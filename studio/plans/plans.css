@@ -917,3 +917,13 @@ body.view-visual .takeoff-section { display: none; }
 /* A corrected quantity keeps the reading it replaced in view: provenance is
    not provenance if the screen quietly drops the half that was wrong. */
 .corrected-from { display: block; margin-top: 3px; color: var(--amber); font-size: 10px; letter-spacing: .02em; }
+
+/* AI Cost Guard — the freshness block and the usage line.
+   The current-analysis state is primary and calm; Reanalyze is quiet,
+   because it is the action that spends money. */
+.analysis-freshness { margin-top: 12px; padding: 12px; border: 1px solid var(--line); border-radius: 10px; background: var(--drgba-72-211-232-09); }
+.freshness-state { margin: 0 0 10px; font-size: 13px; font-weight: 600; color: var(--d91a8b8); }
+.freshness-actions { display: flex; flex-wrap: wrap; gap: 8px; }
+.freshness-actions .button { flex: 1 1 auto; min-width: 120px; }
+.ai-usage-line { margin: 10px 0 0; font-size: 11px; color: var(--d8399aa); font-variant-numeric: tabular-nums; }
+@media (max-width: 520px) { .freshness-actions { flex-direction: column; } .freshness-actions .button { width: 100%; } }

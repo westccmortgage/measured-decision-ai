@@ -97,6 +97,7 @@ begin
   else raise exception 'FAIL  %', label; end if;
 end $$;
 
+
 create or replace function pg_temp.affects(label text, statement text, expected integer) returns void
 language plpgsql as $$
 declare n integer;
@@ -2142,5 +2143,169 @@ select pg_temp.refused('and its doors are shut',
   $$select public.plan_reading_register('bbbbbbbb-0000-0000-0000-000000000001')$$);
 reset role;
 
+-- ══════════════════════════════════ AI COST GUARD ══════════════════════════
+-- The double payment this migration exists to stop, proved without spending
+-- anything: the guard is a unique index, and an index can be tested.
+--
+-- The claim and finish calls run unprivileged-of-role here, as the workers do
+-- with the service key — a signed-in person cannot call them at all, which is
+-- itself checked at the end.
+reset role;
+
+-- 1 · the first claim on a fingerprint is granted
+select pg_temp.check('a fingerprint nobody has claimed is CLAIMED',
+  (select verdict from public.claim_ai_run(
+     'aaaaaaaa-0000-0000-0000-000000000001', 'bbbbbbbb-0000-0000-0000-000000000001',
+     'spatial-analyze', 'test-model', 'contract-1', 'fp-alpha')) = 'CLAIMED');
+
+-- 2 · THE DOUBLE CLICK. A second identical claim while the first is in flight
+-- is refused, and no second row exists to be paid for.
+select pg_temp.check('a second identical claim in flight is RUNNING, not a second call',
+  (select verdict from public.claim_ai_run(
+     'aaaaaaaa-0000-0000-0000-000000000001', 'bbbbbbbb-0000-0000-0000-000000000001',
+     'spatial-analyze', 'test-model', 'contract-1', 'fp-alpha')) = 'RUNNING');
+select pg_temp.check('and exactly one paid run exists for that fingerprint',
+  (select count(*) from public.ai_runs where input_fingerprint = 'fp-alpha') = 1);
+
+-- 3 · the index itself refuses. This is what makes two SIMULTANEOUS requests
+-- safe rather than merely usually safe: the second insert cannot land, whoever
+-- attempts it and whenever it arrives.
+select pg_temp.refused('the database itself refuses a second in-flight row',
+  $$insert into public.ai_runs (organization_id, process_key, model, input_fingerprint, state)
+    values ('aaaaaaaa-0000-0000-0000-000000000001', 'spatial-analyze', 'test-model', 'fp-alpha', 'running')$$);
+
+-- 4 · a finished run is reused rather than bought again
+select public.finish_ai_run(
+  (select id from public.ai_runs where input_fingerprint = 'fp-alpha'),
+  'succeeded', '{"input_tokens": 120, "output_tokens": 30, "total_tokens": 150}'::jsonb);
+select pg_temp.check('unchanged inputs return the reading that already exists',
+  (select verdict from public.claim_ai_run(
+     'aaaaaaaa-0000-0000-0000-000000000001', 'bbbbbbbb-0000-0000-0000-000000000001',
+     'spatial-analyze', 'test-model', 'contract-1', 'fp-alpha')) = 'REUSED');
+select pg_temp.check('and still exactly one paid run',
+  (select count(*) from public.ai_runs where input_fingerprint = 'fp-alpha') = 1);
+
+-- 5 · usage is recorded as the provider reported it
+select pg_temp.check('usage is stored with the run',
+  (select input_tokens = 120 and output_tokens = 30 and total_tokens = 150 and usage_available
+     from public.ai_runs where input_fingerprint = 'fp-alpha'));
+
+-- 6 · a provider that returns no usage does not break anything
+select public.claim_ai_run('aaaaaaaa-0000-0000-0000-000000000001',
+  'bbbbbbbb-0000-0000-0000-000000000001', 'document-classify', 'test-model', 'contract-1', 'fp-nousage');
+select public.finish_ai_run(
+  (select id from public.ai_runs where input_fingerprint = 'fp-nousage'), 'succeeded', '{}'::jsonb);
+select pg_temp.check('a run whose provider returned no usage still closes, marked unavailable',
+  (select state = 'succeeded' and not usage_available and input_tokens is null
+     from public.ai_runs where input_fingerprint = 'fp-nousage'));
+
+-- 7 · a different fingerprint is a different purchase. Changed evidence,
+-- changed model and changed contract version each produce one.
+select pg_temp.check('changed evidence is a new run',
+  (select verdict from public.claim_ai_run(
+     'aaaaaaaa-0000-0000-0000-000000000001', 'bbbbbbbb-0000-0000-0000-000000000001',
+     'spatial-analyze', 'test-model', 'contract-1', 'fp-changed-evidence')) = 'CLAIMED');
+select pg_temp.check('a changed model is a new run',
+  (select verdict from public.claim_ai_run(
+     'aaaaaaaa-0000-0000-0000-000000000001', 'bbbbbbbb-0000-0000-0000-000000000001',
+     'spatial-analyze', 'other-model', 'contract-1', 'fp-changed-model')) = 'CLAIMED');
+select pg_temp.check('a changed contract version is a new run',
+  (select verdict from public.claim_ai_run(
+     'aaaaaaaa-0000-0000-0000-000000000001', 'bbbbbbbb-0000-0000-0000-000000000001',
+     'spatial-analyze', 'test-model', 'contract-2', 'fp-changed-contract')) = 'CLAIMED');
+
+-- 8 · a confirmed Reanalyze buys exactly one more reading of the same inputs
+select pg_temp.check('a forced rerun of an identical reading is CLAIMED',
+  (select verdict from public.claim_ai_run(
+     'aaaaaaaa-0000-0000-0000-000000000001', 'bbbbbbbb-0000-0000-0000-000000000001',
+     'spatial-analyze', 'test-model', 'contract-1', 'fp-alpha',
+     null, null, null, true)) = 'CLAIMED');
+select pg_temp.check('and buys exactly one, never two',
+  (select count(*) from public.ai_runs where input_fingerprint = 'fp-alpha') = 2);
+-- Forcing is not a way round the in-flight guard.
+select pg_temp.check('forcing twice while one is in flight is still RUNNING',
+  (select verdict from public.claim_ai_run(
+     'aaaaaaaa-0000-0000-0000-000000000001', 'bbbbbbbb-0000-0000-0000-000000000001',
+     'spatial-analyze', 'test-model', 'contract-1', 'fp-alpha',
+     null, null, null, true)) = 'RUNNING');
+
+-- 9 · a failed run can be retried safely — failing releases the guard
+select public.finish_ai_run(
+  (select id from public.ai_runs where input_fingerprint = 'fp-alpha' and state = 'running'),
+  'failed', '{}'::jsonb, 'provider_timeout');
+select public.claim_ai_run('aaaaaaaa-0000-0000-0000-000000000001',
+  'bbbbbbbb-0000-0000-0000-000000000001', 'document-evidence', 'test-model', 'contract-1', 'fp-retry');
+select public.finish_ai_run(
+  (select id from public.ai_runs where input_fingerprint = 'fp-retry'), 'failed', '{}'::jsonb, 'reader_failed');
+select pg_temp.check('a failed reading is retried rather than reused as a result',
+  (select verdict from public.claim_ai_run(
+     'aaaaaaaa-0000-0000-0000-000000000001', 'bbbbbbbb-0000-0000-0000-000000000001',
+     'document-evidence', 'test-model', 'contract-1', 'fp-retry')) = 'CLAIMED');
+
+-- 10 · all five workflows are recordable, and nothing else is
+select public.claim_ai_run('aaaaaaaa-0000-0000-0000-000000000001',
+  'bbbbbbbb-0000-0000-0000-000000000001', 'plan-analyze', 'm', 'c', 'fp-w1');
+select public.claim_ai_run('aaaaaaaa-0000-0000-0000-000000000001',
+  'bbbbbbbb-0000-0000-0000-000000000001', 'spatial-analyze', 'm', 'c', 'fp-w2');
+select public.claim_ai_run('aaaaaaaa-0000-0000-0000-000000000001',
+  'bbbbbbbb-0000-0000-0000-000000000001', 'document-classify', 'm', 'c', 'fp-w3');
+select public.claim_ai_run('aaaaaaaa-0000-0000-0000-000000000001',
+  'bbbbbbbb-0000-0000-0000-000000000001', 'document-evidence', 'm', 'c', 'fp-w4');
+select public.claim_ai_run('aaaaaaaa-0000-0000-0000-000000000001',
+  'bbbbbbbb-0000-0000-0000-000000000001', 'field-quality-check', 'm', 'c', 'fp-w5');
+select pg_temp.check('usage is recordable for all five AI workflows',
+  (select count(distinct process_key) from public.ai_runs
+    where input_fingerprint in ('fp-w1','fp-w2','fp-w3','fp-w4','fp-w5')) = 5);
+select pg_temp.refused('and a process nobody wrote cannot be recorded',
+  $$select public.claim_ai_run('aaaaaaaa-0000-0000-0000-000000000001',
+      'bbbbbbbb-0000-0000-0000-000000000001', 'made-up-worker', 'm', 'c', 'fp-nope')$$);
+
+-- 11 · the project's own people see the ledger and its honest silence on money
+set local test.uid = '11111111-1111-1111-1111-111111111111';
+set local role authenticated;
+select pg_temp.check('the project team sees its own runs',
+  (select count(*) from public.ai_runs) > 0);
+select pg_temp.check('the summary reports runs and tokens',
+  (select runs > 0 and total_tokens >= 150 from public.ai_usage_summary('bbbbbbbb-0000-0000-0000-000000000001')));
+select pg_temp.check('and reports no cost while no price list exists',
+  (select estimated_cost_micros is null and pricing_source is null
+     from public.ai_usage_summary('bbbbbbbb-0000-0000-0000-000000000001')));
+
+-- 12 · another organization sees none of it
+reset role;
+set local test.uid = '44444444-4444-4444-4444-444444444444';
+set local role authenticated;
+select pg_temp.check('another organization sees no runs at all',
+  (select count(*) from public.ai_runs) = 0);
+select pg_temp.check('and its usage summary for our project is empty',
+  coalesce((select runs from public.ai_usage_summary('bbbbbbbb-0000-0000-0000-000000000001')), 0) = 0);
+reset role;
+
+-- 13 · the ledger is never written from a browser.
+--
+-- Proved the way this file proves every other write gate: by refusal. The
+-- table carries a read policy and no write policy at all, so RLS turns any
+-- hand-written row away whoever is signed in — and the two doors that DO
+-- write are closed to every browser role.
+set local test.uid = '11111111-1111-1111-1111-111111111111';
+set local role authenticated;
+select pg_temp.refused('nobody writes the ledger by hand — not even the project owner',
+  $$insert into public.ai_runs (organization_id, process_key, model, input_fingerprint)
+    values ('aaaaaaaa-0000-0000-0000-000000000001', 'spatial-analyze', 'm', 'fp-forged')$$);
+select pg_temp.affects('nor edits a run to erase what was spent',
+  $$update public.ai_runs set total_tokens = 0$$, 0);
+select pg_temp.affects('nor deletes one', $$delete from public.ai_runs$$, 0);
+select pg_temp.refused('and a signed-in person cannot claim a run at all',
+  $$select public.claim_ai_run('aaaaaaaa-0000-0000-0000-000000000001',
+      'bbbbbbbb-0000-0000-0000-000000000001', 'spatial-analyze', 'm', 'c', 'fp-theft')$$);
+select pg_temp.refused('nor close one',
+  $$select public.finish_ai_run('00000000-0000-0000-0000-000000000001', 'succeeded')$$);
+reset role;
+select pg_temp.check('the ledger''s two doors are shut to every browser role',
+  not has_function_privilege('authenticated',
+    'public.claim_ai_run(uuid,uuid,text,text,text,text,text,uuid,text,boolean)', 'execute')
+  and not has_function_privilege('anon',
+    'public.claim_ai_run(uuid,uuid,text,text,text,text,text,uuid,text,boolean)', 'execute')
+  and not has_function_privilege('authenticated', 'public.finish_ai_run(uuid,text,jsonb,text)', 'execute'));
 
 rollback;

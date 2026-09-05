@@ -3,6 +3,7 @@ import {
   AGENT_CONTRACT_VERSION,
   EVIDENCE_WORKFLOW_INSTRUCTIONS,
 } from "../_shared/agent-contracts.ts";
+import { claimAiRun, finishAiRun, usageFrom } from "../_shared/ai-run-ledger.ts";
 import { signedObjectReadUrl } from "../_shared/aws-object-store.ts";
 import { openAITransport } from "../_shared/openai-transport.ts";
 
@@ -540,6 +541,49 @@ Deno.serve(async (request) => {
 
     const responseSchema = analysisSchema(job.evidence_ids, sphericalFrames.length > 0);
     const runFingerprint = await promptFingerprint(EVIDENCE_WORKFLOW_INSTRUCTIONS, responseSchema);
+    /* The reading is bought here, and this is the only gate in front of it.
+       Two presses of Analyze create two job rows — that is the browser's
+       business — but only one of them may reach the provider, and which one
+       is decided by a unique index rather than by whichever request happened
+       to arrive first. */
+    const claim = await claimAiRun(admin, {
+      organizationId: job.organization_id,
+      propertyId: job.property_id,
+      processKey: "spatial-analyze",
+      model: OPENAI_MODEL,
+      contractVersion: AGENT_CONTRACT_VERSION,
+      inputs: evidence.map((item) => `${item.id}@${item.byte_size ?? ""}`),
+      requirements: (vocabularyRows || []).map((row: { component_key?: string; description?: string }) => `${row.component_key || ""}|${row.description || ""}`),
+      settings: {
+        profile: job.profile,
+        profile_version: job.profile_version,
+        space: job.space_id || "",
+        prompt: runFingerprint,
+        spherical: sphericalFrames.length > 0,
+      },
+      jobTable: "analysis_jobs",
+      jobId: job.id,
+      transport: aiTransport.transport,
+      force: Boolean(body?.force),
+    });
+    if (claim.verdict !== "CLAIMED") {
+      await admin.from("analysis_jobs").update({
+        state: "cancelled",
+        error_code: claim.verdict === "RUNNING" ? "duplicate_in_flight" : "identical_reading_exists",
+        finished_at: new Date().toISOString(),
+      }).eq("id", job.id);
+      return json(request, {
+        skipped: claim.verdict.toLowerCase(),
+        previous_run_id: claim.previousRunId,
+        reason: claim.verdict === "RUNNING"
+          ? "This exact reading is running right now."
+          : "This exact reading already exists. Open it, or choose Reanalyze to buy a new one.",
+      }, 200);
+    }
+    let runUsage: Record<string, unknown> = {};
+    let ledgerState: "succeeded" | "failed" = "failed";
+    let ledgerError: string | null = null;
+    try {
     const openAIResponse = await fetch(`${aiTransport.baseUrl}/responses`, {
       method: "POST",
       headers: aiTransport.headers,
@@ -563,6 +607,7 @@ Deno.serve(async (request) => {
       string,
       unknown
     >;
+    runUsage = usageFrom(openAIPayload);
     if (!openAIResponse.ok) {
       const apiError = openAIPayload.error as
         Record<string, unknown> | undefined;
@@ -747,6 +792,7 @@ Deno.serve(async (request) => {
       }),
     ]);
 
+    ledgerState = "succeeded";
     return jsonResponse(request, {
       job_id: job.id,
       suggestion_id: suggestion.id,
@@ -756,6 +802,12 @@ Deno.serve(async (request) => {
       analyzed_images: imageCount,
       analyzed_video_frames: videoFrames.length,
     });
+    } catch (readingError) {
+      ledgerError = String(readingError instanceof Error ? readingError.message : readingError).slice(0, 200);
+      throw readingError;
+    } finally {
+      await finishAiRun(admin, claim.runId, ledgerState, runUsage, ledgerError);
+    }
   } catch (error) {
     const status =
       typeof error === "object" && error && "status" in error

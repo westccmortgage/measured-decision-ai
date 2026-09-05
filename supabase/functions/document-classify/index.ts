@@ -17,6 +17,7 @@ import { createClient } from "npm:@supabase/supabase-js@2";
 import { openAITransport } from "../_shared/openai-transport.ts";
 import { signedObjectReadUrl } from "../_shared/aws-object-store.ts";
 import { AGENT_CONTRACT_VERSION } from "../_shared/agent-contracts.ts";
+import { claimAiRun, finishAiRun, usageFrom } from "../_shared/ai-run-ledger.ts";
 
 const allowedOrigins = new Set([
   "https://measureddecision.ai",
@@ -125,7 +126,7 @@ Deno.serve(async (request) => {
     /* RLS scopes this read to the caller's own organisation. */
     const { data: documentRow, error: documentError } = await userClient
       .from("project_documents")
-      .select("id, organization_id, property_id, storage_path, storage_provider, storage_bucket, original_filename, document_type")
+      .select("id, organization_id, property_id, storage_path, storage_provider, storage_bucket, original_filename, document_type, updated_at")
       .eq("id", documentId)
       .single();
     if (documentError || !documentRow) return json(request, { error: "That document is not in your record" }, 404);
@@ -163,11 +164,39 @@ Deno.serve(async (request) => {
     ].join("\n");
 
     const aiTransport = openAITransport({ zeroDataRetention: true });
+    const model = Deno.env.get("OPENAI_MODEL") || "gpt-5.6-sol";
+    /* Nothing is sent to the provider until the ledger says this exact
+       reading is not already bought and not already in flight. */
+    const claim = await claimAiRun(admin, {
+      organizationId: documentRow.organization_id,
+      propertyId: documentRow.property_id,
+      processKey: "document-classify",
+      model,
+      contractVersion: AGENT_CONTRACT_VERSION,
+      inputs: [`${documentRow.id}@${documentRow.updated_at || ""}`, documentRow.storage_path],
+      settings: { document_type: documentRow.document_type },
+      jobTable: "intelligence_jobs",
+      jobId: jobId,
+      transport: aiTransport.transport,
+    });
+    if (claim.verdict !== "CLAIMED") {
+      return json(request, {
+        skipped: claim.verdict.toLowerCase(),
+        reason: claim.verdict === "RUNNING"
+          ? "This document is being classified right now."
+          : "This document has already been classified with exactly these inputs.",
+        document_id: documentRow.id,
+      });
+    }
+    let runUsage: Record<string, unknown> = {};
+    let runState: "succeeded" | "failed" = "failed";
+    let runError: string | null = null;
+    try {
     const response = await fetch(`${aiTransport.baseUrl}/responses`, {
       method: "POST",
       headers: aiTransport.headers,
       body: JSON.stringify({
-        model: Deno.env.get("OPENAI_MODEL") || "gpt-5.6-sol",
+        model,
         store: false,
         instructions,
         input: [{
@@ -182,6 +211,9 @@ Deno.serve(async (request) => {
       }),
     });
     const payload = await response.json();
+    /* Usage is read from the payload whether the call succeeded or not: a
+       refused call can still have been billed for what it consumed. */
+    runUsage = usageFrom(payload);
     if (!response.ok) {
       throw new Error(payload?.error?.message || `The classifier failed (${response.status})`);
     }
@@ -239,6 +271,7 @@ Deno.serve(async (request) => {
       },
     });
 
+    runState = "succeeded";
     return json(request, {
       job_id: jobId,
       document_type: documentType,
@@ -247,6 +280,14 @@ Deno.serve(async (request) => {
       unrouted,
       note: "Pages read by AI · not confirmed. Classification routes the file; it never becomes a construction fact.",
     });
+    } catch (readingError) {
+      runError = String(readingError instanceof Error ? readingError.message : readingError).slice(0, 200);
+      throw readingError;
+    } finally {
+      /* The ledger closes on every path. An open row would go on blocking an
+         honest retry of a reading that failed. */
+      await finishAiRun(admin, claim.runId, runState, runUsage, runError);
+    }
   } catch (error) {
     console.error(error);
     if (jobId) {

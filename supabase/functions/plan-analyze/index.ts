@@ -3,6 +3,7 @@ import {
   AGENT_CONTRACT_VERSION,
   PLAN_WORKFLOW_INSTRUCTIONS,
 } from "../_shared/agent-contracts.ts";
+import { buildFingerprint, claimAiRun, finishAiRun, usageFrom } from "../_shared/ai-run-ledger.ts";
 import { signedObjectReadUrl } from "../_shared/aws-object-store.ts";
 import { openAITransport } from "../_shared/openai-transport.ts";
 import { CHUNK_BYTE_LIMIT, mergeChunkAnalyses, planChunks } from "./chunking.js";
@@ -402,6 +403,7 @@ type PlanJob = {
   requested_by: string;
   provider: string | null;
   provider_job_id: string | null;
+  ai_run_id: string | null;
   model: string | null;
   baseline_id: string | null;
   progress_stage: string;
@@ -808,6 +810,26 @@ async function createProviderReading(
   return openAIPayload as { id: string; status: string };
 }
 
+/* One reading of one set of documents. A chunk is the same reading over
+   fewer files, so the chunk index belongs in the fingerprint: chunk 2 is not
+   a duplicate of chunk 1, and paying for both is correct. */
+function planFingerprintParts(
+  job: { organization_id: string; property_id: string },
+  model: string,
+  documents: DocumentRow[],
+  chunkIndex: number | null,
+) {
+  return {
+    organizationId: job.organization_id,
+    propertyId: job.property_id,
+    processKey: "plan-analyze" as const,
+    model,
+    contractVersion: AGENT_CONTRACT_VERSION,
+    inputs: documents.map((row) => `${row.id}@${row.revision_label || ""}@${row.issued_at || ""}`),
+    settings: { chunk: chunkIndex === null ? "single" : String(chunkIndex) },
+  };
+}
+
 function chunkNoteFor(chunkIndex: number, chunkTotal: number, documents: DocumentRow[]) {
   return [
     `This is chunk ${chunkIndex + 1} of ${chunkTotal} of a larger plan set that exceeds one reading. `
@@ -839,6 +861,16 @@ async function launchNextPendingChunk(
     .eq("id", pending.id).eq("state", "pending").select("id, chunk_index, document_ids").maybeSingle();
   if (!claimed) return null;
   const chunkDocuments = (claimed.document_ids as string[]).map((id) => documentsById.get(id)).filter(Boolean) as DocumentRow[];
+  const ledger = await claimAiRun(admin, {
+    ...planFingerprintParts(job, model, chunkDocuments, claimed.chunk_index),
+    jobTable: "plan_analysis_chunks",
+    jobId: claimed.id,
+    transport: aiTransport.transport,
+    /* A chunk relaunched after a failure is the same purchase the person
+       already asked for, so it is allowed through rather than refused as a
+       duplicate of the failed one. */
+    force: true,
+  });
   try {
     const payload = await createProviderReading(
       admin, aiTransport, model, chunkDocuments, registerText,
@@ -846,10 +878,13 @@ async function launchNextPendingChunk(
     );
     await admin.from("plan_analysis_chunks").update({
       provider_job_id: payload.id,
+      ai_run_id: ledger.runId,
       updated_at: new Date().toISOString(),
     }).eq("id", claimed.id);
     return claimed;
   } catch (error) {
+    await finishAiRun(admin, ledger.runId, "failed", {},
+      String(error instanceof Error ? error.message : error).slice(0, 200));
     /* The launch itself failed — the chunk goes back to pending so a later
        poll retries it instead of the whole run dying on a transient. */
     await admin.from("plan_analysis_chunks").update({
@@ -916,6 +951,8 @@ async function advanceChunkedJob(
   };
 
   const failChunk = async (chunk: Record<string, any>, message: string) => {
+    /* The provider was paid for this attempt whatever it returned. */
+    await finishAiRun(admin, chunk.ai_run_id || null, "failed", {}, message.slice(0, 200));
     await admin.from("plan_analysis_chunks").update({
       state: "failed", error_message: message.slice(0, 800), updated_at: new Date().toISOString(),
     }).eq("id", chunk.id);
@@ -970,6 +1007,9 @@ async function advanceChunkedJob(
       return await failChunk(processing, `the chunk's background response ended with ${providerPayload.status || "an unknown status"}.`);
     }
     const chunkAnalysis = JSON.parse(responseText(providerPayload));
+    /* The background response carries its usage only here, at retrieval —
+       the call that created it returned nothing but an id. */
+    await finishAiRun(admin, processing.ai_run_id || null, "succeeded", usageFrom(providerPayload), null);
     await admin.from("plan_analysis_chunks").update({
       state: "complete", analysis: chunkAnalysis, error_message: null,
       updated_at: new Date().toISOString(),
@@ -1032,7 +1072,7 @@ Deno.serve(async (request) => {
 
     const { data: jobRow, error: jobError } = await userClient
       .from("plan_analysis_jobs")
-      .select("id, organization_id, property_id, document_ids, state, requested_by, provider, provider_job_id, model, baseline_id, progress_stage, progress_percent, started_at, completed_at, error_code, error_message")
+      .select("id, organization_id, property_id, document_ids, state, requested_by, provider, provider_job_id, model, baseline_id, progress_stage, progress_percent, started_at, completed_at, error_code, error_message, ai_run_id")
       .eq("id", jobId)
       .single();
     if (jobError || !jobRow) return json(request, { error: "Analysis job not found" }, 404);
@@ -1074,7 +1114,7 @@ Deno.serve(async (request) => {
          legacy no-provider-id check, which would otherwise declare a healthy
          chunked run abandoned. */
       const { data: chunkRows } = await admin.from("plan_analysis_chunks")
-        .select("id, chunk_index, document_ids, provider_job_id, state, updated_at")
+        .select("id, chunk_index, document_ids, provider_job_id, state, updated_at, ai_run_id")
         .eq("job_id", job.id).order("chunk_index", { ascending: true });
       if (chunkRows && chunkRows.length) {
         return json(request, await advanceChunkedJob(admin, userClient, aiTransport, model, job, userData.user.id, chunkRows));
@@ -1110,6 +1150,7 @@ Deno.serve(async (request) => {
            in "processing" is a progress bar frozen at 18% until somebody gives
            up — the job is failed now, with the way forward in the message. */
         const message = "The provider no longer recognises this background job. The plan files are safe — press Analyze to start a fresh run.";
+        await finishAiRun(admin, job.ai_run_id || null, "failed", {}, "provider_job_lost");
         await markJobFailed(admin, job, message);
         return json(request, {
           job_id: job.id, state: "failed", progress_stage: "failed",
@@ -1127,6 +1168,7 @@ Deno.serve(async (request) => {
         const queuedAge = job.started_at ? Date.now() - new Date(job.started_at).valueOf() : 0;
         if (queuedAge > 15 * 60 * 1000) {
           const message = "The provider accepted this analysis but never started it in 15 minutes. This run is abandoned — the plan files are safe; press Analyze to start a fresh one.";
+          await finishAiRun(admin, job.ai_run_id || null, "failed", {}, "provider_never_started");
           await markJobFailed(admin, job, message);
           return json(request, {
             job_id: job.id, state: "failed", progress_stage: "failed",
@@ -1149,8 +1191,12 @@ Deno.serve(async (request) => {
         });
       }
       if (providerPayload.status !== "completed") {
+        await finishAiRun(admin, job.ai_run_id || null, "failed", usageFrom(providerPayload),
+          String(providerPayload.status || "unknown_status").slice(0, 200));
         throw new Error(providerError(providerPayload, `Background response ended with ${providerPayload.status || "an unknown status"}`));
       }
+      /* Retrieval is where a background reading reports what it consumed. */
+      await finishAiRun(admin, job.ai_run_id || null, "succeeded", usageFrom(providerPayload), null);
 
       const { data: documents, error: documentError } = await userClient
         .from("project_documents")
@@ -1222,10 +1268,41 @@ Deno.serve(async (request) => {
     const registerText = JSON.stringify(register, null, 2);
 
     if (totalBytes <= CHUNK_BYTE_LIMIT) {
-      const openAIPayload = await createProviderReading(admin, aiTransport, model, orderedDocuments, registerText, null);
+      /* Nothing reaches the provider until the ledger has claimed this exact
+         reading. Two Analyze presses on an unchanged plan set both arrive
+         here; one is claimed and one is told the reading already exists. */
+      const ledger = await claimAiRun(admin, {
+        ...planFingerprintParts(job, model, orderedDocuments, null),
+        jobTable: "plan_analysis_jobs",
+        jobId: job.id,
+        transport: aiTransport.transport,
+        force: Boolean(body?.force),
+      });
+      if (ledger.verdict !== "CLAIMED") {
+        await markJobFailed(admin, job,
+          ledger.verdict === "RUNNING"
+            ? "This exact plan set is already being read. Open the run that is in progress."
+            : "This exact plan set has already been read. Open the baseline, or choose Reanalyze to buy a new reading.");
+        return json(request, {
+          job_id: job.id,
+          state: "failed",
+          skipped: ledger.verdict.toLowerCase(),
+          previous_run_id: ledger.previousRunId,
+          code: ledger.verdict === "RUNNING" ? "duplicate_in_flight" : "identical_reading_exists",
+        }, 200);
+      }
+      let openAIPayload;
+      try {
+        openAIPayload = await createProviderReading(admin, aiTransport, model, orderedDocuments, registerText, null);
+      } catch (launchError) {
+        await finishAiRun(admin, ledger.runId, "failed", {},
+          String(launchError instanceof Error ? launchError.message : launchError).slice(0, 200));
+        throw launchError;
+      }
       const acceptedAt = new Date().toISOString();
       await admin.from("plan_analysis_jobs").update({
         provider_job_id: openAIPayload.id,
+        ai_run_id: ledger.runId,
         progress_stage: openAIPayload.status === "queued" ? "provider_queued" : "reading_documents",
         progress_percent: openAIPayload.status === "queued" ? 18 : 32,
         last_heartbeat_at: acceptedAt,
