@@ -3350,19 +3350,17 @@ function showFocusStage(name) {
  * that does nothing when pressed is worse than no citation. */
 function openCitedSource(target) {
   if (target.kind === "capture" && target.evidenceId) {
-    for (const room of rooms) {
-      const item = (room.evidence || []).find((entry) => entry.id === target.evidenceId);
-      if (item) { void openEvidenceViewer(item, room); return; }
-    }
-  }
-  if ((target.kind === "room" || target.kind === "capture") && target.roomId) {
-    openFocusSheet(target.roomId, focusStage);
+    const { item, room } = tileFor(target.evidenceId);
+    if (item) { void openEvidenceViewer(item, room); return; }
+    notify("That capture is unavailable or has been removed.", 6000);
     return;
   }
-  /* Derived records live in the comparison, next to the numbers they came
-     from. */
-  const comparison = $("#focus-money-card") || $("#today-next");
-  comparison?.scrollIntoView({ behavior: "smooth", block: "start" });
+  if (target.kind === "room" && target.roomId) {
+    if (rooms.some(room => room.id === target.roomId)) openFocusSheet(target.roomId, focusStage);
+    else notify("That room is unavailable.", 6000);
+    return;
+  }
+  window.location.assign(`plans/?property=${encodeURIComponent(cloud.propertyId)}&view=visual`);
 }
 
 function applyFocusStage() {

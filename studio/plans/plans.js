@@ -519,8 +519,10 @@ async function initialize() {
      Studio promises the comparison, so it lands on the visual channel
      itself — not one navigation short of it. */
   const requestedView = new URLSearchParams(window.location.search).get("view");
+  const requestedDocument = new URLSearchParams(window.location.search).get("document");
   await openProperty(initial.id);
   if (requestedView === "visual") exitSummaryMode("#visual-panel", "visual");
+  if (requestedDocument) await openSearchDocument(requestedDocument);
   if (state.activeAnalysisJob) void monitorAnalysisJob(state.activeAnalysisJob.id, { resumed: true });
 }
 
@@ -775,6 +777,48 @@ function render() {
   updateAnalyzeAction({ updateMessage: state.analysisOutcome !== "failed" });
   /* The activation checklist lived in the sidebar that this page no longer has.
      The baseline section and the roadmap carry the same state in place. */
+}
+
+// Search currently resolves whole documents. Do not imply a page anchor when
+// retrieval has no saved page number. Sign the existing file only when opened.
+async function openSearchDocument(id) {
+  const source = state.documents.find(row => row.id === id);
+  if (!source) { notify("That source document is unavailable in this project."); return; }
+  try {
+    let url;
+    if (source.storage_provider === "aws-s3") {
+      url = await window.MDAIObjectStorage.getSignedUrl(client, "project_document", source.id);
+    } else {
+      const { data, error } = await client.storage.from(source.storage_bucket || "project-documents")
+        .createSignedUrl(source.storage_path, 3600);
+      if (error) throw error;
+      url = data?.signedUrl;
+    }
+    if (!url) throw new Error("Source link unavailable");
+    document.getElementById("search-source-dialog")?.remove();
+    const dialog = document.createElement("dialog");
+    dialog.id = "search-source-dialog";
+    dialog.style.cssText = "width:90vw;height:85vh;padding:16px";
+    const title = document.createElement("h2");
+    title.textContent = source.original_filename;
+    const note = document.createElement("p");
+    note.textContent = "Whole document — the search record does not contain a page anchor.";
+    const close = document.createElement("button");
+    close.textContent = "Close source";
+    close.onclick = () => dialog.close();
+    const link = document.createElement("a");
+    link.textContent = "Open original document";
+    link.href = url; link.target = "_blank"; link.rel = "noopener";
+    const frame = document.createElement("iframe");
+    frame.title = source.original_filename; frame.src = url;
+    frame.style.cssText = "width:100%;height:65vh;border:0";
+    dialog.append(title, note, close, link, frame);
+    dialog.addEventListener("close", () => dialog.remove());
+    document.body.append(dialog); dialog.showModal();
+  } catch (error) {
+    notify("The source could not be opened. Please try again.");
+    console.warn("search source", error);
+  }
 }
 
 function renderDocuments() {

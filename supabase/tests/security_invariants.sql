@@ -2312,12 +2312,25 @@ select pg_temp.check('the ledger''s two doors are shut to every browser role',
 -- must hold whatever a model says: another organization can never reach it,
 -- and a citation is only ever a record that was actually retrieved.
 reset role;
+insert into public.project_requirements(organization_id, property_id, baseline_id, component_key, description, quantity, method)
+select 'aaaaaaaa-0000-0000-0000-000000000001', 'bbbbbbbb-0000-0000-0000-000000000001',
+ 'eeeeeeee-0000-0000-0000-000000000001', 'search-test-beams-' || n,
+ repeat('Beam framing evidence. ', 100), 14, 'PRINTED_FACT'
+from generate_series(1, 4) n;
+reset role;
 set local test.uid = '11111111-1111-1111-1111-111111111111';
 set local role authenticated;
 
 select pg_temp.check('retrieval finds this project''s own records',
   (select count(*) from public.project_search_context(
-     'bbbbbbbb-0000-0000-0000-000000000001', 'evidence', 40, 24000)) >= 0);
+     'bbbbbbbb-0000-0000-0000-000000000001', 'How many beams are required and where is that shown?', 40, 24000) where kind = 'requirement') >= 4);
+
+select pg_temp.check('a question about beam evidence retrieves requirements',
+  (select count(*) from public.project_search_context(
+    'bbbbbbbb-0000-0000-0000-000000000001', 'What evidence is recorded for beams?', 40, 24000) where kind = 'requirement') >= 4);
+select pg_temp.check('a framing quantity question retrieves requirements',
+  (select count(*) from public.project_search_context(
+    'bbbbbbbb-0000-0000-0000-000000000001', 'What quantities are required for framing?', 40, 24000) where kind = 'requirement') >= 4);
 
 -- Every row carries a stable id of the shape the worker verifies against,
 -- and a version, so a changed record is a different question.
@@ -2335,12 +2348,12 @@ select pg_temp.check('retrieval never returns more rows than asked for',
 -- long readings and forty short rows are the same number and very different
 -- money, and the long ones are what a real project produces.
 select pg_temp.check('and never more characters than the budget allows',
-  coalesce((select sum(char_length(coalesce(r.body, ''))) from public.project_search_context(
+  coalesce((select sum(char_length(coalesce(r.body, '')) + char_length(coalesce(r.title, ''))) from public.project_search_context(
      'bbbbbbbb-0000-0000-0000-000000000001', 'evidence room capture', 40, 600) r), 0) <= 600);
 select pg_temp.check('a smaller budget really does return less',
-  coalesce((select sum(char_length(coalesce(r.body, ''))) from public.project_search_context(
+  coalesce((select sum(char_length(coalesce(r.body, '')) + char_length(coalesce(r.title, ''))) from public.project_search_context(
      'bbbbbbbb-0000-0000-0000-000000000001', 'evidence room capture', 40, 600) r), 0)
-  <= coalesce((select sum(char_length(coalesce(r.body, ''))) from public.project_search_context(
+  < coalesce((select sum(char_length(coalesce(r.body, '')) + char_length(coalesce(r.title, ''))) from public.project_search_context(
      'bbbbbbbb-0000-0000-0000-000000000001', 'evidence room capture', 40, 24000) r), 0));
 
 -- A question that matches nothing retrieves nothing, so the worker refuses
@@ -2382,13 +2395,13 @@ reset role;
 select public.record_project_search_answer(
   'aaaaaaaa-0000-0000-0000-000000000001', 'bbbbbbbb-0000-0000-0000-000000000001',
   null, 'how many beams', 'how many beams', 'fp-refused',
-  'I could not find enough evidence in this project to answer reliably.',
+  'UNVERIFIED MODEL PROSE MUST NEVER RETURN',
   '[]'::jsonb, 'nothing cited', 'low', '{}', 0, 0, true, 'no citation survived verification', null);
 set local test.uid = '11111111-1111-1111-1111-111111111111';
 set local role authenticated;
-select pg_temp.check('a refused answer is never handed back as a saved answer',
-  (select count(*) from public.project_search_answer_for(
-     'bbbbbbbb-0000-0000-0000-000000000001', 'fp-refused')) = 0);
+select pg_temp.check('a repeat refusal returns safe prose without another paid call',
+  (select answer = 'I could not find enough evidence in this project to answer reliably.' and citations = '[]'::jsonb
+   from public.project_search_answer_for('bbbbbbbb-0000-0000-0000-000000000001', 'fp-refused')));
 reset role;
 
 -- A verified answer is, so the same question costs nothing twice.

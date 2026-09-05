@@ -156,7 +156,7 @@ export function verifyReading(context: ContextRow[], reading: Reading): Verdict 
   const modelRefused = modelAnswer.trim().length === 0
     || /could not find enough evidence/i.test(modelAnswer);
   const nothingStands = !modelRefused && citations.length === 0;
-  const refused = modelRefused || nothingStands;
+  const refused = modelRefused || nothingStands || dropped > 0;
 
   const limitations = [
     String(reading?.limitations ?? "").slice(0, 600),
@@ -175,10 +175,21 @@ export function verifyReading(context: ContextRow[], reading: Reading): Verdict 
     limitations: limitations || null,
     confidence: refused ? "low" : confidence,
     refused,
-    refusalReason: nothingStands
+    refusalReason: dropped > 0 ? "a citation was not in the retrieved record" : nothingStands
       ? "no citation survived verification"
       : (modelRefused ? "the record did not support an answer" : null),
     dropped,
     modelAnswer,
   };
+}
+
+// Cap exactly the serialized records sent to the provider, including titles and IDs.
+export function boundContext(rows: ContextRow[], budget: number): ContextRow[] {
+  const result: ContextRow[] = [];
+  for (const row of rows) {
+    const next = { ...row, title: (row.title || "").slice(0, 240), body: (row.body || "").slice(0, 1200) };
+    if (JSON.stringify(recordsForModel([...result, next])).length > budget) break;
+    result.push(next);
+  }
+  return result;
 }

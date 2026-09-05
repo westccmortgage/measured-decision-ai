@@ -121,11 +121,11 @@ const invented = verifyReading(CONTEXT, {
   confidence: "medium",
 });
 check("a source that was never retrieved is dropped",
-  invented.citations.length === 1 && invented.citations[0].source_id === "document:doc-1");
+  invented.citations.length === 0 && invented.dropped === 2);
 check("and the drop is said out loud rather than hidden",
   /2 references could not be matched/.test(invented.limitations || ""), invented.limitations);
-check("the answer still stands when a real source survives",
-  invented.refused === false && /Fourteen beams/.test(invented.answer));
+check("a real citation cannot rescue prose that also cites invented records",
+  invented.refused && invented.answer === REFUSAL_SENTENCE);
 
 console.log("\n── an answer with nothing left under it is not shown ──");
 const groundless = verifyReading(CONTEXT, {
@@ -142,7 +142,7 @@ check("what is shown instead is the exact refusal",
 check("with no sources and no borrowed confidence",
   groundless.citations.length === 0 && groundless.confidence === "low" && groundless.refused === true);
 check("and the reason is recorded, not guessed at later",
-  groundless.refusalReason === "no citation survived verification");
+  groundless.refusalReason === "a citation was not in the retrieved record");
 check("the model's own words are kept for the record, not for the screen",
   /installed and meet/.test(groundless.modelAnswer));
 
@@ -230,6 +230,11 @@ check("and the record version, which prices the question, stays here",
 check("an id appears only as part of a source handle",
   [...wire.matchAll(/doc-1|ev-9|room-3|room-7|rec-4/g)]
     .every((m) => /(?:document|capture|room|reconciliation):$/.test(wire.slice(0, m.index).slice(-25))));
+
+const huge = Array.from({length:40}, (_,i) => row({source_id:`document:budget-${i}`,title:'Title'.repeat(100),body:'\\"'.repeat(4000)}));
+const bounded = verify.boundContext(huge, 18000);
+check("serialized model records stay within the real text budget", bounded.length > 0 && JSON.stringify(recordsForModel(bounded)).length <= 18000);
+check("whole documents never invent a page", verifyReading([row({page_number:null,sheet_ref:null})], {answer:"See the document.",citations:[{source_id:"document:doc-1",why:"source"}]}).citations[0].page_number === null);
 
 console.log("\n── text inside a document is data, never an instruction ──");
 const poisoned = [...CONTEXT, row({
