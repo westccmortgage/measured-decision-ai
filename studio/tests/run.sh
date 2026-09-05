@@ -11,7 +11,10 @@ cd "$(dirname "${BASH_SOURCE[0]}")/../.."
 fail=0
 run() {
   printf "\n\033[1m%s\033[0m\n" "── $1"
-  if node "$2" > /tmp/mdai-test.out 2>&1; then
+  # --experimental-strip-types lets a test import the shipping TypeScript the
+  # edge functions run, rather than a JavaScript copy of it that would go on
+  # passing after the original changed.
+  if node --experimental-strip-types --no-warnings "$2" > /tmp/mdai-test.out 2>&1; then
     grep -E "ALL OK|ALL CHECKS|findings|Nothing found|FINDING" /tmp/mdai-test.out | tail -n 2 | sed 's/^/  /'
   else
     fail=1
@@ -36,6 +39,7 @@ run "the two doors are told apart"    studio/tests/two-doors.mjs
 run "one way through"                 studio/tests/one-way-through.mjs
 run "signing in from a phone"         studio/tests/mobile-sign-in.mjs
 run "every screen, pressed"           studio/tests/screen-audit.mjs
+run "no reading is paid for twice"    studio/tests/ai-cost-guard.mjs
 run "the whole path, walked"          studio/tests/e2e-studio.mjs
 run "a project with nothing in it"   studio/tests/e2e-empty-project.mjs
 run "the chain, state by state"       studio/tests/e2e-chain.mjs

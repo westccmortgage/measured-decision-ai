@@ -11,7 +11,7 @@ try{var t=localStorage.getItem("mdai-theme");document.documentElement.dataset.th
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
-    <link rel="stylesheet" href="plans.css?v=6c33889278">
+    <link rel="stylesheet" href="plans.css?v=b7f00cbc68">
   </head>
   <body>
     <div class="boot-screen" id="boot-screen">
@@ -207,7 +207,19 @@ try{var t=localStorage.getItem("mdai-theme");document.documentElement.dataset.th
               <p class="analysis-estimate">Estimated progress. Completion is confirmed only when the governed baseline is saved.</p>
             </section>
             <button class="button ai-button" id="analyze-plans" type="button">Analyze current plan set <span>↗</span></button>
+            <!-- Shown only once a reading of exactly these inputs exists. The
+                 primary state is that the analysis is current; running it
+                 again is a deliberate, secondary, confirmed act. -->
+            <div class="analysis-freshness" id="analysis-freshness" hidden>
+              <p class="freshness-state" id="freshness-state">Analysis up to date</p>
+              <div class="freshness-actions">
+                <button class="button" id="view-results" type="button">View results</button>
+                <button class="button quiet" id="reanalyze-plans" type="button">Reanalyze</button>
+              </div>
+            </div>
             <p class="action-message" id="action-message" role="status" aria-live="polite"></p>
+            <!-- Runs and tokens, never a bill. -->
+            <p class="ai-usage-line" id="ai-usage-line" hidden></p>
           </aside>
         </section>
 
@@ -452,6 +464,7 @@ try{var t=localStorage.getItem("mdai-theme");document.documentElement.dataset.th
     <script src="../pdf360.js?v=39ada1add4"></script>
     <script src="../intelligence-routing.js?v=fb2b0e5dc2"></script>
     <script src="../page-renders.js?v=ebb42cee89"></script>
-    <script src="plans.js?v=32a01c14e6"></script>
+    <script src="../ai-usage.js?v=ec760c161b"></script>
+    <script src="plans.js?v=126b11a5e5"></script>
   </body>
 </html>

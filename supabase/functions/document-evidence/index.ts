@@ -15,6 +15,7 @@ import { createClient } from "npm:@supabase/supabase-js@2";
 import { openAITransport } from "../_shared/openai-transport.ts";
 import { signedObjectReadUrl } from "../_shared/aws-object-store.ts";
 import { AGENT_CONTRACT_VERSION } from "../_shared/agent-contracts.ts";
+import { claimAiRun, finishAiRun, usageFrom } from "../_shared/ai-run-ledger.ts";
 
 const allowedOrigins = new Set([
   "https://measureddecision.ai",
@@ -104,7 +105,7 @@ Deno.serve(async (request) => {
     /* RLS scopes this read to the caller's own organisation. */
     const { data: documentRow, error: documentError } = await userClient
       .from("project_documents")
-      .select("id, organization_id, property_id, storage_path, storage_provider, storage_bucket, original_filename, document_type, page_classification")
+      .select("id, organization_id, property_id, storage_path, storage_provider, storage_bucket, original_filename, document_type, page_classification, updated_at")
       .eq("id", documentId)
       .single();
     if (documentError || !documentRow) return json(request, { error: "That document is not in your record" }, 404);
@@ -154,7 +155,7 @@ Deno.serve(async (request) => {
        the same keys. */
     const { data: requirementRows } = await admin
       .from("project_requirements")
-      .select("component_key, description")
+      .select("id, component_key, description, updated_at")
       .eq("property_id", documentRow.property_id)
       .eq("state", "active");
     const vocabulary = (requirementRows || [])
@@ -175,11 +176,42 @@ Deno.serve(async (request) => {
     ].filter(Boolean).join("\n");
 
     const aiTransport = openAITransport({ zeroDataRetention: true });
+    const model = Deno.env.get("OPENAI_MODEL") || "gpt-5.6-sol";
+    /* The reading is OF this document and measured AGAINST these
+       requirements, so both belong in the fingerprint: the same invoice read
+       against a changed component vocabulary is a different reading and is
+       worth paying for again. */
+    const claim = await claimAiRun(admin, {
+      organizationId: documentRow.organization_id,
+      propertyId: documentRow.property_id,
+      processKey: "document-evidence",
+      model,
+      contractVersion: AGENT_CONTRACT_VERSION,
+      inputs: [`${documentRow.id}@${documentRow.updated_at || ""}`, documentRow.storage_path],
+      requirements: (requirementRows || []).map((row) => `${row.id}@${row.updated_at || ""}`),
+      settings: { pages: requestedPages.join(",") },
+      jobTable: "intelligence_jobs",
+      jobId,
+      transport: aiTransport.transport,
+    });
+    if (claim.verdict !== "CLAIMED") {
+      return json(request, {
+        skipped: claim.verdict.toLowerCase(),
+        reason: claim.verdict === "RUNNING"
+          ? "This document is being read right now."
+          : "This document has already been read with exactly these inputs.",
+        document_id: documentRow.id,
+      });
+    }
+    let runUsage: Record<string, unknown> = {};
+    let runState: "succeeded" | "failed" = "failed";
+    let runError: string | null = null;
+    try {
     const response = await fetch(`${aiTransport.baseUrl}/responses`, {
       method: "POST",
       headers: aiTransport.headers,
       body: JSON.stringify({
-        model: Deno.env.get("OPENAI_MODEL") || "gpt-5.6-sol",
+        model,
         store: false,
         instructions,
         input: [{
@@ -194,6 +226,7 @@ Deno.serve(async (request) => {
       }),
     });
     const payload = await response.json();
+    runUsage = usageFrom(payload);
     if (!response.ok) {
       throw new Error(payload?.error?.message || `The document reader failed (${response.status})`);
     }
@@ -261,6 +294,7 @@ Deno.serve(async (request) => {
     });
     reconciled = !reconcileError;
 
+    runState = "succeeded";
     return json(request, {
       job_id: jobId,
       lines_recorded: recorded,
@@ -268,6 +302,12 @@ Deno.serve(async (request) => {
       reconciled,
       note: "Delivery recorded. A delivery document is never proof of installation — installation stays not-yet-evidenced until capture shows it.",
     });
+    } catch (readingError) {
+      runError = String(readingError instanceof Error ? readingError.message : readingError).slice(0, 200);
+      throw readingError;
+    } finally {
+      await finishAiRun(admin, claim.runId, runState, runUsage, runError);
+    }
   } catch (error) {
     console.error(error);
     if (jobId) {
