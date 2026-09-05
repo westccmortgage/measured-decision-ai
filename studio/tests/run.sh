@@ -40,6 +40,7 @@ run "one way through"                 studio/tests/one-way-through.mjs
 run "signing in from a phone"         studio/tests/mobile-sign-in.mjs
 run "every screen, pressed"           studio/tests/screen-audit.mjs
 run "no reading is paid for twice"    studio/tests/ai-cost-guard.mjs
+run "asking this project"             studio/tests/ask-this-project.mjs
 run "the whole path, walked"          studio/tests/e2e-studio.mjs
 run "a project with nothing in it"   studio/tests/e2e-empty-project.mjs
 run "the chain, state by state"       studio/tests/e2e-chain.mjs

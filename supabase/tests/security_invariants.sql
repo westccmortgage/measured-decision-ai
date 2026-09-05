@@ -2307,5 +2307,114 @@ select pg_temp.check('the ledger''s two doors are shut to every browser role',
   and not has_function_privilege('anon',
     'public.claim_ai_run(uuid,uuid,text,text,text,text,text,uuid,text,boolean)', 'execute')
   and not has_function_privilege('authenticated', 'public.finish_ai_run(uuid,text,jsonb,text)', 'execute'));
+-- ═══════════════════════════════ ASK THIS PROJECT ══════════════════════════
+-- Deep search answers from ONE project's own record, and the two things that
+-- must hold whatever a model says: another organization can never reach it,
+-- and a citation is only ever a record that was actually retrieved.
+reset role;
+set local test.uid = '11111111-1111-1111-1111-111111111111';
+set local role authenticated;
+
+select pg_temp.check('retrieval finds this project''s own records',
+  (select count(*) from public.project_search_context(
+     'bbbbbbbb-0000-0000-0000-000000000001', 'evidence', 40, 24000)) >= 0);
+
+-- Every row carries a stable id of the shape the worker verifies against,
+-- and a version, so a changed record is a different question.
+select pg_temp.check('every retrieved row has a stable source id and a version',
+  not exists (select 1 from public.project_search_context(
+     'bbbbbbbb-0000-0000-0000-000000000001', 'evidence', 40, 24000) r
+   where r.source_id is null or r.source_id !~ '^[a-z]+:' or r.version is null));
+
+-- THE COST CAP. Not a record count alone: forty long readings and forty short
+-- rows are the same number and very different money.
+select pg_temp.check('retrieval never returns more rows than asked for',
+  (select count(*) from public.project_search_context(
+     'bbbbbbbb-0000-0000-0000-000000000001', 'evidence room capture', 3, 24000)) <= 3);
+-- THE COST CAP THAT ACTUALLY BINDS. A record count is not a limit: forty
+-- long readings and forty short rows are the same number and very different
+-- money, and the long ones are what a real project produces.
+select pg_temp.check('and never more characters than the budget allows',
+  coalesce((select sum(char_length(coalesce(r.body, ''))) from public.project_search_context(
+     'bbbbbbbb-0000-0000-0000-000000000001', 'evidence room capture', 40, 600) r), 0) <= 600);
+select pg_temp.check('a smaller budget really does return less',
+  coalesce((select sum(char_length(coalesce(r.body, ''))) from public.project_search_context(
+     'bbbbbbbb-0000-0000-0000-000000000001', 'evidence room capture', 40, 600) r), 0)
+  <= coalesce((select sum(char_length(coalesce(r.body, ''))) from public.project_search_context(
+     'bbbbbbbb-0000-0000-0000-000000000001', 'evidence room capture', 40, 24000) r), 0));
+
+-- A question that matches nothing retrieves nothing, so the worker refuses
+-- rather than paying for a call it cannot cite.
+select pg_temp.check('a question matching nothing retrieves nothing',
+  (select count(*) from public.project_search_context(
+     'bbbbbbbb-0000-0000-0000-000000000001', 'zzzzqqqqxxxx', 40, 24000)) = 0);
+
+-- 12 · another organization
+reset role;
+set local test.uid = '44444444-4444-4444-4444-444444444444';
+set local role authenticated;
+select pg_temp.check('another organization retrieves nothing from this project',
+  (select count(*) from public.project_search_context(
+     'bbbbbbbb-0000-0000-0000-000000000001', 'evidence room capture', 40, 24000)) = 0);
+select pg_temp.check('and reads none of its saved answers',
+  (select count(*) from public.project_search_answers) = 0);
+select pg_temp.check('and gets nothing back from the saved-answer door',
+  (select count(*) from public.project_search_answer_for(
+     'bbbbbbbb-0000-0000-0000-000000000001', 'any-fingerprint')) = 0);
+reset role;
+
+-- Answers are written by the worker alone.
+set local test.uid = '11111111-1111-1111-1111-111111111111';
+set local role authenticated;
+select pg_temp.refused('nobody writes an answer by hand',
+  $$insert into public.project_search_answers
+      (organization_id, property_id, question, question_normalized, input_fingerprint, answer)
+    values ('aaaaaaaa-0000-0000-0000-000000000001', 'bbbbbbbb-0000-0000-0000-000000000001',
+            'q', 'q', 'fp', 'forged')$$);
+select pg_temp.refused('and the writer is closed to every browser role',
+  $$select public.record_project_search_answer(
+      'aaaaaaaa-0000-0000-0000-000000000001', 'bbbbbbbb-0000-0000-0000-000000000001',
+      null, 'q', 'q', 'fp', 'a', '[]'::jsonb, null, 'low', '{}', 0, 0, false, null, null)$$);
+reset role;
+
+-- A refused answer is never served as knowledge: the question is asked again
+-- rather than the refusal being cached as if it were an answer.
+select public.record_project_search_answer(
+  'aaaaaaaa-0000-0000-0000-000000000001', 'bbbbbbbb-0000-0000-0000-000000000001',
+  null, 'how many beams', 'how many beams', 'fp-refused',
+  'I could not find enough evidence in this project to answer reliably.',
+  '[]'::jsonb, 'nothing cited', 'low', '{}', 0, 0, true, 'no citation survived verification', null);
+set local test.uid = '11111111-1111-1111-1111-111111111111';
+set local role authenticated;
+select pg_temp.check('a refused answer is never handed back as a saved answer',
+  (select count(*) from public.project_search_answer_for(
+     'bbbbbbbb-0000-0000-0000-000000000001', 'fp-refused')) = 0);
+reset role;
+
+-- A verified answer is, so the same question costs nothing twice.
+select public.record_project_search_answer(
+  'aaaaaaaa-0000-0000-0000-000000000001', 'bbbbbbbb-0000-0000-0000-000000000001',
+  null, 'how many beams', 'how many beams', 'fp-good',
+  'The plan set identifies 14 posts.',
+  '[{"source_id":"requirement:1","opens":"comparison"}]'::jsonb, null, 'high',
+  '{requirement:1}', 3, 900, false, null, null);
+set local test.uid = '11111111-1111-1111-1111-111111111111';
+set local role authenticated;
+select pg_temp.check('a verified answer is served again without a second AI call',
+  (select count(*) from public.project_search_answer_for(
+     'bbbbbbbb-0000-0000-0000-000000000001', 'fp-good')) = 1);
+reset role;
+
+-- Project Search spends money, so the ledger admits it.
+select pg_temp.check('project-search is a recordable process in the AI ledger',
+  (select verdict from public.claim_ai_run(
+     'aaaaaaaa-0000-0000-0000-000000000001', 'bbbbbbbb-0000-0000-0000-000000000001',
+     'project-search', 'm', 'c', 'fp-search-1')) = 'CLAIMED');
+select public.finish_ai_run(
+  (select id from public.ai_runs where input_fingerprint = 'fp-search-1'), 'succeeded', '{}'::jsonb);
+select pg_temp.check('and the same question on an unchanged project is not bought twice',
+  (select verdict from public.claim_ai_run(
+     'aaaaaaaa-0000-0000-0000-000000000001', 'bbbbbbbb-0000-0000-0000-000000000001',
+     'project-search', 'm', 'c', 'fp-search-1')) = 'REUSED');
 
 rollback;

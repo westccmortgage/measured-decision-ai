@@ -3342,10 +3342,42 @@ function showFocusStage(name) {
   window.scrollTo({ top: 0, behavior: "smooth" });
 }
 
+/* Where a cited source opens.
+ *
+ * Every one of these is an opener the Studio already had — a citation is a
+ * pointer into the record, not a new way of looking at it. A source whose
+ * door cannot be found says so rather than doing nothing, because a citation
+ * that does nothing when pressed is worse than no citation. */
+function openCitedSource(target) {
+  if (target.kind === "capture" && target.evidenceId) {
+    for (const room of rooms) {
+      const item = (room.evidence || []).find((entry) => entry.id === target.evidenceId);
+      if (item) { void openEvidenceViewer(item, room); return; }
+    }
+  }
+  if ((target.kind === "room" || target.kind === "capture") && target.roomId) {
+    openFocusSheet(target.roomId, focusStage);
+    return;
+  }
+  /* Derived records live in the comparison, next to the numbers they came
+     from. */
+  const comparison = $("#focus-money-card") || $("#today-next");
+  comparison?.scrollIntoView({ behavior: "smooth", block: "start" });
+}
+
 function applyFocusStage() {
   $("#focus-upload-stage").hidden = focusStage !== "upload";
   $("#focus-processing-stage").hidden = focusStage !== "process";
   $("#focus-results-stage").hidden = focusStage !== "results";
+  /* Ask this project belongs where the record is, and only once there IS a
+     record and somebody signed in to read it. */
+  if (window.MDAIAskProject && cloud?.client && cloud.propertyId) {
+    window.MDAIAskProject.mount({
+      client: cloud.client,
+      propertyId: cloud.propertyId,
+      openSource: openCitedSource,
+    });
+  }
   /* The processing screen only means something while a run is in flight. Opened
      with nothing running it kept its hardcoded "Processing… 0% Starting…" —
      a dead screen indistinguishable from a hang. Say what is actually true:
