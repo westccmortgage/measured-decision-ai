@@ -11,7 +11,7 @@ try{var t=localStorage.getItem("mdai-theme");document.documentElement.dataset.th
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
-    <link rel="stylesheet" href="plans.css?v=4b69d65343">
+    <link rel="stylesheet" href="plans.css?v=457b283060">
   </head>
   <body>
     <div class="boot-screen" id="boot-screen">
@@ -216,6 +216,13 @@ try{var t=localStorage.getItem("mdai-theme");document.documentElement.dataset.th
                 <button class="button" id="view-results" type="button">View results</button>
                 <button class="button quiet" id="reanalyze-plans" type="button">Reanalyze</button>
               </div>
+            </div>
+            <!-- A reading made in parts can be put back together from the
+                 saved readings of those parts: no page is read again and
+                 nothing is spent. Shown only when such a reading exists. -->
+            <div class="rebuild-offer" id="rebuild-offer" hidden>
+              <p class="rebuild-note" id="rebuild-note"></p>
+              <button class="button quiet" id="rebuild-baseline" type="button">Rebuild from saved readings</button>
             </div>
             <p class="action-message" id="action-message" role="status" aria-live="polite"></p>
             <!-- Runs and tokens, never a bill. -->
@@ -466,6 +473,6 @@ try{var t=localStorage.getItem("mdai-theme");document.documentElement.dataset.th
     <script src="../page-renders.js?v=0f50a64fc6"></script>
     <script src="../pdf-split.js?v=d9d6bb9690"></script>
     <script src="../ai-usage.js?v=92381d12a3"></script>
-    <script src="plans.js?v=ad496aec1c"></script>
+    <script src="plans.js?v=d5563f08ca"></script>
   </body>
 </html>

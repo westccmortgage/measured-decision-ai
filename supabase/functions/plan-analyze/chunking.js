@@ -238,6 +238,22 @@ function unifyBuilding(readings, chunkMeta) {
   return { readings: rewritten, gaps };
 }
 
+/* Whether a finished reading can be put back together from its saved parts.
+   The parts are the paid, saved readings of each chunk; putting them
+   together again is the same deterministic merge the reading ended with,
+   and costs nothing. It is possible only when there are parts — a set read
+   in one request has none — and every part completed with a reading. */
+export function rebuildableFrom(job, chunks) {
+  const parts = list(chunks);
+  if (!job || job.state !== "completed") return { ok: false, reason: "Only a completed reading can be rebuilt from its saved parts." };
+  if (!parts.length) return { ok: false, reason: "This reading was made in one request; there are no saved parts to rebuild from." };
+  const unfinished = parts.filter((chunk) => chunk.state !== "complete" || !chunk.analysis || typeof chunk.analysis !== "object");
+  if (unfinished.length) {
+    return { ok: false, reason: `${unfinished.length} of ${parts.length} parts ${unfinished.length === 1 ? "has" : "have"} no saved reading; nothing can be rebuilt from a part that was not read.` };
+  }
+  return { ok: true, parts: parts.length };
+}
+
 /* One baseline from many chunk readings.
  *
  * `chunks`, when given, is one entry per reading in the same order:
