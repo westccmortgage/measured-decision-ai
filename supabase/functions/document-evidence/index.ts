@@ -15,7 +15,7 @@ import { createClient } from "npm:@supabase/supabase-js@2";
 import { openAITransport } from "../_shared/openai-transport.ts";
 import { signedObjectReadUrl } from "../_shared/aws-object-store.ts";
 import { AGENT_CONTRACT_VERSION } from "../_shared/agent-contracts.ts";
-import { claimAiRun, finishAiRun, usageFrom } from "../_shared/ai-run-ledger.ts";
+import { claimAiRun, finishAiRun, RunProgress, outcomeForStatus, usageFrom } from "../_shared/ai-run-ledger.ts";
 
 const allowedOrigins = new Set([
   "https://measureddecision.ai",
@@ -204,9 +204,14 @@ Deno.serve(async (request) => {
       });
     }
     let runUsage: Record<string, unknown> = {};
-    let runState: "succeeded" | "failed" = "failed";
+    /* Nothing is on the wire yet, so a failure here costs nothing. After
+       .sent() that stops being true, and after .answered() the reading is
+       bought and no later failure may turn it back into something a retry
+       would buy again. */
+    const progress = new RunProgress();
     let runError: string | null = null;
     try {
+    progress.sent();
     const response = await fetch(`${aiTransport.baseUrl}/responses`, {
       method: "POST",
       headers: aiTransport.headers,
@@ -228,6 +233,7 @@ Deno.serve(async (request) => {
     const payload = await response.json();
     runUsage = usageFrom(payload);
     if (!response.ok) {
+      if (outcomeForStatus(response.status) === "failed") progress.refused();
       throw new Error(payload?.error?.message || `The document reader failed (${response.status})`);
     }
     const outputText = (payload?.output || [])
@@ -235,6 +241,10 @@ Deno.serve(async (request) => {
       .map((part: Record<string, unknown>) => (typeof part?.text === "string" ? part.text : ""))
       .join("");
     const reading = JSON.parse(outputText || "{}");
+    /* The reading is in our hands and on somebody's invoice. Every failure
+       from here is a failure to record what we already bought, and must
+       never license a second purchase. */
+
     const lines = Array.isArray(reading.lines) ? reading.lines : [];
     const unreadable = Array.isArray(reading.unreadable) ? reading.unreadable : [];
 
@@ -294,7 +304,7 @@ Deno.serve(async (request) => {
     });
     reconciled = !reconcileError;
 
-    runState = "succeeded";
+    progress.answered();
     return json(request, {
       job_id: jobId,
       lines_recorded: recorded,
@@ -306,7 +316,7 @@ Deno.serve(async (request) => {
       runError = String(readingError instanceof Error ? readingError.message : readingError).slice(0, 200);
       throw readingError;
     } finally {
-      await finishAiRun(admin, claim.runId, runState, runUsage, runError);
+      await finishAiRun(admin, claim.runId, progress.outcome(), runUsage, runError);
     }
   } catch (error) {
     console.error(error);

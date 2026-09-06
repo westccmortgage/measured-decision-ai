@@ -207,6 +207,137 @@ check("a cost is shown only when one actually exists",
 check("and a project that has never used AI shows no line at all",
   money.none === null);
 
+
+/* ── the unknown outcome ───────────────────────────────────────────────────
+ * The database proves that an unknown outcome cannot be re-bought and that a
+ * confirmation is worth exactly one run. What it cannot prove is the part that
+ * DECIDES which of the three outcomes a failure was — that lives in the
+ * shipping TypeScript, and it is imported here rather than copied. */
+console.log("\n── what happened to the money ──");
+const ledger = await import(
+  `file://${path.resolve("supabase/functions/_shared/ai-run-ledger.ts")}`
+);
+const { RunProgress, outcomeForStatus } = ledger;
+
+check("a failure before anything is sent costs nothing",
+  new RunProgress().outcome() === "failed");
+/* The case this whole change exists for. */
+check("a request that went out and lost its answer is an unknown outcome",
+  new RunProgress().sent().outcome() === "outcome_unknown");
+check("a request the provider rejected did not happen, so it is a plain failure",
+  new RunProgress().sent().refused().outcome() === "failed");
+check("a reading in our hands is succeeded",
+  new RunProgress().sent().answered().outcome() === "succeeded");
+/* Requirement three, stated as a test: once bought, always bought. A database
+   error while saving must send us back to the SAVE, never to the provider. */
+const held = new RunProgress().sent().answered();
+held.sent();
+check("and a failure to save what we already bought never un-buys it",
+  held.outcome() === "succeeded" && held.held === true);
+
+check("a rejected request is a failure — 400, 401, 403, 404, 422",
+  [400, 401, 403, 404, 422].every((code) => outcomeForStatus(code) === "failed"));
+/* A timeout and a rate limit can both arrive after the work was done, which is
+   exactly the trap: treating them as failures is what bought the reading
+   twice. */
+check("a timeout, a rate limit and a server error are unknown, not failures",
+  [408, 429, 500, 502, 503, 504].every((code) => outcomeForStatus(code) === "outcome_unknown"));
+check("and a 200 is succeeded", outcomeForStatus(200) === "succeeded");
+
+console.log("\n── every worker classifies before it closes the ledger ──");
+const ALL_WORKERS = [
+  "plan-analyze", "spatial-analyze", "document-classify",
+  "document-evidence", "field-quality-check", "project-search",
+];
+for (const worker of ALL_WORKERS) {
+  const source = fs.readFileSync(`supabase/functions/${worker}/index.ts`, "utf8");
+  check(`${worker} marks the request as sent before it spends`,
+    /progress\??\.sent\(\)|launchProgress/.test(source));
+  /* The bug in one line: a hardcoded "failed" on a path that may have been
+     billed is a free pass to buy the same reading again. A "failed" is only
+     honest where the provider itself reported a terminal state — which is
+     exactly the case that carries its usage. */
+  const hardcodedFailures = (source.replace(/\n/g, " ")
+    .match(/finishAiRun\([^)]*?,\s*"failed"[^)]*?\)/g) || []);
+  check(`${worker} closes a call as failed only on the provider's own word`,
+    hardcodedFailures.every((call) => /usageFrom\(providerPayload\)/.test(call)),
+    hardcodedFailures.join(" | ") || "none");
+}
+
+/* The one worker that can actually go back for a lost answer. */
+const planSource = fs.readFileSync("supabase/functions/plan-analyze/index.ts", "utf8");
+check("plan-analyze retrieves a background reading by the id it stored",
+  /responses\/\$\{encodeURIComponent\(job\.provider_job_id\)/.test(planSource));
+check("and closes that run with the usage the retrieval reported",
+  /finishAiRun\(admin, job\.ai_run_id \|\| null, "succeeded", usageFrom\(providerPayload\)/.test(planSource));
+check("a background job the provider no longer recognises is unknown, not failed",
+  /"outcome_unknown", \{\}, "provider_job_lost"/.test(planSource));
+check("and one it never started is unknown too",
+  /"outcome_unknown", \{\}, "provider_never_started"/.test(planSource));
+/* The requeue is the dangerous part: a chunk put back to pending is relaunched
+   by the next poll, with nobody asked and nothing said. */
+check("a chunk whose launch was lost is not silently requeued for relaunch",
+  /state: outcome === "outcome_unknown" \? "failed" : "pending"/.test(planSource));
+
+console.log("\n── the sentence a person reads before paying again ──");
+const asked = await page.evaluate(async () => {
+  const guard = window.MDAIAiUsage;
+  const seen = [];
+  let rpcCalls = 0;
+  const client = { rpc: async () => { rpcCalls += 1; return { data: true, error: null }; } };
+  const declined = await guard.confirmUnknownOutcome(client, "run-1", (message) => {
+    seen.push(message); return false;
+  });
+  const rpcAfterDecline = rpcCalls;
+  const accepted = await guard.confirmUnknownOutcome(client, "run-1", (message) => {
+    seen.push(message); return true;
+  });
+  return {
+    seen, declined, accepted, rpcAfterDecline, rpcCalls,
+    warning: guard.UNKNOWN_OUTCOME_WARNING,
+    verdict: guard.skippedVerdict({ skipped: "outcome_unknown" }),
+    message: guard.skippedMessage("outcome_unknown"),
+  };
+});
+check("the question says the previous request may have run and been billed",
+  asked.warning === "The previous request may have run and been billed. Run the analysis again, with possible additional charges?",
+  asked.warning);
+check("and it is the question actually asked",
+  asked.seen.length === 2 && asked.seen.every((m) => m === asked.warning));
+check("declining authorises nothing and reaches no server",
+  asked.declined === false && asked.rpcAfterDecline === 0);
+check("accepting is what records the authorisation",
+  asked.accepted === true && asked.rpcCalls === 1);
+check("a worker that refused to spend is understood, not treated as an error",
+  asked.verdict === "outcome_unknown" && /may have run and been billed/.test(asked.message),
+  asked.message);
+
+/* Two presses of the confirm button must not become two runs. The database
+   makes that true; this is the courtesy in front of it. */
+const pressedTwice = await page.evaluate(async () => {
+  const guard = window.MDAIAiUsage;
+  let runs = 0;
+  const start = () => guard.once("unknown-retry", async () => {
+    runs += 1;
+    await new Promise((r) => setTimeout(r, 40));
+    return { ok: true };
+  });
+  const [first, second] = await Promise.all([start(), start()]);
+  return { runs, first, second };
+});
+check("a double confirmation starts exactly one retry",
+  pressedTwice.runs === 1 && pressedTwice.second.skipped === "in_flight",
+  JSON.stringify(pressedTwice));
+
+console.log("\n── nothing about data retention moved ──");
+for (const worker of ["spatial-analyze", "document-classify", "document-evidence",
+                      "field-quality-check", "project-search"]) {
+  const source = fs.readFileSync(`supabase/functions/${worker}/index.ts`, "utf8");
+  check(`${worker} still sends store:false`, /store: false/.test(source));
+}
+check("plan-analyze still stores its background response, as it must to retrieve it",
+  /background: true,\s*store: true/.test(planSource));
+
 await browser.close();
 server.close();
 console.log(bad ? `\n${bad} FAILURES` : "\nALL OK");

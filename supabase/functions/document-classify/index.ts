@@ -17,7 +17,7 @@ import { createClient } from "npm:@supabase/supabase-js@2";
 import { openAITransport } from "../_shared/openai-transport.ts";
 import { signedObjectReadUrl } from "../_shared/aws-object-store.ts";
 import { AGENT_CONTRACT_VERSION } from "../_shared/agent-contracts.ts";
-import { claimAiRun, finishAiRun, usageFrom } from "../_shared/ai-run-ledger.ts";
+import { claimAiRun, finishAiRun, RunProgress, outcomeForStatus, usageFrom } from "../_shared/ai-run-ledger.ts";
 
 const allowedOrigins = new Set([
   "https://measureddecision.ai",
@@ -189,9 +189,14 @@ Deno.serve(async (request) => {
       });
     }
     let runUsage: Record<string, unknown> = {};
-    let runState: "succeeded" | "failed" = "failed";
+    /* Nothing is on the wire yet, so a failure here costs nothing. After
+       .sent() that stops being true, and after .answered() the reading is
+       bought and no later failure may turn it back into something a retry
+       would buy again. */
+    const progress = new RunProgress();
     let runError: string | null = null;
     try {
+    progress.sent();
     const response = await fetch(`${aiTransport.baseUrl}/responses`, {
       method: "POST",
       headers: aiTransport.headers,
@@ -215,6 +220,10 @@ Deno.serve(async (request) => {
        refused call can still have been billed for what it consumed. */
     runUsage = usageFrom(payload);
     if (!response.ok) {
+      /* What the provider said decides whether a reading was made: a rejected
+         request cost nothing, a 5xx or a rate limit may have arrived after the
+         work was done. */
+      if (outcomeForStatus(response.status) === "failed") progress.refused();
       throw new Error(payload?.error?.message || `The classifier failed (${response.status})`);
     }
     const outputText = (payload?.output || [])
@@ -222,6 +231,10 @@ Deno.serve(async (request) => {
       .map((part: Record<string, unknown>) => (typeof part?.text === "string" ? part.text : ""))
       .join("");
     const reading = JSON.parse(outputText || "{}");
+    /* The reading is in our hands and on somebody's invoice. Every failure
+       from here is a failure to record what we already bought, and must
+       never license a second purchase. */
+
     const pages = (Array.isArray(reading.pages) ? reading.pages : [])
       .filter((page: Record<string, unknown>) => Number.isInteger(page?.page_number) && (page.page_number as number) > 0);
     if (!pages.length) throw new Error("The classifier returned no readable pages");
@@ -271,7 +284,7 @@ Deno.serve(async (request) => {
       },
     });
 
-    runState = "succeeded";
+    progress.answered();
     return json(request, {
       job_id: jobId,
       document_type: documentType,
@@ -286,7 +299,7 @@ Deno.serve(async (request) => {
     } finally {
       /* The ledger closes on every path. An open row would go on blocking an
          honest retry of a reading that failed. */
-      await finishAiRun(admin, claim.runId, runState, runUsage, runError);
+      await finishAiRun(admin, claim.runId, progress.outcome(), runUsage, runError);
     }
   } catch (error) {
     console.error(error);

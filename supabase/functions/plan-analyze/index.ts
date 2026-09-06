@@ -3,7 +3,7 @@ import {
   AGENT_CONTRACT_VERSION,
   PLAN_WORKFLOW_INSTRUCTIONS,
 } from "../_shared/agent-contracts.ts";
-import { buildFingerprint, claimAiRun, finishAiRun, usageFrom } from "../_shared/ai-run-ledger.ts";
+import { buildFingerprint, claimAiRun, finishAiRun, outcomeForStatus, RunProgress, usageFrom } from "../_shared/ai-run-ledger.ts";
 import { signedObjectReadUrl } from "../_shared/aws-object-store.ts";
 import { openAITransport } from "../_shared/openai-transport.ts";
 import { CHUNK_BYTE_LIMIT, mergeChunkAnalyses, planChunks } from "./chunking.js";
@@ -708,6 +708,10 @@ async function createProviderReading(
   documents: DocumentRow[],
   registerText: string,
   chunkNote: string | null,
+  /* Marked as the request moves, so the caller's catch can tell a launch that
+     never left the building from one that may have created — and started
+     billing — a background response we then lost the handle to. */
+  progress?: RunProgress,
 ) {
   const signedDocuments: Array<{ row: DocumentRow; url: string }> = [];
   for (const row of documents) {
@@ -781,6 +785,7 @@ async function createProviderReading(
     }
   }
 
+  progress?.sent();
   const openAIResponse = await fetch(`${aiTransport.baseUrl}/responses`, {
     method: "POST",
     headers: aiTransport.headers,
@@ -804,6 +809,9 @@ async function createProviderReading(
   });
   const openAIPayload = await openAIResponse.json();
   if (!openAIResponse.ok) {
+    /* A rejected request created nothing. A 5xx or a rate limit may have
+       created a background response whose id we never saw. */
+    if (outcomeForStatus(openAIResponse.status) === "failed") progress?.refused();
     throw new Error(openAIPayload?.error?.message || `OpenAI request failed (${openAIResponse.status})`);
   }
   if (!openAIPayload?.id) throw new Error("OpenAI did not return a background response identifier");
@@ -871,10 +879,12 @@ async function launchNextPendingChunk(
        duplicate of the failed one. */
     force: true,
   });
+  const progress = new RunProgress();
   try {
     const payload = await createProviderReading(
       admin, aiTransport, model, chunkDocuments, registerText,
       chunkNoteFor(claimed.chunk_index, chunkTotal, chunkDocuments),
+      progress,
     );
     await admin.from("plan_analysis_chunks").update({
       provider_job_id: payload.id,
@@ -883,13 +893,20 @@ async function launchNextPendingChunk(
     }).eq("id", claimed.id);
     return claimed;
   } catch (error) {
-    await finishAiRun(admin, ledger.runId, "failed", {},
+    const outcome = progress.outcome();
+    await finishAiRun(admin, ledger.runId, outcome, {},
       String(error instanceof Error ? error.message : error).slice(0, 200));
-    /* The launch itself failed — the chunk goes back to pending so a later
-       poll retries it instead of the whole run dying on a transient. */
+    /* A launch that never left the building costs nothing, so the chunk goes
+       back to pending and a later poll retries it. A launch whose answer was
+       lost may already have created a billed background response — requeueing
+       that would buy the same chunk twice, which is the whole point of this
+       state. It stays failed until a person authorises the retry. */
     await admin.from("plan_analysis_chunks").update({
-      state: "pending", provider_job_id: null,
-      error_message: String(error instanceof Error ? error.message : error).slice(0, 800),
+      state: outcome === "outcome_unknown" ? "failed" : "pending",
+      provider_job_id: null,
+      error_message: (outcome === "outcome_unknown"
+        ? "This chunk was sent to the provider and its answer was lost. It may already have run and been billed — confirm before running it again. "
+        : "") + String(error instanceof Error ? error.message : error).slice(0, 600),
       updated_at: new Date().toISOString(),
     }).eq("id", claimed.id);
     throw error;
@@ -950,15 +967,25 @@ async function advanceChunkedJob(
     return await finalizeAnalysis(admin, job, orderedDocuments, merged, job.model || model, userId);
   };
 
-  const failChunk = async (chunk: Record<string, any>, message: string) => {
-    /* The provider was paid for this attempt whatever it returned. */
-    await finishAiRun(admin, chunk.ai_run_id || null, "failed", {}, message.slice(0, 200));
+  /* `outcome` is the honest half of this: 'failed' where the provider told us
+     the reading did not happen, 'outcome_unknown' where we are walking away
+     from a job that may have run and been billed. Only the first may be
+     resumed by pressing Analyze. */
+  const failChunk = async (
+    chunk: Record<string, any>,
+    message: string,
+    outcome: "failed" | "outcome_unknown" = "failed",
+  ) => {
+    await finishAiRun(admin, chunk.ai_run_id || null, outcome, {}, message.slice(0, 200));
     await admin.from("plan_analysis_chunks").update({
       state: "failed", error_message: message.slice(0, 800), updated_at: new Date().toISOString(),
     }).eq("id", chunk.id);
     const resumeMessage =
       `Chunk ${chunk.chunk_index + 1} of ${total} failed: ${message} ` +
-      `${completeCount} finished chunk${completeCount === 1 ? "" : "s"} stay${completeCount === 1 ? "s" : ""} saved — press Analyze to resume from where it stopped.`;
+      `${completeCount} finished chunk${completeCount === 1 ? "" : "s"} stay${completeCount === 1 ? "s" : ""} saved — ` +
+      (outcome === "outcome_unknown"
+        ? "this chunk may already have run and been billed, so running it again needs confirmation."
+        : "press Analyze to resume from where it stopped.");
     await markJobFailed(admin, job, resumeMessage);
     return {
       job_id: job.id, state: "failed", progress_stage: "failed",
@@ -984,7 +1011,10 @@ async function advanceChunkedJob(
     );
     const providerPayload = await providerResponse.json();
     if (providerResponse.status === 404) {
-      return await failChunk(processing, "the provider no longer recognises this chunk's background job.");
+      /* Not recognised is not the same as not run: the job may have executed
+         and been billed under an identity we can no longer read it from. */
+      return await failChunk(processing,
+        "the provider no longer recognises this chunk's background job.", "outcome_unknown");
     }
     if (!providerResponse.ok) {
       throw new Error(providerError(providerPayload, `Could not read chunk response (${providerResponse.status})`));
@@ -992,7 +1022,10 @@ async function advanceChunkedJob(
     if (providerPayload.status === "queued") {
       const queuedAge = processing.updated_at ? Date.now() - new Date(processing.updated_at).valueOf() : 0;
       if (queuedAge > 15 * 60 * 1000) {
-        return await failChunk(processing, "the provider accepted this chunk but never started it in 15 minutes.");
+        /* We walk away while the provider still holds the job. Whether it
+           later runs and bills is exactly what we cannot establish. */
+        return await failChunk(processing,
+          "the provider accepted this chunk but never started it in 15 minutes.", "outcome_unknown");
       }
     }
     if (["queued", "in_progress"].includes(providerPayload.status)) {
@@ -1004,7 +1037,8 @@ async function advanceChunkedJob(
       return progress();
     }
     if (providerPayload.status !== "completed") {
-      return await failChunk(processing, `the chunk's background response ended with ${providerPayload.status || "an unknown status"}.`);
+      return await failChunk(processing,
+        `the chunk's background response ended with ${providerPayload.status || "an unknown status"}.`, "failed");
     }
     const chunkAnalysis = JSON.parse(responseText(providerPayload));
     /* The background response carries its usage only here, at retrieval —
@@ -1149,8 +1183,10 @@ Deno.serve(async (request) => {
            reverse), or it expired. Nothing will ever finish it. Leaving the row
            in "processing" is a progress bar frozen at 18% until somebody gives
            up — the job is failed now, with the way forward in the message. */
-        const message = "The provider no longer recognises this background job. The plan files are safe — press Analyze to start a fresh run.";
-        await finishAiRun(admin, job.ai_run_id || null, "failed", {}, "provider_job_lost");
+        /* It may have run. It may be on the invoice. What is certain is only
+           that we can no longer read it — so this is not a free retry. */
+        const message = "The provider no longer recognises this background job. The plan files are safe. This reading may already have run and been billed, so starting a fresh one needs confirmation.";
+        await finishAiRun(admin, job.ai_run_id || null, "outcome_unknown", {}, "provider_job_lost");
         await markJobFailed(admin, job, message);
         return json(request, {
           job_id: job.id, state: "failed", progress_stage: "failed",
@@ -1167,8 +1203,8 @@ Deno.serve(async (request) => {
            through a billing identity that will not schedule it looks like. */
         const queuedAge = job.started_at ? Date.now() - new Date(job.started_at).valueOf() : 0;
         if (queuedAge > 15 * 60 * 1000) {
-          const message = "The provider accepted this analysis but never started it in 15 minutes. This run is abandoned — the plan files are safe; press Analyze to start a fresh one.";
-          await finishAiRun(admin, job.ai_run_id || null, "failed", {}, "provider_never_started");
+          const message = "The provider accepted this analysis but never started it in 15 minutes. The plan files are safe. The provider still holds the job, so starting a fresh one needs confirmation.";
+          await finishAiRun(admin, job.ai_run_id || null, "outcome_unknown", {}, "provider_never_started");
           await markJobFailed(admin, job, message);
           return json(request, {
             job_id: job.id, state: "failed", progress_stage: "failed",
@@ -1288,14 +1324,20 @@ Deno.serve(async (request) => {
           state: "failed",
           skipped: ledger.verdict.toLowerCase(),
           previous_run_id: ledger.previousRunId,
-          code: ledger.verdict === "RUNNING" ? "duplicate_in_flight" : "identical_reading_exists",
+          code: ledger.verdict === "RUNNING"
+            ? "duplicate_in_flight"
+            : ledger.verdict === "UNKNOWN"
+              ? "outcome_unknown"
+              : "identical_reading_exists",
         }, 200);
       }
       let openAIPayload;
+      const launchProgress = new RunProgress();
       try {
-        openAIPayload = await createProviderReading(admin, aiTransport, model, orderedDocuments, registerText, null);
+        openAIPayload = await createProviderReading(
+          admin, aiTransport, model, orderedDocuments, registerText, null, launchProgress);
       } catch (launchError) {
-        await finishAiRun(admin, ledger.runId, "failed", {},
+        await finishAiRun(admin, ledger.runId, launchProgress.outcome(), {},
           String(launchError instanceof Error ? launchError.message : launchError).slice(0, 200));
         throw launchError;
       }
