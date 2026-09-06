@@ -11,7 +11,7 @@ try{var t=localStorage.getItem("mdai-theme");document.documentElement.dataset.th
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
-    <link rel="stylesheet" href="plans.css?v=457b283060">
+    <link rel="stylesheet" href="plans.css?v=9918afa6e9">
   </head>
   <body>
     <div class="boot-screen" id="boot-screen">
@@ -232,18 +232,27 @@ try{var t=localStorage.getItem("mdai-theme");document.documentElement.dataset.th
 
         <section class="baseline-section" id="baseline-section" hidden>
           <div class="section-heading">
-            <div><p>03 · Human-governed baseline</p><h2>Review what the AI understood</h2></div>
+            <div><p>03 · Human-governed baseline</p><h2>What the plans state</h2></div>
             <div class="heading-actions">
               <span class="state-pill" id="baseline-state">Review</span>
               <button class="button primary approve" id="approve-baseline" type="button">Approve baseline & activate roadmap</button>
             </div>
           </div>
+          <!-- The result first. What was read stands at the top in plain
+               sections; the reading's own questions stand below it, all of
+               them, under one disclosure. Three of those questions are put
+               first by a rule, never by a model's sense of importance. -->
+          <p class="result-status" id="result-status" role="status"></p>
           <p class="approval-guidance" id="approval-guidance" role="status" hidden></p>
-          <div class="baseline-summary">
-            <article class="summary-card"><span>AI project summary</span><p id="project-summary"></p></article>
-            <article class="summary-card"><span>Detected structure</span><div id="structure-summary"></div></article>
-            <article class="summary-card gaps"><span>Questions and gaps</span><div id="gap-list"></div></article>
+          <div class="result-first">
+            <article class="result-card conflicts"><span>Settle first</span><ol class="result-conflicts" id="result-conflicts"></ol><small class="result-rule" id="result-rule"></small></article>
+            <article class="result-card"><span>What the set describes</span><p id="project-summary"></p><div id="structure-summary"></div></article>
           </div>
+          <div class="result-sections" id="result-sections"></div>
+          <details class="result-audit" id="result-audit">
+            <summary id="result-audit-summary">Audit · every question this reading raised</summary>
+            <div id="gap-list"></div>
+          </details>
           <p class="governance-note"><i></i>Approval confirms the roadmap as the current capture baseline. It does not certify the design, code compliance, construction quality, schedule, or concealed conditions.</p>
         </section>
 
@@ -473,6 +482,6 @@ try{var t=localStorage.getItem("mdai-theme");document.documentElement.dataset.th
     <script src="../page-renders.js?v=0f50a64fc6"></script>
     <script src="../pdf-split.js?v=d9d6bb9690"></script>
     <script src="../ai-usage.js?v=92381d12a3"></script>
-    <script src="plans.js?v=d5563f08ca"></script>
+    <script src="plans.js?v=bd4c75d8df"></script>
   </body>
 </html>

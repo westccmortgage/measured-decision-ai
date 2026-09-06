@@ -64,6 +64,7 @@ run "strict schemas stay strict"      studio/tests/strict-schemas.mjs
 run "a 200-sheet set, in chunks"      studio/tests/plan-chunking.mjs
 run "the parts of one file, one project" studio/tests/parts-become-one-project.mjs
 run "rebuilt from the saved parts"      studio/tests/rebuild-from-saved-readings.mjs
+run "the result first"                 studio/tests/the-result-first.mjs
 run "the PDF that leaves"             studio/tests/pdf360.mjs
 run "the record leaves with its owner" studio/tests/e2e-export.mjs
 run "only what a person approved"     studio/tests/e2e-owner-view.mjs
