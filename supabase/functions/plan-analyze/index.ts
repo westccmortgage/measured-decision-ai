@@ -6,7 +6,7 @@ import {
 import { buildFingerprint, claimAiRun, finishAiRun, outcomeForStatus, RunProgress, usageFrom } from "../_shared/ai-run-ledger.ts";
 import { signedObjectReadUrl } from "../_shared/aws-object-store.ts";
 import { openAITransport } from "../_shared/openai-transport.ts";
-import { CHUNK_BYTE_LIMIT, chunkNote, chunkRegister, mergeChunkAnalyses, orderForReading, planChunks } from "./chunking.js";
+import { CHUNK_BYTE_LIMIT, chunkNote, chunkRegister, mergeChunkAnalyses, orderForReading, planChunks, rebuildableFrom } from "./chunking.js";
 
 const allowedOrigins = new Set([
   "https://measureddecision.ai",
@@ -490,6 +490,94 @@ async function recoverCompletedBaseline(admin: ReturnType<typeof createClient>, 
   ]);
   if (!phaseCount.count || !requirementCount.count || taskCount.count !== requirementCount.count) return null;
   return completeSavedBaseline(admin, job, baseline);
+}
+
+/* A finished reading, put back together from its saved parts.
+ *
+ * The parts are the paid readings of each chunk, saved as they came back.
+ * The baseline was made from them by one deterministic merge, and when that
+ * merge is corrected — as it was when it stopped carrying the component
+ * schedules — the same parts can be merged again without reading a page or
+ * spending anything. The result is a new baseline version made by the very
+ * finalize an ordinary reading ends with, under a job of its own that says
+ * what it was rebuilt from. The original job and its parts are not touched:
+ * they are the record of what the provider actually answered.
+ *
+ * Nothing here is a provider call, so nothing here goes through the ledger.
+ * A failure marks only the rebuild's own job, never the reading it came from. */
+async function rebuildFromSavedReadings(
+  admin: ReturnType<typeof createClient>,
+  userClient: ReturnType<typeof createClient>,
+  source: PlanJob,
+  userId: string,
+  model: string,
+): Promise<{ body: Record<string, unknown>; status: number }> {
+  const { data: chunks } = await admin.from("plan_analysis_chunks")
+    .select("id, chunk_index, state, analysis, document_ids")
+    .eq("job_id", source.id).order("chunk_index", { ascending: true });
+  const verdict = rebuildableFrom(source, chunks || []);
+  if (!verdict.ok) return { body: { error: verdict.reason, job_id: source.id }, status: 409 };
+
+  const { data: documents, error: documentError } = await userClient
+    .from("project_documents")
+    .select("id, organization_id, property_id, storage_path, storage_provider, storage_bucket, original_filename, byte_size, document_type, revision_label, issued_at, source_metadata")
+    .in("id", source.document_ids)
+    .eq("organization_id", source.organization_id)
+    .eq("property_id", source.property_id);
+  if (documentError || !documents || documents.length !== source.document_ids.length) {
+    return { body: { error: "One or more of the documents this reading was made from are no longer in this project; the saved parts cannot be placed.", job_id: source.id }, status: 409 };
+  }
+  const orderedDocuments = orderForReading(source.document_ids
+    .map((id) => (documents as DocumentRow[]).find((row) => row.id === id))
+    .filter(Boolean) as DocumentRow[]);
+  const documentsById = new Map(orderedDocuments.map((row) => [row.id, row]));
+  const merged = mergeChunkAnalyses(
+    (chunks || []).map((chunk) => chunk.analysis),
+    (chunks || []).map((chunk) => ({
+      chunk_index: chunk.chunk_index,
+      documents: ((chunk.document_ids || []) as string[]).map((id) => documentsById.get(id)).filter(Boolean)
+        .map((row) => ({ id: row!.id, filename: row!.original_filename, part_of: row!.source_metadata?.derived_from || null })),
+    })),
+  );
+
+  const startedAt = new Date().toISOString();
+  const { data: rebuildJob, error: jobError } = await admin.from("plan_analysis_jobs").insert({
+    organization_id: source.organization_id,
+    property_id: source.property_id,
+    document_ids: source.document_ids,
+    state: "processing",
+    requested_by: userId,
+    provider: source.provider,
+    model: source.model,
+    progress_stage: "rebuilding",
+    progress_percent: 80,
+    started_at: startedAt,
+    last_heartbeat_at: startedAt,
+  }).select("id, organization_id, property_id, document_ids, state, requested_by, provider, provider_job_id, model, baseline_id, progress_stage, progress_percent, started_at, completed_at, error_code, error_message, ai_run_id").single();
+  if (jobError || !rebuildJob) return { body: { error: "The rebuild could not be recorded as a job", job_id: source.id }, status: 500 };
+
+  try {
+    const result = await finalizeAnalysis(admin, rebuildJob as PlanJob, orderedDocuments, merged, source.model || model, userId);
+    await admin.from("audit_events").insert({
+      organization_id: source.organization_id,
+      actor_id: userId,
+      action: "document_baseline.rebuilt_from_saved_readings",
+      entity_type: "document_baseline",
+      entity_id: result.baseline_id,
+      detail: {
+        rebuilt_from_job_id: source.id,
+        rebuild_job_id: rebuildJob.id,
+        parts: verdict.parts,
+        version: result.version,
+        provider_calls: 0,
+      },
+    });
+    return { body: { ...result, rebuilt_from_job_id: source.id, parts: verdict.parts, provider_calls: 0 }, status: 200 };
+  } catch (error) {
+    const message = error instanceof Error ? error.message : "The saved parts could not be rebuilt";
+    await markJobFailed(admin, rebuildJob as PlanJob, message);
+    return { body: { error: message, job_id: source.id, rebuild_job_id: rebuildJob.id }, status: 500 };
+  }
 }
 
 async function finalizeAnalysis(
@@ -1120,6 +1208,11 @@ Deno.serve(async (request) => {
       .maybeSingle();
     if (!membership || !["owner", "admin", "reviewer", "contributor"].includes(membership.role)) {
       return json(request, { error: "Not authorized for plan analysis" }, 403);
+    }
+
+    if (action === "rebuild") {
+      const rebuilt = await rebuildFromSavedReadings(admin, userClient, job, userData.user.id, model);
+      return json(request, rebuilt.body, rebuilt.status);
     }
 
     if (action === "status") {

@@ -25,6 +25,7 @@ const state = {
   projectRooms: [],
   projectEvidence: [],
   reconciliations: [],
+  rebuildOffer: null,
   requirements: [],
   tasks: [],
   assignments: [],
@@ -66,6 +67,9 @@ const elements = {
   freshnessState: $("#freshness-state"),
   viewResults: $("#view-results"),
   reanalyze: $("#reanalyze-plans"),
+  rebuildBlock: $("#rebuild-offer"),
+  rebuildNote: $("#rebuild-note"),
+  rebuildButton: $("#rebuild-baseline"),
   aiUsageLine: $("#ai-usage-line"),
   message: $("#action-message"),
   analysisProgress: $("#analysis-progress"),
@@ -689,6 +693,7 @@ async function openProperty(propertyId) {
     await loadReadingRegister(propertyId);
     await loadReadingWeakSpots();
   }
+  await loadRebuildOffer(propertyId);
   render();
   elements.sync.textContent = state.activeAnalysisJob
     ? "Plan analysis continues in the background"
@@ -763,6 +768,7 @@ async function ensureIntelligenceChain(trigger) {
 }
 
 function render() {
+  renderRebuildOffer();
   const workflowState = state.property?.workflow_state || "intake";
   elements.workflowBadge.textContent = label(workflowState);
   elements.workflowBadge.className = `state-pill ${workflowState}`;
@@ -3402,6 +3408,71 @@ elements.analyze.addEventListener("click", () => {
   }
   void analyzePlans();
 });
+/* A finished reading, put back together from its saved parts.
+ *
+ * A set larger than one request is read in parts, and each part's reading is
+ * saved as the provider returned it. The baseline is one deterministic merge
+ * of those parts — so when the merge is corrected, the same parts can be
+ * merged again without reading a page or spending anything. The offer stands
+ * only for the newest completed reading, only when every one of its parts
+ * has a saved reading, and only for the roles that may analyze. */
+async function loadRebuildOffer(propertyId) {
+  state.rebuildOffer = null;
+  if (!propertyId || !state.organizationId) return;
+  const { data: jobs, error: jobError } = await client.from("plan_analysis_jobs")
+    .select("id, state, baseline_id, created_at")
+    .eq("organization_id", state.organizationId)
+    .eq("property_id", propertyId)
+    .eq("state", "completed")
+    .order("created_at", { ascending: false })
+    .limit(1);
+  const job = jobError ? null : (jobs || [])[0];
+  if (!job) return;
+  const { data: chunks, error: chunkError } = await client.from("plan_analysis_chunks")
+    .select("id, state, chunk_index")
+    .eq("job_id", job.id)
+    .order("chunk_index", { ascending: true });
+  const parts = chunkError ? [] : (chunks || []);
+  if (!parts.length || parts.some((chunk) => chunk.state !== "complete")) return;
+  state.rebuildOffer = { jobId: job.id, parts: parts.length, baselineId: job.baseline_id };
+}
+
+function renderRebuildOffer() {
+  if (!elements.rebuildBlock) return;
+  const offer = state.rebuildOffer;
+  const shown = Boolean(offer) && canAnalyzePlans() && !state.activeAnalysisJob;
+  elements.rebuildBlock.hidden = !shown;
+  if (!shown) return;
+  elements.rebuildNote.textContent =
+    `The latest reading was made in ${offer.parts} parts. Their saved readings can be brought together again without reading the plans again — no AI is called and nothing is spent.`;
+}
+
+async function rebuildFromSavedReadings() {
+  const offer = state.rebuildOffer;
+  if (!offer || state.busy) return;
+  await window.MDAIAiUsage.once(`rebuild:${offer.jobId}`, async () => {
+    setBusy(true, "Bringing the saved readings together…");
+    try {
+      const { data, error } = await client.functions.invoke("plan-analyze", {
+        body: { action: "rebuild", job_id: offer.jobId },
+      });
+      let refusal = data?.error || "";
+      if (!refusal && error) {
+        refusal = error.message || "The rebuild did not answer";
+        try { refusal = (await error.context?.json())?.error || refusal; } catch { /* the message stands */ }
+      }
+      if (refusal) {
+        notify(`Nothing was rebuilt: ${refusal}`, "error");
+        return;
+      }
+      notify(`Baseline v${data.version} rebuilt from the saved readings of ${data.parts} part${data.parts === 1 ? "" : "s"}. No AI was called.`);
+      await openProperty(state.property.id);
+    } finally {
+      setBusy(false);
+    }
+  });
+}
+
 /* View results is the primary action on a current analysis: it goes to the
    baseline that was already bought, and spends nothing. */
 elements.viewResults?.addEventListener("click", () => {
@@ -3411,6 +3482,7 @@ elements.viewResults?.addEventListener("click", () => {
 });
 /* Reanalyze is the only path that buys a second reading of unchanged inputs,
    and it never happens without the sentence that names the cost. */
+elements.rebuildButton?.addEventListener("click", () => { void rebuildFromSavedReadings(); });
 elements.reanalyze?.addEventListener("click", () => {
   if (!window.MDAIAiUsage.confirmReanalyze()) return;
   elements.freshness.hidden = true;

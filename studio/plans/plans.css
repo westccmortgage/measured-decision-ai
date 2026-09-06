@@ -941,3 +941,8 @@ body.view-visual .takeoff-section { display: none; }
 .freshness-actions .button { flex: 1 1 auto; min-width: 120px; }
 .ai-usage-line { margin: 10px 0 0; font-size: 11px; color: var(--d8399aa); font-variant-numeric: tabular-nums; }
 @media (max-width: 520px) { .freshness-actions { flex-direction: column; } .freshness-actions .button { width: 100%; } }
+/* The saved-readings rebuild: quieter than the freshness block, because it
+   spends nothing and asks for nothing. */
+.rebuild-offer { margin-top: 12px; padding: 12px; border: 1px dashed var(--line); border-radius: 10px; }
+.rebuild-note { margin: 0 0 10px; font-size: 12px; color: var(--d91a8b8); }
+.rebuild-offer .button { width: 100%; }
