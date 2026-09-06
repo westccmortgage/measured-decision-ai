@@ -1,6 +1,6 @@
 import { createClient } from "npm:@supabase/supabase-js@2";
 import { AGENT_CONTRACT_VERSION, FIELD_QC_WORKFLOW_INSTRUCTIONS } from "../_shared/agent-contracts.ts";
-import { claimAiRun, finishAiRun, usageFrom } from "../_shared/ai-run-ledger.ts";
+import { claimAiRun, finishAiRun, RunProgress, outcomeForStatus, usageFrom } from "../_shared/ai-run-ledger.ts";
 import { signedObjectReadUrl } from "../_shared/aws-object-store.ts";
 
 const MODEL = Deno.env.get("OPENAI_FIELD_QC_MODEL") || "gpt-5-mini";
@@ -62,6 +62,8 @@ Deno.serve(async (request) => {
   const admin = createClient(supabaseUrl, serviceKey, { auth: { persistSession: false } });
   let checkId = "";
   let runId: string | null = null;
+  /* Nothing sent yet, so a failure so far costs nothing. */
+  const progress = new RunProgress();
   let runUsage: Record<string, unknown> = {};
 
   try {
@@ -156,6 +158,7 @@ Deno.serve(async (request) => {
         return json({ quality_check_id: check.id, state: check.state, skipped: claim.verdict.toLowerCase() });
       }
       runId = claim.runId;
+      progress.sent();
       const response = await fetch("https://api.openai.com/v1/responses", {
         method: "POST",
         headers: { Authorization: `Bearer ${openAIKey}`, "Content-Type": "application/json" },
@@ -170,8 +173,16 @@ Deno.serve(async (request) => {
       });
       const payload = await response.json();
       runUsage = usageFrom(payload);
-      if (!response.ok) throw new Error(payload?.error?.message || `AI quality check failed (${response.status})`);
+      if (!response.ok) {
+        /* A rejected request cost nothing; a 5xx or a rate limit may have
+           arrived after the reading was made. */
+        if (outcomeForStatus(response.status) === "failed") progress.refused();
+        throw new Error(payload?.error?.message || `AI quality check failed (${response.status})`);
+      }
       result = JSON.parse(outputText(payload));
+      /* Bought and in hand. Everything after this is recording, and a failure
+         to record must never license a second purchase. */
+      progress.answered();
     }
 
     const state = String(result.verdict || "needs_review");
@@ -185,11 +196,11 @@ Deno.serve(async (request) => {
       admin.from("field_assignment_events").insert({ organization_id: check.organization_id, assignment_id: assignment.id, event_type: `quality_check.${state}`, detail: { quality_check_id: check.id, summary: result.summary } }),
       admin.from("audit_events").insert({ organization_id: check.organization_id, actor_id: null, action: `field_quality_check.${state}`, entity_type: "field_quality_check", entity_id: check.id, detail: { capture_task_id: task.id, evidence_ids: check.evidence_ids, agent_key: "field_qc", agent_contract_version: AGENT_CONTRACT_VERSION } }),
     ]);
-    await finishAiRun(admin, runId, "succeeded", runUsage, null);
+    await finishAiRun(admin, runId, progress.outcome(), runUsage, null);
     return json({ quality_check_id: check.id, state, result });
   } catch (error) {
     console.error("field-quality-check", error);
-    await finishAiRun(admin, runId, "failed", runUsage,
+    await finishAiRun(admin, runId, progress.outcome(), runUsage,
       String(error instanceof Error ? error.message : error).slice(0, 200));
     if (checkId) {
       const { data: check } = await admin.from("field_quality_checks").select("assignment_id").eq("id", checkId).maybeSingle();

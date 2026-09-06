@@ -55,7 +55,13 @@
       ? `${tokens.toLocaleString("en-US")} tokens`
       : "tokens unavailable";
     const note = missing ? ` · ${missing} run${missing === 1 ? "" : "s"} reported no usage` : "";
-    return `AI usage: ${runs} run${runs === 1 ? "" : "s"} · ${tokenText} · ${cost}${note}`;
+    /* A run whose outcome nobody could establish may be on the invoice. Saying
+       so is the difference between a ledger and a comforting number. */
+    const unknown = Number(row.outcome_unknown) || 0;
+    const unknownNote = unknown
+      ? ` · ${unknown} run${unknown === 1 ? "" : "s"} with an unknown outcome, possibly billed`
+      : "";
+    return `AI usage: ${runs} run${runs === 1 ? "" : "s"} · ${tokenText} · ${cost}${note}${unknownNote}`;
   }
 
   function renderUsage(node, text) {
@@ -74,17 +80,43 @@
     return Boolean(prompt(REANALYZE_WARNING));
   }
 
+  /* The other sentence, for the harder case: a request that went out and whose
+     answer never came back. The provider may have done the work and billed it.
+     "May" is the honest word — anything more definite would be invented, and
+     anything vaguer would hide a cost from the person paying it. */
+  const UNKNOWN_OUTCOME_WARNING =
+    "The previous request may have run and been billed. Run the analysis again, with possible additional charges?";
+
+  /* Authorise exactly one retry of a run whose outcome is unknown.
+   *
+   * The authorisation lives in the database and is consumed by the claim that
+   * spends it, so this cannot be the guard — it is the question in front of
+   * it. Pressing twice sets a flag that is already set; two tabs racing to
+   * spend it produce one run between them, because only one claim can take it. */
+  async function confirmUnknownOutcome(client, runId, ask) {
+    if (!client || !runId) return false;
+    const prompt = typeof ask === "function" ? ask : window.confirm.bind(window);
+    if (!prompt(UNKNOWN_OUTCOME_WARNING)) return false;
+    const { data, error } = await client.rpc("confirm_ai_run_retry", { p_run_id: runId });
+    if (error) return false;
+    return data === true;
+  }
+
   /* A worker that refused to spend says so in the same shape every time. */
   function skippedVerdict(payload) {
     const skipped = String(payload?.skipped || "").toLowerCase();
     if (skipped === "reused") return "reused";
     if (skipped === "running") return "running";
+    if (skipped === "outcome_unknown" || skipped === "unknown") return "outcome_unknown";
     return null;
   }
 
   function skippedMessage(verdict) {
     if (verdict === "running") return "This analysis is already running. Its result will appear here.";
     if (verdict === "reused") return "Analysis up to date — this result was read from exactly these inputs.";
+    if (verdict === "outcome_unknown") {
+      return "An earlier attempt may have run and been billed. Confirm before running it again.";
+    }
     return "";
   }
 
@@ -94,9 +126,11 @@
     usageLine,
     renderUsage,
     confirmReanalyze,
+    confirmUnknownOutcome,
     skippedVerdict,
     skippedMessage,
     REANALYZE_WARNING,
+    UNKNOWN_OUTCOME_WARNING,
     NOT_PRICED,
   };
 })();

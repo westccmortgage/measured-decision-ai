@@ -3,7 +3,7 @@ import {
   AGENT_CONTRACT_VERSION,
   EVIDENCE_WORKFLOW_INSTRUCTIONS,
 } from "../_shared/agent-contracts.ts";
-import { claimAiRun, finishAiRun, usageFrom } from "../_shared/ai-run-ledger.ts";
+import { claimAiRun, finishAiRun, RunProgress, outcomeForStatus, usageFrom } from "../_shared/ai-run-ledger.ts";
 import { signedObjectReadUrl } from "../_shared/aws-object-store.ts";
 import { openAITransport } from "../_shared/openai-transport.ts";
 
@@ -581,9 +581,14 @@ Deno.serve(async (request) => {
       }, 200);
     }
     let runUsage: Record<string, unknown> = {};
-    let ledgerState: "succeeded" | "failed" = "failed";
+    /* Nothing is on the wire yet, so a failure here costs nothing. After
+       .sent() that stops being true, and after .answered() the reading is
+       bought and no later failure may turn it back into something a retry
+       would buy again. */
+    const progress = new RunProgress();
     let ledgerError: string | null = null;
     try {
+    progress.sent();
     const openAIResponse = await fetch(`${aiTransport.baseUrl}/responses`, {
       method: "POST",
       headers: aiTransport.headers,
@@ -609,6 +614,10 @@ Deno.serve(async (request) => {
     >;
     runUsage = usageFrom(openAIPayload);
     if (!openAIResponse.ok) {
+      /* What the provider said decides whether a reading was made: a rejected
+         request cost nothing, a 5xx or a rate limit may have arrived after the
+         work was done. */
+      if (outcomeForStatus(openAIResponse.status) === "failed") progress.refused();
       const apiError = openAIPayload.error as
         Record<string, unknown> | undefined;
       const providerCode = diagnosticCode(apiError?.code || apiError?.type);
@@ -637,6 +646,10 @@ Deno.serve(async (request) => {
       string,
       unknown
     >;
+    /* The reading is in our hands and on somebody's invoice. Every failure
+       from here is a failure to record what we already bought, and must never
+       license a second purchase. */
+    progress.answered();
     const observations =
       (analysis.visible_observations as Array<Record<string, unknown>>) || [];
     /* An anchor is only meaningful on the sphere it was read from. Anything
@@ -792,7 +805,6 @@ Deno.serve(async (request) => {
       }),
     ]);
 
-    ledgerState = "succeeded";
     return jsonResponse(request, {
       job_id: job.id,
       suggestion_id: suggestion.id,
@@ -806,7 +818,7 @@ Deno.serve(async (request) => {
       ledgerError = String(readingError instanceof Error ? readingError.message : readingError).slice(0, 200);
       throw readingError;
     } finally {
-      await finishAiRun(admin, claim.runId, ledgerState, runUsage, ledgerError);
+      await finishAiRun(admin, claim.runId, progress.outcome(), runUsage, ledgerError);
     }
   } catch (error) {
     const status =

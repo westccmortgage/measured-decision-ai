@@ -73,7 +73,18 @@ export async function buildFingerprint(parts: FingerprintParts): Promise<string>
   return [...new Uint8Array(digest)].map((b) => b.toString(16).padStart(2, "0")).join("");
 }
 
-export type ClaimVerdict = "CLAIMED" | "RUNNING" | "REUSED";
+export type ClaimVerdict = "CLAIMED" | "RUNNING" | "REUSED" | "UNKNOWN";
+
+/* How a run ended, from the only angle that matters for money.
+ *
+ *   succeeded        the result is in our hands
+ *   failed           the work demonstrably did not happen
+ *   outcome_unknown  it left the building and we cannot say what happened
+ *
+ * There is no fourth option and no default. A worker that cannot tell the
+ * difference must say outcome_unknown, because the cost of a needless
+ * confirmation is a question, and the cost of a wrong "failed" is an invoice. */
+export type RunOutcome = "succeeded" | "failed" | "outcome_unknown";
 
 export type Claim = {
   verdict: ClaimVerdict;
@@ -123,6 +134,69 @@ export async function claimAiRun(
   };
 }
 
+/* THE PART THAT DECIDES WHETHER WE MIGHT HAVE BEEN BILLED.
+ *
+ * A worker walks this in order and never guesses:
+ *
+ *   new RunProgress()   nothing sent yet — a failure here is `failed`
+ *   .sent()             the request is on the wire — from this instant a
+ *                       failure is `outcome_unknown`, because a reading may
+ *                       have been performed and billed
+ *   .refused()          the provider answered with a definite non-result
+ *                       (a 4xx validation error, a terminal job status) — the
+ *                       work did not happen, so `failed` again
+ *   .answered()         a complete result is in hand — `succeeded`, and it
+ *                       STAYS succeeded however badly the rest of the request
+ *                       goes. A failure to save something we already bought is
+ *                       a reason to retry the save, never the purchase.
+ *
+ * That last transition is the whole of requirement three: after .answered()
+ * the outcome no longer moves, so a database error while recording the answer
+ * cannot turn a paid reading back into something a retry would buy again. */
+export class RunProgress {
+  #outcome: RunOutcome = "failed";
+  #answered = false;
+
+  sent() {
+    if (!this.#answered) this.#outcome = "outcome_unknown";
+    return this;
+  }
+
+  /* The provider spoke and said no reading was made. */
+  refused() {
+    if (!this.#answered) this.#outcome = "failed";
+    return this;
+  }
+
+  answered() {
+    this.#answered = true;
+    this.#outcome = "succeeded";
+    return this;
+  }
+
+  get held() {
+    return this.#answered;
+  }
+
+  outcome(): RunOutcome {
+    return this.#outcome;
+  }
+}
+
+/* An HTTP response is evidence about what happened, and the status says which
+ * kind. A request the provider rejected before reading anything cost nothing;
+ * a 5xx or a 429 may have been raised after the work was done, and a body we
+ * could not read tells us nothing at all. */
+export function outcomeForStatus(status: number): RunOutcome {
+  if (status >= 200 && status < 300) return "succeeded";
+  /* 408 and 429 are explicitly not in here: a timeout and a rate-limit rejection
+     can both arrive after a reading was performed. */
+  if (status === 400 || status === 401 || status === 403 || status === 404 || status === 422) {
+    return "failed";
+  }
+  return "outcome_unknown";
+}
+
 /* Whatever the provider said about usage, as it said it.
  *
  * Providers name these fields differently and add new ones. Three are lifted
@@ -139,7 +213,7 @@ export function usageFrom(payload: unknown): Record<string, unknown> {
 export async function finishAiRun(
   admin: { rpc: (name: string, args: Record<string, unknown>) => Promise<{ data: unknown; error: unknown }> },
   runId: string | null,
-  state: "succeeded" | "failed",
+  state: RunOutcome,
   usage: Record<string, unknown> = {},
   errorCode: string | null = null,
 ) {

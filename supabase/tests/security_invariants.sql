@@ -2430,4 +2430,109 @@ select pg_temp.check('and the same question on an unchanged project is not bough
      'aaaaaaaa-0000-0000-0000-000000000001', 'bbbbbbbb-0000-0000-0000-000000000001',
      'project-search', 'm', 'c', 'fp-search-1')) = 'REUSED');
 
+-- ═════════════════════════════ THE UNKNOWN OUTCOME ═════════════════════════
+--
+-- 048 stopped paying twice for a reading somebody asked for twice. This is
+-- the other double payment: a request that went out, did the work, was
+-- billed, and whose answer never came back. 'failed' was a free pass to buy
+-- it again. 'outcome_unknown' is not.
+
+-- A run whose answer was lost is not a failure and is not free to repeat.
+select verdict, run_id from public.claim_ai_run(
+  'aaaaaaaa-0000-0000-0000-000000000001', 'bbbbbbbb-0000-0000-0000-000000000001',
+  'plan-analyze', 'm', 'c', 'fp-lost-answer') \gset lost_
+select public.finish_ai_run(:'lost_run_id', 'outcome_unknown', '{}'::jsonb, 'response_lost');
+
+select pg_temp.check('a lost answer is recorded as an unknown outcome, not a failure',
+  (select state from public.ai_runs where id = :'lost_run_id') = 'outcome_unknown');
+select pg_temp.check('and nobody may buy that reading again without saying so',
+  (select verdict from public.claim_ai_run(
+     'aaaaaaaa-0000-0000-0000-000000000001', 'bbbbbbbb-0000-0000-0000-000000000001',
+     'plan-analyze', 'm', 'c', 'fp-lost-answer')) = 'UNKNOWN');
+-- Forcing means "buy another reading of inputs I already have". It has never
+-- meant "buy one that may already be on the invoice".
+select pg_temp.check('forcing does not walk past an unknown outcome',
+  (select verdict from public.claim_ai_run(
+     'aaaaaaaa-0000-0000-0000-000000000001', 'bbbbbbbb-0000-0000-0000-000000000001',
+     'plan-analyze', 'm', 'c', 'fp-lost-answer', null, null, null, true)) = 'UNKNOWN');
+select pg_temp.check('and no second run was created while it was refused',
+  (select count(*) from public.ai_runs where input_fingerprint = 'fp-lost-answer') = 1);
+
+-- The confirmation, and the fact that it is worth exactly one run.
+set local test.uid = '11111111-1111-1111-1111-111111111111';
+set local role authenticated;
+select pg_temp.check('a member may authorise the retry',
+  public.confirm_ai_run_retry(:'lost_run_id') = true);
+reset role;
+set local test.uid = '44444444-4444-4444-4444-444444444444';
+set local role authenticated;
+select pg_temp.check('and somebody from another organization may not',
+  public.confirm_ai_run_retry(:'lost_run_id') = false);
+reset role;
+
+select verdict, run_id from public.claim_ai_run(
+  'aaaaaaaa-0000-0000-0000-000000000001', 'bbbbbbbb-0000-0000-0000-000000000001',
+  'plan-analyze', 'm', 'c', 'fp-lost-answer') \gset after_
+select pg_temp.check('the authorised retry is allowed exactly once',
+  :'after_verdict' = 'CLAIMED');
+select pg_temp.check('the authorisation it spent is marked consumed',
+  (select retry_consumed_at is not null from public.ai_runs where id = :'lost_run_id'));
+-- And it does not carry over. The authorised retry loses its answer too; the
+-- next attempt must stop again rather than inherit the old permission.
+select public.finish_ai_run(:'after_run_id', 'outcome_unknown', '{}'::jsonb, 'response_lost');
+select pg_temp.check('one confirmation authorises one run and no more',
+  (select verdict from public.claim_ai_run(
+     'aaaaaaaa-0000-0000-0000-000000000001', 'bbbbbbbb-0000-0000-0000-000000000001',
+     'plan-analyze', 'm', 'c', 'fp-lost-answer')) = 'UNKNOWN');
+
+-- A failure the provider declared is still free to retry: this file must not
+-- turn every error into a confirmation dialog.
+select verdict, run_id from public.claim_ai_run(
+  'aaaaaaaa-0000-0000-0000-000000000001', 'bbbbbbbb-0000-0000-0000-000000000001',
+  'spatial-analyze', 'm', 'c', 'fp-refused') \gset refused_
+select public.finish_ai_run(:'refused_run_id', 'failed', '{}'::jsonb, 'http_400');
+select pg_temp.check('a request the provider refused is still free to retry',
+  (select verdict from public.claim_ai_run(
+     'aaaaaaaa-0000-0000-0000-000000000001', 'bbbbbbbb-0000-0000-0000-000000000001',
+     'spatial-analyze', 'm', 'c', 'fp-refused')) = 'CLAIMED');
+
+-- A result already in our hands is never re-bought, whatever went wrong after.
+select verdict, run_id from public.claim_ai_run(
+  'aaaaaaaa-0000-0000-0000-000000000001', 'bbbbbbbb-0000-0000-0000-000000000001',
+  'document-evidence', 'm', 'c', 'fp-saved-badly') \gset saved_
+select public.finish_ai_run(:'saved_run_id', 'succeeded', '{}'::jsonb);
+select pg_temp.check('a reading we already hold is reused even if saving it failed',
+  (select verdict from public.claim_ai_run(
+     'aaaaaaaa-0000-0000-0000-000000000001', 'bbbbbbbb-0000-0000-0000-000000000001',
+     'document-evidence', 'm', 'c', 'fp-saved-badly')) = 'REUSED');
+
+-- A lock nobody released is not evidence that nothing was bought.
+select verdict, run_id from public.claim_ai_run(
+  'aaaaaaaa-0000-0000-0000-000000000001', 'bbbbbbbb-0000-0000-0000-000000000001',
+  'document-classify', 'm', 'c', 'fp-stale-lock') \gset stale_
+update public.ai_runs set started_at = now() - interval '20 hours' where id = :'stale_run_id';
+select pg_temp.check('an expired lock becomes an unknown outcome, not a free retry',
+  (select verdict from public.claim_ai_run(
+     'aaaaaaaa-0000-0000-0000-000000000001', 'bbbbbbbb-0000-0000-0000-000000000001',
+     'document-classify', 'm', 'c', 'fp-stale-lock')) = 'UNKNOWN');
+select pg_temp.check('and the abandoned row says why it was closed',
+  (select state = 'outcome_unknown' and error_code = 'lock_expired'
+     from public.ai_runs where id = :'stale_run_id'));
+
+-- The screen must not hide a run that may be on the invoice inside "failed".
+set local test.uid = '11111111-1111-1111-1111-111111111111';
+set local role authenticated;
+select pg_temp.check('the usage line counts unknown outcomes separately',
+  (select outcome_unknown from public.ai_usage_summary('bbbbbbbb-0000-0000-0000-000000000001')) >= 1);
+-- The browser asks before it spends, and gets told.
+select pg_temp.check('the button can find out that a retry needs confirmation',
+  (select verdict from public.ai_run_state_for(
+     'aaaaaaaa-0000-0000-0000-000000000001', 'document-classify', 'fp-stale-lock')) = 'UNKNOWN');
+-- The doors stay shut. A browser may confirm; it may not write the ledger.
+select pg_temp.refused('the ledger writer is still closed to the browser',
+  $$select public.finish_ai_run('00000000-0000-0000-0000-000000000000', 'failed')$$);
+select pg_temp.refused('and so is claiming a run',
+  $$select public.claim_ai_run('aaaaaaaa-0000-0000-0000-000000000001', null, 'plan-analyze', 'm', 'c', 'x')$$);
+reset role;
+
 rollback;

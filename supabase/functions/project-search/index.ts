@@ -22,7 +22,7 @@ import {
   PROJECT_SEARCH_INSTRUCTIONS,
 } from "../_shared/agent-contracts.ts";
 import { openAITransport } from "../_shared/openai-transport.ts";
-import { claimAiRun, finishAiRun, usageFrom } from "../_shared/ai-run-ledger.ts";
+import { claimAiRun, finishAiRun, RunProgress, outcomeForStatus, usageFrom } from "../_shared/ai-run-ledger.ts";
 import {
   type ContextRow,
   boundContext,
@@ -178,6 +178,18 @@ Deno.serve(async (request) => {
           ai_calls: 0,
         });
       }
+      /* An earlier attempt at this exact question may have been performed and
+         billed by the provider without its answer ever reaching us. Nobody
+         buys it again until a person says to. */
+      if (claim.verdict === "UNKNOWN") {
+        return json(request, {
+          skipped: "outcome_unknown",
+          answer: null,
+          unresolved_run_id: claim.previousRunId,
+          message: "An earlier attempt at this question may have run and been billed. Confirm before asking again.",
+          ai_calls: 0,
+        });
+      }
       return json(request, {
         running: claim.verdict === "RUNNING",
         answer: null,
@@ -190,7 +202,9 @@ Deno.serve(async (request) => {
 
     /* ── the one call ─────────────────────────────────────────────────── */
     let usage: Record<string, unknown> = {};
-    let ledgerState: "succeeded" | "failed" = "failed";
+    /* Nothing has been sent yet, so a failure from here is a failure that cost
+       nothing. The moment the request is on the wire that stops being true. */
+    const progress = new RunProgress();
     let ledgerError: string | null = null;
     try {
       /* Only four fields per record reach the model. The sheet numbers, page
@@ -198,6 +212,7 @@ Deno.serve(async (request) => {
       const forModel = recordsForModel(context);
       const charactersSent = JSON.stringify(forModel).length;
 
+      progress.sent();
       const response = await fetch(`${aiTransport.baseUrl}/responses`, {
         method: "POST",
         headers: aiTransport.headers,
@@ -230,13 +245,23 @@ Deno.serve(async (request) => {
       });
       const payload = await response.json();
       usage = usageFrom(payload);
-      if (!response.ok) throw new Error(payload?.error?.message || `Project search failed (${response.status})`);
+      if (!response.ok) {
+        /* The provider spoke. What it said decides whether a reading was made:
+           a rejected request cost nothing, a 5xx or a rate limit may have
+           arrived after the work was done. */
+        if (outcomeForStatus(response.status) === "failed") progress.refused();
+        throw new Error(payload?.error?.message || `Project search failed (${response.status})`);
+      }
 
       const text = (payload?.output || [])
         .flatMap((item: Record<string, unknown>) => (item?.content as Array<Record<string, unknown>>) || [])
         .map((part: Record<string, unknown>) => (typeof part?.text === "string" ? part.text : ""))
         .join("");
       const reading = JSON.parse(text || "{}");
+      /* The reading is in our hands and on somebody's invoice. From here every
+         remaining failure is a failure to SAVE what we already bought, and the
+         ledger must never let a retry buy it a second time. */
+      progress.answered();
 
       /* ── verification ───────────────────────────────────────────────── */
       const verdict = verifyReading(context, reading);
@@ -263,7 +288,10 @@ Deno.serve(async (request) => {
         p_asked_by: userData.user.id,
       });
 
-      if (saveError) throw new Error(saveError.message);
+      /* Deliberately not fatal. The answer exists and the run is closed as
+         succeeded either way; losing the saved copy costs a later reuse, while
+         throwing here would cost the person the answer they already paid for. */
+      if (saveError) console.error("project-search: answer not saved", saveError.message);
 
       await admin.from("audit_events").insert({
         organization_id: property.organization_id,
@@ -282,7 +310,6 @@ Deno.serve(async (request) => {
         },
       });
 
-      ledgerState = "succeeded";
       return json(request, {
         answer: verdict.answer,
         citations: verdict.citations,
@@ -298,7 +325,7 @@ Deno.serve(async (request) => {
       ledgerError = String(searchError instanceof Error ? searchError.message : searchError).slice(0, 200);
       throw searchError;
     } finally {
-      await finishAiRun(admin, claim.runId, ledgerState, usage, ledgerError);
+      await finishAiRun(admin, claim.runId, progress.outcome(), usage, ledgerError);
     }
   } catch (error) {
     console.error("project-search", error);
