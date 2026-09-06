@@ -65,6 +65,26 @@ for file in "$ROOT"/supabase/migrations/*.sql; do
   fi
 done
 
+echo "--- stored object lookups ---"
+# The file service's get_url runs one select per kind of stored object. The
+# column lists live in TypeScript; here the very same strings are run as SQL
+# against the schema the migrations just built, so a select that names a
+# column its table does not have fails here instead of becoming a 404 in
+# production.
+command -v node >/dev/null || { echo "node is needed to read the file service's column lists"; exit 1; }
+lookups="$(node --experimental-strip-types --no-warnings -e '
+  const m = await import("'"$ROOT"'/supabase/functions/_shared/stored-object-lookup.ts");
+  for (const kind of Object.keys(m.STORED_OBJECT_TABLES)) {
+    console.log(`select ${m.storedObjectSelect(kind)} from public.${m.storedObjectTable(kind)} limit 0;`);
+  }
+' --input-type=module)"
+[ -n "$lookups" ] || { echo "No stored-object lookups were generated."; exit 1; }
+if echo "$lookups" | psql -q -v ON_ERROR_STOP=1 >/dev/null 2>"$WORK/err"; then
+  echo "$lookups" | sed 's/^/  ok  /'
+else
+  echo "  FAILED"; grep -i error "$WORK/err" | head -5; exit 1
+fi
+
 echo "--- invariants ---"
 # `set -e` would abort here on a failing psql, before anything is printed — the
 # script would end mid-sentence and look like it had simply finished.

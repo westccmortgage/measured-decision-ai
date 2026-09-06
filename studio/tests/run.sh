@@ -24,6 +24,7 @@ run() {
 
 run "cached files match the markup"   studio/tests/asset-versions.mjs
 run "every function is deployed"      studio/tests/functions-deployed.mjs
+run "each table asked for its own columns" studio/tests/stored-object-lookup.mjs
 run "when the machine may start"      studio/tests/machine-wake.mjs
 run "what the AI refusal says"        studio/tests/analysis-blocker.mjs
 run "what the processing screen says" studio/tests/processing-headline.mjs
