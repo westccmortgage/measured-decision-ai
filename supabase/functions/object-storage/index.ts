@@ -1,4 +1,5 @@
 import { safeError } from "../_shared/safe-error.ts";
+import { storedObjectSelect, storedObjectTable } from "../_shared/stored-object-lookup.ts";
 import { wake360Machine } from "../_shared/wake-360-machine.ts";
 import { createClient } from "npm:@supabase/supabase-js@2";
 import {
@@ -622,12 +623,15 @@ Deno.serve(async (request) => {
     if (operation === "get_url") {
       const entityType = text(body?.entity_type);
       const recordId = text(body?.record_id);
-      const table = entityType === "project_document" ? "project_documents" : entityType === "evidence" ? "evidence_items" : "";
+      const table = storedObjectTable(entityType);
       if (!table || !isUuid(recordId)) throw Object.assign(new Error("A valid record is required"), { status: 400 });
-      const { data: record } = await admin.from(table)
-        .select("id,organization_id,property_id,storage_provider,storage_bucket,storage_path,field_assignment_id,capture_session_id,project_intake_access_id" + (entityType === "evidence" ? ",deleted_at,purged_at" : ""))
+      /* Each table is asked only for the columns it has. A lookup that fails
+         is an error with a reference in the log — never "not found". */
+      const { data: record, error: lookupError } = await admin.from(table)
+        .select(storedObjectSelect(entityType))
         .eq("id", recordId)
         .maybeSingle();
+      if (lookupError) throw lookupError;
       if (!record) throw Object.assign(new Error("Stored object not found"), { status: 404 });
       /* A file that has been deleted from the record does not open again through
          a link somebody still has. */
