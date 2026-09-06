@@ -460,7 +460,12 @@ select:focus, input:focus { border-color: var(--cyan); box-shadow: 0 0 0 2px var
 .upload-fields label { display: grid; gap: 5px; color: var(--d71889b); font-size: 9px; text-transform: uppercase; letter-spacing: .06em; }
 .upload-fields .selected-files { grid-column: 1 / -1; margin: 2px 0 0; color: var(--d9bb0c0); font-size: 11px; }
 .document-list { display: grid; }
-.document-row { min-height: 66px; padding: 11px 18px; display: grid; grid-template-columns: 38px minmax(0,1fr) 120px 110px 70px 58px; gap: 12px; align-items: center; border-bottom: 1px solid var(--drgba-27-51-71-7); }
+.document-row { min-height: 66px; padding: 11px 18px; display: grid; grid-template-columns: 38px minmax(0,1fr) 120px 110px auto; gap: 12px; align-items: center; border-bottom: 1px solid var(--drgba-27-51-71-7); }
+/* The row's status and its actions share one cell, side by side. They used
+   to be separate grid items in a six-column row, so a third action — Split
+   for analysis, Read again — had no column of its own and was drawn over the
+   status word, while Delete fell to a line below. */
+.document-actions { display: flex; align-items: center; justify-content: flex-end; gap: 10px; flex-wrap: wrap; }
 .document-row:last-child { border-bottom: 0; }
 .document-icon { width: 34px; height: 40px; display: grid; place-items: center; color: var(--d86deea); border: 1px solid var(--d2b5868); background: var(--cyan-soft); border-radius: 4px; font-size: 9px; font-weight: 700; }
 .document-choice { width: 38px; height: 48px; display: grid; place-items: center; position: relative; cursor: pointer; }

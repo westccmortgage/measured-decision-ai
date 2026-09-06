@@ -909,12 +909,14 @@ function renderDocuments() {
       <div class="document-name"><strong title="${escapeHtml(document.original_filename)}">${escapeHtml(document.original_filename)}</strong><small>${document.byte_size ? `${(document.byte_size / 1048576).toFixed(1)} MB` : "Private source"}</small>${classifiedLine}${partLine}${whyItFailed}</div>
       <div class="document-cell"><span>Discipline</span><strong>${escapeHtml(label(document.document_type))}</strong></div>
       <div class="document-cell"><span>Revision</span><strong>${escapeHtml(display(document.revision_label, "Not stated"))}</strong></div>
-      ${paperwork
-        ? `<span class="document-status uploaded" title="Delivery paperwork — read for delivered quantities, never analyzed as plans">Paperwork</span>`
-        : `<span class="document-status ${document.status}" title="${escapeHtml(document.processing_error || "")}">${escapeHtml(label(document.status))}</span>`}
-      ${splitAction(document, parts)}
-      ${rereadAction(document)}
-      ${canDeletePlans() ? `<button class="document-delete" type="button" data-document-delete="${document.id}" title="${escapeHtml(deleteTitle)}" aria-label="${escapeHtml(deleteTitle)}" ${baselineVersion ? "disabled" : ""}>Delete</button>` : ""}
+      <div class="document-actions">
+        ${paperwork
+          ? `<span class="document-status uploaded" title="Delivery paperwork — read for delivered quantities, never analyzed as plans">Paperwork</span>`
+          : `<span class="document-status ${document.status}" title="${escapeHtml(document.processing_error || "")}">${escapeHtml(label(document.status))}</span>`}
+        ${splitAction(document, parts)}
+        ${rereadAction(document)}
+        ${canDeletePlans() ? `<button class="document-delete" type="button" data-document-delete="${document.id}" title="${escapeHtml(deleteTitle)}" aria-label="${escapeHtml(deleteTitle)}" ${baselineVersion ? "disabled" : ""}>Delete</button>` : ""}
+      </div>
     </article>
   `;
   }).join("");
