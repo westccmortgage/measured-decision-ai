@@ -78,7 +78,10 @@
 
   /* Renders and stores every page of one project document, once. Returns
      { ok, rendered, reason } — ok:false means analysis proceeds PDF-only. */
-  async function ensure({ client, document: documentRow, organizationId, propertyId, onProgress = () => {} }) {
+  /* pageOffset: a part of a larger set starts at some page of that set, and
+     its tiles are named by the set's numbering so "page 137" means the same
+     thing to the model, the person and the original file. */
+  async function ensure({ client, document: documentRow, organizationId, propertyId, pageOffset = 0, onProgress = () => {} }) {
     try {
       const existing = await client.from("plan_page_renders")
         .select("document_id, pages").eq("document_id", documentRow.id).maybeSingle();
@@ -115,14 +118,14 @@
           canvas.height = tile.height;
           const viewport = page.getViewport({ scale: layout.scale, offsetX: -tile.x, offsetY: -tile.y });
           await page.render({ canvasContext: context, viewport }).promise;
-          await uploadTile(client, `${prefix}/${tileName(pageNumber, layout, tile)}`, await canvasJpeg(canvas));
+          await uploadTile(client, `${prefix}/${tileName(pageNumber + pageOffset, layout, tile)}`, await canvasJpeg(canvas));
         }
         if (layout.tiles.length > 1) {
           const overview = page.getViewport({ scale: layout.overviewScale });
           canvas.width = Math.ceil(overview.width);
           canvas.height = Math.ceil(overview.height);
           await page.render({ canvasContext: context, viewport: overview }).promise;
-          await uploadTile(client, `${prefix}/p${pageNumber}-full.jpg`, await canvasJpeg(canvas));
+          await uploadTile(client, `${prefix}/p${pageNumber + pageOffset}-full.jpg`, await canvasJpeg(canvas));
         }
         page.cleanup();
       }
