@@ -2519,6 +2519,29 @@ select pg_temp.check('and the abandoned row says why it was closed',
   (select state = 'outcome_unknown' and error_code = 'lock_expired'
      from public.ai_runs where id = :'stale_run_id'));
 
+-- The worker died between reading the answer and writing it down.
+--
+-- RunProgress is a flag in the memory of an edge function, and that memory is
+-- gone. Nothing about the reading was persisted — so the question is not "what
+-- did the flag say", it is "what does the row say", and the row says 'running'.
+-- The in-flight index blocks a duplicate for as long as it stands, and when the
+-- lock finally expires the run becomes unknown, never available. At no point
+-- in that sequence can anybody buy the reading again without deciding to.
+select verdict, run_id from public.claim_ai_run(
+  'aaaaaaaa-0000-0000-0000-000000000001', 'bbbbbbbb-0000-0000-0000-000000000001',
+  'document-evidence', 'm', 'c', 'fp-died-after-answering') \gset died_
+select pg_temp.check('a worker that died after reading leaves its run in flight',
+  (select state from public.ai_runs where id = :'died_run_id') = 'running');
+select pg_temp.check('and the in-flight row blocks a second purchase on its own',
+  (select verdict from public.claim_ai_run(
+     'aaaaaaaa-0000-0000-0000-000000000001', 'bbbbbbbb-0000-0000-0000-000000000001',
+     'document-evidence', 'm', 'c', 'fp-died-after-answering')) = 'RUNNING');
+update public.ai_runs set started_at = now() - interval '20 hours' where id = :'died_run_id';
+select pg_temp.check('and when the lock finally expires it becomes a decision, not a free retry',
+  (select verdict from public.claim_ai_run(
+     'aaaaaaaa-0000-0000-0000-000000000001', 'bbbbbbbb-0000-0000-0000-000000000001',
+     'document-evidence', 'm', 'c', 'fp-died-after-answering')) = 'UNKNOWN');
+
 -- The screen must not hide a run that may be on the invoice inside "failed".
 set local test.uid = '11111111-1111-1111-1111-111111111111';
 set local role authenticated;

@@ -2937,6 +2937,12 @@ async function refreshAiUsageLine() {
   window.MDAIAiUsage.renderUsage(elements.aiUsageLine, line);
 }
 
+/* One key per project, so a block raised on one project never offers itself
+   on another. */
+function unknownKey() {
+  return `plan-analyze:${state.propertyId || "unknown"}`;
+}
+
 async function analyzePlans(options = {}) {
   const eligibility = analyzeSelectionState();
   if (eligibility.disabled) {
@@ -2946,6 +2952,24 @@ async function analyzePlans(options = {}) {
   /* One press, one job, however fast the finger. The database refuses a
      second identical reading regardless; this only spares the round trip. */
   if (window.MDAIAiUsage?.isBusy("plan-analyze")) return;
+  /* An earlier reading of this set may already have run and been billed. The
+     person is asked in those words before anything is sent, and a No leaves
+     the block exactly where it was. */
+  {
+    /* The block is cleared before the retry runs, so this recursion asks once
+       and then takes the ordinary path. */
+    const offer = await window.MDAIAiUsage.offerUnknownRetry({
+      client,
+      key: unknownKey(),
+      retry: () => analyzePlans(options),
+    });
+    if (offer.handled) {
+      if (!offer.confirmed && offer.reason === "declined") {
+        setMessage("Nothing was run. The earlier attempt is still unresolved.");
+      }
+      return;
+    }
+  }
   const activeDocuments = selectedDocuments();
   if (elements.freshness) elements.freshness.hidden = true;
   startAnalysisProgress();
@@ -2990,6 +3014,10 @@ async function analyzePlans(options = {}) {
     if (refused) {
       state.activeAnalysisJob = null;
       setBusy(false);
+      /* An unknown outcome is a decision waiting for a person, so it is
+         remembered against this project and taken when they press Analyze
+         again — not sprung on them as a dialog nobody asked for. */
+      if (refused === "outcome_unknown") window.MDAIAiUsage.rememberUnknown(unknownKey(), data);
       setMessage(window.MDAIAiUsage.skippedMessage(refused), refused === "reused" ? "success" : "");
       renderAnalysisFreshness(refused);
       return;

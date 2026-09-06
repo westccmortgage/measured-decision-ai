@@ -3664,6 +3664,10 @@ dialog textarea { min-height:78px; resize:vertical; }
    misses. */
 .ask-source-link { display: block; text-align: left; padding: 5px 0; border: 0; background: none; color: var(--cyan, #48d3e8); font: inherit; font-size: 12px; text-decoration: underline; cursor: pointer; }
 .ask-source-why { display: block; margin-top: 2px; color: var(--d8399aa, #8399aa); }
+/* The one button that resolves a block, sitting in the note line where the
+   explanation already is. */
+.ask-retry-line { display: block; }
+.ask-retry { margin-top: 8px; min-height: 38px; }
 .ask-note { margin: 12px 0 0; font-size: 11px; color: var(--d8399aa, #8399aa); }
 @media (max-width: 520px) {
   .ask-form { flex-direction: column; }

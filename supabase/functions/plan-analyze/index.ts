@@ -1322,8 +1322,9 @@ Deno.serve(async (request) => {
         return json(request, {
           job_id: job.id,
           state: "failed",
-          skipped: ledger.verdict.toLowerCase(),
+          skipped: ledger.verdict === "UNKNOWN" ? "outcome_unknown" : ledger.verdict.toLowerCase(),
           previous_run_id: ledger.previousRunId,
+          unresolved_run_id: ledger.verdict === "UNKNOWN" ? ledger.previousRunId : null,
           code: ledger.verdict === "RUNNING"
             ? "duplicate_in_flight"
             : ledger.verdict === "UNKNOWN"
