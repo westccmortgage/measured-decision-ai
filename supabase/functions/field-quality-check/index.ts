@@ -71,7 +71,12 @@ Deno.serve(async (request) => {
     checkId = String(body?.quality_check_id || "");
     const { data: check } = await admin.from("field_quality_checks").select("*").eq("id", checkId).maybeSingle();
     if (!check) return json({ error: "Quality check not found" }, 404);
-    if (!["queued", "failed"].includes(check.state)) return json({ quality_check_id: check.id, state: check.state, reused: true });
+    /* 'outcome_unknown' is re-enterable on purpose: this is the door a
+       reviewer's confirmation comes through. Whether the reading may actually
+       be bought again is decided below by the ledger, never here. */
+    if (!["queued", "failed", "outcome_unknown"].includes(check.state)) {
+      return json({ quality_check_id: check.id, state: check.state, reused: true });
+    }
 
     const now = new Date().toISOString();
     await admin.from("field_quality_checks").update({ state: "processing", provider: openAIKey ? "openai" : null, model: openAIKey ? MODEL : null, started_at: now }).eq("id", check.id);
@@ -92,6 +97,43 @@ Deno.serve(async (request) => {
     if (!assignment || !task || !sources.length) throw new Error("Quality-check sources are incomplete");
     const { data: requirement } = await admin.from("capture_requirements").select("*").eq("id", task.requirement_id).single();
     if (!requirement) throw new Error("Capture requirement not found");
+
+    /* What a finished check does to the assignment and the task — one place,
+       because a result that was already bought for these exact files must do
+       exactly what a fresh one would. */
+    async function applyResult(verdictResult: Record<string, unknown>, options: { reusedFrom: string | null }) {
+      const state = String(verdictResult.verdict || "needs_review");
+      const assignmentStatus = state === "retake" ? "retake" : "ready_for_review";
+      const taskStatus = state === "retake" ? "needs_more" : "submitted";
+      const completedAt = new Date().toISOString();
+      await Promise.all([
+        admin.from("field_quality_checks").update({ state, result: verdictResult, completed_at: completedAt }).eq("id", check.id),
+        admin.from("field_assignments").update({ status: assignmentStatus, updated_at: completedAt }).eq("id", assignment.id),
+        admin.from("capture_tasks").update({ status: taskStatus, reviewer_note: state === "retake" ? String(verdictResult.retake_instruction || verdictResult.summary || "Retake requested") : null, updated_at: completedAt }).eq("id", task.id),
+        admin.from("field_assignment_events").insert({ organization_id: check.organization_id, assignment_id: assignment.id, event_type: `quality_check.${state}`, detail: { quality_check_id: check.id, summary: verdictResult.summary, reused_from: options.reusedFrom } }),
+        admin.from("audit_events").insert({ organization_id: check.organization_id, actor_id: null, action: `field_quality_check.${state}`, entity_type: "field_quality_check", entity_id: check.id, detail: { capture_task_id: task.id, evidence_ids: check.evidence_ids, agent_key: "field_qc", agent_contract_version: AGENT_CONTRACT_VERSION, reused_from: options.reusedFrom } }),
+      ]);
+      return state;
+    }
+
+    /* The three ways a check ends without a reading, each with a row state a
+       person can read and a way forward. None of them leaves the row in
+       'processing', and none of them queues anything. */
+    async function settleWithoutReading(rowState: "outcome_unknown" | "failed" | "needs_review", summary: string, aiRunId: string | null) {
+      const completedAt = new Date().toISOString();
+      await Promise.all([
+        admin.from("field_quality_checks").update({
+          state: rowState,
+          result: { verdict: rowState === "needs_review" ? "needs_review" : null, summary, retake_instruction: null, checks: [] },
+          ai_run_id: aiRunId,
+          completed_at: completedAt,
+        }).eq("id", check.id),
+        /* A person can always review by eye. What they cannot do is wait on a
+           check that will never finish. */
+        admin.from("field_assignments").update({ status: "ready_for_review", updated_at: completedAt }).eq("id", assignment.id),
+        admin.from("field_assignment_events").insert({ organization_id: check.organization_id, assignment_id: assignment.id, event_type: `quality_check.${rowState}`, detail: { quality_check_id: check.id, summary, ai_run_id: aiRunId } }),
+      ]);
+    }
 
     const images = sources.filter((item) => String(item.mime_type || "").startsWith("image/")).slice(0, 8);
     let result: Record<string, unknown>;
@@ -154,14 +196,51 @@ Deno.serve(async (request) => {
         jobId: check.id,
         transport: "openai_direct",
       });
-      if (claim.verdict !== "CLAIMED") {
-        return json({
-        quality_check_id: check.id, state: check.state,
-        skipped: claim.verdict === "UNKNOWN" ? "outcome_unknown" : claim.verdict.toLowerCase(),
-        unresolved_run_id: claim.verdict === "UNKNOWN" ? claim.previousRunId : null,
-      });
+      if (claim.verdict === "RUNNING") {
+        /* Another instance holds this exact check and will finish the row.
+           Leaving 'processing' is correct here and only here. */
+        return json({ quality_check_id: check.id, state: "processing", skipped: "running" });
+      }
+      if (claim.verdict === "REUSED") {
+        /* Bought already, for these exact files. Use that answer — as the
+           row's own result, with the assignment moved exactly as a fresh
+           result would move it. */
+        const { data: earlier } = await admin.from("field_quality_checks")
+          .select("id, state, result, evidence_ids")
+          .eq("assignment_id", check.assignment_id)
+          .in("state", ["passed", "retake", "needs_review"])
+          .neq("id", check.id)
+          .order("completed_at", { ascending: false })
+          .limit(5);
+        const sameFiles = (earlier || []).find((row) =>
+          JSON.stringify([...(row.evidence_ids || [])].sort()) === JSON.stringify([...(check.evidence_ids || [])].sort()));
+        if (sameFiles?.result && typeof sameFiles.result === "object") {
+          await admin.from("field_quality_checks").update({ ai_run_id: claim.previousRunId }).eq("id", check.id);
+          const state = await applyResult(sameFiles.result as Record<string, unknown>, { reusedFrom: sameFiles.id });
+          return json({ quality_check_id: check.id, state, result: sameFiles.result, reused_from: sameFiles.id });
+        }
+        /* The ledger says a reading was bought, and its saved copy is not on
+           file. That is a lost SAVE, not a lost reading — so it is not bought
+           again; a person inspects instead. */
+        await settleWithoutReading("needs_review",
+          "An earlier automated check of these files completed, but its result is not on file. A project reviewer must inspect the upload.",
+          claim.previousRunId);
+        return json({ quality_check_id: check.id, state: "needs_review", skipped: "reused" });
+      }
+      if (claim.verdict === "UNKNOWN") {
+        /* An earlier attempt at this exact check went out and nobody can say
+           what happened to it. It is not queued, not retried, not hidden: the
+           row says so, the assignment goes to a person, and the reviewer can
+           authorise one repeat from the field screen. */
+        await settleWithoutReading("outcome_unknown",
+          "An earlier automated check of these files may have run and been billed, and its answer was not received. A reviewer can confirm a repeat, or review the upload by eye.",
+          claim.previousRunId);
+        return json({ quality_check_id: check.id, state: "outcome_unknown", skipped: "outcome_unknown", unresolved_run_id: claim.previousRunId });
       }
       runId = claim.runId;
+      /* Recorded before the call, so a worker that dies mid-flight still
+         leaves the row pointing at the run a reviewer would decide about. */
+      await admin.from("field_quality_checks").update({ ai_run_id: runId }).eq("id", check.id);
       progress.sent();
       const response = await fetch("https://api.openai.com/v1/responses", {
         method: "POST",
@@ -189,17 +268,7 @@ Deno.serve(async (request) => {
       progress.answered();
     }
 
-    const state = String(result.verdict || "needs_review");
-    const assignmentStatus = state === "retake" ? "retake" : "ready_for_review";
-    const taskStatus = state === "retake" ? "needs_more" : "submitted";
-    const completedAt = new Date().toISOString();
-    await Promise.all([
-      admin.from("field_quality_checks").update({ state, result, completed_at: completedAt }).eq("id", check.id),
-      admin.from("field_assignments").update({ status: assignmentStatus, updated_at: completedAt }).eq("id", assignment.id),
-      admin.from("capture_tasks").update({ status: taskStatus, reviewer_note: state === "retake" ? String(result.retake_instruction || result.summary || "Retake requested") : null, updated_at: completedAt }).eq("id", task.id),
-      admin.from("field_assignment_events").insert({ organization_id: check.organization_id, assignment_id: assignment.id, event_type: `quality_check.${state}`, detail: { quality_check_id: check.id, summary: result.summary } }),
-      admin.from("audit_events").insert({ organization_id: check.organization_id, actor_id: null, action: `field_quality_check.${state}`, entity_type: "field_quality_check", entity_id: check.id, detail: { capture_task_id: task.id, evidence_ids: check.evidence_ids, agent_key: "field_qc", agent_contract_version: AGENT_CONTRACT_VERSION } }),
-    ]);
+    const state = await applyResult(result, { reusedFrom: null });
     await finishAiRun(admin, runId, progress.outcome(), runUsage, null);
     return json({ quality_check_id: check.id, state, result });
   } catch (error) {
@@ -208,7 +277,19 @@ Deno.serve(async (request) => {
       String(error instanceof Error ? error.message : error).slice(0, 200));
     if (checkId) {
       const { data: check } = await admin.from("field_quality_checks").select("assignment_id").eq("id", checkId).maybeSingle();
-      await admin.from("field_quality_checks").update({ state: "failed", result: { error: error instanceof Error ? error.message : "Quality check failed" }, completed_at: new Date().toISOString() }).eq("id", checkId);
+      /* Same distinction as the ledger's: a request that never got its answer
+         may have been billed, and the row must say so rather than 'failed' —
+         because 'failed' is free to repeat and this is not. */
+      const lost = progress.outcome() === "outcome_unknown";
+      const message = error instanceof Error ? error.message : "Quality check failed";
+      await admin.from("field_quality_checks").update({
+        state: lost ? "outcome_unknown" : "failed",
+        result: lost
+          ? { verdict: null, summary: `The automated check was sent and its answer was not received (${message}). It may have run and been billed; a reviewer can confirm a repeat or review the upload by eye.`, retake_instruction: null, checks: [] }
+          : { error: message },
+        ai_run_id: runId,
+        completed_at: new Date().toISOString(),
+      }).eq("id", checkId);
       if (check?.assignment_id) await admin.from("field_assignments").update({ status: "ready_for_review", updated_at: new Date().toISOString() }).eq("id", check.assignment_id);
     }
     return json({ error: error instanceof Error ? error.message : "Quality check failed" }, 500);

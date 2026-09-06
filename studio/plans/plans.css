@@ -484,6 +484,13 @@ select:focus, input:focus { border-color: var(--cyan); box-shadow: 0 0 0 2px var
 .document-delete { min-height: 34px; padding: 0 9px; border: 1px solid var(--drgba-255-112-112-45); border-radius: 5px; background: transparent; color: var(--dff8a8a); font: inherit; font-size: 9px; text-transform: uppercase; letter-spacing: .05em; cursor: pointer; }
 .document-delete:hover { border-color: var(--red); background: var(--drgba-255-92-92-09); color: var(--dffb1b1); }
 .document-delete:disabled { opacity: .28; cursor: not-allowed; }
+/* The reader's button, beside the document it reads. Same footprint as
+   Delete so the row's actions line up; a different colour so they never read
+   as one. */
+.document-reread-cell { display: flex; flex-direction: column; align-items: flex-end; gap: 4px; }
+.document-reread { min-height: 34px; padding: 0 9px; border: 1px solid var(--drgba-72-211-232-45, rgba(72,211,232,.45)); border-radius: 5px; background: transparent; color: var(--cyan, #48d3e8); font: inherit; font-size: 9px; text-transform: uppercase; letter-spacing: .05em; cursor: pointer; white-space: nowrap; }
+.document-reread:hover { background: var(--drgba-72-211-232-09, rgba(72,211,232,.09)); }
+.document-unknown { color: var(--amber, #d8a24a); max-width: 22ch; text-align: right; }
 .empty-state { padding: 42px 25px; text-align: center; color: var(--d71889b); }
 .empty-state > span { width: 54px; height: 64px; margin: 0 auto 15px; display: grid; place-items: center; border: 1px solid var(--d29485e); border-radius: 6px; color: var(--cyan); font-weight: 700; }
 .empty-state h3 { color: var(--ddbe6ec); margin-bottom: 8px; }

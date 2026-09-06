@@ -98,6 +98,16 @@
               if (seeded && typeof seeded === "object" && seeded.byAction) {
                 return result(seeded.byAction[opts?.body?.action] ?? seeded.default ?? {});
               }
+              /* A worker whose answer depends on what happened before — the
+                 cost guard refuses once, then a person confirms, then it
+                 answers. { sequence: [first, second, …] } hands out each
+                 answer in turn and repeats the last. */
+              if (seeded && typeof seeded === "object" && Array.isArray(seeded.sequence)) {
+                window.__sequenceIndex ||= {};
+                const index = window.__sequenceIndex[name] || 0;
+                window.__sequenceIndex[name] = index + 1;
+                return result(seeded.sequence[Math.min(index, seeded.sequence.length - 1)]);
+              }
               return result(seeded);
             }
             /* A capture with no playable URL is not spatial, so without this the

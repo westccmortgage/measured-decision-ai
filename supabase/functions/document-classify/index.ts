@@ -178,6 +178,10 @@ Deno.serve(async (request) => {
       jobTable: "intelligence_jobs",
       jobId: jobId,
       transport: aiTransport.transport,
+      /* "Read again" on a document already read. Force skips reuse and
+         nothing else: the ledger still refuses an unknown outcome, and the
+         browser has already asked the person about the cost. */
+      force: Boolean(body?.force),
     });
     if (claim.verdict !== "CLAIMED") {
       return json(request, {

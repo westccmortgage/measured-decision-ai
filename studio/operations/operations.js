@@ -5,7 +5,7 @@ const client = window.supabase?.createClient && config.supabaseUrl && config.sup
   : null;
 
 const state = { session:null, organizationId:null, role:null, properties:[], propertyId:null, tasks:[], requirements:[], assignments:[], checks:[], evidence:[], captureSessions:[], captureItems:[], selectedAssignmentId:null, pollTimer:null };
-const labels = { sent:"Sent", opened:"Opened", in_progress:"In field", uploading:"Uploading", submitted:"Submitted", ai_check:"AI checking", ready_for_review:"Ready for review", retake:"Retake needed", completed:"Completed", revoked:"Replaced", expired:"Expired" };
+const labels = { sent:"Sent", opened:"Opened", in_progress:"In field", uploading:"Uploading", submitted:"Submitted", ai_check:"AI checking", ready_for_review:"Ready for review", retake:"Retake needed", completed:"Completed", revoked:"Replaced", expired:"Expired", outcome_unknown:"Unknown outcome" };
 
 function escapeHtml(value="") { return String(value).replaceAll("&","&amp;").replaceAll("<","&lt;").replaceAll(">","&gt;").replaceAll('"',"&quot;").replaceAll("'","&#039;"); }
 function label(value="") { return labels[value] || String(value).replaceAll("_"," ").replace(/\b\w/g,(letter)=>letter.toUpperCase()); }
@@ -110,12 +110,44 @@ function render() {
   const filter=$("#status-filter").value; const latestChecks=latestBy(state.checks,"assignment_id");
   const visible=state.assignments.filter(a=>filter==="all"||(filter==="active"&&["sent","opened","in_progress","uploading","ai_check"].includes(a.status))||(filter==="review"&&a.status==="ready_for_review")||a.status===filter);
   $("#queue").innerHTML=visible.length ? visible.map(a=>{
-    const task=state.tasks.find(t=>t.id===a.capture_task_id); const req=state.requirements.find(r=>r.id===(task?.requirement_id||a.requirement_id)); const qc=latestChecks.get(a.id); const summary=qc?.result?.summary|| (a.status==="ai_check"?"Checking the upload now…":"No automatic result yet.");
+    const task=state.tasks.find(t=>t.id===a.capture_task_id); const req=state.requirements.find(r=>r.id===(task?.requirement_id||a.requirement_id)); const qc=latestChecks.get(a.id);
+    /* Three things a check can be, told apart on the card: still running
+       (wait), finished (its result), or an outcome nobody could establish
+       (a status a person can read, and one button that resolves it). */
+    const unknown=qc?.state==="outcome_unknown";
+    const summary=qc?.result?.summary|| (a.status==="ai_check"?"Checking the upload now…":"No automatic result yet.");
     const reviewable=["ready_for_review","retake"].includes(a.status);
     const delivery=a.email_delivery_state==="sent"?"Email provider accepted":a.email_delivery_state==="failed"?"Email failed — use private link":"Private link only";
-    return `<article class="assignment"><div><h3>${escapeHtml(req?.title||a.instructions_snapshot?.title||"Field capture")}</h3><p>${escapeHtml(a.instructions_snapshot?.location?.name||"Project-wide")}</p></div><div class="cell"><span>Worker</span><strong>${escapeHtml(a.worker_name)}</strong><small>${escapeHtml(a.worker_email)}</small></div><div class="cell"><span>Due</span><strong>${escapeHtml(shortDate(a.due_at))}</strong><small title="${escapeHtml(a.email_delivery_error||"")}">${escapeHtml(delivery)}</small></div><div class="qc"><strong>${escapeHtml(qc?label(qc.state):"Waiting")}</strong>${escapeHtml(summary)}</div><div class="cell"><span class="status ${escapeHtml(a.status)}">${escapeHtml(label(a.status))}</span>${reviewable?`<button class="button secondary" data-review="${a.id}">Review</button>`:""}</div></article>`;
+    const retry=unknown?`<button class="button secondary qc-retry" data-qc-retry="${a.id}" title="Confirm before the automated check runs again">Run check again</button>`:"";
+    return `<article class="assignment"><div><h3>${escapeHtml(req?.title||a.instructions_snapshot?.title||"Field capture")}</h3><p>${escapeHtml(a.instructions_snapshot?.location?.name||"Project-wide")}</p></div><div class="cell"><span>Worker</span><strong>${escapeHtml(a.worker_name)}</strong><small>${escapeHtml(a.worker_email)}</small></div><div class="cell"><span>Due</span><strong>${escapeHtml(shortDate(a.due_at))}</strong><small title="${escapeHtml(a.email_delivery_error||"")}">${escapeHtml(delivery)}</small></div><div class="qc${unknown?" unknown":""}"><strong>${escapeHtml(qc?label(qc.state):"Waiting")}</strong>${escapeHtml(summary)}${retry}</div><div class="cell"><span class="status ${escapeHtml(a.status)}">${escapeHtml(label(a.status))}</span>${reviewable?`<button class="button secondary" data-review="${a.id}">Review</button>`:""}</div></article>`;
   }).join("") : `<div class="empty"><h3>${counts.toSend?"The roadmap is ready; no task has been sent yet.":"No assignments in this view."}</h3><p>${counts.toSend?"Use the Next action above to send the first task.":"New field work and completed reviews will appear here."}</p></div>`;
   document.querySelectorAll("[data-review]").forEach(button=>button.addEventListener("click",()=>openReview(button.dataset.review)));
+  document.querySelectorAll("[data-qc-retry]").forEach(button=>button.addEventListener("click",()=>retryQualityCheck(button.dataset.qcRetry)));
+}
+
+/* A reviewer repeats a check whose outcome nobody could establish.
+ *
+ * The question comes first and is the agreed one about money already spent;
+ * a No changes nothing. A Yes records the single-use authorisation against
+ * the check's own ledger row, then asks the field service to dispatch the
+ * check once. The whole thing sits inside once(), so a double press is
+ * dropped before it can ask. The server refuses an unconfirmed dispatch on
+ * its own, so this is a courtesy in front of a guard, not the guard. */
+async function retryQualityCheck(assignmentId) {
+  const qc=latestBy(state.checks,"assignment_id").get(assignmentId);
+  if(!qc||qc.state!=="outcome_unknown") return;
+  const guard=window.MDAIAiUsage;
+  if(!guard){ notify("The cost guard did not load. Reload the page and try again.","error"); return; }
+  const outcome=await guard.once(`qc-retry:${assignmentId}`, async()=>{
+    const authorised=await guard.confirmUnknownOutcome(client, qc.ai_run_id||null);
+    if(!authorised) return {confirmed:false};
+    await invoke({action:"retry_quality_check",assignment_id:assignmentId});
+    return {confirmed:true};
+  });
+  if(outcome?.skipped==="in_flight") return;
+  if(!outcome?.confirmed){ notify("Nothing was run. The earlier check is still unresolved."); return; }
+  notify("The automated check is running again.");
+  await load();
 }
 
 function renderCaptureSessions() {

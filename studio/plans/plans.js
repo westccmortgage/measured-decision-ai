@@ -878,6 +878,7 @@ function renderDocuments() {
       ${paperwork
         ? `<span class="document-status uploaded" title="Delivery paperwork — read for delivered quantities, never analyzed as plans">Paperwork</span>`
         : `<span class="document-status ${document.status}" title="${escapeHtml(document.processing_error || "")}">${escapeHtml(label(document.status))}</span>`}
+      ${rereadAction(document)}
       ${canDeletePlans() ? `<button class="document-delete" type="button" data-document-delete="${document.id}" title="${escapeHtml(deleteTitle)}" aria-label="${escapeHtml(deleteTitle)}" ${baselineVersion ? "disabled" : ""}>Delete</button>` : ""}
     </article>
   `;
@@ -892,6 +893,116 @@ function renderDocuments() {
   elements.documentList.querySelectorAll("[data-document-delete]").forEach((button) => {
     button.addEventListener("click", () => deletePlanDocument(button.dataset.documentDelete));
   });
+  elements.documentList.querySelectorAll("[data-document-reread]").forEach((button) => {
+    button.addEventListener("click", () => rereadDocument(button.dataset.documentReread));
+  });
+}
+
+/* Which reader a document belongs to, and the key its block is remembered
+   under. Paperwork goes to the document reader; an undeclared PDF goes back
+   through page classification, which then routes its pages itself. */
+function readerFor(document) {
+  if (isPaperworkDocument(document)) return { worker: "document-evidence", label: "Read again" };
+  if (document.document_type === "other" || document.page_classification?.pages?.length) {
+    return { worker: "document-classify", label: "Read again" };
+  }
+  return null;
+}
+function rereadKey(document) {
+  const reader = readerFor(document);
+  return reader ? `${reader.worker}:${document.id}` : null;
+}
+
+/* The action beside a document that has a reader. When an earlier reading's
+   outcome is unknown the row says so, and the same button is the way out. */
+function rereadAction(document) {
+  const reader = readerFor(document);
+  if (!reader) return "";
+  const pending = window.MDAIAiUsage?.pendingUnknownRun(rereadKey(document));
+  const note = pending
+    ? `<small class="document-why document-unknown">An earlier reading may have run and been billed. Press ${reader.label} to decide.</small>`
+    : "";
+  const title = pending
+    ? "Confirm before this document is read again"
+    : `Read ${document.original_filename} again — this runs AI and may use additional credits`;
+  return `<div class="document-reread-cell">${note}<button class="document-reread" type="button" data-document-reread="${document.id}" title="${escapeHtml(title)}">${reader.label}</button></div>`;
+}
+
+/* One press, one reading, whatever the state of the earlier one.
+ *
+ *   unknown outcome remembered  → the money-already-spent question, then one run
+ *   otherwise                   → the money-about-to-be-spent question, then one
+ *                                 forced run — which the ledger may still refuse
+ *                                 as unknown, in which case the person is asked
+ *                                 the first question right then, because they
+ *                                 pressed and are waiting for an answer
+ *
+ * Everything is inside once(), so a double press is dropped before it can
+ * ask anything. */
+async function rereadDocument(documentId) {
+  const document = state.documents.find((item) => item.id === documentId);
+  const reader = document ? readerFor(document) : null;
+  if (!document || !reader || state.busy) return;
+  const key = rereadKey(document);
+
+  const run = async ({ force }) => {
+    setBusy(true, `Reading ${document.original_filename} again…`);
+    try {
+      const outcome = reader.worker === "document-classify"
+        ? await classifyUploadedDocument(document.id, { force })
+        : await readDeliveryDocument(document.id, { force });
+      if (outcome?.refused === "outcome_unknown") {
+        /* The ledger refused because an earlier attempt is unresolved. The
+           person has just pressed and is waiting, so the decision is offered
+           now rather than left for a second press. */
+        const offer = await window.MDAIAiUsage.offerUnknownRetry({
+          client, key, retry: () => run({ force: false }),
+        });
+        if (offer.handled && !offer.confirmed && offer.reason === "declined") {
+          notify("Nothing was read. The earlier attempt is still unresolved.");
+        }
+      }
+    } finally {
+      setBusy(false);
+      renderDocuments();
+    }
+  };
+
+  await window.MDAIAiUsage.once(`reread:${document.id}`, async () => {
+    /* An unresolved earlier reading comes first: that question is about
+       money already spent, the other about money about to be. */
+    const offer = await window.MDAIAiUsage.offerUnknownRetry({
+      client, key, retry: () => run({ force: false }),
+    });
+    if (offer.handled) {
+      if (!offer.confirmed && offer.reason === "declined") {
+        notify("Nothing was read. The earlier attempt is still unresolved.");
+      }
+      return;
+    }
+    if (!window.MDAIAiUsage.confirmReanalyze()) return;
+    await run({ force: true });
+  });
+}
+
+/* The document reader, pressed by a person rather than by an upload. */
+async function readDeliveryDocument(documentId, options = {}) {
+  const { data, error } = await client.functions.invoke("document-evidence", {
+    body: { document_id: documentId, force: Boolean(options.force) },
+  });
+  const refused = window.MDAIAiUsage?.skippedVerdict(data);
+  if (refused) {
+    if (refused === "outcome_unknown") window.MDAIAiUsage.rememberUnknown(`document-evidence:${documentId}`, data);
+    else notify(window.MDAIAiUsage.skippedMessage(refused));
+    return { read: false, refused, data };
+  }
+  if (error || data?.error) {
+    notify(data?.error || "The delivery document could not be read — it stays preserved in the record", "error");
+    return { read: false };
+  }
+  notify(`Delivery recorded: ${data.lines_recorded} line${data.lines_recorded === 1 ? "" : "s"} — the Delivered column of the comparison is updated. Installation stays not-yet-evidenced until capture shows it.`);
+  void openProperty(state.property.id);
+  return { read: true };
 }
 
 async function deletePlanDocument(documentId) {
@@ -2747,7 +2858,13 @@ async function savePendingFiles() {
               /* Both doors into this worker — a declared invoice and a
                  classified page range — can reach the same document. The
                  second one is told the reading exists rather than buying it
-                 again, and that is not an error to shout about. */
+                 again, and that is not an error to shout about. An unknown
+                 outcome is remembered against the document, so the row can
+                 offer the way out. */
+              if (refused === "outcome_unknown") {
+                window.MDAIAiUsage.rememberUnknown(`document-evidence:${savedId}`, data);
+                renderDocuments();
+              }
               notify(window.MDAIAiUsage.skippedMessage(refused));
             } else if (error || data?.error) {
               notify(data?.error || "The delivery document could not be read — it stays preserved in the record", "error");
@@ -2796,11 +2913,26 @@ async function savePendingFiles() {
 /* One undeclared PDF, classified page by page, then chained onward. The
    classifier's answer is a reading — "Read by AI · not confirmed" — and the
    only thing it moves is routing: which worker reads which pages next. */
-async function classifyUploadedDocument(documentId) {
-  const { data, error } = await client.functions.invoke("document-classify", { body: { document_id: documentId } });
+async function classifyUploadedDocument(documentId, options = {}) {
+  const { data, error } = await client.functions.invoke("document-classify", {
+    body: { document_id: documentId, force: Boolean(options.force) },
+  });
   if (error || data?.error) {
     notify(data?.error || "The PDF could not be classified — it stays preserved in the record, selected for plan analysis", "error");
-    return;
+    return { read: false };
+  }
+  /* A refusal is not a reading. Before this check the code fell through to
+     an empty route list and announced "Pages read by AI · not confirmed:
+     nothing routable" — a sentence that says pages were read when nothing
+     was. The worker said no; the screen says the same. */
+  const classifierRefused = window.MDAIAiUsage?.skippedVerdict(data);
+  if (classifierRefused) {
+    if (classifierRefused === "outcome_unknown") {
+      window.MDAIAiUsage.rememberUnknown(`document-classify:${documentId}`, data);
+      renderDocuments();
+    }
+    notify(window.MDAIAiUsage.skippedMessage(classifierRefused));
+    return { read: false, refused: classifierRefused, data };
   }
   const routes = Array.isArray(data?.routes) ? data.routes : [];
   const totalPages = Array.isArray(data?.pages) ? data.pages.length : 0;
@@ -2833,6 +2965,7 @@ async function classifyUploadedDocument(documentId) {
   if (technicalRoute) {
     setMessage(`${technicalRoute.pages.length} page${technicalRoute.pages.length === 1 ? "" : "s"} read as plans — the document is selected and ready for plan analysis.`, "success");
   }
+  return { read: true };
   void openProperty(state.property.id);
 }
 window.__classifyUploadedDocument = classifyUploadedDocument;

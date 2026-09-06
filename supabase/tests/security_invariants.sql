@@ -2558,4 +2558,20 @@ select pg_temp.refused('and so is claiming a run',
   $$select public.claim_ai_run('aaaaaaaa-0000-0000-0000-000000000001', null, 'plan-analyze', 'm', 'c', 'x')$$);
 reset role;
 
+-- ═══════════════════ THE FIELD CHECK THAT COULD NOT BE REPEATED ════════════
+--
+-- A field check the ledger refused used to stay 'processing' forever, because
+-- the row had no word for "we do not know what happened" and no pointer to
+-- the run it did not know about. Now it has both.
+select pg_temp.check('a field check can say its outcome is unknown',
+  (select pg_get_constraintdef(oid) like '%outcome_unknown%'
+     from pg_constraint where conname = 'field_quality_checks_state_check'));
+select pg_temp.check('and it points at the run a reviewer decides about',
+  exists (select 1 from information_schema.columns
+           where table_name = 'field_quality_checks' and column_name = 'ai_run_id'));
+select pg_temp.check('a state the row has no word for is still refused',
+  not exists (select 1 from pg_constraint
+               where conname = 'field_quality_checks_state_check'
+                 and pg_get_constraintdef(oid) like '%queued_for_retry%'));
+
 rollback;
