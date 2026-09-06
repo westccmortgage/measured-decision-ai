@@ -6,7 +6,7 @@ import {
 import { buildFingerprint, claimAiRun, finishAiRun, outcomeForStatus, RunProgress, usageFrom } from "../_shared/ai-run-ledger.ts";
 import { signedObjectReadUrl } from "../_shared/aws-object-store.ts";
 import { openAITransport } from "../_shared/openai-transport.ts";
-import { CHUNK_BYTE_LIMIT, mergeChunkAnalyses, planChunks } from "./chunking.js";
+import { CHUNK_BYTE_LIMIT, chunkNote, chunkRegister, mergeChunkAnalyses, orderForReading, planChunks } from "./chunking.js";
 
 const allowedOrigins = new Set([
   "https://measureddecision.ai",
@@ -840,15 +840,6 @@ function planFingerprintParts(
   };
 }
 
-function chunkNoteFor(chunkIndex: number, chunkTotal: number, documents: DocumentRow[]) {
-  return [
-    `This is chunk ${chunkIndex + 1} of ${chunkTotal} of a larger plan set that exceeds one reading. `
-    + `Only these files are attached: ${documents.map((row) => row.original_filename).join(", ")}. `
-    + "The full source register above lists documents analyzed in other chunks — never invent content from files you cannot see. "
-    + "A mark whose schedule lives in an unattached document goes to gaps with the mark and the sheet you saw it on, exactly like any other unresolved reference.",
-  ].join("");
-}
-
 /* The next pending chunk starts, claimed atomically so two concurrent polls
    never buy the same reading twice. Returns the launched chunk row or null
    when another poll got there first (or nothing is pending). */
@@ -857,10 +848,10 @@ async function launchNextPendingChunk(
   aiTransport: { baseUrl: string; headers: Record<string, string> },
   model: string,
   job: PlanJob,
-  documentsById: Map<string, DocumentRow>,
-  registerText: string,
+  orderedDocuments: DocumentRow[],
   chunkTotal: number,
 ) {
+  const documentsById = new Map(orderedDocuments.map((row) => [row.id, row]));
   const { data: pending } = await admin.from("plan_analysis_chunks")
     .select("id, chunk_index, document_ids")
     .eq("job_id", job.id).eq("state", "pending")
@@ -871,6 +862,11 @@ async function launchNextPendingChunk(
     .eq("id", pending.id).eq("state", "pending").select("id, chunk_index, document_ids").maybeSingle();
   if (!claimed) return null;
   const chunkDocuments = (claimed.document_ids as string[]).map((id) => documentsById.get(id)).filter(Boolean) as DocumentRow[];
+  const attachedIds = new Set(chunkDocuments.map((row) => row.id));
+  /* Each chunk is told which documents it holds and which are being read by
+     the other chunks of this same reading — so a file it cannot see is a
+     file being read, not a file to ask for. */
+  const registerText = JSON.stringify(chunkRegister(orderedDocuments, claimed.document_ids as string[], claimed.chunk_index, chunkTotal), null, 2);
   const ledger = await claimAiRun(admin, {
     ...planFingerprintParts(job, model, chunkDocuments, claimed.chunk_index),
     jobTable: "plan_analysis_chunks",
@@ -885,7 +881,7 @@ async function launchNextPendingChunk(
   try {
     const payload = await createProviderReading(
       admin, aiTransport, model, chunkDocuments, registerText,
-      chunkNoteFor(claimed.chunk_index, chunkTotal, chunkDocuments),
+      chunkNote(claimed.chunk_index, chunkTotal, chunkDocuments, orderedDocuments.filter((row) => !attachedIds.has(row.id))),
       progress,
     );
     await admin.from("plan_analysis_chunks").update({
@@ -948,25 +944,26 @@ async function advanceChunkedJob(
   if (documentError || !documents || documents.length !== job.document_ids.length) {
     throw new Error("One or more project documents are missing or outside this project");
   }
-  const orderedDocuments = job.document_ids
+  const orderedDocuments = orderForReading(job.document_ids
     .map((id) => (documents as DocumentRow[]).find((row) => row.id === id))
-    .filter(Boolean) as DocumentRow[];
+    .filter(Boolean) as DocumentRow[]);
   const documentsById = new Map(orderedDocuments.map((row) => [row.id, row]));
-  const registerText = JSON.stringify(orderedDocuments.map((row) => ({
-    id: row.id,
-    filename: row.original_filename,
-    document_type: row.document_type,
-    revision: row.revision_label,
-    issued_at: row.issued_at,
-    part_of: row.source_metadata?.derived_from || null,
-  })), null, 2);
 
   const finalizeIfDone = async () => {
     const { data: freshChunks } = await admin.from("plan_analysis_chunks")
-      .select("chunk_index, state, analysis")
+      .select("chunk_index, state, analysis, document_ids")
       .eq("job_id", job.id).order("chunk_index", { ascending: true });
     if (!(freshChunks || []).length || (freshChunks || []).some((chunk) => chunk.state !== "complete")) return null;
-    const merged = mergeChunkAnalyses((freshChunks || []).map((chunk) => chunk.analysis));
+    /* The merge is told which documents each chunk held, so it can tell a
+       file read elsewhere from a file that is missing. */
+    const merged = mergeChunkAnalyses(
+      (freshChunks || []).map((chunk) => chunk.analysis),
+      (freshChunks || []).map((chunk) => ({
+        chunk_index: chunk.chunk_index,
+        documents: ((chunk.document_ids || []) as string[]).map((id) => documentsById.get(id)).filter(Boolean)
+          .map((row) => ({ id: row!.id, filename: row!.original_filename, part_of: row!.source_metadata?.derived_from || null })),
+      })),
+    );
     return await finalizeAnalysis(admin, job, orderedDocuments, merged, job.model || model, userId);
   };
 
@@ -1004,7 +1001,7 @@ async function advanceChunkedJob(
     await admin.from("plan_analysis_chunks").update({
       state: "pending", updated_at: new Date().toISOString(),
     }).eq("id", processing.id).eq("state", "processing");
-    await launchNextPendingChunk(admin, aiTransport, model, job, documentsById, registerText, total);
+    await launchNextPendingChunk(admin, aiTransport, model, job, orderedDocuments, total);
     return progress();
   }
   if (processing) {
@@ -1051,7 +1048,7 @@ async function advanceChunkedJob(
       state: "complete", analysis: chunkAnalysis, error_message: null,
       updated_at: new Date().toISOString(),
     }).eq("id", processing.id);
-    await launchNextPendingChunk(admin, aiTransport, model, job, documentsById, registerText, total);
+    await launchNextPendingChunk(admin, aiTransport, model, job, orderedDocuments, total);
     const done = await finalizeIfDone();
     if (done) return done;
     return { ...progress(), chunks_complete: completeCount + 1, progress_percent: 20 + Math.floor(60 * ((completeCount + 1) / total)) };
@@ -1060,7 +1057,7 @@ async function advanceChunkedJob(
   const done = await finalizeIfDone();
   if (done) return done;
   /* Nothing processing, something pending — a poll after a restart. */
-  await launchNextPendingChunk(admin, aiTransport, model, job, documentsById, registerText, total);
+  await launchNextPendingChunk(admin, aiTransport, model, job, orderedDocuments, total);
   return progress();
 }
 
@@ -1294,9 +1291,9 @@ Deno.serve(async (request) => {
     }).in("id", job.document_ids);
     await admin.from("properties").update({ workflow_state: "analyzing_plans" }).eq("id", job.property_id);
 
-    const orderedDocuments = job.document_ids
+    const orderedDocuments = orderForReading(job.document_ids
       .map((id) => (documents as DocumentRow[]).find((row) => row.id === id))
-      .filter(Boolean) as DocumentRow[];
+      .filter(Boolean) as DocumentRow[]);
     const register = orderedDocuments.map((row) => ({
       id: row.id,
       filename: row.original_filename,
@@ -1373,8 +1370,11 @@ Deno.serve(async (request) => {
     const { data: existingChunks } = await admin.from("plan_analysis_chunks")
       .select("id, chunk_index, document_ids, state")
       .eq("job_id", job.id).order("chunk_index", { ascending: true });
+    /* A resumed job keeps its finished readings when its chunks hold the
+       same document sets — in any order, so a change in reading order
+       between two runs never throws away a chunk that was paid for. */
     const partitionMatches = (existingChunks || []).length === partition.length
-      && (existingChunks || []).every((row, index) => sameIds(row.document_ids || [], partition[index].document_ids));
+      && (existingChunks || []).every((row) => partition.some((chunk) => sameIds(row.document_ids || [], chunk.document_ids)));
     if (!partitionMatches) {
       const activeJob = job;
       await admin.from("plan_analysis_chunks").delete().eq("job_id", activeJob.id);
@@ -1397,8 +1397,7 @@ Deno.serve(async (request) => {
         }
       }
     }
-    const documentsById = new Map(orderedDocuments.map((row) => [row.id, row]));
-    await launchNextPendingChunk(admin, aiTransport, model, job, documentsById, registerText, partition.length);
+    await launchNextPendingChunk(admin, aiTransport, model, job, orderedDocuments, partition.length);
     const resumedComplete = partitionMatches
       ? (existingChunks || []).filter((row) => row.state === "complete").length
       : 0;

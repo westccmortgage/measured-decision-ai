@@ -62,6 +62,7 @@ run "the owner summary"               studio/tests/e2e-summary.mjs
 run "two channels, one project"       studio/tests/e2e-intelligence.mjs
 run "strict schemas stay strict"      studio/tests/strict-schemas.mjs
 run "a 200-sheet set, in chunks"      studio/tests/plan-chunking.mjs
+run "the parts of one file, one project" studio/tests/parts-become-one-project.mjs
 run "the PDF that leaves"             studio/tests/pdf360.mjs
 run "the record leaves with its owner" studio/tests/e2e-export.mjs
 run "only what a person approved"     studio/tests/e2e-owner-view.mjs
