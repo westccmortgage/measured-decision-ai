@@ -573,7 +573,10 @@ Deno.serve(async (request) => {
         finished_at: new Date().toISOString(),
       }).eq("id", job.id);
       return json(request, {
-        skipped: claim.verdict.toLowerCase(),
+        skipped: claim.verdict === "UNKNOWN" ? "outcome_unknown" : claim.verdict.toLowerCase(),
+        /* The run a person has to decide about. Without this the screen can
+           explain the block but cannot offer the way out of it. */
+        unresolved_run_id: claim.verdict === "UNKNOWN" ? claim.previousRunId : null,
         previous_run_id: claim.previousRunId,
         reason: claim.verdict === "RUNNING"
           ? "This exact reading is running right now."

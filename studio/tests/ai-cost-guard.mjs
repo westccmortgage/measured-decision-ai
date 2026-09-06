@@ -338,6 +338,182 @@ for (const worker of ["spatial-analyze", "document-classify", "document-evidence
 check("plan-analyze still stores its background response, as it must to retrieve it",
   /background: true,\s*store: true/.test(planSource));
 
+
+/* ── the decision, taken through the real block ────────────────────────────
+ * The shipping markup, the shipping stylesheet, the shipping ask-project.js,
+ * and a worker answer stubbed at the client boundary. Nothing is called that
+ * costs anything; what is exercised is what a person actually presses. */
+console.log("\n── an unknown outcome, through the real interface ──");
+const studioHtml = fs.readFileSync("studio/index.html", "utf8");
+const blockStart = studioHtml.indexOf('<section class="ask-project"');
+const askBlock = studioHtml
+  .slice(blockStart, studioHtml.indexOf("</section>", blockStart) + "</section>".length)
+  .replace(" hidden>", ">");
+
+async function openAsk() {
+  const context = await browser.newContext({ viewport: { width: 1200, height: 900 } });
+  await context.route("**://*/**", (r) => (r.request().url().startsWith(baseUrl) ? r.continue() : r.abort()));
+  const askPage = await context.newPage();
+  await askPage.goto(`${baseUrl}/studio/tests/fixtures/blank.html`);
+  await askPage.setContent(`<!doctype html><html><head>
+    <link rel="stylesheet" href="${baseUrl}/studio/studio.css"></head>
+    <body class="studio"><main style="max-width:620px">${askBlock}</main>
+    <script src="${baseUrl}/studio/ai-usage.js"></script>
+    <script src="${baseUrl}/studio/ask-project.js"></script></body></html>`);
+  await askPage.waitForFunction(() => !!window.MDAIAskProject);
+  await askPage.evaluate(() => {
+    window.__invokes = [];
+    window.__rpc = [];
+    window.__prompts = [];
+    window.__answer = null;
+    /* The worker's first answer is the refusal; after an authorisation is
+       recorded it answers normally, exactly as the real one would. */
+    window.__authorised = false;
+    const client = {
+      functions: {
+        invoke: async (name, opts) => {
+          window.__invokes.push({ name, body: opts?.body });
+          await new Promise((r) => setTimeout(r, 30));
+          if (!window.__authorised) {
+            return { data: { skipped: "outcome_unknown", answer: null,
+              unresolved_run_id: "run-lost-1", ai_calls: 0 }, error: null };
+          }
+          return { data: window.__answer, error: null };
+        },
+      },
+      rpc: async (name, args) => {
+        window.__rpc.push({ name, args });
+        if (name === "confirm_ai_run_retry") { window.__authorised = true; return { data: true, error: null }; }
+        return { data: null, error: null };
+      },
+    };
+    /* The confirm dialog, captured rather than shown. */
+    window.__decide = true;
+    window.confirm = (message) => { window.__prompts.push(message); return window.__decide; };
+    window.MDAIAskProject.mount({ client, propertyId: "prop-1", openSource: () => {} });
+  });
+  return { context, askPage };
+}
+
+const { context: askContext, askPage } = await openAsk();
+
+/* 1 — the refusal explains itself and offers exactly one button. */
+await askPage.fill("#ask-question", "How many beams are required?");
+await askPage.click("#ask-submit");
+await askPage.waitForSelector("#ask-retry");
+const blocked = await askPage.evaluate(() => ({
+  text: document.getElementById("ask-answer-text").textContent,
+  buttons: document.querySelectorAll("#ask-retry").length,
+  label: document.getElementById("ask-retry").textContent,
+  sources: document.getElementById("ask-sources").children.length,
+  invokes: window.__invokes.length,
+  prompts: window.__prompts.length,
+}));
+check("an unknown outcome explains itself instead of failing",
+  /may have run and been billed/.test(blocked.text), blocked.text);
+check("and offers exactly one button to resolve it",
+  blocked.buttons === 1 && blocked.label === "Ask again");
+check("no answer and no sources are shown for a run nobody can vouch for",
+  blocked.sources === 0);
+check("and nothing was asked twice on the way there",
+  blocked.invokes === 1 && blocked.prompts === 0);
+
+/* 2 — declining keeps the block and spends nothing. */
+await askPage.evaluate(() => { window.__decide = false; });
+await askPage.click("#ask-retry");
+await askPage.waitForFunction(() => window.__prompts.length === 1);
+const declined = await askPage.evaluate(() => ({
+  prompt: window.__prompts[0],
+  rpc: window.__rpc.length,
+  invokes: window.__invokes.length,
+  stillThere: !!document.getElementById("ask-retry"),
+  note: document.querySelector(".ask-retry-line")?.textContent || "",
+}));
+check("pressing it asks the agreed question, in the agreed words",
+  declined.prompt === "The previous request may have run and been billed. Run the analysis again, with possible additional charges?",
+  declined.prompt);
+check("declining authorises nothing and calls no worker",
+  declined.rpc === 0 && declined.invokes === 1);
+check("and the block stays exactly where it was",
+  declined.stillThere && /still unresolved/.test(declined.note), declined.note);
+
+/* 3 — confirming authorises once and runs exactly once. */
+await askPage.evaluate(() => {
+  window.__decide = true;
+  window.__answer = {
+    answer: "Fourteen LVL beams are required on sheet S2.1.",
+    citations: [{ source_id: "document:doc-1", kind: "document", opens: "document",
+      document_id: "doc-1", label: "structural-set.pdf", sheet_ref: "S2.1", why: "beam schedule" }],
+    limitations: "", confidence: "medium", records_considered: 5, ai_calls: 1,
+  };
+});
+await askPage.click("#ask-retry");
+await askPage.waitForFunction(() => document.querySelectorAll(".ask-source-link").length === 1);
+const authorised = await askPage.evaluate(() => ({
+  rpc: window.__rpc.map((call) => call.name),
+  runId: window.__rpc[0]?.args?.p_run_id,
+  invokes: window.__invokes.length,
+  prompts: window.__prompts.length,
+  answer: document.getElementById("ask-answer-text").textContent,
+}));
+check("confirming records the authorisation against the blocked run",
+  authorised.rpc.length === 1 && authorised.rpc[0] === "confirm_ai_run_retry"
+  && authorised.runId === "run-lost-1", JSON.stringify(authorised.rpc));
+check("and starts exactly one new run",
+  authorised.invokes === 2, `${authorised.invokes} worker calls in total`);
+check("the person was asked twice and answered twice — no silent third",
+  authorised.prompts === 2);
+check("and the answer they paid for is on the screen",
+  /Fourteen LVL beams/.test(authorised.answer));
+await askContext.close();
+
+/* 4 — the double click, on the real button. */
+const { context: doubleContext, askPage: doublePage } = await openAsk();
+await doublePage.fill("#ask-question", "How many beams are required?");
+await doublePage.click("#ask-submit");
+await doublePage.waitForSelector("#ask-retry");
+await doublePage.evaluate(() => {
+  window.__answer = { answer: "Fourteen.", citations: [], limitations: "",
+    confidence: "low", records_considered: 5, ai_calls: 1 };
+  /* Two presses microseconds apart, before any render can disable anything. */
+  const button = document.getElementById("ask-retry");
+  button.click();
+  button.click();
+});
+await doublePage.waitForFunction(() => window.__invokes.length >= 2);
+await doublePage.waitForTimeout(300);
+const doubled = await doublePage.evaluate(() => ({
+  prompts: window.__prompts.length,
+  rpc: window.__rpc.length,
+  invokes: window.__invokes.length,
+}));
+check("a double press asks the person once, not twice",
+  doubled.prompts === 1, `${doubled.prompts} prompts`);
+check("authorises once",
+  doubled.rpc === 1, `${doubled.rpc} authorisations`);
+check("and buys exactly one new run",
+  doubled.invokes === 2, `${doubled.invokes} worker calls in total`);
+await doubleContext.close();
+
+console.log("\n── every screen that can be blocked can also resolve it ──");
+for (const [file, screen] of [
+  ["studio/plans/plans.js", "the plans door"],
+  ["studio/studio.js", "the room analysis"],
+  ["studio/ask-project.js", "Ask this project"],
+]) {
+  const source = fs.readFileSync(file, "utf8");
+  check(`${screen} remembers a block instead of losing it`,
+    /rememberUnknown\(/.test(source));
+  check(`${screen} offers the decision before it spends`,
+    /offerUnknownRetry\(/.test(source));
+}
+/* And every worker hands over the run there is a decision about. */
+for (const worker of ALL_WORKERS) {
+  const source = fs.readFileSync(`supabase/functions/${worker}/index.ts`, "utf8");
+  check(`${worker} names the run a person has to decide about`,
+    /unresolved_run_id/.test(source));
+}
+
 await browser.close();
 server.close();
 console.log(bad ? `\n${bad} FAILURES` : "\nALL OK");

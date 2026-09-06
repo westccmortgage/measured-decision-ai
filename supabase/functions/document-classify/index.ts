@@ -181,7 +181,8 @@ Deno.serve(async (request) => {
     });
     if (claim.verdict !== "CLAIMED") {
       return json(request, {
-        skipped: claim.verdict.toLowerCase(),
+        skipped: claim.verdict === "UNKNOWN" ? "outcome_unknown" : claim.verdict.toLowerCase(),
+        unresolved_run_id: claim.verdict === "UNKNOWN" ? claim.previousRunId : null,
         reason: claim.verdict === "RUNNING"
           ? "This document is being classified right now."
           : "This document has already been classified with exactly these inputs.",

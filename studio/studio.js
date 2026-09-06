@@ -5754,9 +5754,17 @@ async function analyzeFocusRoom(room, onStatus, options = {}) {
        anything — the person is told which, and offered the result. */
     const refused = window.MDAIAiUsage?.skippedVerdict(data);
     if (refused) {
-      localJob.status = refused === "running" ? "Already running" : "Up to date";
+      /* An unknown outcome is not "up to date" — nothing was read, and a
+         person has to decide whether to buy it again. */
+      localJob.status = refused === "running"
+        ? "Already running"
+        : refused === "outcome_unknown" ? "Needs confirmation" : "Up to date";
+      if (refused === "outcome_unknown") {
+        window.MDAIAiUsage.rememberUnknown(`spatial-analyze:${room.id}`, data);
+      }
       saveJobs();
       return { warnings, analyzed: false, upToDate: refused === "reused", running: refused === "running",
+        unknown: refused === "outcome_unknown",
         message: window.MDAIAiUsage.skippedMessage(refused), evidenceIds };
     }
     if (!data?.analysis) throw new Error(data?.error || "AI returned no result");
@@ -6688,6 +6696,23 @@ $("#request-analysis").addEventListener("click", async () => {
   const alreadyRead = jobs.some(
     (job) => job.roomId === room.id && ["Completed", "Up to date"].includes(job.status),
   );
+  /* An earlier reading of this room may already have run and been billed.
+     That question comes first, because it is about money already spent
+     rather than money about to be. */
+  const offer = await window.MDAIAiUsage.offerUnknownRetry({
+    client: cloud.client,
+    key: `spatial-analyze:${room.id}`,
+    /* offerUnknownRetry clears the pending block before it calls this, so the
+       re-press takes the ordinary path rather than asking the question again. */
+    retry: () => button.click(),
+  });
+  if (offer.handled) {
+    if (!offer.confirmed && offer.reason === "declined") {
+      notify("Nothing was run. The earlier attempt is still unresolved.");
+    }
+    return;
+  }
+
   let force = false;
   if (alreadyRead) {
     if (!window.MDAIAiUsage.confirmReanalyze()) {
@@ -6778,9 +6803,15 @@ $("#request-analysis").addEventListener("click", async () => {
     if (error) throw await functionInvocationError(error);
     const refused = window.MDAIAiUsage?.skippedVerdict(data);
     if (refused) {
-      localJob.status = refused === "running" ? "Already running" : "Up to date";
+      localJob.status = refused === "running"
+        ? "Already running"
+        : refused === "outcome_unknown" ? "Needs confirmation" : "Up to date";
+      if (refused === "outcome_unknown") {
+        window.MDAIAiUsage.rememberUnknown(`spatial-analyze:${room.id}`, data);
+      }
       saveJobs();
       return { analyzed: false, upToDate: refused === "reused", running: refused === "running",
+        unknown: refused === "outcome_unknown",
         message: window.MDAIAiUsage.skippedMessage(refused) };
     }
     if (!data?.analysis) throw new Error(data?.error || "AI returned no result");

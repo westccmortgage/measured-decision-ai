@@ -155,7 +155,11 @@ Deno.serve(async (request) => {
         transport: "openai_direct",
       });
       if (claim.verdict !== "CLAIMED") {
-        return json({ quality_check_id: check.id, state: check.state, skipped: claim.verdict.toLowerCase() });
+        return json({
+        quality_check_id: check.id, state: check.state,
+        skipped: claim.verdict === "UNKNOWN" ? "outcome_unknown" : claim.verdict.toLowerCase(),
+        unresolved_run_id: claim.verdict === "UNKNOWN" ? claim.previousRunId : null,
+      });
       }
       runId = claim.runId;
       progress.sent();

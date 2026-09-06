@@ -108,6 +108,51 @@
     note.hidden = lines.length === 0;
   }
 
+  /* One key per project, so a block raised on one project is never offered
+     on another. */
+  function unknownKey() {
+    return `project-search:${state.propertyId || "unknown"}`;
+  }
+
+  /* The explanation and the one button that resolves it. */
+  function renderUnknown(question) {
+    const answerBox = $("ask-answer");
+    const text = $("ask-answer-text");
+    if (!answerBox) return;
+    answerBox.hidden = false;
+    text.textContent = window.MDAIAiUsage.skippedMessage("outcome_unknown");
+    $("ask-limitations").hidden = true;
+    $("ask-sources-head").hidden = true;
+    $("ask-sources").innerHTML = "";
+
+    /* The note holds a line and a button as separate nodes, so writing the
+       line can never remove the only way out of the block — which is exactly
+       what happened when they shared one text node. */
+    const note = $("ask-note");
+    note.hidden = false;
+    note.innerHTML = "";
+    const line = el("span", "ask-retry-line", "");
+    const button = el("button", "button ask-retry", "Ask again");
+    button.type = "button";
+    button.id = "ask-retry";
+    button.addEventListener("click", async () => {
+      const offer = await window.MDAIAiUsage.offerUnknownRetry({
+        client: state.client,
+        key: unknownKey(),
+        /* The block is cleared before this runs, so the retry takes the
+           ordinary path rather than asking again. */
+        retry: () => ask(question),
+      });
+      /* Declining changes nothing: the explanation and the button stay, and
+         no AI call was made. */
+      if (offer.handled && !offer.confirmed && offer.reason === "declined") {
+        line.textContent = "Nothing was asked. The earlier attempt is still unresolved.";
+      }
+    });
+    note.appendChild(line);
+    note.appendChild(button);
+  }
+
   async function ask(question, options = {}) {
     if (!state.client || !state.propertyId) return;
     const submit = $("ask-submit");
@@ -139,6 +184,15 @@
       });
       if (state.propertyId !== askedProperty) return;
       if (payload?.skipped === "in_flight") return;
+      /* An earlier attempt at this exact question may already have run and
+         been billed. That is a decision, not an error: the block explains
+         itself and offers one button, and nothing is sent until it is
+         pressed and the question is answered. */
+      if (window.MDAIAiUsage.skippedVerdict(payload) === "outcome_unknown") {
+        window.MDAIAiUsage.rememberUnknown(unknownKey(), payload);
+        renderUnknown(question);
+        return;
+      }
       if (payload?.error) {
         text.textContent = payload.error;
         return;

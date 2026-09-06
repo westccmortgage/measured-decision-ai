@@ -102,6 +102,59 @@
     return data === true;
   }
 
+  /* ── the unknown outcome, from the person's side ──────────────────────────
+   *
+   * A worker that refuses because an earlier attempt may already have run and
+   * been billed leaves a decision behind, not an error. The decision belongs to
+   * a person, so it is remembered against whatever the screen considers one
+   * action, and taken when they press the button they were already going to
+   * press — never as a dialog that appears on its own. */
+  const pendingUnknown = new Map();
+
+  function rememberUnknown(key, payload) {
+    const runId = payload?.unresolved_run_id || payload?.previous_run_id || null;
+    if (!key || !runId) return null;
+    pendingUnknown.set(key, runId);
+    return runId;
+  }
+
+  function pendingUnknownRun(key) {
+    return pendingUnknown.get(key) || null;
+  }
+
+  function clearUnknown(key) {
+    pendingUnknown.delete(key);
+  }
+
+  /* The whole decision, in one call, for every screen that can reach it.
+   *
+   * Returns { handled: false } when there is nothing pending — the caller then
+   * proceeds exactly as before. Otherwise it asks, and only a yes reaches the
+   * worker. The prompt lives INSIDE once(), so a double press cannot produce
+   * two questions, two authorisations or two runs; the second press is
+   * dropped before it can ask anything. */
+  async function offerUnknownRetry(options) {
+    const { client, key, ask, retry } = options || {};
+    const runId = pendingUnknownRun(key);
+    if (!runId) return { handled: false };
+
+    const outcome = await once(`unknown:${key}`, async () => {
+      const authorised = await confirmUnknownOutcome(client, runId, ask);
+      /* Declining keeps the block exactly as it was: nothing authorised,
+         nothing sent, and the same question available next time. */
+      if (!authorised) return { confirmed: false, reason: "declined" };
+      /* The authorisation is single-use in the database; forgetting it here
+         only stops this screen offering it twice. */
+      clearUnknown(key);
+      return { confirmed: true, result: await retry() };
+    });
+
+    if (outcome?.skipped === "in_flight") {
+      return { handled: true, confirmed: false, reason: "in_flight" };
+    }
+    return { handled: true, ...outcome };
+  }
+
   /* A worker that refused to spend says so in the same shape every time. */
   function skippedVerdict(payload) {
     const skipped = String(payload?.skipped || "").toLowerCase();
@@ -127,6 +180,10 @@
     renderUsage,
     confirmReanalyze,
     confirmUnknownOutcome,
+    offerUnknownRetry,
+    rememberUnknown,
+    pendingUnknownRun,
+    clearUnknown,
     skippedVerdict,
     skippedMessage,
     REANALYZE_WARNING,
