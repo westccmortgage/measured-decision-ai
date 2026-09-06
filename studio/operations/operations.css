@@ -291,6 +291,10 @@ textarea { padding:11px; resize:vertical; text-transform:none; letter-spacing:no
 .qc { color:var(--d92a7b5); }
 
 .qc strong { display:block; color:var(--ddbe7ec); font-size:11px; }
+/* A check nobody could vouch for wears the colour of "not yet evidenced" —
+   it is that, about the check itself. */
+.qc.unknown strong { color:var(--amber, #d8a24a); }
+.qc-retry { display:inline-flex; margin-top:8px; min-height:36px; font-size:12px; }
 
 .empty { padding:50px; text-align:center; color:var(--muted); background:var(--d071522); }
 

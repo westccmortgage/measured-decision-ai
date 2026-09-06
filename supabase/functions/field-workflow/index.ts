@@ -413,6 +413,62 @@ Deno.serve(async (request) => {
       return json(request, { status: assignmentPatch.status });
     }
 
+    if (action === "retry_quality_check") {
+      /* A reviewer repeats a field check whose outcome nobody could establish.
+         This is the ONLY way such a check runs again: never from submit,
+         never from a poll, never from a queue. The person's confirmation is
+         recorded by the browser through confirm_ai_run_retry; this action
+         refuses to dispatch until that record exists, so an unconfirmed press
+         cannot even reach the worker. */
+      const { user, client } = await authenticatedActor();
+      const assignmentId = cleanText(body?.assignment_id);
+      if (!isUuid(assignmentId)) fail("A valid assignment is required");
+      const { data: assignment } = await admin.from("field_assignments").select("*").eq("id", assignmentId).maybeSingle();
+      if (!assignment) fail("Assignment not found", 404);
+      const role = await membership(client, assignment.organization_id, user.id);
+      if (!role || !["owner", "admin", "reviewer"].includes(role)) fail("Reviewer access is required", 403);
+
+      const { data: checks } = await admin.from("field_quality_checks")
+        .select("id, state, ai_run_id")
+        .eq("assignment_id", assignment.id)
+        .order("created_at", { ascending: false })
+        .limit(1);
+      const check = checks?.[0];
+      if (!check) fail("There is no automated check to repeat for this assignment", 404);
+      if (check.state === "processing") return json(request, { status: assignment.status, skipped: "running" });
+      if (check.state !== "outcome_unknown") {
+        fail(`This check is ${String(check.state).replace(/_/g, " ")}; only a check with an unknown outcome can be repeated this way`, 409);
+      }
+      if (check.ai_run_id) {
+        const { data: run } = await admin.from("ai_runs")
+          .select("retry_authorized_at, retry_consumed_at")
+          .eq("id", check.ai_run_id)
+          .maybeSingle();
+        if (!run?.retry_authorized_at || run.retry_consumed_at) {
+          fail("Repeating this check needs confirmation first — the earlier attempt may have run and been billed", 409);
+        }
+      }
+
+      const now = new Date().toISOString();
+      await Promise.all([
+        admin.from("field_assignments").update({ status: "ai_check", updated_at: now }).eq("id", assignment.id),
+        admin.from("field_assignment_events").insert({ organization_id: assignment.organization_id, assignment_id: assignment.id, event_type: "quality_check.repeat_confirmed", actor_id: user.id, detail: { quality_check_id: check.id, ai_run_id: check.ai_run_id } }),
+        admin.from("audit_events").insert({ organization_id: assignment.organization_id, actor_id: user.id, action: "field_quality_check.repeat_confirmed", entity_type: "field_quality_check", entity_id: check.id, detail: { assignment_id: assignment.id, ai_run_id: check.ai_run_id } }),
+      ]);
+      /* Same dispatch as submit. The worker re-enters the same row, the
+         ledger consumes the one authorisation, and a second press finds it
+         spent. */
+      const repeat = fetch(`${supabaseUrl}/functions/v1/field-quality-check`, {
+        method: "POST",
+        headers: { Authorization: `Bearer ${serviceKey}`, apikey: serviceKey, "Content-Type": "application/json" },
+        body: JSON.stringify({ quality_check_id: check.id }),
+      }).catch((error) => console.error("field-quality-check repeat dispatch", error));
+      const runtime = (globalThis as unknown as { EdgeRuntime?: { waitUntil(promise: Promise<unknown>): void } }).EdgeRuntime;
+      if (runtime?.waitUntil) runtime.waitUntil(repeat);
+      else await repeat;
+      return json(request, { status: "ai_check", quality_check_id: check.id });
+    }
+
     return json(request, { error: "Unsupported action" }, 400);
   } catch (error) {
     const safe = safeError(error, "The field service could not complete that request.");
