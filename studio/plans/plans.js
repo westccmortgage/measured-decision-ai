@@ -363,8 +363,25 @@ function isPaperworkDocument(document) {
   return PAPERWORK_TYPES.has(document?.document_type);
 }
 
+/* A part of a larger set, and the set it came from. Parts are ordinary
+   documents with a memory of where they belong. */
+function partOf(document) {
+  const derived = document?.source_metadata?.derived_from;
+  return derived && derived.document_id ? derived : null;
+}
+function partsOf(document) {
+  return state.documents.filter((item) => partOf(item)?.document_id === document?.id);
+}
+/* Over the provider's per-file limit: it cannot be sent whole, only as parts. */
+function isOversizedDocument(document) {
+  return Number(document?.byte_size || 0) > AI_INPUT_LIMIT_BYTES;
+}
+
 function canAnalyzeDocument(document) {
-  return ANALYZABLE_DOCUMENT_STATUSES.has(document?.status) && !isPaperworkDocument(document);
+  return ANALYZABLE_DOCUMENT_STATUSES.has(document?.status)
+    && !isPaperworkDocument(document)
+    /* The original of a split set is read through its parts, never whole. */
+    && !isOversizedDocument(document);
 }
 
 function sameDocumentSet(left = [], right = []) {
@@ -419,12 +436,15 @@ function analyzeSelectionState() {
   }
 
   const totalBytes = documents.reduce((sum, document) => sum + Number(document.byte_size || 0), 0);
-  const oversized = documents.find((document) => Number(document.byte_size || 0) > AI_INPUT_LIMIT_BYTES);
+  const oversized = documents.find((document) => isOversizedDocument(document));
   if (oversized) {
+    const parts = partsOf(oversized);
     return {
       disabled: true,
-      label: "Select a smaller PDF set",
-      message: `${oversized.original_filename} exceeds the 49 MB analysis limit. Keep the original here and add an optimized PDF copy.`,
+      label: parts.length ? "Select its parts instead" : "Split for analysis first",
+      message: parts.length
+        ? `${oversized.original_filename} is read through its ${parts.length} parts — select those instead of the original.`
+        : `${oversized.original_filename} is larger than the AI provider accepts in one file (49 MB). Press Split for analysis on its row: the original stays untouched and its parts are read as one set.`,
       kind: "warning",
     };
   }
@@ -555,7 +575,7 @@ async function openProperty(propertyId) {
   setMessage("");
   const [documentsResult, baselinesResult, activeJobResult] = await Promise.all([
     client.from("project_documents")
-      .select("id, storage_path, storage_provider, storage_bucket, object_version_id, original_filename, mime_type, byte_size, document_type, revision_label, issued_at, status, processing_error, created_at, page_classification")
+      .select("id, storage_path, storage_provider, storage_bucket, object_version_id, original_filename, mime_type, byte_size, document_type, revision_label, issued_at, status, processing_error, created_at, page_classification, source_metadata")
       .eq("organization_id", state.organizationId)
       .eq("property_id", propertyId)
       .order("created_at", { ascending: false }),
@@ -827,8 +847,14 @@ function renderDocuments() {
   elements.documentList.innerHTML = state.documents.map((document) => {
     const selectable = canAnalyzeDocument(document);
     const paperwork = isPaperworkDocument(document);
+    const parts = partsOf(document);
+    const part = partOf(document);
     const choiceTitle = paperwork
       ? "Delivery paperwork is read by the document reader — it is never part of plan analysis"
+      : isOversizedDocument(document)
+        ? (parts.length
+          ? `Analysed through its ${parts.length} parts — select those`
+          : "Larger than the AI provider accepts in one file — split it for analysis first")
       : document.status === "failed"
         ? "Select to retry analysis"
         : selectable
@@ -869,15 +895,24 @@ function renderDocuments() {
     const whyItFailed = document.status === "failed" && document.processing_error
       ? `<small class="document-why">${escapeHtml(document.processing_error)}</small>`
       : "";
+    /* A part says which pages of which file it is; an original that has
+       been split says it is read through its parts. Both are derived
+       copies — the original file is never altered. */
+    const partLine = part
+      ? `<small class="document-part">Part ${part.part} of ${part.parts} · pages ${part.page_from}–${part.page_to} of ${part.pages_total} · derived for analysis</small>`
+      : parts.length
+        ? `<small class="document-part">Analysed as ${parts.length} parts · the original is kept whole</small>`
+        : "";
     return `
     <article class="document-row">
       <label class="document-choice" title="${escapeHtml(choiceTitle)}"><input type="checkbox" data-document-select="${document.id}" ${state.selectedDocumentIds.has(document.id) ? "checked" : ""} ${selectable ? "" : "disabled"}><span class="document-icon">PDF</span></label>
-      <div class="document-name"><strong title="${escapeHtml(document.original_filename)}">${escapeHtml(document.original_filename)}</strong><small>${document.byte_size ? `${(document.byte_size / 1048576).toFixed(1)} MB` : "Private source"}</small>${classifiedLine}${whyItFailed}</div>
+      <div class="document-name"><strong title="${escapeHtml(document.original_filename)}">${escapeHtml(document.original_filename)}</strong><small>${document.byte_size ? `${(document.byte_size / 1048576).toFixed(1)} MB` : "Private source"}</small>${classifiedLine}${partLine}${whyItFailed}</div>
       <div class="document-cell"><span>Discipline</span><strong>${escapeHtml(label(document.document_type))}</strong></div>
       <div class="document-cell"><span>Revision</span><strong>${escapeHtml(display(document.revision_label, "Not stated"))}</strong></div>
       ${paperwork
         ? `<span class="document-status uploaded" title="Delivery paperwork — read for delivered quantities, never analyzed as plans">Paperwork</span>`
         : `<span class="document-status ${document.status}" title="${escapeHtml(document.processing_error || "")}">${escapeHtml(label(document.status))}</span>`}
+      ${splitAction(document, parts)}
       ${rereadAction(document)}
       ${canDeletePlans() ? `<button class="document-delete" type="button" data-document-delete="${document.id}" title="${escapeHtml(deleteTitle)}" aria-label="${escapeHtml(deleteTitle)}" ${baselineVersion ? "disabled" : ""}>Delete</button>` : ""}
     </article>
@@ -895,6 +930,89 @@ function renderDocuments() {
   });
   elements.documentList.querySelectorAll("[data-document-reread]").forEach((button) => {
     button.addEventListener("click", () => rereadDocument(button.dataset.documentReread));
+  });
+  elements.documentList.querySelectorAll("[data-document-split]").forEach((button) => {
+    button.addEventListener("click", () => splitDocumentForAnalysis(button.dataset.documentSplit));
+  });
+}
+
+/* The way through for a file the provider will not take whole. Offered only
+   where it applies: an oversized plan that has no parts yet. */
+function splitAction(document, parts = partsOf(document)) {
+  if (!isOversizedDocument(document) || isPaperworkDocument(document) || parts.length || partOf(document)) return "";
+  const title = `Copy ${document.original_filename} into parts the AI can read — the original stays exactly as uploaded`;
+  return `<div class="document-reread-cell"><button class="document-reread" type="button" data-document-split="${document.id}" title="${escapeHtml(title)}">Split for analysis</button></div>`;
+}
+
+/* Copies a plan's pages into parts that fit one AI reading each and stores
+   every part as a derived document beside the original. `bytes` is the file
+   as uploaded; nothing here writes to it. */
+async function splitAndUploadParts({ bytes, original, onProgress = () => {} }) {
+  if (!window.MDAIPdfSplit) throw new Error("The PDF splitter did not load. Reload the page and retry.");
+  const { parts, skipped, pageCount } = await window.MDAIPdfSplit.splitPdf({
+    bytes, byteSize: original.byte_size || bytes.byteLength, onProgress,
+  });
+  if (!parts.length) throw new Error("No page range of this file fits one AI reading. An optimized copy is still needed.");
+  const saved = [];
+  for (const [index, part] of parts.entries()) {
+    const filename = window.MDAIPdfSplit.partFilename(original.original_filename, part.from, part.to);
+    onProgress(`Saving part ${index + 1} of ${parts.length} — ${filename}…`);
+    const file = new File([part.bytes], filename, { type: "application/pdf", lastModified: Date.now() });
+    const result = await window.MDAIObjectStorage.upload({
+      client,
+      entityType: "project_document",
+      organizationId: state.organizationId,
+      propertyId: state.property.id,
+      file,
+      metadata: {
+        document_type: original.document_type,
+        revision_label: original.revision_label || null,
+        issued_at: original.issued_at || null,
+        source_metadata: {
+          source: "measured-decision-plan-workspace",
+          derived_from: window.MDAIPdfSplit.derivedFrom({
+            documentId: original.id, from: part.from, to: part.to,
+            pagesTotal: pageCount, part: index + 1, parts: parts.length,
+          }),
+        },
+      },
+    });
+    if (result?.record?.id) saved.push(result.record.id);
+  }
+  return { saved, skipped, pageCount, parts: parts.length };
+}
+
+/* The row action: fetch the original once, split it, store the parts. */
+async function splitDocumentForAnalysis(documentId) {
+  const document = state.documents.find((item) => item.id === documentId);
+  if (!document || state.busy || partsOf(document).length) return;
+  await window.MDAIAiUsage.once(`split:${document.id}`, async () => {
+    setBusy(true, `Reading ${document.original_filename} for splitting…`);
+    try {
+      let url = "";
+      if (document.storage_provider === "aws-s3") {
+        url = await window.MDAIObjectStorage.getSignedUrl(client, "project_document", document.id);
+      } else {
+        const { data, error } = await client.storage.from(document.storage_bucket || "project-documents")
+          .createSignedUrl(document.storage_path, 600);
+        if (error || !data?.signedUrl) throw error || new Error("No signed URL for the plan PDF");
+        url = data.signedUrl;
+      }
+      const response = await fetch(url);
+      if (!response.ok) throw new Error(`The plan PDF could not be read (${response.status})`);
+      const bytes = await response.arrayBuffer();
+      const outcome = await splitAndUploadParts({
+        bytes, original: document,
+        onProgress: (line) => setBusy(true, line),
+      });
+      notify(`${document.original_filename} copied into ${outcome.parts} part${outcome.parts === 1 ? "" : "s"} for analysis — the original is untouched.`
+        + (outcome.skipped.length ? ` Page${outcome.skipped.length === 1 ? "" : "s"} ${outcome.skipped.join(", ")} could not fit one reading and need an optimized copy.` : ""));
+      await openProperty(state.property.id);
+    } catch (error) {
+      notify(error?.message || "The plan could not be split. The original is untouched.", "error");
+    } finally {
+      setBusy(false);
+    }
   });
 }
 
@@ -2835,6 +2953,25 @@ async function savePendingFiles() {
       if (uploadResult?.record?.id) {
         uploadedDocumentIds.push(uploadResult.record.id);
         uploadedDocuments.push({ id: uploadResult.record.id, filename: file.name, mime: file.type });
+        /* Larger than the provider takes in one file, and not paperwork: copy
+           its pages into parts now, while the bytes are already here, so the
+           owner never meets the wall at Analyze. A failure here is said and
+           leaves the original exactly as uploaded — Split for analysis stays
+           available on the row. */
+        if (file.size > AI_INPUT_LIMIT_BYTES && !PAPERWORK_TYPES.has(documentType)) {
+          try {
+            const outcome = await splitAndUploadParts({
+              bytes: await file.arrayBuffer(),
+              original: { id: uploadResult.record.id, original_filename: file.name, byte_size: file.size,
+                document_type: documentType, revision_label: revision, issued_at: issuedAt },
+              onProgress: (line) => { elements.sync.textContent = line; },
+            });
+            uploadedDocumentIds.push(...outcome.saved);
+            notify(`${file.name} is larger than one AI reading — copied into ${outcome.parts} parts for analysis; the original is kept whole.`);
+          } catch (splitError) {
+            notify(`${file.name} was saved, but could not be split here: ${splitError?.message || "unknown error"}. Use Split for analysis on its row from a desktop.`, "error");
+          }
+        }
       }
     }
     notify(`${state.pendingFiles.length} plan document${state.pendingFiles.length === 1 ? "" : "s"} saved`);
@@ -3118,6 +3255,7 @@ async function analyzePlans(options = {}) {
       const rendered = await window.MDAIPageRenders.ensure({
         client,
         document: planDocument,
+        pageOffset: (partOf(planDocument)?.page_from || 1) - 1,
         organizationId: state.organizationId,
         propertyId: state.property.id,
         onProgress: (progressMessage) => setMessage(progressMessage),

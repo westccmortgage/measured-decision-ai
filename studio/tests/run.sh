@@ -42,6 +42,7 @@ run "every screen, pressed"           studio/tests/screen-audit.mjs
 run "no reading is paid for twice"    studio/tests/ai-cost-guard.mjs
 run "asking this project"             studio/tests/ask-this-project.mjs
 run "the last three dead ends"        studio/tests/dead-ends.mjs
+run "a set larger than one reading"   studio/tests/big-sets.mjs
 run "project search in the full page" studio/tests/e2e-ask-project.mjs
 run "the whole path, walked"          studio/tests/e2e-studio.mjs
 run "a project with nothing in it"   studio/tests/e2e-empty-project.mjs

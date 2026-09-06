@@ -364,6 +364,7 @@ const schema = {
 };
 
 type DocumentRow = {
+  source_metadata?: { derived_from?: Record<string, unknown> } | null;
   id: string;
   organization_id: string;
   property_id: string;
@@ -773,6 +774,7 @@ async function createProviderReading(
     userContent.push({
       type: "input_text",
       text: [
+        "A document whose register entry has part_of is a page range copied from a larger file; treat all parts of one file as one set, and cite pages by the numbers in their tile names, which are the original file's page numbers.",
         "High-resolution page renders accompany the PDFs, in this order:",
         ...renderImages.map((image, index) => `${index + 1}. ${image.label}`),
         "Tile names: p<page>-r<row>c<col> is one quadrant of that page at ~200 dpi; p<page>-full is the whole page. "
@@ -939,7 +941,7 @@ async function advanceChunkedJob(
 
   const { data: documents, error: documentError } = await userClient
     .from("project_documents")
-    .select("id, organization_id, property_id, storage_path, storage_provider, storage_bucket, original_filename, byte_size, document_type, revision_label, issued_at")
+    .select("id, organization_id, property_id, storage_path, storage_provider, storage_bucket, original_filename, byte_size, document_type, revision_label, issued_at, source_metadata")
     .in("id", job.document_ids)
     .eq("organization_id", job.organization_id)
     .eq("property_id", job.property_id);
@@ -956,6 +958,7 @@ async function advanceChunkedJob(
     document_type: row.document_type,
     revision: row.revision_label,
     issued_at: row.issued_at,
+    part_of: row.source_metadata?.derived_from || null,
   })), null, 2);
 
   const finalizeIfDone = async () => {
@@ -1236,7 +1239,7 @@ Deno.serve(async (request) => {
 
       const { data: documents, error: documentError } = await userClient
         .from("project_documents")
-        .select("id, organization_id, property_id, storage_path, storage_provider, storage_bucket, original_filename, byte_size, document_type, revision_label, issued_at")
+        .select("id, organization_id, property_id, storage_path, storage_provider, storage_bucket, original_filename, byte_size, document_type, revision_label, issued_at, source_metadata")
         .in("id", job.document_ids)
         .eq("organization_id", job.organization_id)
         .eq("property_id", job.property_id);
@@ -1261,7 +1264,7 @@ Deno.serve(async (request) => {
 
     const { data: documents, error: documentError } = await userClient
       .from("project_documents")
-      .select("id, organization_id, property_id, storage_path, storage_provider, storage_bucket, original_filename, byte_size, document_type, revision_label, issued_at")
+      .select("id, organization_id, property_id, storage_path, storage_provider, storage_bucket, original_filename, byte_size, document_type, revision_label, issued_at, source_metadata")
       .in("id", job.document_ids)
       .eq("organization_id", job.organization_id)
       .eq("property_id", job.property_id);
@@ -1275,7 +1278,7 @@ Deno.serve(async (request) => {
     const oversized = (documents as DocumentRow[]).find((item) => Number(item.byte_size || 0) > CHUNK_BYTE_LIMIT);
     if (oversized) {
       throw new Error(
-        `${oversized.original_filename} exceeds the 49 MB AI input limit. Keep the original in Studio and upload an optimized PDF copy for analysis.`,
+        `${oversized.original_filename} exceeds the AI provider's 49 MB per-file limit. Split it for analysis in Studio — the original stays untouched and its parts are read as one set.`,
       );
     }
 
@@ -1300,6 +1303,9 @@ Deno.serve(async (request) => {
       document_type: row.document_type,
       revision: row.revision_label,
       issued_at: row.issued_at,
+      /* A part of a larger file says so: which file, which pages. Its tiles
+         are numbered by the original set, so page references stay true. */
+      part_of: row.source_metadata?.derived_from || null,
     }));
     const registerText = JSON.stringify(register, null, 2);
 
