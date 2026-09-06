@@ -44,7 +44,7 @@ const schema = {
   additionalProperties: false,
   required: [
     "project_summary", "source_register", "levels", "spaces", "space_links", "framing_walls", "framing_decks",
-    "component_schedules", "systems", "phases", "capture_requirements", "gaps", "assumptions",
+    "component_schedules", "structural_members", "framing_defaults", "systems", "phases", "capture_requirements", "gaps", "assumptions",
   ],
   properties: {
     project_summary: { type: "string" },
@@ -279,6 +279,66 @@ const schema = {
           count_proposed: { type: "integer" },
           count_confidence: { type: "string", enum: ["high", "medium", "low", "none"] },
           count_note: { type: "string" },
+          source_refs: { type: "array", items: { type: "string" } },
+        },
+      },
+    },
+    /* The structural vocabulary: what a framing set states in its beam,
+       header, joist, rafter, post, footing and hold-down schedules, one row
+       per scheduled member — the way an architectural set states doors and
+       windows. A schedule row is the requirement; marks counted drawn on
+       the plans corroborate it. Nothing here is measured by scale. */
+    structural_members: {
+      type: "array",
+      items: {
+        type: "object",
+        additionalProperties: false,
+        required: [
+          "mark", "member_type", "description", "size", "spacing", "material", "level", "location",
+          "count_scheduled", "count_drawn", "count_proposed", "count_confidence", "count_note",
+          "length_printed", "unit", "detail_refs", "source_refs",
+        ],
+        properties: {
+          mark: { type: "string" },
+          member_type: {
+            type: "string",
+            enum: [
+              "beam", "header", "joist", "rafter", "ridge", "post", "column", "stud", "blocking", "ledger",
+              "strap", "holdown", "anchor", "shear_wall", "footing", "grade_beam", "pier", "slab", "other",
+            ],
+          },
+          description: { type: "string" },
+          size: { type: "string" },
+          spacing: { type: "string" },
+          material: { type: "string" },
+          level: { type: "string" },
+          location: { type: "string" },
+          count_scheduled: { type: "integer" },
+          count_drawn: { type: "integer" },
+          count_proposed: { type: "integer" },
+          count_confidence: { type: "string", enum: ["high", "medium", "low", "none"] },
+          count_note: { type: "string" },
+          length_printed: { type: "string" },
+          unit: { type: "string" },
+          detail_refs: { type: "array", items: { type: "string" } },
+          source_refs: { type: "array", items: { type: "string" } },
+        },
+      },
+    },
+    /* The printed general rules for members not individually scheduled —
+       "ALL STUDS 2x4 #2 @ 16'' O.C. U.N.O." — each with its exception
+       clause copied verbatim. A printed rule is a project requirement with
+       its exception, never an assumption of ours. */
+    framing_defaults: {
+      type: "array",
+      items: {
+        type: "object",
+        additionalProperties: false,
+        required: ["rule", "applies_to", "exception", "source_refs"],
+        properties: {
+          rule: { type: "string" },
+          applies_to: { type: "string" },
+          exception: { type: "string" },
           source_refs: { type: "array", items: { type: "string" } },
         },
       },

@@ -199,6 +199,7 @@ const CONFIDENCE_RANK = { high: 1, medium: 2, low: 3, none: 4 };
 const betterConfidence = (a, b) => (CONFIDENCE_RANK[a] || 4) <= (CONFIDENCE_RANK[b] || 4) ? a : b;
 const lowerText = (value) => text(value).trim().toLowerCase();
 const scheduleIdentity = (entry) => `${lowerText(entry.category)}|${lowerText(entry.mark)}`;
+const memberIdentity = (entry) => `${lowerText(entry.member_type)}|${lowerText(entry.mark)}`;
 const sameSchedule = (a, b) =>
   lowerText(a.unit) === lowerText(b.unit)
   && normaliseName(a.description) === normaliseName(b.description)
@@ -348,36 +349,48 @@ export function mergeChunkAnalyses(analyses, chunks = []) {
     return (attached || candidates[0]).entry;
   });
 
-  /* Schedule rows: the same row from two chunks is one row with both
-     sources; a row with the same mark and different values is kept beside
-     it, with a question. Nothing read is thrown away. */
-  const component_schedules = [];
+  /* Schedule rows and structural members: the same row from two chunks is
+     one row with both sources; a row with the same mark and different
+     values is kept beside it, with a question. Nothing read is thrown
+     away. */
   const scheduleGaps = [];
-  const conflictsSeen = new Set();
-  readings.forEach((reading, index) => {
-    for (const entry of list(reading.component_schedules)) {
-      const identity = scheduleIdentity(entry);
-      const chunkNumber = orderedMeta[index].chunk_index + 1;
-      const twin = component_schedules.find((kept) => scheduleIdentity(kept) === identity && sameSchedule(kept, entry));
-      if (twin) {
-        twin.source_refs = unionRefs(twin.source_refs, entry.source_refs);
-        twin.count_confidence = betterConfidence(twin.count_confidence, entry.count_confidence);
-        if (!twin.read_in_chunks.includes(chunkNumber)) twin.read_in_chunks.push(chunkNumber);
-        continue;
+  const mergeRows = (key, identityOf, describe) => {
+    const kept = [];
+    const conflictsSeen = new Set();
+    readings.forEach((reading, index) => {
+      for (const entry of list(reading[key])) {
+        const identity = identityOf(entry);
+        const chunkNumber = orderedMeta[index].chunk_index + 1;
+        const twin = kept.find((row) => identityOf(row) === identity && sameSchedule(row, entry));
+        if (twin) {
+          twin.source_refs = unionRefs(twin.source_refs, entry.source_refs);
+          twin.count_confidence = betterConfidence(twin.count_confidence, entry.count_confidence);
+          if (!twin.read_in_chunks.includes(chunkNumber)) twin.read_in_chunks.push(chunkNumber);
+          continue;
+        }
+        const rival = kept.find((row) => identityOf(row) === identity);
+        if (rival && !conflictsSeen.has(identity)) {
+          conflictsSeen.add(identity);
+          scheduleGaps.push({
+            severity: "important",
+            question: `${describe(entry)} was read with different values by different chunks of this reading: chunk ${rival.read_in_chunks[0]} says ${describeCounts(rival)}, "${text(rival.description)}"; chunk ${chunkNumber} says ${describeCounts(entry)}, "${text(entry.description)}". Both rows are kept; confirm which governs.`,
+            source_refs: unionRefs(rival.source_refs, entry.source_refs),
+            blocks_activation: false,
+          });
+        }
+        kept.push({ ...entry, source_refs: unionRefs(entry.source_refs, []), read_in_chunks: [chunkNumber] });
       }
-      const rival = component_schedules.find((kept) => scheduleIdentity(kept) === identity);
-      if (rival && !conflictsSeen.has(identity)) {
-        conflictsSeen.add(identity);
-        scheduleGaps.push({
-          severity: "important",
-          question: `"${text(entry.mark)}" (${text(entry.category)}) was read with different values by different chunks of this reading: chunk ${rival.read_in_chunks[0]} says ${describeCounts(rival)}, "${text(rival.description)}"; chunk ${chunkNumber} says ${describeCounts(entry)}, "${text(entry.description)}". Both rows are kept; confirm which governs.`,
-          source_refs: unionRefs(rival.source_refs, entry.source_refs),
-          blocks_activation: false,
-        });
-      }
-      component_schedules.push({ ...entry, source_refs: unionRefs(entry.source_refs, []), read_in_chunks: [chunkNumber] });
-    }
-  });
+    });
+    return kept;
+  };
+  const component_schedules = mergeRows("component_schedules", scheduleIdentity, (entry) => `"${text(entry.mark)}" (${text(entry.category)})`);
+  const structural_members = mergeRows("structural_members", memberIdentity, (entry) => `"${text(entry.mark)}" (${text(entry.member_type)})`);
+  /* A printed rule read by two chunks is one rule; the exception clause is
+     part of the rule. */
+  const framing_defaults = dedupeBy(
+    readings.flatMap((reading) => list(reading.framing_defaults)),
+    (rule) => `${normaliseName(rule.rule)}|${normaliseName(rule.exception)}`,
+  );
 
   /* Gaps: every chunk's questions survive. The one rewrite is the question
      that asks for a file this same reading holds in another chunk — it
@@ -411,6 +424,8 @@ export function mergeChunkAnalyses(analyses, chunks = []) {
     framing_walls: readings.flatMap((reading) => list(reading.framing_walls)),
     framing_decks: readings.flatMap((reading) => list(reading.framing_decks)),
     component_schedules,
+    structural_members,
+    framing_defaults,
     systems: dedupeBy(
       readings.flatMap((reading) => list(reading.systems)),
       (system) => normaliseName(system.name),

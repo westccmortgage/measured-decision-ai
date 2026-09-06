@@ -235,5 +235,29 @@ console.log("\n── determinism, the whole point ──");
   check("the same walls produce the same order, byte for byte", a === b);
 }
 
+console.log("\n── scheduled structural members ──");
+{
+  const members = [
+    { mark: "FB1", member_type: "beam", description: "3-1/2 x 11-7/8 LVL", unit: "each", count_scheduled: 2, count_drawn: 2, count_proposed: 2, count_confidence: "high", count_note: "", detail_refs: ["S-6/4"], source_refs: ["S-3 (original p25)"] },
+    { mark: "HDR4", member_type: "header", description: "Parallam PSL 2.0E 3.50 x 18.0", unit: "each", count_scheduled: 0, count_drawn: 3, count_proposed: 3, count_confidence: "high", count_note: "", detail_refs: [], source_refs: ["S-3 (original p25)"] },
+    { mark: "RB 1", member_type: "beam", description: "6x12 DF #1", unit: "each", count_scheduled: 0, count_drawn: 0, count_proposed: 2, count_confidence: "medium", count_note: "one mark under a leader", detail_refs: [], source_refs: ["S-4"] },
+    { mark: "F1", member_type: "footing", description: "24 x 24 x 12 concrete w/ 3-#4 e.w.", unit: "each", count_scheduled: 0, count_drawn: 4, count_proposed: 4, count_confidence: "high", count_note: "", detail_refs: ["S-5/1"], source_refs: ["S-2 (original p24)"] },
+    { mark: "HDU4", member_type: "holdown", description: "Simpson HDU4-SDS2.5", unit: "each", count_scheduled: 0, count_drawn: 0, count_proposed: 0, count_confidence: "none", count_note: "locations not read", detail_refs: [], source_refs: ["S-5"] },
+  ];
+  const result = takeoff([], [], members);
+  const byMark = (mark) => result.lines.find((line) => line.item.includes(` ${mark}:`));
+  check("a printed quantity is a printed fact in the schedule's unit", byMark("FB1")?.quantity === 2 && byMark("FB1")?.unit === "each" && byMark("FB1")?.method === "PRINTED_FACT");
+  check("its detail rides in the provenance", (byMark("FB1")?.source_refs || []).includes("S-6/4"));
+  check("a mark counted drawn is a plan count", byMark("HDR4")?.quantity === 3 && byMark("HDR4")?.method === "AI_PLAN_COUNT" && byMark("HDR4")?.unit === "drawn on plan");
+  check("a proposal is not a line: a question and a proposal with its confidence",
+    !byMark("RB 1") && result.gaps.some((gap) => /beam RB 1 .* not read with certainty/.test(gap))
+    && result.proposals.some((p) => /2 × beam RB 1/.test(p.proposed) && p.confidence === "medium" && /leader/.test(p.basis)));
+  check("a member nobody could count is a question and nothing else", !byMark("HDU4") && result.gaps.some((gap) => /hold-down HDU4/.test(gap)) && !result.proposals.some((p) => /HDU4/.test(p.proposed)));
+  check("concrete is counted for verification and says so", /not lumber — verification count/.test(byMark("F1")?.item || "") && byMark("F1")?.category === "not_lumber");
+  check("lines remember their member type, and foundation types are told apart", byMark("F1")?.member_type === "footing" && takeoff.length >= 0 && require("../takeoff360.js").isFoundationMember("footing") && !require("../takeoff360.js").isFoundationMember("beam"));
+  check("a set with members and no walls is still a takeoff", result.lines.length === 3);
+  check("and members beside decks merge into one list", takeoff([], [], members).lines.length === 3);
+}
+
 console.log(bad ? `\n${bad} FAILURES` : "\nALL OK");
 process.exit(bad ? 1 : 0);

@@ -171,13 +171,20 @@
     return merged;
   }
 
-  function takeoff(walls, decks) {
+  function takeoff(walls, decks, members = []) {
     const lines = new Map();
     const traces = [];
     const gaps = [];
     const proposals = [];
     const unmeasured = [];
     let measuredWalls = 0;
+    const scheduled = takeoffMembers(members);
+    if (scheduled.lines.length || scheduled.gaps.length) {
+      traces.push({ wall: "structural schedules", source_refs: [...new Set(scheduled.lines.flatMap((line) => line.source_refs))], steps: scheduled.steps });
+      gaps.push(...scheduled.gaps);
+      proposals.push(...scheduled.proposals);
+      for (const line of scheduled.lines) mergeLine(lines, line);
+    }
     for (const deck of Array.isArray(decks) ? decks : []) {
       const result = takeoffDeck(deck);
       if (result.lines.length) measuredWalls += 1;
@@ -219,6 +226,65 @@
      surface, independent of which way the joists run. Piece counts, by
      contrast, need span layout, which is a builder's cut list, not a
      drawing's fact — so LF is what this states. */
+  /* Not everything scheduled is lumber: concrete piles and footings, a
+     reinforced grade beam, steel guard posts, straps and hold-downs. They
+     are counted for verification — the invoice for them is real — but a
+     lumber order that lists concrete as a line item reads as a bigger wood
+     buy than it is, so the line says what it is out loud. */
+  const notLumber = (text) => /\bconc(?:rete|\.)?\b|\bsteel\b|\bTS\b|stirrup|re-?bars?\b|\bHDU\b|\bSSW\b|simpson|\bstrap\b|anchor bolt|\bPSL\b\s*$/i.test(String(text || ""));
+  const materialTag = (description) => (notLumber(description) ? " · not lumber — verification count" : "");
+
+  /* The words a person uses for a member type. */
+  const MEMBER_WORDS = {
+    beam: "beam", header: "header", joist: "joist", rafter: "rafter", ridge: "ridge beam", post: "post", column: "column",
+    stud: "stud", blocking: "blocking", ledger: "ledger", strap: "strap", holdown: "hold-down", anchor: "anchor",
+    shear_wall: "shear wall", footing: "footing", grade_beam: "grade beam", pier: "pier", slab: "slab", other: "member",
+  };
+  const FOUNDATION_TYPES = new Set(["footing", "grade_beam", "pier", "slab", "holdown", "anchor"]);
+
+  /* Scheduled structural members, one line each.
+     A printed quantity is a printed fact; a mark counted drawn on the plan is
+     a count; a proposal with a confidence is a proposal, not a line; a member
+     nobody could count is a question. Never a measurement by scale. */
+  function takeoffMembers(members) {
+    const lines = [];
+    const gaps = [];
+    const proposals = [];
+    const steps = [];
+    for (const member of Array.isArray(members) ? members : []) {
+      const word = MEMBER_WORDS[member.member_type] || "member";
+      const mark = String(member.mark || "").trim();
+      const description = String(member.description || "").trim();
+      const item = `${word} ${mark}: ${description}${materialTag(description)}`.replace(/\s+/g, " ").trim();
+      const refs = [...(member.source_refs || []), ...(member.detail_refs || [])];
+      const scheduled = Number(member.count_scheduled) || 0;
+      const drawn = Number(member.count_drawn) || 0;
+      const proposed = Number(member.count_proposed) || 0;
+      const base = { item, member_type: member.member_type || "other", category: notLumber(description) ? "not_lumber" : "lumber", status: "ready", source_refs: refs };
+      if (scheduled > 0) {
+        lines.push({ ...base, quantity: scheduled, unit: String(member.unit || "each"), method: "PRINTED_FACT" });
+        steps.push(`${mark || word}: ${scheduled} printed in the schedule`);
+        continue;
+      }
+      if (drawn > 0) {
+        lines.push({ ...base, quantity: drawn, unit: "drawn on plan", method: "AI_PLAN_COUNT" });
+        steps.push(`${mark || word}: ${drawn} drawn on the plan`);
+        continue;
+      }
+      const gapText = `${word} ${mark} (${description}) is scheduled but its count was not read with certainty`;
+      gaps.push(gapText);
+      if (proposed > 0) {
+        proposals.push({
+          question: gapText,
+          proposed: `${proposed} × ${word} ${mark}`.trim(),
+          confidence: String(member.count_confidence || "low"),
+          basis: String(member.count_note || "").trim() || "counted on the plan",
+        });
+      }
+    }
+    return { lines, gaps, proposals, steps };
+  }
+
   function takeoffDeck(deck) {
     const lines = [];
     const steps = [];
@@ -348,8 +414,6 @@
        verification — the invoice for them is real — but a lumber order that
        lists concrete as a line item reads as a bigger wood buy than it is,
        so the line says what it is out loud. */
-    const notLumber = (text) => /\bconc(?:rete|\.)?\b|\bsteel\b|\bTS\b|stirrup|re-?bars?\b/i.test(String(text || ""));
-    const materialTag = (description) => (notLumber(description) ? " · not lumber — verification count" : "");
     const propose = (gapText, member, what) => {
       const proposed = Number(member?.count_proposed) || 0;
       if (proposed > 0) {
@@ -402,6 +466,8 @@
   }
 
   const api = { parseFeetInches, normalizeLumberSize, parsePrintedNumber, takeoffWall, takeoff, takeoffDeck, stockLengthFor, headerDepthFor };
+  api.takeoffMembers = takeoffMembers;
+  api.isFoundationMember = (type) => FOUNDATION_TYPES.has(String(type || ""));
   if (typeof window !== "undefined") window.MDAITakeoff360 = api;
   if (typeof module !== "undefined" && module.exports) module.exports = api;
 })();
