@@ -277,6 +277,17 @@ export function rebuildableFrom(job, chunks) {
   return { ok: true, parts: parts.length };
 }
 
+/* A launch the provider refused before it read anything, because it could
+   not fetch our files in time. Nothing was sent to a model and nothing was
+   billed — the provider said so — and the files are where they were, so
+   one more try a few seconds later is the honest response. Only that
+   refusal, and only once: any other failure, and any launch whose answer
+   was lost, keeps the caution it already has. */
+const DOWNLOAD_REFUSAL = /unable to download (the )?content|could not (download|fetch|retrieve) (the )?(content|file)|timed out (while )?(downloading|fetching)/i;
+export function retryableLaunchRefusal(message, outcome, attempt) {
+  return attempt === 1 && outcome === "failed" && DOWNLOAD_REFUSAL.test(String(message || ""));
+}
+
 /* One baseline from many chunk readings.
  *
  * `chunks`, when given, is one entry per reading in the same order:

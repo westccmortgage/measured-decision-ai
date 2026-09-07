@@ -6,7 +6,7 @@ import {
 import { buildFingerprint, claimAiRun, finishAiRun, outcomeForStatus, RunProgress, usageFrom } from "../_shared/ai-run-ledger.ts";
 import { signedObjectReadUrl } from "../_shared/aws-object-store.ts";
 import { openAITransport } from "../_shared/openai-transport.ts";
-import { CHUNK_BYTE_LIMIT, chunkNote, chunkRegister, mergeChunkAnalyses, orderForReading, planChunks, rebuildableFrom } from "./chunking.js";
+import { CHUNK_BYTE_LIMIT, chunkNote, chunkRegister, mergeChunkAnalyses, orderForReading, planChunks, rebuildableFrom, retryableLaunchRefusal } from "./chunking.js";
 
 const allowedOrigins = new Set([
   "https://measureddecision.ai",
@@ -1025,20 +1025,40 @@ async function launchNextPendingChunk(
        duplicate of the failed one. */
     force: true,
   });
-  const progress = new RunProgress();
-  try {
-    const payload = await createProviderReading(
-      admin, aiTransport, model, chunkDocuments, registerText,
-      chunkNote(claimed.chunk_index, chunkTotal, chunkDocuments, orderedDocuments.filter((row) => !attachedIds.has(row.id))),
-      progress,
-    );
-    await admin.from("plan_analysis_chunks").update({
-      provider_job_id: payload.id,
-      ai_run_id: ledger.runId,
-      updated_at: new Date().toISOString(),
-    }).eq("id", claimed.id);
-    return claimed;
-  } catch (error) {
+  /* Two attempts at most, and the second only when the provider refused
+     the first before reading anything because it could not fetch our
+     files in time — a refusal, not a lost answer, so nothing was billed. */
+  let attempt = 0;
+  let progress = new RunProgress();
+  let lastError: unknown = null;
+  while (attempt < 2) {
+    attempt += 1;
+    progress = new RunProgress();
+    try {
+      const payload = await createProviderReading(
+        admin, aiTransport, model, chunkDocuments, registerText,
+        chunkNote(claimed.chunk_index, chunkTotal, chunkDocuments, orderedDocuments.filter((row) => !attachedIds.has(row.id))),
+        progress,
+      );
+      await admin.from("plan_analysis_chunks").update({
+        provider_job_id: payload.id,
+        ai_run_id: ledger.runId,
+        updated_at: new Date().toISOString(),
+      }).eq("id", claimed.id);
+      return claimed;
+    } catch (error) {
+      lastError = error;
+      const message = error instanceof Error ? error.message : String(error);
+      if (retryableLaunchRefusal(message, progress.outcome(), attempt)) {
+        console.warn(`Chunk ${claimed.chunk_index + 1}: the provider could not fetch the files in time; trying once more`, message.slice(0, 120));
+        await new Promise((resolve) => setTimeout(resolve, 4000));
+        continue;
+      }
+      break;
+    }
+  }
+  {
+    const error = lastError;
     const outcome = progress.outcome();
     await finishAiRun(admin, ledger.runId, outcome, {},
       String(error instanceof Error ? error.message : error).slice(0, 200));
