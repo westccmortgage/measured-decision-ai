@@ -2655,5 +2655,39 @@ select pg_temp.check('and so does a reading that took only one request',
            where table_name = 'plan_analysis_jobs' and column_name = 'image_fingerprint')
   and exists (select 1 from information_schema.columns
                where table_name = 'plan_analysis_jobs' and column_name = 'images_sent'));
+-- ═══════════════════════ THE COMPARISON OF READINGS ════════════════════════
+--
+-- A comparison says which of several readings read a plan set better. It is a
+-- finding about readers, bought like any other call — so the ledger must be
+-- able to spell it, the browser must be able to read it and unable to write
+-- it, and the control markup it may be measured against must belong to a
+-- project like everything else.
+select pg_temp.check('the ledger can name a comparison, so one cannot be bought twice unnoticed',
+  (select pg_get_constraintdef(oid) like '%compare-readings%'
+     from pg_constraint where conname = 'ai_runs_process_key_check'));
+select pg_temp.check('a comparison is readable by the organisation that paid for it',
+  exists (select 1 from pg_policies
+           where tablename = 'reading_comparisons' and cmd = 'SELECT'
+             and qual like '%is_org_member%'));
+select pg_temp.check('and by nobody else — no browser writes a verdict',
+  not exists (select 1 from pg_policies
+               where tablename = 'reading_comparisons' and cmd in ('INSERT', 'UPDATE', 'DELETE', 'ALL')));
+select pg_temp.check('a control markup is read the same way and written by nobody in a browser',
+  exists (select 1 from pg_policies where tablename = 'reading_ground_truth' and cmd = 'SELECT' and qual like '%is_org_member%')
+  and not exists (select 1 from pg_policies where tablename = 'reading_ground_truth' and cmd in ('INSERT', 'UPDATE', 'DELETE', 'ALL')));
+select pg_temp.check('a markup records what it was checked against, so it cannot drift onto another revision',
+  exists (select 1 from information_schema.columns
+           where table_name = 'reading_ground_truth' and column_name = 'verified_against'));
+select pg_temp.check('one comparison of the same readings is one row, so reopening it costs nothing',
+  exists (select 1 from pg_indexes
+           where tablename = 'reading_comparisons' and indexname = 'reading_comparisons_fingerprint'
+             and indexdef like '%UNIQUE%'));
+select pg_temp.check('a comparison says whether the readings were made under the same conditions',
+  exists (select 1 from information_schema.columns
+           where table_name = 'reading_comparisons' and column_name = 'comparable'));
+select pg_temp.check('and a comparison a reader could not finish has a word for it',
+  (select pg_get_constraintdef(oid) like '%incomplete%'
+     from pg_constraint where conname = 'reading_comparisons_state_check'));
+rollback;
 
 rollback;

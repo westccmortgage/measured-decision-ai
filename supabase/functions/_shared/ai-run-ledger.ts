@@ -21,7 +21,12 @@ export type AiProcessKey =
   | "spatial-analyze"
   | "document-classify"
   | "document-evidence"
-  | "field-quality-check";
+  | "field-quality-check"
+  | "project-search"
+  /* Not a reading of drawings but a reading of readings: which of several
+     answers read one plan set better. It is bought like any other call, so
+     it is fingerprinted and ledgered like any other call. */
+  | "compare-readings";
 
 export type FingerprintParts = {
   organizationId: string;

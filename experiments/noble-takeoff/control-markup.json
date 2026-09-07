@@ -1,0 +1,950 @@
+{
+  "label": "4423 Noble — S-2, S-3, S-4 printed labels",
+  "read_from": "2306-NA_231114 - PC Submittal Set, pages 24-26 (S-2, S-3, S-4), rendered at ~200 dpi (7197x4795 px per sheet)",
+  "how_it_was_made": "Every printed structural label on the three sheets was located by hand on the enlargements and recorded with its page coordinates. The number in `count` is therefore a count of labels drawn, which is a verifiable fact about the sheet. It is not the same as a count of members: one framing line can carry two labels, and one label can cover several members. A reading that reports members where this markup counted labels is reported as a difference in what was counted, and is never scored as wrong.",
+  "not_used_to_decide": "Entries flagged disputed are shown and never used to decide between readers. Settling a disputed reference with a reader's own answer would be circular.",
+  "entries": [
+    {
+      "section": "structural_members",
+      "category": "footing",
+      "mark": "F1",
+      "sheet": "S-2",
+      "page": 24,
+      "count": 3,
+      "counted": "labels",
+      "places": [
+        {
+          "x": 3305,
+          "y": 1010
+        },
+        {
+          "x": 4120,
+          "y": 1745
+        },
+        {
+          "x": 5415,
+          "y": 2245
+        }
+      ],
+      "note": "Printed labels marked by hand on the ~200 dpi enlargement, with page coordinates."
+    },
+    {
+      "section": "structural_members",
+      "category": "footing",
+      "mark": "F2",
+      "sheet": "S-2",
+      "page": 24,
+      "count": 11,
+      "counted": "labels",
+      "places": [
+        {
+          "x": 1800,
+          "y": 1970
+        },
+        {
+          "x": 3180,
+          "y": 1075
+        },
+        {
+          "x": 3725,
+          "y": 1460
+        },
+        {
+          "x": 3205,
+          "y": 1705
+        },
+        {
+          "x": 4465,
+          "y": 870
+        },
+        {
+          "x": 4660,
+          "y": 1750
+        },
+        {
+          "x": 2125,
+          "y": 2135
+        },
+        {
+          "x": 1850,
+          "y": 2765
+        },
+        {
+          "x": 3210,
+          "y": 2005
+        },
+        {
+          "x": 4030,
+          "y": 2080
+        },
+        {
+          "x": 4710,
+          "y": 2100
+        }
+      ],
+      "disputed": true,
+      "note": "Includes a footing tag near the east stair whose mark could not be read with certainty at 200 dpi."
+    },
+    {
+      "section": "structural_members",
+      "category": "footing",
+      "mark": "F3",
+      "sheet": "S-2",
+      "page": 24,
+      "count": 2,
+      "counted": "labels",
+      "places": [
+        {
+          "x": 2235,
+          "y": 1130
+        },
+        {
+          "x": 1970,
+          "y": 1830
+        }
+      ],
+      "note": "Printed labels marked by hand on the ~200 dpi enlargement, with page coordinates."
+    },
+    {
+      "section": "structural_members",
+      "category": "footing",
+      "mark": "F4",
+      "sheet": "S-2",
+      "page": 24,
+      "count": 4,
+      "counted": "labels",
+      "places": [
+        {
+          "x": 1510,
+          "y": 1935
+        },
+        {
+          "x": 5230,
+          "y": 865
+        },
+        {
+          "x": 5425,
+          "y": 1785
+        },
+        {
+          "x": 1710,
+          "y": 2635
+        }
+      ],
+      "note": "Printed labels marked by hand on the ~200 dpi enlargement, with page coordinates."
+    },
+    {
+      "section": "structural_members",
+      "category": "beam",
+      "mark": "FB 1",
+      "sheet": "S-3",
+      "page": 25,
+      "count": 12,
+      "counted": "labels",
+      "places": [
+        {
+          "x": 2045,
+          "y": 1228
+        },
+        {
+          "x": 2045,
+          "y": 1585
+        },
+        {
+          "x": 2600,
+          "y": 905
+        },
+        {
+          "x": 4580,
+          "y": 1040
+        },
+        {
+          "x": 3085,
+          "y": 2400
+        },
+        {
+          "x": 3895,
+          "y": 1985
+        },
+        {
+          "x": 4595,
+          "y": 1990
+        },
+        {
+          "x": 3895,
+          "y": 2400
+        },
+        {
+          "x": 4260,
+          "y": 2695
+        },
+        {
+          "x": 5150,
+          "y": 2060
+        },
+        {
+          "x": 5315,
+          "y": 2060
+        },
+        {
+          "x": 5205,
+          "y": 2245
+        }
+      ],
+      "note": "Printed labels marked by hand on the ~200 dpi enlargement, with page coordinates."
+    },
+    {
+      "section": "structural_members",
+      "category": "beam",
+      "mark": "FB 10",
+      "sheet": "S-3",
+      "page": 25,
+      "count": 1,
+      "counted": "labels",
+      "places": [
+        {
+          "x": 1600,
+          "y": 2360
+        }
+      ],
+      "note": "Printed labels marked by hand on the ~200 dpi enlargement, with page coordinates."
+    },
+    {
+      "section": "structural_members",
+      "category": "beam",
+      "mark": "FB 11",
+      "sheet": "S-3",
+      "page": 25,
+      "count": 3,
+      "counted": "labels",
+      "places": [
+        {
+          "x": 1700,
+          "y": 2017
+        },
+        {
+          "x": 1470,
+          "y": 2360
+        },
+        {
+          "x": 1700,
+          "y": 2695
+        }
+      ],
+      "note": "Printed labels marked by hand on the ~200 dpi enlargement, with page coordinates."
+    },
+    {
+      "section": "structural_members",
+      "category": "beam",
+      "mark": "FB 2",
+      "sheet": "S-3",
+      "page": 25,
+      "count": 5,
+      "counted": "labels",
+      "places": [
+        {
+          "x": 2940,
+          "y": 958
+        },
+        {
+          "x": 3470,
+          "y": 1830
+        },
+        {
+          "x": 4145,
+          "y": 1550
+        },
+        {
+          "x": 3945,
+          "y": 1620
+        },
+        {
+          "x": 4265,
+          "y": 2085
+        }
+      ],
+      "note": "Printed labels marked by hand on the ~200 dpi enlargement, with page coordinates."
+    },
+    {
+      "section": "structural_members",
+      "category": "beam",
+      "mark": "FB 3",
+      "sheet": "S-3",
+      "page": 25,
+      "count": 4,
+      "counted": "labels",
+      "places": [
+        {
+          "x": 1960,
+          "y": 1440
+        },
+        {
+          "x": 2005,
+          "y": 2017
+        },
+        {
+          "x": 1960,
+          "y": 2360
+        },
+        {
+          "x": 3510,
+          "y": 2665
+        }
+      ],
+      "note": "Printed labels marked by hand on the ~200 dpi enlargement, with page coordinates."
+    },
+    {
+      "section": "structural_members",
+      "category": "beam",
+      "mark": "FB 4",
+      "sheet": "S-3",
+      "page": 25,
+      "count": 1,
+      "counted": "labels",
+      "places": [
+        {
+          "x": 3250,
+          "y": 958
+        }
+      ],
+      "note": "Printed labels marked by hand on the ~200 dpi enlargement, with page coordinates."
+    },
+    {
+      "section": "structural_members",
+      "category": "beam",
+      "mark": "FB 5",
+      "sheet": "S-3",
+      "page": 25,
+      "count": 2,
+      "counted": "labels",
+      "places": [
+        {
+          "x": 2600,
+          "y": 1190
+        },
+        {
+          "x": 4990,
+          "y": 1155
+        }
+      ],
+      "note": "Printed labels marked by hand on the ~200 dpi enlargement, with page coordinates."
+    },
+    {
+      "section": "structural_members",
+      "category": "beam",
+      "mark": "FB 6",
+      "sheet": "S-3",
+      "page": 25,
+      "count": 1,
+      "counted": "labels",
+      "places": [
+        {
+          "x": 3510,
+          "y": 2135
+        }
+      ],
+      "note": "Printed labels marked by hand on the ~200 dpi enlargement, with page coordinates."
+    },
+    {
+      "section": "structural_members",
+      "category": "beam",
+      "mark": "FB 7",
+      "sheet": "S-3",
+      "page": 25,
+      "count": 1,
+      "counted": "labels",
+      "places": [
+        {
+          "x": 2565,
+          "y": 1825
+        }
+      ],
+      "note": "Printed labels marked by hand on the ~200 dpi enlargement, with page coordinates."
+    },
+    {
+      "section": "structural_members",
+      "category": "beam",
+      "mark": "FB 8",
+      "sheet": "S-3",
+      "page": 25,
+      "count": 1,
+      "counted": "labels",
+      "places": [
+        {
+          "x": 3085,
+          "y": 1885
+        }
+      ],
+      "note": "Printed labels marked by hand on the ~200 dpi enlargement, with page coordinates."
+    },
+    {
+      "section": "structural_members",
+      "category": "beam",
+      "mark": "FB 9",
+      "sheet": "S-3",
+      "page": 25,
+      "count": 1,
+      "counted": "labels",
+      "places": [
+        {
+          "x": 4530,
+          "y": 1370
+        }
+      ],
+      "note": "Printed labels marked by hand on the ~200 dpi enlargement, with page coordinates."
+    },
+    {
+      "section": "structural_members",
+      "category": "header",
+      "mark": "HDR",
+      "sheet": "S-3",
+      "page": 25,
+      "count": 16,
+      "counted": "labels",
+      "places": [
+        {
+          "x": 2035,
+          "y": 907
+        },
+        {
+          "x": 2275,
+          "y": 907
+        },
+        {
+          "x": 2915,
+          "y": 905
+        },
+        {
+          "x": 3255,
+          "y": 905
+        },
+        {
+          "x": 4230,
+          "y": 905
+        },
+        {
+          "x": 3375,
+          "y": 1365
+        },
+        {
+          "x": 4280,
+          "y": 1300
+        },
+        {
+          "x": 4060,
+          "y": 1410
+        },
+        {
+          "x": 3955,
+          "y": 1525
+        },
+        {
+          "x": 4370,
+          "y": 1695
+        },
+        {
+          "x": 2970,
+          "y": 2495
+        },
+        {
+          "x": 4035,
+          "y": 2695
+        },
+        {
+          "x": 4475,
+          "y": 2695
+        },
+        {
+          "x": 4995,
+          "y": 2005
+        },
+        {
+          "x": 4815,
+          "y": 2245
+        },
+        {
+          "x": 1985,
+          "y": 2048
+        }
+      ],
+      "disputed": true,
+      "note": "Unnumbered header labels. Which schedule row governs each one cannot be resolved without the printed header table, so the number of members behind these labels is not settled."
+    },
+    {
+      "section": "structural_members",
+      "category": "header",
+      "mark": "HDR 1",
+      "sheet": "S-3",
+      "page": 25,
+      "count": 4,
+      "counted": "labels",
+      "places": [
+        {
+          "x": 3730,
+          "y": 905
+        },
+        {
+          "x": 1835,
+          "y": 2360
+        },
+        {
+          "x": 3510,
+          "y": 2595
+        },
+        {
+          "x": 4585,
+          "y": 2490
+        }
+      ],
+      "note": "Printed labels marked by hand on the ~200 dpi enlargement, with page coordinates."
+    },
+    {
+      "section": "structural_members",
+      "category": "header",
+      "mark": "HDR 2",
+      "sheet": "S-3",
+      "page": 25,
+      "count": 1,
+      "counted": "labels",
+      "places": [
+        {
+          "x": 2375,
+          "y": 2695
+        }
+      ],
+      "note": "Printed labels marked by hand on the ~200 dpi enlargement, with page coordinates."
+    },
+    {
+      "section": "structural_members",
+      "category": "header",
+      "mark": "HDR 3",
+      "sheet": "S-3",
+      "page": 25,
+      "count": 1,
+      "counted": "labels",
+      "places": [
+        {
+          "x": 2085,
+          "y": 1520
+        }
+      ],
+      "note": "Printed labels marked by hand on the ~200 dpi enlargement, with page coordinates."
+    },
+    {
+      "section": "structural_members",
+      "category": "header",
+      "mark": "HDR 4",
+      "sheet": "S-3",
+      "page": 25,
+      "count": 1,
+      "counted": "labels",
+      "places": [
+        {
+          "x": 5320,
+          "y": 1390
+        }
+      ],
+      "note": "Printed labels marked by hand on the ~200 dpi enlargement, with page coordinates."
+    },
+    {
+      "section": "structural_members",
+      "category": "beam",
+      "mark": "HIP BM 1",
+      "sheet": "S-4",
+      "page": 26,
+      "count": 4,
+      "counted": "labels",
+      "places": [
+        {
+          "x": 2720,
+          "y": 1520
+        },
+        {
+          "x": 3820,
+          "y": 1670
+        },
+        {
+          "x": 3870,
+          "y": 1965
+        },
+        {
+          "x": 2695,
+          "y": 2090
+        }
+      ],
+      "note": "Printed labels marked by hand on the ~200 dpi enlargement, with page coordinates."
+    },
+    {
+      "section": "structural_members",
+      "category": "beam",
+      "mark": "HIP BM 2",
+      "sheet": "S-4",
+      "page": 26,
+      "count": 4,
+      "counted": "labels",
+      "places": [
+        {
+          "x": 2245,
+          "y": 1050
+        },
+        {
+          "x": 4160,
+          "y": 1340
+        },
+        {
+          "x": 2230,
+          "y": 2560
+        },
+        {
+          "x": 4320,
+          "y": 2420
+        }
+      ],
+      "disputed": true,
+      "note": "Four marks were found on S-4; an advisor reading the same sheet counted six. Not settled, so not used to decide between readers."
+    },
+    {
+      "section": "structural_members",
+      "category": "rafter",
+      "mark": "R.R.1",
+      "sheet": "S-4",
+      "page": 26,
+      "count": 12,
+      "counted": "zones",
+      "places": [
+        {
+          "x": 2045,
+          "y": 1290
+        },
+        {
+          "x": 2045,
+          "y": 1520
+        },
+        {
+          "x": 2455,
+          "y": 1680
+        },
+        {
+          "x": 3470,
+          "y": 1330
+        },
+        {
+          "x": 4210,
+          "y": 1610
+        },
+        {
+          "x": 4785,
+          "y": 1400
+        },
+        {
+          "x": 5275,
+          "y": 1290
+        },
+        {
+          "x": 5275,
+          "y": 1710
+        },
+        {
+          "x": 4785,
+          "y": 1990
+        },
+        {
+          "x": 2045,
+          "y": 2165
+        },
+        {
+          "x": 2045,
+          "y": 2555
+        },
+        {
+          "x": 3470,
+          "y": 2290
+        }
+      ],
+      "note": "Twelve framing-zone callouts, marked by hand with their page coordinates. These are zones, not individual rafters — a reading that reports twelve rafters has counted the wrong thing, and that is the difference this entry exists to expose."
+    },
+    {
+      "section": "structural_members",
+      "category": "beam",
+      "mark": "RB 1",
+      "sheet": "S-4",
+      "page": 26,
+      "count": 2,
+      "counted": "labels",
+      "places": [
+        {
+          "x": 2090,
+          "y": 1385
+        },
+        {
+          "x": 2090,
+          "y": 2345
+        }
+      ],
+      "note": "Printed labels marked by hand on the ~200 dpi enlargement, with page coordinates."
+    },
+    {
+      "section": "structural_members",
+      "category": "beam",
+      "mark": "RB 2",
+      "sheet": "S-4",
+      "page": 26,
+      "count": 2,
+      "counted": "labels",
+      "places": [
+        {
+          "x": 2425,
+          "y": 1520
+        },
+        {
+          "x": 2425,
+          "y": 2270
+        }
+      ],
+      "note": "Printed labels marked by hand on the ~200 dpi enlargement, with page coordinates."
+    },
+    {
+      "section": "structural_members",
+      "category": "beam",
+      "mark": "RB 2?",
+      "sheet": "S-4",
+      "page": 26,
+      "count": 1,
+      "counted": "labels",
+      "places": [
+        {
+          "x": 5210,
+          "y": 1570
+        }
+      ],
+      "disputed": true,
+      "note": "One label could not be read with certainty as RB 2."
+    },
+    {
+      "section": "structural_members",
+      "category": "beam",
+      "mark": "RB 3",
+      "sheet": "S-4",
+      "page": 26,
+      "count": 1,
+      "counted": "labels",
+      "places": [
+        {
+          "x": 3680,
+          "y": 1840
+        }
+      ],
+      "note": "Printed labels marked by hand on the ~200 dpi enlargement, with page coordinates."
+    },
+    {
+      "section": "structural_members",
+      "category": "header",
+      "mark": "RHDR",
+      "sheet": "S-4",
+      "page": 26,
+      "count": 28,
+      "counted": "labels",
+      "places": [
+        {
+          "x": 2285,
+          "y": 905
+        },
+        {
+          "x": 2510,
+          "y": 905
+        },
+        {
+          "x": 2035,
+          "y": 1225
+        },
+        {
+          "x": 2512,
+          "y": 1205
+        },
+        {
+          "x": 3025,
+          "y": 1335
+        },
+        {
+          "x": 2035,
+          "y": 1585
+        },
+        {
+          "x": 3090,
+          "y": 1990
+        },
+        {
+          "x": 3555,
+          "y": 905
+        },
+        {
+          "x": 3935,
+          "y": 905
+        },
+        {
+          "x": 3795,
+          "y": 1005
+        },
+        {
+          "x": 3315,
+          "y": 1435
+        },
+        {
+          "x": 4180,
+          "y": 1550
+        },
+        {
+          "x": 4445,
+          "y": 905
+        },
+        {
+          "x": 5150,
+          "y": 1155
+        },
+        {
+          "x": 4450,
+          "y": 1555
+        },
+        {
+          "x": 4540,
+          "y": 1760
+        },
+        {
+          "x": 4785,
+          "y": 1855
+        },
+        {
+          "x": 4965,
+          "y": 1855
+        },
+        {
+          "x": 2190,
+          "y": 2695
+        },
+        {
+          "x": 2890,
+          "y": 2695
+        },
+        {
+          "x": 3340,
+          "y": 2145
+        },
+        {
+          "x": 3870,
+          "y": 2290
+        },
+        {
+          "x": 3870,
+          "y": 2590
+        },
+        {
+          "x": 3380,
+          "y": 2665
+        },
+        {
+          "x": 3670,
+          "y": 2665
+        },
+        {
+          "x": 4060,
+          "y": 2695
+        },
+        {
+          "x": 4585,
+          "y": 2490
+        },
+        {
+          "x": 5150,
+          "y": 2070
+        }
+      ],
+      "disputed": true,
+      "note": "Unnumbered roof header labels, same reason as HDR."
+    },
+    {
+      "section": "structural_members",
+      "category": "header",
+      "mark": "RHDR 1",
+      "sheet": "S-4",
+      "page": 26,
+      "count": 3,
+      "counted": "labels",
+      "places": [
+        {
+          "x": 1960,
+          "y": 1360
+        },
+        {
+          "x": 1960,
+          "y": 2310
+        },
+        {
+          "x": 5315,
+          "y": 1440
+        }
+      ],
+      "note": "Printed labels marked by hand on the ~200 dpi enlargement, with page coordinates."
+    },
+    {
+      "section": "structural_members",
+      "category": "header",
+      "mark": "RHDR 2",
+      "sheet": "S-4",
+      "page": 26,
+      "count": 1,
+      "counted": "labels",
+      "places": [
+        {
+          "x": 3985,
+          "y": 2085
+        }
+      ],
+      "note": "Printed labels marked by hand on the ~200 dpi enlargement, with page coordinates."
+    },
+    {
+      "section": "structural_members",
+      "category": "ridge",
+      "mark": "RIDGE BM 1",
+      "sheet": "S-4",
+      "page": 26,
+      "count": 2,
+      "counted": "labels",
+      "places": [
+        {
+          "x": 3345,
+          "y": 1805
+        },
+        {
+          "x": 4890,
+          "y": 1700
+        }
+      ],
+      "note": "Printed labels marked by hand on the ~200 dpi enlargement, with page coordinates."
+    },
+    {
+      "section": "structural_members",
+      "category": "ridge",
+      "mark": "RIDGE BM 2",
+      "sheet": "S-4",
+      "page": 26,
+      "count": 3,
+      "counted": "labels",
+      "places": [
+        {
+          "x": 2015,
+          "y": 1415
+        },
+        {
+          "x": 2015,
+          "y": 2365
+        },
+        {
+          "x": 5275,
+          "y": 1510
+        }
+      ],
+      "disputed": true,
+      "note": "Three places carry this mark; whether they are three assemblies or one assembly in three places is not settled on the sheet."
+    }
+  ]
+}

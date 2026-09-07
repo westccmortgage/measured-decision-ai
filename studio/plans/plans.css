@@ -1020,3 +1020,29 @@ body.view-visual .takeoff-section { display: none; }
 .reading-tab small { font-size: 11px; color: var(--muted); }
 .reading-tab[aria-selected="true"] { border-color: var(--accent); box-shadow: 0 0 0 1px var(--accent) inset; }
 .reading-run { margin: 0; font-size: 12px; color: var(--muted); }
+.compare-bar { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; }
+.compare-note { font-size: 12px; color: var(--muted); }
+.compare-bar .ghost { padding: 6px 12px; border-radius: 10px; border: 1px solid var(--line); background: transparent; color: var(--muted); cursor: pointer; font: inherit; font-size: 12px; }
+.compare-bar .ghost:hover:not(:disabled) { color: var(--ink); border-color: var(--accent); }
+
+/* The comparison reads as a finding, not as a scoreboard: the recommendation
+   first, the reason beside it, and every number reachable from there. */
+.comparison { display: grid; gap: 14px; margin: 0 0 18px; padding: 16px; border: 1px solid var(--line); border-radius: 16px; background: var(--panel); }
+.comparison-head { display: grid; gap: 6px; }
+.comparison-head h3 { margin: 0; font-size: 16px; }
+.comparison-reason { margin: 0; font-size: 13px; color: var(--ink); }
+.comparison-conditions { margin: 0; font-size: 12px; padding: 8px 10px; border-radius: 10px; border: 1px solid var(--warn, #b7791f); color: var(--ink); }
+.comparison-run { margin: 0; font-size: 12px; color: var(--muted); }
+.comparison-table-wrap { overflow-x: auto; }
+.comparison-table { width: 100%; border-collapse: collapse; font-size: 12px; }
+.comparison-table caption { text-align: left; font-size: 11px; color: var(--muted); padding: 0 0 6px; }
+.comparison-table th, .comparison-table td { text-align: left; padding: 6px 8px; border-bottom: 1px solid var(--line); vertical-align: top; }
+.comparison-table td.numeric { font-variant-numeric: tabular-nums; }
+.comparison-top { display: grid; gap: 8px; }
+.comparison-finding { display: grid; gap: 3px; padding: 10px 12px; border: 1px solid var(--line); border-radius: 12px; }
+.comparison-finding strong { font-size: 13px; }
+.comparison-finding small { font-size: 11px; color: var(--muted); }
+.comparison-coverage { margin: 0; font-size: 12px; color: var(--muted); }
+.comparison-evidence { font-size: 12px; }
+.comparison-evidence summary { cursor: pointer; color: var(--muted); }
+.comparison-evidence ul { margin: 8px 0 0; padding-left: 18px; display: grid; gap: 4px; }
