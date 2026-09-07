@@ -428,14 +428,18 @@ function analyzeSelectionState() {
 
   if (state.baseline && sameDocumentSet(documents.map((document) => document.id), state.baseline.source_document_ids || [])) {
     const approved = state.baseline.state === "approved";
+    /* The same set, already read. The door to reading it again stays open
+       — a reader improves, a contract changes, a person may want a second
+       reading — and it is a deliberate, confirmed act: the button says so,
+       and the sentence that names the cost comes before anything is sent. */
     return {
-      disabled: !approved,
-      label: approved ? "Open Field Operations" : `Baseline v${state.baseline.version} is ready`,
+      disabled: false,
+      label: approved ? "Open Field Operations" : "Reanalyze this set",
       message: approved
         ? `Baseline v${state.baseline.version} is approved and the roadmap is active. Continue in Field Operations.`
-        : "This exact plan set is already analyzed. Next: review the baseline below and activate the roadmap.",
+        : `This exact plan set is already analyzed as baseline v${state.baseline.version}. Review it below, or reanalyze — that runs AI again and may use additional credits.`,
       kind: "success",
-      action: approved ? "operations" : "analyze",
+      action: approved ? "operations" : "reanalyze",
     };
   }
 
@@ -3750,6 +3754,13 @@ $("#confirm-upload").addEventListener("click", savePendingFiles);
 elements.analyze.addEventListener("click", () => {
   if (elements.analyze.dataset.action === "operations" && state.property?.id) {
     window.location.assign(`../operations/?property=${encodeURIComponent(state.property.id)}`);
+    return;
+  }
+  /* A second reading of an unchanged set is bought only after the sentence
+     that names the cost, and it is sent as a deliberate second purchase. */
+  if (elements.analyze.dataset.action === "reanalyze") {
+    if (!window.MDAIAiUsage.confirmReanalyze()) return;
+    void analyzePlans({ force: true });
     return;
   }
   void analyzePlans();
