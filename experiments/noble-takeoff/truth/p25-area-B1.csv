@@ -1,0 +1,12 @@
+no,label,kind,tile,tile_x,tile_y,page_x,page_y,note
+1,FB 1,beam,p25-r1c1,2045,1228,2045,1228,"horizontal FB1 label at the west wall, north bay"
+2,FB 3,beam,p25-r1c1,1960,1440,1960,1440,"vertical FB3 label, west edge line"
+3,HDR 3,header,p25-r1c1,2085,1520,2085,1520,vertical HDR3 label on grid 2B wall
+4,FB 1,beam,p25-r1c1,2045,1585,2045,1585,"horizontal FB1 label, second bay"
+5,FB 11,beam,p25-r1c1,1700,2017,1700,2017,"horizontal FB11 label at grid C1, over SSW 12x9"
+6,FB 3,beam,p25-r1c1,2005,2017,2005,2017,horizontal FB3 label at grid C1
+7,HDR(BELOW),header,p25-r1c1,1985,2048,1985,2048,general HDR label with BELOW note — no numbered mark
+8,FB 11,beam,p25-r1c1,1470,2360,1470,2360,"vertical FB11 label, west porch line — same member line continues south into r2c1"
+9,FB 10,beam,p25-r1c1,1600,2360,1600,2360,vertical FB10 label — line continues south into r2c1
+10,HDR 1,header,p25-r1c1,1835,2360,1835,2360,vertical HDR1 label — line continues south into r2c1
+11,FB 3,beam,p25-r1c1,1960,2360,1960,2360,vertical FB3 label — line continues south into r2c1
