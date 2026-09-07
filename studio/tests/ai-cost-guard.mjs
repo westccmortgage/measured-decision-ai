@@ -259,9 +259,20 @@ for (const worker of ALL_WORKERS) {
      exactly the case that carries its usage. */
   const hardcodedFailures = (source.replace(/\n/g, " ")
     .match(/finishAiRun\([^)]*?,\s*"failed"[^)]*?\)/g) || []);
-  check(`${worker} closes a call as failed only on the provider's own word`,
-    hardcodedFailures.every((call) => /usageFrom\(providerPayload\)/.test(call)),
+  /* One other shape is honest, and only one: a run refused before a request
+     was ever built. Nothing was sent, so nothing can be on the invoice, and
+     the work is safe to start again on a worker with room. It is allowed
+     here by its own reason string, and the branch it sits on is held to
+     "nothing was sent" by studio/tests/long-readings-fit.mjs. */
+  const nothingWasSent = /"worker_out_of_time"/;
+  check(`${worker} closes a call as failed only on the provider's own word, or where nothing was sent`,
+    hardcodedFailures.every((call) => /usageFrom\(providerPayload\)/.test(call) || nothingWasSent.test(call)),
     hardcodedFailures.join(" | ") || "none");
+  if (nothingWasSent.test(source)) {
+    check(`${worker} only says that where the request was refused before it was built`,
+      source.indexOf("NOT_ENOUGH_WORKER_TIME") < source.indexOf('"worker_out_of_time"')
+      && /Nothing was sent and nothing was bought/.test(source));
+  }
 }
 
 /* The one worker that can actually go back for a lost answer. */
@@ -340,8 +351,20 @@ for (const worker of ["spatial-analyze", "document-classify", "document-evidence
 const providerSource = fs.readFileSync("supabase/functions/_shared/ai-providers.ts", "utf8");
 check("plan-analyze still stores its background response, as it must to retrieve it",
   /background: true,\s*store: true/.test(providerSource + planSource));
-check("the two synchronous readers send the pages inline and upload nothing to a provider file store",
-  !/\/files\b/.test(providerSource) && /inlineData/.test(providerSource) && /"type":"base64"/.test(providerSource));
+/* Retention, said accurately rather than comfortably. Claude is given signed
+   URLs it fetches itself and keeps no file object. Gemini will not fetch a
+   URL and its inline limit is under one chunk, so a copy is uploaded to its
+   file store — and the honest guarantee is not "inline", it is that every
+   copy is deleted when the reading ends and the signed URLs expire. */
+check("Claude is given signed URLs rather than a copy of the plan set",
+  /\{ type: "url", url: document\.url \}/.test(providerSource)
+  && /\{ type: "url", url: image\.url \}/.test(providerSource));
+check("every copy uploaded to Gemini's file store is deleted when the reading ends",
+  /export async function releaseGoogleFiles/.test(providerSource)
+  && /method: "DELETE"/.test(providerSource)
+  && /await releaseGoogleFiles\(transport, uploads\)/.test(planSource));
+check("no plan bytes are base64-encoded into any request body",
+  !/btoa\(/.test(providerSource) && !/"type":"base64"/.test(providerSource));
 check("no provider key is ever written into a request body — only into headers",
   /headers\["x-api-key"\] = secret/.test(providerSource) && !/body[^\n]*secret/.test(providerSource));
 

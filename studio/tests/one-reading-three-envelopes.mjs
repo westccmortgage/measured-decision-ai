@@ -4,14 +4,20 @@
  * same question. This proves it at the wire: the same documents in the same
  * order, the same enlargements with the same labels, the same task, the same
  * result schema and the same output ceiling reach OpenAI, Claude and Gemini —
- * and that the streamed bodies really are the JSON each API expects, with the
- * file bytes in the right field and no key anywhere in them.
+ * and that each body really is the JSON its API expects, with every asset in
+ * the right field and no key anywhere in them.
+ *
+ * None of the three is given the bytes. OpenAI and Claude are given signed
+ * URLs they fetch themselves; Gemini, which will not fetch a URL, is given
+ * uris for copies uploaded to its file store and deleted after the reading.
+ * That is what keeps a 50 MB chunk out of an edge function's memory.
  */
 globalThis.Deno = { env: { get: (name) => (name.endsWith("_API_KEY") ? "test-key-do-not-log" : "") } };
 const {
   PROVIDERS, providerTransport, providerCatalogue, providerConfigured,
-  openAIRequestBody, syncRequest, jsonStreamBody, readAnswer, normaliseUsage, usageCost,
-  readingManifest, modelOptionOrUnknown,
+  openAIRequestBody, syncRequest, readAnswer, normaliseUsage, usageCost,
+  readingManifest, modelOptionOrUnknown, readingImageBudget, readingRefusal,
+  MANY_IMAGE_THRESHOLD, uploadToGoogle, waitForGoogleFiles, releaseGoogleFiles,
 } = await import("../../supabase/functions/_shared/ai-providers.ts");
 
 let bad = 0;
@@ -64,68 +70,86 @@ check("the manifest names the pages and the enlargements in order",
 
 const openAiBody = openAIRequestBody(openai, content);
 const openAiJson = JSON.stringify(openAiBody);
-const anthropicParts = syncRequest(anthropic, content);
-const googleParts = syncRequest(google, content);
 
-/* Each streamed body is assembled with a stubbed fetch, so the bytes of every
-   asset are known and can be found in the right field. */
-const bytesFor = (url) => new TextEncoder().encode(`BYTES:${url}`);
-const stubFetch = async (url) => ({ ok: true, arrayBuffer: async () => bytesFor(url).buffer });
-async function collect(parts) {
-  const stream = jsonStreamBody(parts, stubFetch);
-  const chunks = [];
-  const reader = stream.getReader();
-  for (;;) {
-    const { done, value } = await reader.read();
-    if (done) break;
-    chunks.push(new TextDecoder().decode(value));
+/* Gemini's copies are made with a stubbed transport, so the uris in its body
+   can be traced back to the assets they were made from. */
+const uploadCalls = [];
+const stubFetch = async (url, init = {}) => {
+  uploadCalls.push({ url: String(url), method: init.method || "GET", command: init.headers?.["X-Goog-Upload-Command"] || "" });
+  if (String(url).startsWith("https://files.example/")) {
+    return { ok: true, status: 200, headers: new Map(), arrayBuffer: async () => new TextEncoder().encode(`BYTES:${url}`).buffer };
   }
-  return chunks.join("");
-}
-const anthropicText = await collect(anthropicParts.parts);
-const googleText = await collect(googleParts.parts);
-let anthropicBody, googleBody;
-try { anthropicBody = JSON.parse(anthropicText); } catch (error) { check("the Claude body is valid JSON", false, String(error).slice(0, 120) + " :: " + anthropicText.slice(0, 200)); }
-try { googleBody = JSON.parse(googleText); } catch (error) { check("the Gemini body is valid JSON", false, String(error).slice(0, 120) + " :: " + googleText.slice(0, 200)); }
-check("both streamed bodies are valid JSON", Boolean(anthropicBody && googleBody));
+  if (String(url).endsWith("/files") && init.headers?.["X-Goog-Upload-Command"] === "start") {
+    const source = JSON.parse(init.body).file.display_name;
+    return { ok: true, status: 200, headers: { get: (name) => (name === "x-goog-upload-url" ? `https://upload.example/${encodeURIComponent(source)}` : null) } };
+  }
+  if (String(url).startsWith("https://upload.example/")) {
+    const label = decodeURIComponent(String(url).split("/").pop());
+    return { ok: true, status: 200, json: async () => ({ file: { uri: `https://files.google/v1/${label}`, name: `files/${label}`, state: "ACTIVE" } }) };
+  }
+  return { ok: true, status: 200, json: async () => ({ state: "ACTIVE" }) };
+};
 
-if (anthropicBody && googleBody) {
+const uploads = [];
+for (const asset of [...content.documents, ...content.images]) uploads.push(await uploadToGoogle(google, asset, stubFetch));
+await waitForGoogleFiles(google, uploads, stubFetch, 1000, async () => {});
+
+const anthropicRequest = syncRequest(anthropic, content);
+const googleRequest = syncRequest(google, content, uploads);
+const anthropicBody = anthropicRequest.body;
+const googleBody = googleRequest.body;
+const anthropicText = JSON.stringify(anthropicBody);
+const googleText = JSON.stringify(googleBody);
+
+check("each asset is uploaded to Gemini once and finalised in one command",
+  uploads.length === 5
+  && uploadCalls.filter((call) => call.command === "start").length === 5
+  && uploadCalls.filter((call) => call.command === "upload, finalize").length === 5,
+  JSON.stringify(uploadCalls.filter((c) => c.command).map((c) => c.command)));
+
+{
   const anthropicBlocks = anthropicBody.messages[0].content;
-  const googleParts2 = googleBody.contents[0].parts;
+  const geminiParts = googleBody.contents[0].parts;
   const openAiBlocks = openAiBody.input[0].content;
 
   check("every reader is asked for the same model it was chosen as",
-    openAiBody.model === "gpt-5.6-sol" && anthropicBody.model === "claude-opus-5" && googleParts.url.includes("gemini-3.1-pro-preview"),
-    `${openAiBody.model} / ${anthropicBody.model} / ${googleParts.url.split("/").pop()}`);
+    openAiBody.model === "gpt-5.6-sol" && anthropicBody.model === "claude-opus-5" && googleRequest.url.includes("gemini-3.1-pro-preview"),
+    `${openAiBody.model} / ${anthropicBody.model} / ${googleRequest.url.split("/").pop()}`);
 
+  const uriFor = (asset) => uploads.find((item) => item.url === asset.url)?.fileUri;
   const documentsIn = {
     openai: openAiBlocks.filter((b) => b.type === "input_file").map((b) => b.file_url),
-    anthropic: anthropicBlocks.filter((b) => b.type === "document").map((b) => new TextDecoder().decode(Uint8Array.from(atob(b.source.data), (c) => c.charCodeAt(0)))),
-    google: googleParts2.filter((p) => p.inlineData?.mimeType === "application/pdf").map((p) => new TextDecoder().decode(Uint8Array.from(atob(p.inlineData.data), (c) => c.charCodeAt(0)))),
+    anthropic: anthropicBlocks.filter((b) => b.type === "document").map((b) => b.source.url),
+    google: geminiParts.filter((p) => p.fileData?.mimeType === "application/pdf").map((p) => p.fileData.fileUri),
   };
   check("all three carry both documents, in the same order",
     documentsIn.openai.length === 2 && documentsIn.anthropic.length === 2 && documentsIn.google.length === 2
     && documentsIn.openai[0] === content.documents[0].url
-    && documentsIn.anthropic[0] === `BYTES:${content.documents[0].url}`
-    && documentsIn.google[1] === `BYTES:${content.documents[1].url}`,
-    JSON.stringify({ openai: documentsIn.openai.length, anthropic: documentsIn.anthropic[0], google: documentsIn.google[1] }));
+    && documentsIn.anthropic[0] === content.documents[0].url
+    && documentsIn.google[1] === uriFor(content.documents[1]),
+    JSON.stringify(documentsIn));
 
   const imagesIn = {
     openai: openAiBlocks.filter((b) => b.type === "input_image").map((b) => b.image_url),
-    anthropic: anthropicBlocks.filter((b) => b.type === "image").map((b) => new TextDecoder().decode(Uint8Array.from(atob(b.source.data), (c) => c.charCodeAt(0)))),
-    google: googleParts2.filter((p) => p.inlineData?.mimeType === "image/jpeg").map((p) => new TextDecoder().decode(Uint8Array.from(atob(p.inlineData.data), (c) => c.charCodeAt(0)))),
+    anthropic: anthropicBlocks.filter((b) => b.type === "image").map((b) => b.source.url),
+    google: geminiParts.filter((p) => p.fileData?.mimeType === "image/jpeg").map((p) => p.fileData.fileUri),
   };
   check("all three carry the same three enlargements, in the same order",
     imagesIn.openai.length === 3 && imagesIn.anthropic.length === 3 && imagesIn.google.length === 3
     && imagesIn.openai[2] === content.images[2].url
-    && imagesIn.anthropic[2] === `BYTES:${content.images[2].url}`
-    && imagesIn.google[0] === `BYTES:${content.images[0].url}`,
+    && imagesIn.anthropic[2] === content.images[2].url
+    && imagesIn.google[0] === uriFor(content.images[0]),
     JSON.stringify([imagesIn.openai.length, imagesIn.anthropic.length, imagesIn.google.length]));
+
+  check("no reader is handed the bytes — a 50 MB chunk never enters a request body",
+    anthropicBlocks.every((b) => b.source?.type !== "base64")
+    && geminiParts.every((p) => !p.inlineData)
+    && !/BYTES:/.test(anthropicText) && !/BYTES:/.test(googleText));
 
   const texts = {
     openai: openAiBlocks.filter((b) => b.type === "input_text").map((b) => b.text).join("\n") + "\n" + openAiBody.instructions,
     anthropic: anthropicBlocks.filter((b) => b.type === "text").map((b) => b.text).join("\n") + "\n" + anthropicBody.system,
-    google: googleParts2.filter((p) => p.text).map((p) => p.text).join("\n"),
+    google: geminiParts.filter((p) => p.text).map((p) => p.text).join("\n"),
   };
   check("all three are given the same task, the same register, the same chunk note and the same instructions",
     Object.values(texts).every((text) => text.includes(content.taskText) && text.includes(content.chunkNote) && text.includes(content.instructions) && text.includes(content.imageNote)),
@@ -140,6 +164,39 @@ if (anthropicBody && googleBody) {
   check("no key appears in any body — the secret rides in the headers and nowhere else",
     ![openAiJson, anthropicText, googleText].some((body) => body.includes("test-key-do-not-log"))
     && anthropic.headers["x-api-key"] === "test-key-do-not-log" && google.headers["x-goog-api-key"] === "test-key-do-not-log");
+}
+
+console.log("\n── every copy is taken back ──");
+{
+  const deleted = [];
+  await releaseGoogleFiles(google, uploads, async (url, init) => {
+    deleted.push(`${init.method} ${url}`);
+    return { ok: true, status: 200, json: async () => ({}) };
+  });
+  check("each uploaded copy is deleted when the reading is over",
+    deleted.length === 5 && deleted.every((call) => call.startsWith("DELETE ") && call.includes("/files/")),
+    deleted[0]);
+  const survived = await releaseGoogleFiles(google, uploads, async () => { throw new Error("network gone"); }).then(() => true, () => false);
+  check("and a delete that fails never fails a reading that already happened", survived);
+}
+
+console.log("\n── a reading that cannot be asked for honestly is refused before it is bought ──");
+{
+  check("every reader carries the same enlargement budget, set by the strictest of their own rules",
+    readingImageBudget("openai") === MANY_IMAGE_THRESHOLD
+    && readingImageBudget("anthropic") === MANY_IMAGE_THRESHOLD
+    && readingImageBudget("google") === MANY_IMAGE_THRESHOLD,
+    `${readingImageBudget("openai")} / ${readingImageBudget("anthropic")} / ${readingImageBudget("google")}`);
+  check("so the catalogue the Studio shows names one budget, not three",
+    new Set(providerCatalogue().map((entry) => entry.image_budget)).size === 1,
+    JSON.stringify(providerCatalogue().map((entry) => entry.image_budget)));
+  const tooMany = { ...content, images: Array.from({ length: MANY_IMAGE_THRESHOLD + 1 }, (_, i) => ({ label: `t${i}`, url: `https://files.example/t${i}`, mediaType: "image/jpeg" })) };
+  const refusal = readingRefusal(anthropic, tooMany);
+  check("above the threshold Claude is refused with the reason and the way round it",
+    Boolean(refusal) && /2000 pixels/.test(refusal) && /smaller parts/.test(refusal), String(refusal).slice(0, 90));
+  check("at the budget it is not refused", readingRefusal(anthropic, content) === null);
+  check("and the same set is not refused for the readers whose rule it is not",
+    readingRefusal(openai, tooMany) === null && readingRefusal(google, tooMany) === null);
 }
 
 console.log("\n── three answers, one shape ──");

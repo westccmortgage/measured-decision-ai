@@ -55,6 +55,28 @@ export type ProviderDefinition = {
   source: string;
 };
 
+/* Above this many images in one request, Claude applies a stricter per-image
+   size limit (2000 px per side) than our ~200 dpi tiles satisfy. A reading
+   that would cross it is refused before it is bought, not silently degraded. */
+export const MANY_IMAGE_THRESHOLD = 20;
+
+/* ONE KIT, FOR EVERY READER.
+ *
+ * How many drawing-desk enlargements one reading carries — the same number
+ * for all three readers, because a comparison between readers who were shown
+ * different drawings is a comparison of what they were shown. The number is
+ * the strictest of the three readers' own rules: above twenty images Claude
+ * requires every image to be under 2000 px per side, and our ~200 dpi tiles
+ * are drawn larger than that so a schedule stays legible.
+ *
+ * A smaller budget does not mean less of the drawings is read. It means a
+ * set is read in more parts, each carrying all of its own tiles — which
+ * covers more sheets at drawing-desk resolution than one large budget
+ * stretched thin, not fewer. The splitter in studio/pdf-split.js and the
+ * chunker in plan-analyze/chunking.js both cut to this number; tests hold
+ * the three in step. */
+export const READING_IMAGE_BUDGET = MANY_IMAGE_THRESHOLD;
+
 /* Checked 2026-09-07 on each provider's own documentation. `verifyModelId`
    re-checks the id against the provider's live model list before a paid
    reading, so a rename shows up as an error rather than as a silent charge. */
@@ -170,9 +192,17 @@ export function providerCatalogue() {
     label: definition.label,
     mode: definition.mode,
     configured: providerConfigured(definition.key),
+    image_budget: READING_IMAGE_BUDGET,
     source: definition.source,
     models: definition.models.map((model) => ({ ...model })),
   }));
+}
+
+/* How many enlargements a reading carries. The parameter is here so every
+   call site reads as "this reader's budget" and can be checked; the answer
+   is deliberately the same for all three, and a test holds it that way. */
+export function readingImageBudget(_key?: ProviderKey) {
+  return READING_IMAGE_BUDGET;
 }
 
 export class ProviderNotConfigured extends Error {
@@ -294,47 +324,134 @@ export function readingManifest(content: ReadingContent) {
   };
 }
 
-/* A JSON body assembled as a stream.
+/* NOTHING IS CARRIED THAT CAN BE POINTED AT.
  *
- * Two of the three APIs take the bytes inline. A plan chunk is up to eighty
- * ~200 dpi tiles; holding them all as base64 in one string is how an edge
- * function dies. So the body is produced piece by piece: each asset is
- * fetched, encoded, written, and released before the next one starts. */
-type BodyPart = string | { fetch: string };
+ * A plan chunk is a 50 MB PDF plus up to eighty ~200 dpi tiles. Encoding
+ * that into a request body costs memory and CPU an edge function does not
+ * have, so neither synchronous reader is given bytes:
+ *
+ *   Claude takes a signed URL per document and per image and fetches them
+ *   itself, so the request body stays a few kilobytes.
+ *   Gemini will not fetch a URL, and its inline limit is 20 MB — under one
+ *   chunk — so each asset is uploaded to Google's Files API first, streamed
+ *   through one at a time, and deleted again when the reading is over.
+ *
+ * "Inline" was never a retention promise. What limits retention here is that
+ * the signed URLs expire and the uploaded copies are deleted; Google keeps an
+ * undeleted file for 48 hours on its own schedule.
+ */
 
-function base64(bytes: Uint8Array) {
-  let binary = "";
-  const step = 0x8000;
-  for (let index = 0; index < bytes.length; index += step) {
-    binary += String.fromCharCode(...bytes.subarray(index, index + step));
-  }
-  return btoa(binary);
-}
+const GOOGLE_UPLOAD_BASE = "https://generativelanguage.googleapis.com/upload/v1beta";
 
-export function jsonStreamBody(parts: BodyPart[], fetchImpl: typeof fetch = fetch): ReadableStream<Uint8Array> {
-  const encoder = new TextEncoder();
-  let index = 0;
-  return new ReadableStream({
-    async pull(controller) {
-      if (index >= parts.length) {
-        controller.close();
-        return;
-      }
-      const part = parts[index];
-      index += 1;
-      if (typeof part === "string") {
-        controller.enqueue(encoder.encode(part));
-        return;
-      }
-      const response = await fetchImpl(part.fetch);
-      if (!response.ok) throw new Error(`Could not read an input file for the reading (${response.status})`);
-      const bytes = new Uint8Array(await response.arrayBuffer());
-      controller.enqueue(encoder.encode(base64(bytes)));
+export type UploadedAsset = {
+  /* The signed URL this copy was made from, which is how a request part finds it. */
+  url: string;
+  fileUri: string;
+  mimeType: string;
+  /* Google's own name for the stored file — "files/xxxx" — used to delete it. */
+  name: string;
+};
+
+/* One asset, uploaded and released from memory before the next one starts. */
+export async function uploadToGoogle(
+  transport: ProviderTransport,
+  asset: ReadingAsset,
+  fetchImpl: typeof fetch = fetch,
+): Promise<UploadedAsset> {
+  const source = await fetchImpl(asset.url);
+  if (!source.ok) throw new Error(`Could not read an input file for the reading (${source.status})`);
+  const bytes = new Uint8Array(await source.arrayBuffer());
+  const start = await fetchImpl(`${GOOGLE_UPLOAD_BASE}/files`, {
+    method: "POST",
+    headers: {
+      ...transport.headers,
+      "X-Goog-Upload-Protocol": "resumable",
+      "X-Goog-Upload-Command": "start",
+      "X-Goog-Upload-Header-Content-Length": String(bytes.byteLength),
+      "X-Goog-Upload-Header-Content-Type": asset.mediaType,
     },
+    body: JSON.stringify({ file: { display_name: asset.label } }),
   });
+  const uploadUrl = start.headers.get("x-goog-upload-url");
+  if (!start.ok || !uploadUrl) {
+    const payload = await start.json().catch(() => ({}));
+    throw new Error(providerErrorMessage("google", payload, `Gemini would not accept an upload for ${asset.label} (${start.status})`));
+  }
+  const finish = await fetchImpl(uploadUrl, {
+    method: "POST",
+    headers: {
+      "Content-Length": String(bytes.byteLength),
+      "X-Goog-Upload-Offset": "0",
+      "X-Goog-Upload-Command": "upload, finalize",
+    },
+    body: bytes,
+  });
+  const payload = await finish.json().catch(() => ({}));
+  const file = (payload as Record<string, any>)?.file || payload;
+  if (!finish.ok || !file?.uri) {
+    throw new Error(providerErrorMessage("google", payload as Record<string, any>, `Gemini did not store ${asset.label} (${finish.status})`));
+  }
+  return {
+    url: asset.url,
+    fileUri: String(file.uri),
+    mimeType: asset.mediaType,
+    name: String(file.name || ""),
+  };
 }
 
-const jsonText = (value: unknown) => JSON.stringify(value);
+/* A stored PDF is not readable the instant it lands. Reading it before it is
+   ACTIVE is how a reading fails for a reason that has nothing to do with the
+   drawings. */
+export async function waitForGoogleFiles(
+  transport: ProviderTransport,
+  uploads: UploadedAsset[],
+  fetchImpl: typeof fetch = fetch,
+  deadlineMs = 120_000,
+  sleep: (ms: number) => Promise<void> = (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
+) {
+  const until = Date.now() + deadlineMs;
+  for (const item of uploads) {
+    if (!item.name) continue;
+    for (;;) {
+      const response = await fetchImpl(`${transport.baseUrl}/${item.name}`, { headers: transport.headers });
+      const payload = await response.json().catch(() => ({}));
+      const state = String((payload as Record<string, any>)?.state || "");
+      if (!response.ok) throw new Error(providerErrorMessage("google", payload as Record<string, any>, `Gemini lost a stored page (${response.status})`));
+      if (state === "ACTIVE" || state === "") break;
+      if (state === "FAILED") throw new Error(`Gemini could not process ${item.name} and the reading was not started.`);
+      if (Date.now() > until) throw new Error("Gemini did not finish preparing the uploaded pages in time. Nothing was read and nothing was billed.");
+      await sleep(2000);
+    }
+  }
+}
+
+/* Best effort, and deliberately so: a copy left behind is deleted by Google
+   within 48 hours, and failing to delete it must never fail a reading that
+   already happened. */
+export async function releaseGoogleFiles(
+  transport: ProviderTransport,
+  uploads: UploadedAsset[],
+  fetchImpl: typeof fetch = fetch,
+) {
+  for (const item of uploads) {
+    if (!item.name) continue;
+    try {
+      await fetchImpl(`${transport.baseUrl}/${item.name}`, { method: "DELETE", headers: transport.headers });
+    } catch {
+      /* Left to Google's own expiry. */
+    }
+  }
+}
+
+/* A reading this provider cannot be asked for honestly, named before it is
+   bought rather than after it fails. */
+export function readingRefusal(transport: ProviderTransport, content: ReadingContent): string | null {
+  if (transport.provider === "anthropic" && content.images.length > MANY_IMAGE_THRESHOLD) {
+    return `This reading carries ${content.images.length} enlargements. Above ${MANY_IMAGE_THRESHOLD} images in one request Claude requires every image to be no more than 2000 pixels per side, `
+      + "and these tiles are drawn larger than that so schedules and marks stay legible. Read this set in smaller parts.";
+  }
+  return null;
+}
 
 /* OpenAI: Responses API, background, signed URLs. The proven production
    path — unchanged in shape by this file. */
@@ -368,58 +485,66 @@ export function openAIRequestBody(transport: ProviderTransport, content: Reading
   };
 }
 
-/* Anthropic and Google take one synchronous request each, with the same
-   assets inline. Both bodies are streamed, so no asset is ever held in
-   memory beside the ones before it. */
-export function syncRequest(transport: ProviderTransport, content: ReadingContent) {
-  const parts: BodyPart[] = [];
-  const anthropic = transport.provider === "anthropic";
-  let first = true;
-  const separator = () => (first ? "" : ",");
-  const text = (value: string) => {
-    parts.push(anthropic
-      ? `${separator()}{"type":"text","text":${jsonText(value)}}`
-      : `${separator()}{"text":${jsonText(value)}}`);
-    first = false;
-  };
-  const asset = (item: ReadingAsset, kind: "document" | "image") => {
-    parts.push(anthropic
-      ? `${separator()}{"type":"${kind}","source":{"type":"base64","media_type":${jsonText(item.mediaType)},"data":"`
-      : `${separator()}{"inlineData":{"mimeType":${jsonText(item.mediaType)},"data":"`);
-    parts.push({ fetch: item.url });
-    parts.push(`"}}`);
-    first = false;
-  };
-
-  if (anthropic) {
-    parts.push(`{"model":${jsonText(transport.model.id)},"max_tokens":${content.maxOutputTokens}`);
-    parts.push(`,"system":${jsonText(content.instructions)}`);
-    parts.push(`,"messages":[{"role":"user","content":[`);
-  } else {
-    parts.push(`{"contents":[{"role":"user","parts":[`);
-    text(content.instructions);
+/* Claude and Gemini each take one request with the same pages, the same
+   enlargements in the same order, the same task and the same schema. Only
+   the way each one reaches the bytes differs. */
+export function syncRequest(
+  transport: ProviderTransport,
+  content: ReadingContent,
+  uploads: UploadedAsset[] = [],
+): { url: string; body: Record<string, unknown> } {
+  if (transport.provider === "anthropic") {
+    const blocks: Array<Record<string, unknown>> = [];
+    for (const document of content.documents) {
+      blocks.push({ type: "text", text: `Document: ${document.label}` });
+      blocks.push({ type: "document", source: { type: "url", url: document.url } });
+    }
+    if (content.images.length && content.imageNote) blocks.push({ type: "text", text: content.imageNote });
+    for (const image of content.images) {
+      blocks.push({ type: "text", text: `Image ${image.label}` });
+      blocks.push({ type: "image", source: { type: "url", url: image.url } });
+    }
+    blocks.push({ type: "text", text: content.taskText });
+    if (content.chunkNote) blocks.push({ type: "text", text: content.chunkNote });
+    return {
+      url: `${transport.baseUrl}/messages`,
+      body: {
+        model: transport.model.id,
+        max_tokens: content.maxOutputTokens,
+        system: content.instructions,
+        messages: [{ role: "user", content: blocks }],
+      },
+    };
   }
 
+  const stored = new Map(uploads.map((item) => [item.url, item]));
+  const filePart = (asset: ReadingAsset) => {
+    const copy = stored.get(asset.url);
+    if (!copy) throw new Error(`Gemini was not given a stored copy of ${asset.label}`);
+    return { fileData: { fileUri: copy.fileUri, mimeType: copy.mimeType } };
+  };
+  const parts: Array<Record<string, unknown>> = [{ text: content.instructions }];
   for (const document of content.documents) {
-    text(`Document: ${document.label}`);
-    asset(document, "document");
+    parts.push({ text: `Document: ${document.label}` });
+    parts.push(filePart(document));
   }
-  if (content.images.length && content.imageNote) text(content.imageNote);
+  if (content.images.length && content.imageNote) parts.push({ text: content.imageNote });
   for (const image of content.images) {
-    text(`Image ${image.label}`);
-    asset(image, "image");
+    parts.push({ text: `Image ${image.label}` });
+    parts.push(filePart(image));
   }
-  text(content.taskText);
-  if (content.chunkNote) text(content.chunkNote);
-
-  if (anthropic) {
-    parts.push(`]}]}`);
-    return { url: `${transport.baseUrl}/messages`, parts };
-  }
-  parts.push(`]}],"generationConfig":{"responseMimeType":"application/json","maxOutputTokens":${content.maxOutputTokens},"responseJsonSchema":${jsonText(content.schema)}}}`);
+  parts.push({ text: content.taskText });
+  if (content.chunkNote) parts.push({ text: content.chunkNote });
   return {
     url: `${transport.baseUrl}/models/${encodeURIComponent(transport.model.id)}:generateContent`,
-    parts,
+    body: {
+      contents: [{ role: "user", parts }],
+      generationConfig: {
+        responseMimeType: "application/json",
+        maxOutputTokens: content.maxOutputTokens,
+        responseJsonSchema: content.schema,
+      },
+    },
   };
 }
 
