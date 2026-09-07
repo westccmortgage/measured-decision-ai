@@ -88,10 +88,10 @@ export function tileCoverageLines(coverage) {
       return `${entry.filename}: ${parts.join("; ")}`;
     });
 }
-export function tileCoverageGaps(coverage) {
+export function tileCoverageGaps(coverage, maxImages = MAX_RENDER_IMAGES) {
   return tileCoverageLines(coverage).map((line) => ({
     severity: "important",
-    question: `Read without high-resolution tiles — ${line}. This is the limit of one reading's image budget (${MAX_RENDER_IMAGES} images), not a gap in the drawings: the sheets are whole. Counts and fine print on these pages came from the PDF at the provider's own resolution. Split the set into finer parts and read again to count them.`,
+    question: `Read without high-resolution tiles — ${line}. This is the limit of one reading's image budget (${maxImages} images), not a gap in the drawings: the sheets are whole. Counts and fine print on these pages came from the PDF at the provider's own resolution. Split the set into finer parts and read again to count them.`,
     source_refs: [],
     blocks_activation: false,
     origin: "reader",
@@ -207,6 +207,9 @@ export function chunkRegister(orderedDocuments, chunkDocumentIds, chunkIndex, ch
 }
 
 export function chunkNote(chunkIndex, chunkTotal, attachedDocuments, elsewhereDocuments) {
+  /* A reading in one part is not a chunk of anything, and telling a reader
+     it is chunk 1 of 1 of a set too large for one request is simply false. */
+  if (Number(chunkTotal) <= 1) return null;
   const name = (row) => {
     const pages = pagesOf({ part_of: row.source_metadata?.derived_from });
     return pages ? `${row.original_filename} (${pages})` : row.original_filename;

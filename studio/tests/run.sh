@@ -71,6 +71,7 @@ run "every page keeps its tiles"       studio/tests/every-page-keeps-its-tiles.m
 run "the legend is scope"              studio/tests/legend-devices.mjs
 run "one reading, three envelopes"     studio/tests/one-reading-three-envelopes.mjs
 run "three readers in the Studio"      studio/tests/three-readers.mjs
+run "long readings fit the function" studio/tests/long-readings-fit.mjs
 run "what the number counts"           studio/tests/what-the-number-counts.mjs
 run "the PDF that leaves"             studio/tests/pdf360.mjs
 run "the record leaves with its owner" studio/tests/e2e-export.mjs
