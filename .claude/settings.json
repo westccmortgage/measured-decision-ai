@@ -1,0 +1,15 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(apt-get update)",
+      "Bash(apt-get install -y poppler-utils qpdf)",
+      "Bash(pip install pillow)",
+      "Bash(pip3 install pillow)",
+      "Bash(node experiments/noble-takeoff/kit/build-kit.mjs --pages=24,25,26 --extra=14,22,27,28,29 --dpi=200 --grid=2x3 --overlap=150)",
+      "Bash(node experiments/noble-takeoff/kit/build-kit.mjs *)",
+      "Bash(node experiments/noble-takeoff/run/run-comparison.mjs --approve-budget=25 --providers=openai,anthropic,google --dry-run)",
+      "Bash(node experiments/noble-takeoff/run/run-comparison.mjs --approve-budget=25 --providers=openai,anthropic,google)",
+      "Bash(node experiments/noble-takeoff/run/run-comparison.mjs *)"
+    ]
+  }
+}
