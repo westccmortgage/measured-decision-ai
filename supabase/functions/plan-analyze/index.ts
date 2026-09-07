@@ -6,7 +6,7 @@ import {
 import { buildFingerprint, claimAiRun, finishAiRun, outcomeForStatus, RunProgress, usageFrom } from "../_shared/ai-run-ledger.ts";
 import { signedObjectReadUrl } from "../_shared/aws-object-store.ts";
 import { openAITransport } from "../_shared/openai-transport.ts";
-import { CHUNK_BYTE_LIMIT, chunkNote, chunkRegister, mergeChunkAnalyses, orderForReading, planChunks, rebuildableFrom } from "./chunking.js";
+import { CHUNK_BYTE_LIMIT, chunkNote, chunkRegister, MAX_RENDER_IMAGES, mergeChunkAnalyses, orderForReading, planChunks, rebuildableFrom, tileCoverage, tileCoverageGaps, tileCoverageLines } from "./chunking.js";
 
 const allowedOrigins = new Set([
   "https://measureddecision.ai",
@@ -591,6 +591,7 @@ async function rebuildFromSavedReadings(
     .map((id) => (documents as DocumentRow[]).find((row) => row.id === id))
     .filter(Boolean) as DocumentRow[]);
   const documentsById = new Map(orderedDocuments.map((row) => [row.id, row]));
+  const chunkDocuments = (chunks || []).map((chunk) => ((chunk.document_ids || []) as string[]).map((id) => documentsById.get(id)).filter(Boolean) as DocumentRow[]);
   const merged = mergeChunkAnalyses(
     (chunks || []).map((chunk) => chunk.analysis),
     (chunks || []).map((chunk) => ({
@@ -617,7 +618,7 @@ async function rebuildFromSavedReadings(
   if (jobError || !rebuildJob) return { body: { error: "The rebuild could not be recorded as a job", job_id: source.id }, status: 500 };
 
   try {
-    const result = await finalizeAnalysis(admin, rebuildJob as PlanJob, orderedDocuments, merged, source.model || model, userId);
+    const result = await finalizeAnalysis(admin, rebuildJob as PlanJob, orderedDocuments, withGaps(merged, await tileCoverageGapsFor(admin, chunkDocuments)), source.model || model, userId);
     await admin.from("audit_events").insert({
       organization_id: source.organization_id,
       actor_id: userId,
@@ -846,6 +847,37 @@ async function finalizeAnalysis(
   }
 }
 
+/* The stored tiles of one document, named p<page>-full / p<page>-r<row>c<col>,
+   with the original set's page numbers. */
+async function listPageTiles(admin: ReturnType<typeof createClient>, row: DocumentRow) {
+  const { data: renderRecord } = await admin.from("plan_page_renders")
+    .select("document_id").eq("document_id", row.id).maybeSingle();
+  if (!renderRecord) return [];
+  const prefix = `${row.organization_id}/page-renders/${row.id}`;
+  const { data: objects } = await admin.storage.from("project-documents").list(prefix, { limit: 1000 });
+  return (objects || [])
+    .filter((object) => object.name.endsWith(".jpg"))
+    .map((object) => ({ name: object.name, page: Number((object.name.match(/^p(\d+)-/) || [])[1] || 0) }));
+}
+
+/* What each reading of this job could not see at drawing-desk resolution,
+   as gaps the result keeps. Computed the same way the request was composed,
+   per reading, so a rebuild from saved readings says it too — the saved
+   readings were made with the same budget. */
+async function tileCoverageGapsFor(admin: ReturnType<typeof createClient>, readings: DocumentRow[][]) {
+  const gaps: Array<Record<string, unknown>> = [];
+  for (const documents of readings) {
+    const withTiles: Array<{ id: string; filename: string; tiles: Array<{ name: string; page: number }> }> = [];
+    for (const row of documents) withTiles.push({ id: row.id, filename: row.original_filename, tiles: await listPageTiles(admin, row) });
+    gaps.push(...tileCoverageGaps(tileCoverage(withTiles, MAX_RENDER_IMAGES).coverage));
+  }
+  return gaps;
+}
+function withGaps(analysis: Record<string, any>, gaps: Array<Record<string, unknown>>) {
+  if (!gaps.length) return analysis;
+  return { ...analysis, gaps: [...(Array.isArray(analysis.gaps) ? analysis.gaps : []), ...gaps] };
+}
+
 /* One provider reading: sign the given documents, gather their high-res
    tiles, compose the request, launch it as a background response. Shared by
    the single-shot path and by every chunk of a large set — a chunk is not a
@@ -882,30 +914,21 @@ async function createProviderReading(
      not, the PDFs still go alone — reduced sharpness, never a dead end.
      The budget is per reading, so a chunked large set gets a full tile
      budget for every chunk instead of one budget stretched over 200 sheets. */
-  const MAX_RENDER_IMAGES = 80;
-  const renderImages: Array<{ label: string; url: string }> = [];
-  let renderTilesDropped = 0;
+  const withTiles: Array<{ id: string; filename: string; tiles: Array<{ name: string; page: number }> }> = [];
   for (const { row } of signedDocuments) {
-    const { data: renderRecord } = await admin.from("plan_page_renders")
-      .select("document_id, pages, target_dpi").eq("document_id", row.id).maybeSingle();
-    if (!renderRecord) continue;
-    const prefix = `${row.organization_id}/page-renders/${row.id}`;
-    const { data: objects } = await admin.storage.from("project-documents")
-      .list(prefix, { limit: 1000 });
-    const tiles = (objects || [])
-      .filter((object) => object.name.endsWith(".jpg"))
-      .sort((a, b) => {
-        const pageOf = (name: string) => Number((name.match(/^p(\d+)-/) || [])[1] || 0);
-        const partOf = (name: string) => (/-full\.jpg$/.test(name) ? 0 : 1);
-        return pageOf(a.name) - pageOf(b.name) || partOf(a.name) - partOf(b.name) || a.name.localeCompare(b.name);
-      });
-    for (const tile of tiles) {
-      if (renderImages.length >= MAX_RENDER_IMAGES) { renderTilesDropped += 1; continue; }
-      const { data: signedTile } = await admin.storage.from("project-documents")
-        .createSignedUrl(`${prefix}/${tile.name}`, 3600);
-      if (signedTile?.signedUrl) renderImages.push({ label: `${row.original_filename} · ${tile.name}`, url: signedTile.signedUrl });
-    }
+    withTiles.push({ id: row.id, filename: row.original_filename, tiles: await listPageTiles(admin, row) });
   }
+  const budget = tileCoverage(withTiles, MAX_RENDER_IMAGES);
+  const renderImages: Array<{ label: string; url: string }> = [];
+  for (const tile of budget.kept) {
+    const row = signedDocuments.find((entry) => entry.row.id === tile.document_id)?.row;
+    if (!row) continue;
+    const prefix = `${row.organization_id}/page-renders/${row.id}`;
+    const { data: signedTile } = await admin.storage.from("project-documents")
+      .createSignedUrl(`${prefix}/${tile.name}`, 3600);
+    if (signedTile?.signedUrl) renderImages.push({ label: `${row.original_filename} · ${tile.name}`, url: signedTile.signedUrl });
+  }
+  const unseen = tileCoverageLines(budget.coverage);
 
   const userContent: Array<Record<string, unknown>> = [
     {
@@ -927,7 +950,12 @@ async function createProviderReading(
         ...renderImages.map((image, index) => `${index + 1}. ${image.label}`),
         "Tile names: p<page>-r<row>c<col> is one quadrant of that page at ~200 dpi; p<page>-full is the whole page. "
         + "Read fine print — schedules, legends, keynotes, title blocks — from these tiles, and count drawn marks tile by tile, summing across a page without double-counting the overlap-free tile edges.",
-        renderTilesDropped > 0 ? `${renderTilesDropped} additional tiles were omitted to fit the request; the PDFs remain the complete source.` : "",
+        ...(unseen.length ? [
+          `Pages whose high-resolution tiles this request could not carry — ${unseen.join(" · ")}. `
+          + "That is the limit of this reading's image budget, not a gap in the drawings: those sheets are whole and are attached in the PDF at the provider's own resolution. "
+          + "Read them there. Where a count or a line of fine print on such a page is not legible at that resolution, write \"not legible at this reading's resolution\" in the row's count_note with count_confidence none — "
+          + "never describe the sheet as cropped, partial or unavailable, and never raise it as a question to the designer.",
+        ] : []),
       ].filter(Boolean).join("\n"),
     });
     for (const image of renderImages) {
@@ -1112,7 +1140,8 @@ async function advanceChunkedJob(
           .map((row) => ({ id: row!.id, filename: row!.original_filename, part_of: row!.source_metadata?.derived_from || null })),
       })),
     );
-    return await finalizeAnalysis(admin, job, orderedDocuments, merged, job.model || model, userId);
+    const chunkDocuments = (freshChunks || []).map((chunk) => ((chunk.document_ids || []) as string[]).map((id) => documentsById.get(id)).filter(Boolean) as DocumentRow[]);
+    return await finalizeAnalysis(admin, job, orderedDocuments, withGaps(merged, await tileCoverageGapsFor(admin, chunkDocuments)), job.model || model, userId);
   };
 
   /* `outcome` is the honest half of this: 'failed' where the provider told us
@@ -1397,7 +1426,7 @@ Deno.serve(async (request) => {
         throw new Error("One or more project documents are missing or outside this project");
       }
       const analysis = JSON.parse(responseText(providerPayload));
-      const result = await finalizeAnalysis(admin, job, documents as DocumentRow[], analysis, job.model || model, userData.user.id);
+      const result = await finalizeAnalysis(admin, job, documents as DocumentRow[], withGaps(analysis, await tileCoverageGapsFor(admin, [documents as DocumentRow[]])), job.model || model, userData.user.id);
       return json(request, result);
     }
 
