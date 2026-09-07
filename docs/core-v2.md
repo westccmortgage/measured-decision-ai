@@ -129,6 +129,30 @@ People act through four functions, each of which checks the asker:
 their storage path, byte size and revision label. A browser may state what it
 believes the fingerprint is and be told it is stale; it never supplies the value.
 
+## One project, all the way down
+
+§16.8: source and evidence records cannot cross organisations through ids,
+signed URLs, search, comparison, or joins. Since the browser cannot write any
+V2 table, the risk is not a form post — it is a worker, a fixture or a later
+migration joining a row of one project to a row of another and producing a
+decision that opens somebody else's drawing.
+
+`core_v2_guard_tenancy` runs before insert and update on every table that
+carries a reference, with the column/parent pairs as trigger arguments, and
+refuses any foreign key whose parent belongs to a different property. That
+covers the outbox's workflow, a page's document, a region's page and parent, a
+task's workflow and lineage, a dependency's two tasks, an attempt's task, a
+claim's workflow, attempt, superseded claim and entity, an anchor's claim,
+document, page, region and evidence item, an entity's workflows, an alias's
+entity and attempt, a relation's entities and decision, an assessment's claim
+and attempt, a disagreement's workflow and resolving decision, a decision's
+workflow, entity, deciding attempt and superseded decision, decision evidence's
+decision, claim and anchor, and an action's decision and completion evidence.
+
+`core_v2_start_workflow` applies the same rule to the sources a person names:
+every document must belong to the property being read, and a borrowed id cannot
+ride along with a real one.
+
 ## Audit
 
 `core_v2.workflow.started`, `core_v2.workflow.cancelled`,

@@ -2830,6 +2830,25 @@ select pg_temp.check('starting work is in the trail, with the sources it was giv
              and entity_id = (select v::text from core_v2_ids where k = 'wf1')
              and detail ? 'source_set_fingerprint'));
 
+-- ───────────────────────────── an id from another project is still another project's
+--
+-- The browser cannot write any of these tables, so this is not about a form
+-- post. It is about a worker, a fixture or a later migration joining a row of
+-- one project to a row of another and producing a decision that opens somebody
+-- else's drawing.
+reset role;
+select pg_temp.refused('a page cannot be created against another project''s document',
+  $$insert into public.source_pages(organization_id, property_id, document_id, page_index, content_hash)
+    values ('aaaaaaaa-0000-0000-0000-000000000001','bbbbbbbb-0000-0000-0000-000000000001',
+      'ddddddd0-0000-0000-0000-00000000000e', 0, 'borrowed')$$);
+select pg_temp.refused('a task cannot be filed under another project''s reading',
+  $$insert into public.extraction_tasks(organization_id, property_id, workflow_id, task_type,
+      subject_key, input_fingerprint, contract_version)
+    values ('aaaaaaaa-0000-0000-0000-000000000002','bbbbbbbb-0000-0000-0000-000000000002',
+      (select v from core_v2_ids where k = 'wf1'),'ingest_page','borrowed','fp','v1')$$);
+set local role authenticated;
+set local test.uid = '11111111-1111-1111-1111-111111111111';
+
 -- ─────────────────────────────── one transaction, or none: the outbox atomicity
 --
 -- The workflow row and its start command are written together. If the command
@@ -3115,6 +3134,12 @@ select pg_temp.refused('an anchor that points nowhere is not an anchor',
   $$insert into public.evidence_anchors(organization_id, property_id, claim_id, source_kind, anchor_hash)
     values ('aaaaaaaa-0000-0000-0000-000000000001','bbbbbbbb-0000-0000-0000-000000000001',
       '0e0e0000-0000-0000-0000-000000000001','page_region','nowhere')$$);
+select pg_temp.refused('nor may an anchor of this project point at another project''s document',
+  $$insert into public.evidence_anchors(organization_id, property_id, claim_id, source_kind,
+      document_id, anchor_hash)
+    values ('aaaaaaaa-0000-0000-0000-000000000001','bbbbbbbb-0000-0000-0000-000000000001',
+      '0e0e0000-0000-0000-0000-000000000001','document_text',
+      'ddddddd0-0000-0000-0000-00000000000e','borrowed')$$);
 select pg_temp.refused('nor is a box drawn in some other resolution''s pixels',
   $$insert into public.evidence_anchors(organization_id, property_id, claim_id, source_kind,
       page_id, bbox, anchor_hash)

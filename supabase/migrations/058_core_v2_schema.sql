@@ -1612,3 +1612,105 @@ grant execute on function public.core_v2_cancel_workflow(uuid, text) to authenti
 grant execute on function public.core_v2_authorize_task_retry(uuid, text) to authenticated, service_role;
 grant execute on function public.core_v2_resolve_disagreement(uuid, text, text, uuid, jsonb, text, text, text) to authenticated, service_role;
 grant execute on function public.core_v2_source_set_fingerprint(uuid, uuid[]) to authenticated, service_role;
+
+-- ═════════════════════════════════════ 15 · one project, all the way down
+--
+-- Section 16.8: source and evidence records cannot cross organisations through
+-- ids, signed urls, search, comparison, or joins. The browser cannot write any
+-- of these tables at all, so the risk is not a malicious form post — it is a
+-- worker, a fixture or a future migration joining a row of one project to a row
+-- of another and producing a decision that opens somebody else's drawing.
+--
+-- Every foreign key below is checked against the property of the row carrying
+-- it, on the way in.
+create or replace function public.core_v2_property_of(p_table text, p_id uuid)
+returns uuid language plpgsql stable as $$
+declare found uuid;
+begin
+  if p_id is null then return null; end if;
+  execute format('select property_id from public.%I where id = $1', p_table)
+    into found using p_id;
+  return found;
+end $$;
+
+create or replace function public.core_v2_guard_tenancy() returns trigger
+language plpgsql as $$
+declare
+  i integer := 0;
+  column_name text;
+  parent_table text;
+  child uuid;
+  parent_property uuid;
+  row_json jsonb := to_jsonb(new);
+begin
+  while i < TG_NARGS loop
+    column_name := TG_ARGV[i];
+    parent_table := TG_ARGV[i + 1];
+    child := nullif(row_json ->> column_name, '')::uuid;
+    if child is not null then
+      parent_property := public.core_v2_property_of(parent_table, child);
+      if parent_property is null then
+        raise exception 'core_v2: %.% points at a % that does not exist',
+          TG_TABLE_NAME, column_name, parent_table using errcode = 'check_violation';
+      elsif parent_property <> new.property_id then
+        raise exception 'core_v2: %.% points at a % in another project',
+          TG_TABLE_NAME, column_name, parent_table using errcode = 'check_violation';
+      end if;
+    end if;
+    i := i + 2;
+  end loop;
+  return new;
+end $$;
+
+comment on function public.core_v2_guard_tenancy() is
+  'Refuses a Core V2 row whose foreign key points into another project. Trigger arguments are pairs of column name and parent table.';
+
+create trigger core_v2_tenancy before insert or update on public.workflow_outbox
+  for each row execute function public.core_v2_guard_tenancy('workflow_id','intelligence_workflows');
+create trigger core_v2_tenancy before insert or update on public.source_pages
+  for each row execute function public.core_v2_guard_tenancy('document_id','project_documents');
+create trigger core_v2_tenancy before insert or update on public.page_regions
+  for each row execute function public.core_v2_guard_tenancy(
+    'page_id','source_pages','parent_region_id','page_regions');
+create trigger core_v2_tenancy before insert or update on public.extraction_tasks
+  for each row execute function public.core_v2_guard_tenancy(
+    'workflow_id','intelligence_workflows','parent_task_id','extraction_tasks',
+    'created_by_task_id','extraction_tasks');
+create trigger core_v2_tenancy before insert or update on public.task_dependencies
+  for each row execute function public.core_v2_guard_tenancy(
+    'task_id','extraction_tasks','depends_on_task_id','extraction_tasks');
+create trigger core_v2_tenancy before insert or update on public.agent_attempts
+  for each row execute function public.core_v2_guard_tenancy('task_id','extraction_tasks');
+create trigger core_v2_tenancy before insert or update on public.evidence_claims
+  for each row execute function public.core_v2_guard_tenancy(
+    'workflow_id','intelligence_workflows','attempt_id','agent_attempts',
+    'supersedes_claim_id','evidence_claims','canonical_entity_id','project_entities');
+create trigger core_v2_tenancy before insert or update on public.evidence_anchors
+  for each row execute function public.core_v2_guard_tenancy(
+    'claim_id','evidence_claims','document_id','project_documents','page_id','source_pages',
+    'region_id','page_regions','evidence_item_id','evidence_items');
+create trigger core_v2_tenancy before insert or update on public.project_entities
+  for each row execute function public.core_v2_guard_tenancy(
+    'first_seen_workflow_id','intelligence_workflows','last_seen_workflow_id','intelligence_workflows');
+create trigger core_v2_tenancy before insert or update on public.entity_aliases
+  for each row execute function public.core_v2_guard_tenancy(
+    'entity_id','project_entities','attempt_id','agent_attempts');
+create trigger core_v2_tenancy before insert or update on public.entity_relations
+  for each row execute function public.core_v2_guard_tenancy(
+    'from_entity_id','project_entities','to_entity_id','project_entities','decision_id','decisions');
+create trigger core_v2_tenancy before insert or update on public.claim_assessments
+  for each row execute function public.core_v2_guard_tenancy(
+    'claim_id','evidence_claims','attempt_id','agent_attempts');
+create trigger core_v2_tenancy before insert or update on public.disagreements
+  for each row execute function public.core_v2_guard_tenancy(
+    'workflow_id','intelligence_workflows','resolution_decision_id','decisions');
+create trigger core_v2_tenancy before insert or update on public.decisions
+  for each row execute function public.core_v2_guard_tenancy(
+    'workflow_id','intelligence_workflows','subject_entity_id','project_entities',
+    'decided_by_attempt_id','agent_attempts','supersedes_decision_id','decisions');
+create trigger core_v2_tenancy before insert or update on public.decision_evidence
+  for each row execute function public.core_v2_guard_tenancy(
+    'decision_id','decisions','claim_id','evidence_claims','anchor_id','evidence_anchors');
+create trigger core_v2_tenancy before insert or update on public.decision_actions
+  for each row execute function public.core_v2_guard_tenancy(
+    'decision_id','decisions','completion_evidence_id','evidence_items');
