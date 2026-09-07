@@ -140,6 +140,27 @@ console.log("\n── one kit, the same for every reader ──");
     /planChunks\(orderedDocuments, CHUNK_BYTE_LIMIT, MAX_RENDER_IMAGES, tilesByDocument\)/.test(plan));
 }
 
+console.log("\n── a reading cut short by its own ceiling is a known failure ──");
+{
+  const ceiling = number("MAX_READING_OUTPUT_TOKENS");
+  check("the output ceiling holds the thinking as well as the answer, and is the largest all three accept",
+    ceiling === 64_000, `${ceiling} tokens — Claude and GPT-5.6 Sol publish 128k, Gemini 3.1 Pro 64k`);
+  check("a stop at that ceiling is recorded as a plain failure, never as an unknown outcome",
+    /throw readingStopped\(/.test(plan)
+    && /error\.readingOutcome = "failed";/.test(plan)
+    && /const outcome = stopped\s*\?\s*stopped\.readingOutcome/.test(plan));
+  check("and the usage the provider did report is kept, not thrown away with the error",
+    /error\.providerUsage = usage \|\| \{\};/.test(plan)
+    && /finishAiRun\(admin, ledger\.runId, outcome, stopped\?\.providerUsage \|\| \{\}/.test(plan));
+  check("the message says it is a limit of how the reading was asked for, not of how the plans were read",
+    /not a judgement of how the plans were read/.test(plan));
+  check("the single-request path classifies it the same way",
+    /const launchStopped = stoppedReading\(launchError\);/.test(plan));
+  check("what each reader was told about thinking is recorded with the reading",
+    /reasoning_effort: readingEffort\(transport\.provider\)/.test(plan)
+    && /max_output_tokens: MAX_READING_OUTPUT_TOKENS/.test(plan));
+}
+
 console.log("\n── the kit that was sent is recorded, and can be compared ──");
 {
   check("the digest is taken over the very arrays the request carries",
@@ -182,7 +203,7 @@ console.log("\n── what each reading saw is recorded, so two readings are nev
 check("every reading records the enlargement budget it was given",
   /image_budget: readingImageBudget\(transport\.provider\)/.test(plan));
 check("and the task version it was read under",
-  /image_budget: readingImageBudget\(transport\.provider\),\n    agent_contract_version: AGENT_CONTRACT_VERSION,/.test(plan));
+  /reasoning_effort: readingEffort\(transport\.provider\),\n    max_output_tokens: MAX_READING_OUTPUT_TOKENS,\n    agent_contract_version: AGENT_CONTRACT_VERSION,/.test(plan));
 check("the coverage note names the budget of the reading that produced it, not a constant",
   /tileCoverageGaps\(coverage, maxImages = MAX_RENDER_IMAGES\)/.test(fs.readFileSync("supabase/functions/plan-analyze/chunking.js", "utf8")));
 

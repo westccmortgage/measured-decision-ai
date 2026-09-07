@@ -9,7 +9,7 @@ import { openAITransport } from "../_shared/openai-transport.ts";
 import {
   DEFAULT_PROVIDER, isProviderKey, modelOptionOrUnknown, openAIRequestBody, PROVIDERS,
   ProviderNotConfigured, providerCatalogue, providerErrorMessage, providerTransport, readAnswer,
-  readingImageBudget, readingRefusal, releaseGoogleFiles, syncRequest, uploadToGoogle, usageCost,
+  readingEffort, readingImageBudget, readingRefusal, releaseGoogleFiles, syncRequest, uploadToGoogle, usageCost,
   verifyModelId, waitForGoogleFiles,
   type ProviderKey, type ProviderTransport, type ReadingContent, type UploadedAsset,
 } from "../_shared/ai-providers.ts";
@@ -40,7 +40,21 @@ function corsHeaders(request: Request) {
    reader is given does not differ between them. A reading stopped at this
    limit is an error with its reason on the screen, never a partial result
    presented as finished. */
-const MAX_READING_OUTPUT_TOKENS = 32000;
+/* THE CEILING HAS TO HOLD THE THINKING TOO.
+ *
+ * Thirty-two thousand was not enough. The first real Claude reading of three
+ * structural sheets ran the full five and a half minutes and then stopped at
+ * this limit with the answer unfinished — because on Claude Opus 5 max_tokens
+ * is "a hard limit on total output (thinking plus response text)", and the
+ * model thinks by default at high effort. The ceiling was being spent on
+ * reasoning before the schedule was written.
+ *
+ * Sixty-four thousand is the largest number all three readers accept: Claude
+ * Opus 5 and GPT-5.6 Sol both publish a 128k maximum output, and Gemini 3.1
+ * Pro publishes 64k — the binding one. Google's own page could not be reached
+ * from here to confirm it, so if that figure is wrong the request is rejected
+ * before anything is generated, which costs nothing and says so. */
+const MAX_READING_OUTPUT_TOKENS = 64000;
 
 /* A SYNCHRONOUS READER DOES NOT FIT IN A REQUEST.
  *
@@ -101,6 +115,26 @@ const INLINE_CHUNK_HANDLE = "inline";
 /* Work that outlives the response. Supabase's runtime keeps the worker alive
    for a promise handed to `waitUntil`; anywhere else (a local run, a test)
    the promise simply runs. */
+/* A CALL THAT FINISHED BADLY IS NOT A CALL THAT MIGHT HAVE RUN.
+ *
+ * The ledger's hardest distinction is between "we know this happened and how
+ * it ended" and "we do not know whether this was billed". A provider that
+ * answered — even with a truncated answer — is the first kind: the outcome is
+ * a plain failure, the usage is the usage it reported, and a person deciding
+ * whether to run it again is deciding about a known cost, not an unknown one. */
+type StoppedReading = Error & { readingOutcome: "failed"; providerUsage: Record<string, unknown> };
+
+function readingStopped(message: string, usage: Record<string, unknown>): StoppedReading {
+  const error = new Error(message) as StoppedReading;
+  error.readingOutcome = "failed";
+  error.providerUsage = usage || {};
+  return error;
+}
+
+function stoppedReading(error: unknown): StoppedReading | null {
+  return (error as StoppedReading)?.readingOutcome === "failed" ? error as StoppedReading : null;
+}
+
 function runAfterResponse(work: Promise<unknown>) {
   const runtime = (globalThis as Record<string, any>).EdgeRuntime;
   const settled = work.catch((error) => {
@@ -789,6 +823,10 @@ function runMetrics(
     /* How many enlargements a reading carries — the same for every reader,
        so three readings of one set are three readings of the same drawings. */
     image_budget: readingImageBudget(transport.provider),
+    /* Two readings asked to think differently are not the same reading, so
+       what each was told is recorded beside what it cost. */
+    reasoning_effort: readingEffort(transport.provider),
+    max_output_tokens: MAX_READING_OUTPUT_TOKENS,
     agent_contract_version: AGENT_CONTRACT_VERSION,
     /* And the digest of the pages and enlargements this reading actually
        carried, so "they were given the same kit" can be checked against the
@@ -1193,9 +1231,17 @@ async function createProviderReading(
     }
     const answer = readAnswer(transport.provider, payload);
     if (/max_tokens|MAX_TOKENS|length/i.test(answer.stopReason || "")) {
-      throw new Error(
-        `${PROVIDERS[transport.provider].label} stopped at the output limit before finishing the reading (${answer.stopReason}). `
-        + "The reading was paid for and is incomplete; nothing was saved as a result.",
+      /* This is a finished call, not a lost one. The provider answered, we
+         hold the answer and its usage, and we know exactly why it is short.
+         Calling that an unknown outcome would put a warning on the screen
+         about a billing question nobody has — and hide the real cause. */
+      throw readingStopped(
+        `${PROVIDERS[transport.provider].label} reached this reading's output limit of `
+        + `${MAX_READING_OUTPUT_TOKENS.toLocaleString("en-US")} tokens before the answer was complete `
+        + `(${Number(answer.usage?.output_tokens) || "an unreported number of"} output tokens used, `
+        + "thinking included). The call was billed and nothing was saved from it. "
+        + "This is a limit of how the reading was asked for, not a judgement of how the plans were read.",
+        answer.usage,
       );
     }
     let analysis: Record<string, unknown>;
@@ -1354,9 +1400,14 @@ async function launchNextPendingChunk(
       return;
     }
     /* A reading that timed out mid-flight was sent and may be billed, even
-       though nothing came back. It is an unknown outcome, not a free retry. */
-    const outcome = /may already have run and been billed/i.test(message) ? "outcome_unknown" : progress.outcome();
-    await finishAiRun(admin, ledger.runId, outcome, {}, message.slice(0, 200));
+       though nothing came back. It is an unknown outcome, not a free retry.
+       A reading that answered and was cut short by its own output ceiling is
+       neither: it is a known failure with known usage. */
+    const stopped = stoppedReading(error);
+    const outcome = stopped
+      ? stopped.readingOutcome
+      : /may already have run and been billed/i.test(message) ? "outcome_unknown" : progress.outcome();
+    await finishAiRun(admin, ledger.runId, outcome, stopped?.providerUsage || {}, message.slice(0, 200));
     /* A launch that never left the building costs nothing, so the chunk goes
        back to pending and a later poll retries it. A launch whose answer was
        lost may already have created a billed reading — requeueing that would
@@ -1922,9 +1973,12 @@ Deno.serve(async (request) => {
           admin, transport, orderedDocuments, registerText, null, launchProgress);
       } catch (launchError) {
         const launchMessage = String(launchError instanceof Error ? launchError.message : launchError);
+        const launchStopped = stoppedReading(launchError);
         await finishAiRun(admin, ledger.runId,
-          /may already have run and been billed/i.test(launchMessage) ? "outcome_unknown" : launchProgress.outcome(),
-          {}, launchMessage.slice(0, 200));
+          launchStopped
+            ? launchStopped.readingOutcome
+            : /may already have run and been billed/i.test(launchMessage) ? "outcome_unknown" : launchProgress.outcome(),
+          launchStopped?.providerUsage || {}, launchMessage.slice(0, 200));
         throw launchError;
       }
       if (reading.kind === "sync") {

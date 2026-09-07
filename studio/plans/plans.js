@@ -2911,6 +2911,9 @@ function runLine(baseline) {
   if (run.provider_label || run.provider) parts.push(`${run.provider_label || run.provider}${run.model ? ` · ${run.model}` : ""}`);
   else if (baseline?.model) parts.push(baseline.model);
   if (baseline?.agent_contract_version) parts.push(`task ${baseline.agent_contract_version}`);
+  /* A reader asked to think less than it would by default is a different
+     reader, and the line that says what a reading cost should say so too. */
+  if (run.reasoning_effort && run.reasoning_effort !== "provider default") parts.push(`${run.reasoning_effort} effort`);
   if (run.duration_ms) parts.push(`${Math.max(1, Math.round(run.duration_ms / 1000))} s`);
   const input = Number(usage.input_tokens);
   const output = Number(usage.output_tokens);

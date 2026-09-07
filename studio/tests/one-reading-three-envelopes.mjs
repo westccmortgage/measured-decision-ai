@@ -42,7 +42,7 @@ const content = {
     { label: "Set.pdf · p24-r1c2.jpg", url: "https://files.example/t3?sig=e", mediaType: "image/jpeg" },
   ],
   schema: { type: "object", properties: { project_summary: { type: "string" }, structural_members: { type: "array" } }, required: ["project_summary"] },
-  maxOutputTokens: 32000,
+  maxOutputTokens: 64000,
 };
 
 console.log("── the registry ──");
@@ -158,8 +158,20 @@ check("each asset is uploaded to Gemini once and finalised in one command",
   check("all three are held to the same result schema and the same output ceiling",
     openAiBody.text.format.schema.properties.structural_members
     && googleBody.generationConfig.responseJsonSchema.properties.structural_members
-    && openAiBody.max_output_tokens === 32000 && anthropicBody.max_tokens === 32000 && googleBody.generationConfig.maxOutputTokens === 32000,
+    && openAiBody.max_output_tokens === 64000 && anthropicBody.max_tokens === 64000 && googleBody.generationConfig.maxOutputTokens === 64000,
     JSON.stringify([openAiBody.max_output_tokens, anthropicBody.max_tokens, googleBody.generationConfig.maxOutputTokens]));
+
+  /* max_tokens on Claude is a hard limit on thinking plus answer, so what a
+     reader is told about thinking belongs beside the ceiling it shares. */
+  check("Claude is told how much to think, and the others are left at their own default",
+    anthropicBody.output_config.effort === "medium"
+    && PROVIDERS.anthropic.reasoningEffort === "medium"
+    && PROVIDERS.openai.reasoningEffort === "provider default"
+    && PROVIDERS.google.reasoningEffort === "provider default",
+    JSON.stringify(anthropicBody.output_config));
+  check("and the catalogue carries it, so the screen can show that the readers were not asked the same thing",
+    providerCatalogue().map((entry) => entry.reasoning_effort).join(",") === "provider default,medium,provider default",
+    providerCatalogue().map((entry) => `${entry.provider}:${entry.reasoning_effort}`).join(" "));
 
   check("no key appears in any body — the secret rides in the headers and nowhere else",
     ![openAiJson, anthropicText, googleText].some((body) => body.includes("test-key-do-not-log"))
