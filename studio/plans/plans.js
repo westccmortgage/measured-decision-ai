@@ -719,6 +719,17 @@ async function openProperty(propertyId) {
  * run by themselves. Idempotent on the server (re-runs supersede, never
  * duplicate), gated to the roles that hold the technical channel, and
  * silent when there is nothing to do. The owner still enters nothing. */
+/* The names a person uses for what the reader calls a category. */
+const RESULT_SECTIONS = [
+  { category: "door", title: "Doors" },
+  { category: "window", title: "Windows" },
+  { category: "electrical_fixture", title: "Lighting and electrical" },
+  { category: "plumbing_fixture", title: "Plumbing fixtures" },
+  { category: "mechanical_equipment", title: "Mechanical equipment" },
+  { category: "appliance", title: "Appliances" },
+  { category: "other", title: "Other scheduled items" },
+];
+
 const chainRuns = new Set();
 async function ensureIntelligenceChain(trigger) {
   const baseline = state.baseline;
@@ -769,6 +780,7 @@ async function ensureIntelligenceChain(trigger) {
 
 function render() {
   renderRebuildOffer();
+  renderHero();
   const workflowState = state.property?.workflow_state || "intake";
   elements.workflowBadge.textContent = label(workflowState);
   elements.workflowBadge.className = `state-pill ${workflowState}`;
@@ -2074,7 +2086,10 @@ function renderOwnerSummary() {
   const section = $("#owner-summary");
   if (!section) return;
   const draft = takeoffDraft();
-  const hasAnalysis = Boolean(state.baseline) && Boolean(draft);
+  const counts = state.baseline ? readingCounts() : { rows: 0, byKind: [], framing: 0, foundation: 0 };
+  /* A reading with anything to show — framing lines or scheduled rows —
+     has a summary. A reading with neither has nothing to summarize. */
+  const hasAnalysis = Boolean(state.baseline) && (Boolean(draft) || counts.rows > 0);
   section.hidden = !hasAnalysis;
   /* A door to a summary that cannot exist is a dead control: the back
      button only stands when there is a summary to go back to. */
@@ -2100,10 +2115,16 @@ function renderOwnerSummary() {
   applyChannelView();
   if (state.channelView === "visual") renderVisualPanel();
 
-  const gaps = takeoffOpenGaps(draft);
-  const proposals = draft.result.proposals || [];
-  const lines = draft.result.lines || [];
+  const gaps = draft ? takeoffOpenGaps(draft) : [];
+  const proposals = draft?.result?.proposals || [];
+  const lines = draft?.result?.lines || [];
   const holds = lines.filter((line) => line.status === "hold");
+  const download = $("#summary-download");
+  if (download) download.hidden = !draft;
+  const viewAll = $("#summary-view-takeoff");
+  if (viewAll) viewAll.textContent = draft ? "View full takeoff →" : "View everything the plans state →";
+  const rfis = $("#summary-rfis");
+  if (rfis) rfis.textContent = draft ? "View RFIs" : "View all questions";
   let blockers = 0;
   try {
     if (state.baseline.state !== "approved") blockers = blockingBaselineGaps().length;
@@ -2116,6 +2137,24 @@ function renderOwnerSummary() {
   decisionEl.className = `summary-decision ${decision.tone}`;
   $("#summary-why").textContent = decision.why;
   $("#summary-eyebrow").textContent = `Analysis complete · plan set v${state.baseline.version || 1} · ${String(state.baseline.created_at || "").slice(0, 10)}`;
+
+  /* What the plans state, in one line, each kind a door to its section. */
+  const read = $("#summary-read");
+  if (read) {
+    const kinds = counts.byKind.map((entry) => `<button type="button" data-summary-open="${escapeHtml(entry.category)}">${escapeHtml(entry.title)} ${entry.count}</button>`);
+    const structural = counts.framing || counts.foundation
+      ? `<button type="button" data-summary-open="framing">Structural framing ${counts.framing}</button><button type="button" data-summary-open="foundation">Foundation ${counts.foundation}</button>`
+      : `<span class="not-read">Structural framing and foundation: not yet read as a schedule</span>`;
+    read.hidden = !kinds.length && !lines.length;
+    read.innerHTML = `${kinds.join("")}${structural}`;
+    read.querySelectorAll("[data-summary-open]").forEach((button) => {
+      button.addEventListener("click", () => {
+        exitSummaryMode("#baseline-section", "technical");
+        const target = document.querySelector(`[data-result-section="${button.dataset.summaryOpen}"]`);
+        if (target) { target.open = true; target.scrollIntoView({ behavior: "smooth", block: "start" }); }
+      });
+    });
+  }
 
   /* The one next action the comparison is actually waiting for: captured
      rooms nobody has read contribute nothing to the installed side, and
@@ -2140,6 +2179,7 @@ function renderOwnerSummary() {
   const principal = [...lines].sort((a, b) => (b.quantity || 0) - (a.quantity || 0))[0];
   const numbers = [
     { value: sheetCount, label: `plan sheet${sheetCount === 1 ? "" : "s"} analyzed` },
+    counts.rows ? { value: counts.rows, label: "scheduled items read" } : null,
     deckArea ? { value: deckArea.toLocaleString("en-US"), label: "sf printed area" } : null,
     principal ? { value: `${principal.quantity.toLocaleString("en-US")} ${principal.unit || ""}`.trim(), label: principal.item.split(" — ")[0].slice(0, 34) } : null,
     { value: gaps.length, label: "open RFIs" },
@@ -2164,20 +2204,41 @@ function renderOwnerSummary() {
       basis: `AI plan count · ${proposal.confidence}`,
       status: "Verify",
     })),
+    /* With no framing lines, the preview is the schedule: the first rows
+       the set prints, with the same four words for how. */
+    ...(lines.length || proposals.length ? [] : (state.baseline.analysis?.component_schedules || []).map((row) => {
+      const prov = scheduleProvenance(row);
+      const kind = (RESULT_SECTIONS.find((entry) => entry.category === (row.category || "other"))?.title || "Item").replace(/s$/, "").replace(/ and electrical$/, "");
+      return {
+        item: `${kind} ${row.mark || ""} — ${String(row.description || "").split(";")[0]}`.trim().slice(0, 56),
+        qty: prov.quantity === null ? "" : `${prov.quantity} ${row.unit || "each"}`,
+        basis: prov.label.replace(/ · .*$/, ""),
+        status: prov.kind === "unknown" ? "Verify" : "Ready",
+      };
+    })),
   ].slice(0, 8);
   $("#summary-table tbody").innerHTML = previewRows.map((row) =>
     `<tr><td>${escapeHtml(row.item)}</td><td>${escapeHtml(row.qty)}</td><td>${escapeHtml(row.basis)}</td><td><span class="summary-chip ${escapeHtml(row.status.toLowerCase())}">${escapeHtml(row.status)}</span></td></tr>`).join("");
 
   /* Three issues: reconciliation discrepancies first (reality disagreeing
      with the documents outranks paperwork), then holds, then RFIs. */
-  const RECON_SEVERITY = { CONFLICTING: 0, PARTIALLY_SUPPORTED: 1, NOT_EVIDENCED: 2 };
+  const RECON_SEVERITY = { CONFLICTING: 0, PARTIALLY_SUPPORTED: 1 };
   const discrepancies = (state.reconciliations || [])
     .filter((entry) => entry.verdict in RECON_SEVERITY)
     .sort((a, b) => RECON_SEVERITY[a.verdict] - RECON_SEVERITY[b.verdict])
     .map((entry) => ({ title: entry.component_key, impact: entry.narrative, status: entry.verdict === "CONFLICTING" ? "Conflict" : entry.verdict === "NOT_EVIDENCED" ? "RFI" : "Verify" }));
+  /* A reading's question, as an issue: its first sentence as the title,
+     the rest and its sheets as the impact — never the same words twice. */
+  const readingQuestions = settleFirst(Array.isArray(state.baseline.gaps) ? state.baseline.gaps : [])
+    .map((gap) => {
+      const [first, ...rest] = String(gap.question || "").split(/(?<=[.?!])\s+/);
+      const refs = (gap.source_refs || []).slice(0, 2).join(" · ");
+      return { title: first.slice(0, 90), impact: [rest.join(" "), refs].filter(Boolean).join(" — ") || "Blocks activation until a person answers.", status: "RFI" };
+    });
   const issues = [
     ...discrepancies,
     ...holds.map((line) => ({ title: line.item.split(" — ")[0], impact: line.hold_reason || "On hold before procurement.", status: "Hold" })),
+    ...(state.baseline.state === "approved" ? [] : readingQuestions),
     ...gaps.filter((gap) => !/^.*HOLD — /.test(gap)).map((gap) => {
       const [head, ...rest] = gap.split(": ");
       return { title: rest.length ? rest.join(": ").split(" is scheduled")[0].split(" — ")[0].slice(0, 60) : head.slice(0, 60), impact: gap, status: "RFI" };
@@ -2251,8 +2312,16 @@ function renderVisualPanel() {
 $("#summary-download")?.addEventListener("click", () => $("#download-ai-takeoff")?.click());
 $("#summary-visual")?.addEventListener("click", () => exitSummaryMode("#visual-panel", "visual"));
 $("#summary-full")?.addEventListener("click", () => exitSummaryMode("#takeoff-section", "technical"));
-$("#summary-rfis")?.addEventListener("click", () => exitSummaryMode("#takeoff-gaps", "technical"));
-$("#summary-view-takeoff")?.addEventListener("click", (event) => { event.preventDefault(); exitSummaryMode("#takeoff-section", "technical"); });
+$("#summary-rfis")?.addEventListener("click", () => {
+  if (takeoffDraft()) { exitSummaryMode("#takeoff-gaps", "technical"); return; }
+  exitSummaryMode("#baseline-section", "technical");
+  const audit = document.getElementById("result-audit");
+  if (audit) { audit.open = true; audit.scrollIntoView({ behavior: "smooth", block: "start" }); }
+});
+$("#summary-view-takeoff")?.addEventListener("click", (event) => {
+  event.preventDefault();
+  exitSummaryMode(takeoffDraft() ? "#takeoff-section" : "#baseline-section", "technical");
+});
 $("#summary-all-rfis")?.addEventListener("click", (event) => { event.preventDefault(); exitSummaryMode("#takeoff-gaps", "technical"); });
 $("#nav-summary")?.addEventListener("click", () => { state.summaryMode = true; applyChannelView(); window.scrollTo({ top: 0, behavior: "smooth" }); });
 $("#visual-refresh")?.addEventListener("click", async () => {
@@ -2385,17 +2454,6 @@ function sendBlockedReason(task) {
  * description, its quantity, its unit, where it came from, and a word for
  * how the quantity was arrived at. Every question the reading raised is
  * still here, all of it, under one disclosure. */
-
-/* The names a person uses for what the reader calls a category. */
-const RESULT_SECTIONS = [
-  { category: "door", title: "Doors" },
-  { category: "window", title: "Windows" },
-  { category: "electrical_fixture", title: "Lighting and electrical" },
-  { category: "plumbing_fixture", title: "Plumbing fixtures" },
-  { category: "mechanical_equipment", title: "Mechanical equipment" },
-  { category: "appliance", title: "Appliances" },
-  { category: "other", title: "Other scheduled items" },
-];
 
 /* How a scheduled row's quantity was arrived at. Four words, in the order
    a buyer trusts them: printed on a schedule, counted on the plan, proposed
@@ -2603,6 +2661,43 @@ async function openSheet(documentId, page) {
   }
 }
 
+/* What the reading holds, counted by kind — the numbers the hero, the
+   summary and the result share. */
+function readingCounts() {
+  const analysis = state.baseline?.analysis || {};
+  const rows = Array.isArray(analysis.component_schedules) ? analysis.component_schedules : [];
+  const byKind = RESULT_SECTIONS.map(({ category, title }) => ({ category, title, count: rows.filter((row) => (row.category || "other") === category).length }))
+    .filter((entry) => entry.count > 0);
+  const draft = takeoffDraft();
+  const lines = draft?.result?.lines || [];
+  return { rows: rows.length, byKind, framing: lines.filter((line) => !isFoundationLine(line)).length, foundation: lines.filter(isFoundationLine).length };
+}
+
+function renderHero() {
+  const eyebrow = $("#hero-eyebrow");
+  const title = $("#hero-title");
+  const copy = $("#hero-copy");
+  if (!eyebrow || !title || !copy) return;
+  document.body.classList.toggle("has-baseline", Boolean(state.baseline));
+  if (!state.baseline) {
+    eyebrow.textContent = "Project intelligence · Start here";
+    title.textContent = "Plans first. Evidence with a purpose.";
+    copy.textContent = "Upload the current drawing set. AI will map the project, identify evidence gates, and produce exact room-by-room capture instructions for human approval.";
+    return;
+  }
+  const approved = state.baseline.state === "approved";
+  const counts = readingCounts();
+  const blockers = approved ? 0 : blockingBaselineGaps().length;
+  eyebrow.textContent = `Project · plan set v${state.baseline.version || 1}`;
+  title.textContent = state.property?.name || "Project";
+  copy.textContent = [
+    approved ? "Roadmap active" : "Analysis complete · Review required",
+    counts.rows ? `${counts.rows} scheduled item${counts.rows === 1 ? "" : "s"} read` : "",
+    counts.framing || counts.foundation ? `${counts.framing + counts.foundation} structural line${counts.framing + counts.foundation === 1 ? "" : "s"}` : "",
+    blockers ? `${blockers} question${blockers === 1 ? "" : "s"} block${blockers === 1 ? "s" : ""} activation` : "",
+  ].filter(Boolean).join(" · ");
+}
+
 function renderBaseline() {
   elements.baselineSection.hidden = !state.baseline;
   if (!state.baseline) return;
@@ -2620,7 +2715,7 @@ function renderBaseline() {
   approvalButton.title = blockingGaps.length
     ? "Record the manager's governing-set confirmation before activating field tasks."
     : "Approve this reviewed baseline and activate field capture tasks.";
-  approvalGuidance.hidden = !blockingGaps.length;
+  approvalGuidance.hidden = !blockingGaps.length || state.baseline.state === "approved";
   approvalGuidance.textContent = blockingGaps.length
     ? "If this is the official approved set, an authorized manager can acknowledge the blocking questions, record the approval reference, and activate the roadmap."
     : "";

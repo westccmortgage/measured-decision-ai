@@ -11,7 +11,7 @@ try{var t=localStorage.getItem("mdai-theme");document.documentElement.dataset.th
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
-    <link rel="stylesheet" href="plans.css?v=28751192e0">
+    <link rel="stylesheet" href="plans.css?v=86dbc286d4">
   </head>
   <body>
     <div class="boot-screen" id="boot-screen">
@@ -37,9 +37,9 @@ try{var t=localStorage.getItem("mdai-theme");document.documentElement.dataset.th
       <main class="workspace">
         <section class="hero">
           <div>
-            <p class="eyebrow">Project intelligence · Start here</p>
-            <h1>Plans first. Evidence with a purpose.</h1>
-            <p class="hero-copy">Upload the current drawing set. AI will map the project, identify evidence gates, and produce exact room-by-room capture instructions for human approval.</p>
+            <p class="eyebrow" id="hero-eyebrow">Project intelligence · Start here</p>
+            <h1 id="hero-title">Plans first. Evidence with a purpose.</h1>
+            <p class="hero-copy" id="hero-copy">Upload the current drawing set. AI will map the project, identify evidence gates, and produce exact room-by-room capture instructions for human approval.</p>
           </div>
           <div class="property-picker">
             <label for="property-select">Active project</label>
@@ -59,6 +59,9 @@ try{var t=localStorage.getItem("mdai-theme");document.documentElement.dataset.th
               <h2 id="summary-title"></h2>
               <p class="summary-decision" id="summary-decision"></p>
               <p class="summary-why" id="summary-why"></p>
+              <!-- What the plans state, in one line: each kind the set
+                   schedules with its count, and framing said honestly. -->
+              <p class="summary-read" id="summary-read" hidden></p>
               <p class="summary-more" id="summary-unread" hidden></p>
             </div>
             <div class="summary-actions">
@@ -135,7 +138,7 @@ try{var t=localStorage.getItem("mdai-theme");document.documentElement.dataset.th
         <section class="workflow-grid">
           <article class="panel documents-panel">
             <div class="panel-heading">
-              <div><p>01 · Document control</p><h2>Current plan set</h2></div>
+              <div><p>01 · Plan set</p><h2>Current plan set</h2></div>
               <label class="button primary upload-button" id="upload-plans-label" for="plan-files">Upload PDF plans <span>↑</span></label>
               <input id="plan-files" type="file" accept="application/pdf,.pdf" multiple hidden>
             </div>
@@ -175,7 +178,7 @@ try{var t=localStorage.getItem("mdai-theme");document.documentElement.dataset.th
           </article>
 
           <aside class="panel action-panel">
-            <p class="eyebrow">02 · Controlled AI processing</p>
+            <p class="eyebrow">02 · AI reading</p>
             <h2>Build the project baseline</h2>
             <p>AI reads PDF text and page images, connects sheet references, and generates a proposed construction evidence roadmap.</p>
             <ul class="contract">
@@ -232,7 +235,7 @@ try{var t=localStorage.getItem("mdai-theme");document.documentElement.dataset.th
 
         <section class="baseline-section" id="baseline-section" hidden>
           <div class="section-heading">
-            <div><p>03 · Human-governed baseline</p><h2>What the plans state</h2></div>
+            <div><p>03 · Result for review</p><h2>What the plans state</h2></div>
             <div class="heading-actions">
               <span class="state-pill" id="baseline-state">Review</span>
               <button class="button primary approve" id="approve-baseline" type="button">Approve baseline & activate roadmap</button>
@@ -482,6 +485,6 @@ try{var t=localStorage.getItem("mdai-theme");document.documentElement.dataset.th
     <script src="../page-renders.js?v=0f50a64fc6"></script>
     <script src="../pdf-split.js?v=d9d6bb9690"></script>
     <script src="../ai-usage.js?v=92381d12a3"></script>
-    <script src="plans.js?v=111574e9a0"></script>
+    <script src="plans.js?v=ac1ceef266"></script>
   </body>
 </html>
