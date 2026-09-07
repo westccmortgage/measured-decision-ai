@@ -43,6 +43,7 @@ const state = {
      and never becomes the project's baseline. */
   comparison: null,
   comparisonBusy: false,
+  stoppingAnalysis: false,
   activeBaseline: null,
   readingRegister: null,
   readingWeakSpots: null,
@@ -83,6 +84,7 @@ const elements = {
   aiUsageLine: $("#ai-usage-line"),
   message: $("#action-message"),
   analysisProgress: $("#analysis-progress"),
+  stopAnalysis: $("#stop-analysis"),
   analysisProgressStatus: $("#analysis-progress-status"),
   analysisProgressTrack: $("#analysis-progress-track"),
   analysisProgressFill: $("#analysis-progress-fill"),
@@ -244,10 +246,16 @@ function startAnalysisProgress(from = null) {
     updateAnalysisProgress();
   }
   state.analysisProgressTimer = window.setInterval(updateAnalysisProgress, 500);
+  if (elements.stopAnalysis) {
+    elements.stopAnalysis.hidden = false;
+    elements.stopAnalysis.disabled = false;
+    elements.stopAnalysis.textContent = "Stop waiting for this reading";
+  }
 }
 
 function finishAnalysisProgress(success, detail = "") {
   window.clearInterval(state.analysisProgressTimer);
+  if (elements.stopAnalysis) elements.stopAnalysis.hidden = true;
   state.analysisProgressTimer = null;
   state.analysisOutcome = success ? "success" : "failed";
   if (success) {
@@ -1544,6 +1552,7 @@ async function reviewTakeoffLine(lineKey, verdict, value) {
   }
 }
 
+$("#stop-analysis")?.addEventListener("click", () => stopAnalysis());
 $("#compare-readings")?.addEventListener("click", () => runComparison());
 $("#attach-truth")?.addEventListener("click", () => $("#truth-file")?.click());
 $("#truth-file")?.addEventListener("change", async (event) => {
@@ -3095,6 +3104,46 @@ async function attachControlMarkup(file) {
       + `${disputed ? `, ${disputed} of them disputed and never used to decide between readers` : ""}.`);
   } catch (error) {
     notify(error?.message || "The control markup could not be attached", "error");
+  }
+}
+
+/* STOP WAITING FOR THIS READING.
+ *
+ * Not a recall. A request already sent to a provider cannot be taken back,
+ * and whatever it does next it may still bill for — so the confirmation says
+ * that in plain words before anything happens, and the answer the server
+ * gives back says exactly how many readings were in that position. What
+ * stopping buys is the end of an unleaveable screen. */
+async function stopAnalysis() {
+  const job = state.activeAnalysisJob;
+  if (!job?.id || state.stoppingAnalysis) return;
+  const sent = state.analysisStage >= analysisStageIndex("reading_documents");
+  const warning = sent
+    ? "Stop waiting for this reading?\n\nThe plans have already gone to the provider. Stopping ends the wait here, but it cannot recall the request — it may still run and be billed. Parts already finished stay saved."
+    : "Stop waiting for this reading?\n\nNothing has been sent to the provider yet, so nothing will be bought. Parts already finished stay saved.";
+  if (!window.confirm(warning)) return;
+  state.stoppingAnalysis = true;
+  if (elements.stopAnalysis) {
+    elements.stopAnalysis.disabled = true;
+    elements.stopAnalysis.textContent = "Stopping…";
+  }
+  try {
+    const { data, error } = await client.functions.invoke("plan-analyze", {
+      body: { action: "cancel", job_id: job.id },
+    });
+    if (error) throw error;
+    state.activeAnalysisJob = null;
+    finishAnalysisProgress(false, data?.error || "Stopped.");
+    notify(data?.error || "The reading was stopped.", data?.unknown_outcome_chunks ? "info" : "success");
+    await openProperty(state.property.id);
+  } catch (error) {
+    notify(error?.message || "The reading could not be stopped. Reload the page and try again.", "error");
+    if (elements.stopAnalysis) {
+      elements.stopAnalysis.disabled = false;
+      elements.stopAnalysis.textContent = "Stop waiting for this reading";
+    }
+  } finally {
+    state.stoppingAnalysis = false;
   }
 }
 

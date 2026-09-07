@@ -1020,6 +1020,13 @@ body.view-visual .takeoff-section { display: none; }
 .reading-tab small { font-size: 11px; color: var(--muted); }
 .reading-tab[aria-selected="true"] { border-color: var(--accent); box-shadow: 0 0 0 1px var(--accent) inset; }
 .reading-run { margin: 0; font-size: 12px; color: var(--muted); }
+.stop-analysis {
+  justify-self: start; margin: 4px 0 0; padding: 7px 14px; border-radius: 10px; font: inherit; font-size: 12px;
+  border: 1px solid var(--line); background: transparent; color: var(--muted); cursor: pointer;
+}
+.stop-analysis:hover:not(:disabled) { color: var(--ink); border-color: var(--danger, #b23c3c); }
+.stop-analysis:disabled { opacity: .6; cursor: default; }
+
 .compare-bar { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; }
 .compare-note { font-size: 12px; color: var(--muted); }
 .compare-bar .ghost { padding: 6px 12px; border-radius: 10px; border: 1px solid var(--line); background: transparent; color: var(--muted); cursor: pointer; font: inherit; font-size: 12px; }

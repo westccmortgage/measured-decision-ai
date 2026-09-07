@@ -265,37 +265,64 @@ export function providerTransport(key: ProviderKey, modelId?: string | null): Pr
 }
 
 /* A free call to the provider's own model list. A paid reading is never
-   bought under a model id the provider does not list. */
-export async function verifyModelId(transport: ProviderTransport): Promise<{ ok: boolean; detail: string }> {
+   bought under a model id the provider does not list — and, where the
+   provider publishes its own output ceiling there, never bought under an
+   output limit larger than the one it will accept.
+ *
+ * That second answer matters because the alternative is a document. Google's
+ * own pages are not reachable from every environment this runs in, and a
+ * number copied from a blog is not a fact about the account making the call.
+ * `outputLimit` is null where the provider does not report one — OpenAI's
+ * model resource carries no token limits — and a null is treated as unknown,
+ * never as permission. */
+export async function verifyModelId(transport: ProviderTransport): Promise<{ ok: boolean; detail: string; outputLimit: number | null }> {
   const id = transport.model.id;
   try {
     if (transport.provider === "openai") {
       const response = await fetch(`${transport.baseUrl}/models/${encodeURIComponent(id)}`, { headers: transport.headers });
-      if (response.ok) return { ok: true, detail: `${id} listed by OpenAI` };
-      if (response.status === 404) return { ok: false, detail: `OpenAI does not list ${id}` };
-      return { ok: true, detail: `model list unavailable (${response.status}); proceeding with ${id}` };
+      /* OpenAI's model resource carries no token limits, so this stays null:
+         unknown, and never taken as permission. */
+      if (response.ok) return { ok: true, detail: `${id} listed by OpenAI`, outputLimit: null };
+      if (response.status === 404) return { ok: false, detail: `OpenAI does not list ${id}`, outputLimit: null };
+      return { ok: true, detail: `model list unavailable (${response.status}); proceeding with ${id}`, outputLimit: null };
     }
     if (transport.provider === "anthropic") {
       const response = await fetch(`${transport.baseUrl}/models/${encodeURIComponent(id)}`, { headers: transport.headers });
-      if (response.ok) return { ok: true, detail: `${id} listed by Anthropic` };
-      if (response.status === 404) return { ok: false, detail: `Anthropic does not list ${id}` };
-      return { ok: true, detail: `model list unavailable (${response.status}); proceeding with ${id}` };
+      if (response.ok) {
+        const payload = await response.json().catch(() => ({}));
+        const limit = Number((payload as Record<string, any>)?.max_tokens);
+        return {
+          ok: true,
+          detail: `${id} listed by Anthropic${Number.isFinite(limit) ? `, max output ${limit}` : ""}`,
+          outputLimit: Number.isFinite(limit) ? limit : null,
+        };
+      }
+      if (response.status === 404) return { ok: false, detail: `Anthropic does not list ${id}`, outputLimit: null };
+      return { ok: true, detail: `model list unavailable (${response.status}); proceeding with ${id}`, outputLimit: null };
     }
     const response = await fetch(`${transport.baseUrl}/models/${encodeURIComponent(id)}`, { headers: transport.headers });
-    if (response.ok) return { ok: true, detail: `${id} listed by Google` };
+    if (response.ok) {
+      const payload = await response.json().catch(() => ({}));
+      const limit = Number((payload as Record<string, any>)?.outputTokenLimit);
+      return {
+        ok: true,
+        detail: `${id} listed by Google${Number.isFinite(limit) ? `, outputTokenLimit ${limit}` : ""}`,
+        outputLimit: Number.isFinite(limit) ? limit : null,
+      };
+    }
     if (response.status === 404) {
       const list = await fetch(`${transport.baseUrl}/models?pageSize=200`, { headers: transport.headers })
         .then((r) => r.json()).catch(() => ({}));
       const names = ((list?.models || []) as Array<{ name?: string }>)
         .map((m) => String(m.name || "").replace(/^models\//, ""))
         .filter((n) => /gemini-3/.test(n));
-      return { ok: false, detail: `Google does not list ${id}. Listed Gemini 3 models: ${names.join(", ") || "none"}` };
+      return { ok: false, detail: `Google does not list ${id}. Listed Gemini 3 models: ${names.join(", ") || "none"}`, outputLimit: null };
     }
-    return { ok: true, detail: `model list unavailable (${response.status}); proceeding with ${id}` };
+    return { ok: true, detail: `model list unavailable (${response.status}); proceeding with ${id}`, outputLimit: null };
   } catch (error) {
     /* A model check that could not run is not a reason to refuse a reading
        the person asked for; it is a reason to say so. */
-    return { ok: true, detail: `model check failed (${String(error).slice(0, 80)}); proceeding with ${id}` };
+    return { ok: true, detail: `model check failed (${String(error).slice(0, 80)}); proceeding with ${id}`, outputLimit: null };
   }
 }
 
@@ -538,6 +565,12 @@ export function syncRequest(
            recorded with the reading, so a comparison shows that this reader
            was asked to think less than one running at its own default. */
         output_config: { effort: PROVIDERS.anthropic.reasoningEffort },
+        /* Thinking is billed as output and counts against max_tokens, and on
+           Claude Opus 5 its text is omitted by default — so a reading that
+           spends its ceiling on reasoning leaves no evidence of where the
+           ceiling went. Asking for the summary costs nothing extra and puts
+           that evidence in the answer we keep. */
+        thinking: { type: "adaptive", display: "summarized" },
         system: content.instructions,
         messages: [{ role: "user", content: blocks }],
       },

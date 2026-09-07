@@ -122,12 +122,30 @@ const INLINE_CHUNK_HANDLE = "inline";
  * answered — even with a truncated answer — is the first kind: the outcome is
  * a plain failure, the usage is the usage it reported, and a person deciding
  * whether to run it again is deciding about a known cost, not an unknown one. */
-type StoppedReading = Error & { readingOutcome: "failed"; providerUsage: Record<string, unknown> };
+type StoppedReading = Error & {
+  readingOutcome: "failed";
+  providerUsage: Record<string, unknown>;
+  /* The answer as it arrived — incomplete, paid for, and kept. Publishing it
+     as a schedule would present a truncated reading as a finished one; losing
+     it throws away the only record of what the money bought. */
+  providerRaw: Record<string, unknown> | null;
+  durationMs: number | null;
+  modelReported: string | null;
+};
 
-function readingStopped(message: string, usage: Record<string, unknown>): StoppedReading {
+function readingStopped(
+  message: string,
+  usage: Record<string, unknown>,
+  raw: Record<string, unknown> | null = null,
+  durationMs: number | null = null,
+  modelReported: string | null = null,
+): StoppedReading {
   const error = new Error(message) as StoppedReading;
   error.readingOutcome = "failed";
   error.providerUsage = usage || {};
+  error.providerRaw = raw;
+  error.durationMs = durationMs;
+  error.modelReported = modelReported || null;
   return error;
 }
 
@@ -1235,13 +1253,27 @@ async function createProviderReading(
          hold the answer and its usage, and we know exactly why it is short.
          Calling that an unknown outcome would put a warning on the screen
          about a billing question nobody has — and hide the real cause. */
+      /* WHERE THE CEILING WENT.
+       *
+       * Anthropic bills thinking as output and counts it against max_tokens,
+       * but reports no separate thinking count — so the only way to see the
+       * split is to measure it: the billed output tokens against the answer
+       * text that actually arrived. A reading that spent 32,000 tokens and
+       * produced 6,000 tokens of JSON spent the rest reasoning, and that is
+       * a measurement from this call, not a claim from a document. */
+      const produced = String(answer.text || "");
+      const spent = Number(answer.usage?.output_tokens);
       throw readingStopped(
         `${PROVIDERS[transport.provider].label} reached this reading's output limit of `
         + `${MAX_READING_OUTPUT_TOKENS.toLocaleString("en-US")} tokens before the answer was complete `
-        + `(${Number(answer.usage?.output_tokens) || "an unreported number of"} output tokens used, `
-        + "thinking included). The call was billed and nothing was saved from it. "
+        + `(${Number.isFinite(spent) ? spent.toLocaleString("en-US") : "an unreported number of"} output tokens billed, `
+        + `thinking included, against ${produced.length.toLocaleString("en-US")} characters of answer text). `
+        + "The incomplete answer is kept with this reading so it can be examined; it is not a schedule and was not saved as one. "
         + "This is a limit of how the reading was asked for, not a judgement of how the plans were read.",
         answer.usage,
+        payload as Record<string, unknown>,
+        Date.now() - startedAt,
+        answer.modelReported,
       );
     }
     let analysis: Record<string, unknown>;
@@ -1413,8 +1445,17 @@ async function launchNextPendingChunk(
        lost may already have created a billed reading — requeueing that would
        buy the same chunk twice, which is the whole point of this state. */
     await admin.from("plan_analysis_chunks").update({
-      state: outcome === "outcome_unknown" ? "failed" : "pending",
+      /* A stopped reading stays failed with its evidence attached; only a
+         launch that never left the building goes back to pending. */
+      state: outcome === "outcome_unknown" || stopped ? "failed" : "pending",
       provider_job_id: null,
+      ...(stopped
+        ? {
+          provider_raw: stopped.providerRaw,
+          duration_ms: stopped.durationMs,
+          model_reported: stopped.modelReported,
+        }
+        : {}),
       error_message: (outcome === "outcome_unknown"
         ? "This chunk was sent to the provider and its answer was lost. It may already have run and been billed — confirm before running it again. "
         : "") + message.slice(0, 600),
@@ -1607,6 +1648,31 @@ async function advanceChunkedJob(
 
   const done = await finalizeIfDone();
   if (done) return done;
+
+  /* A CHUNK THAT FAILED AND A JOB THAT NEVER HEARD ABOUT IT.
+   *
+   * A synchronous chunk records its own failure on its own row and then
+   * throws — into a background task whose only listener writes a log line.
+   * Nothing touched the job. So every later poll found no chunk processing,
+   * none pending, not all complete, and answered "still reading" forever:
+   * a screen that could not be left, for a reading that had been over for
+   * twenty minutes. The failure was on the chunk the whole time; nothing
+   * was carrying it up to the job. This does. */
+  const failed = chunks.filter((chunk) => chunk.state === "failed");
+  const pending = chunks.filter((chunk) => chunk.state === "pending");
+  if (failed.length && !pending.length) {
+    const worst = failed[0];
+    const reason = String(worst.error_message || "the reading did not finish.");
+    const resumeMessage = `Chunk ${worst.chunk_index + 1} of ${total} did not finish: ${reason} `
+      + `${completeCount} finished chunk${completeCount === 1 ? "" : "s"} stay${completeCount === 1 ? "s" : ""} saved.`;
+    await markJobFailed(admin, job, resumeMessage);
+    return {
+      job_id: job.id, state: "failed", progress_stage: "failed",
+      progress_percent: 20 + Math.floor(60 * (completeCount / total)),
+      error: resumeMessage, code: "chunk_failed",
+    };
+  }
+
   /* Nothing processing, something pending — a poll after a restart. */
   await launchNextPendingChunk(admin, transport, job, orderedDocuments, total);
   return progress();
@@ -1726,6 +1792,80 @@ Deno.serve(async (request) => {
       return json(request, { error: "Server configuration is incomplete" }, 500);
     }
 
+    /* STOP WAITING.
+     *
+     * A person watching a reading must always be able to leave. This is not a
+     * recall: a request already sent to a provider cannot be taken back, and
+     * whatever it does next it may still bill for. What stopping does is end
+     * the waiting honestly — the job is cancelled, a chunk this worker was
+     * holding becomes an unknown outcome because that is exactly what it is,
+     * a chunk not yet sent is simply dropped, and finished chunks stay saved
+     * so nothing already paid for is thrown away. */
+    if (action === "cancel") {
+      if (!["owner", "admin", "contributor"].includes(membership.role)) {
+        return json(request, { error: "Not authorized to stop this reading" }, 403);
+      }
+      if (!["queued", "processing"].includes(job.state)) {
+        return json(request, { job_id: job.id, state: job.state, already_finished: true });
+      }
+      const { data: liveChunks } = await admin.from("plan_analysis_chunks")
+        .select("id, chunk_index, state, provider_job_id, ai_run_id")
+        .eq("job_id", job.id);
+      let unknown = 0;
+      let dropped = 0;
+      for (const chunk of liveChunks || []) {
+        if (chunk.state === "processing") {
+          /* Sent, and we are walking away from it. Whether it runs and bills
+             is precisely what we cannot establish, so the ledger says so. */
+          await finishAiRun(admin, chunk.ai_run_id || null, "outcome_unknown", {}, "stopped_by_person");
+          await admin.from("plan_analysis_chunks").update({
+            state: "failed",
+            provider_job_id: null,
+            error_message: "Stopped while this chunk was with the provider. It may already have run and been billed — confirm before running it again.",
+            updated_at: new Date().toISOString(),
+          }).eq("id", chunk.id).eq("state", "processing");
+          unknown += 1;
+        } else if (chunk.state === "pending") {
+          await admin.from("plan_analysis_chunks").update({
+            state: "failed",
+            error_message: "Stopped before this chunk was sent. Nothing was bought for it.",
+            updated_at: new Date().toISOString(),
+          }).eq("id", chunk.id).eq("state", "pending");
+          dropped += 1;
+        }
+      }
+      if (!(liveChunks || []).length && job.provider_job_id) {
+        await finishAiRun(admin, job.ai_run_id || null, "outcome_unknown", {}, "stopped_by_person");
+        unknown += 1;
+      }
+      const stoppedMessage = "Stopped by a person. "
+        + (unknown
+          ? `${unknown} reading${unknown === 1 ? " was" : "s were"} already with the provider and may still run and be billed — confirm before running ${unknown === 1 ? "it" : "them"} again. `
+          : "Nothing had been sent, so nothing was bought. ")
+        + (dropped ? `${dropped} part${dropped === 1 ? "" : "s"} had not been sent and ${dropped === 1 ? "was" : "were"} dropped. ` : "")
+        + "Finished parts stay saved.";
+      await admin.from("plan_analysis_jobs").update({
+        state: "cancelled",
+        progress_stage: "failed",
+        error_code: "stopped_by_person",
+        error_message: stoppedMessage,
+        completed_at: new Date().toISOString(),
+      }).eq("id", job.id).in("state", ["queued", "processing"]);
+      await admin.from("audit_events").insert({
+        organization_id: job.organization_id,
+        actor_id: userData.user.id,
+        action: "plan_analysis.stopped",
+        entity_type: "plan_analysis_job",
+        entity_id: job.id,
+        detail: { property_id: job.property_id, provider: job.provider, unknown_outcome_chunks: unknown, dropped_chunks: dropped },
+      });
+      return json(request, {
+        job_id: job.id, state: "cancelled", progress_stage: "failed",
+        error: stoppedMessage, code: "stopped_by_person",
+        unknown_outcome_chunks: unknown, dropped_chunks: dropped,
+      });
+    }
+
     if (action === "rebuild") {
       const rebuilt = await rebuildFromSavedReadings(admin, userClient, job, userData.user.id, transport);
       return json(request, rebuilt.body, rebuilt.status);
@@ -1757,7 +1897,7 @@ Deno.serve(async (request) => {
          legacy no-provider-id check, which would otherwise declare a healthy
          chunked run abandoned. */
       const { data: chunkRows } = await admin.from("plan_analysis_chunks")
-        .select("id, chunk_index, document_ids, provider_job_id, state, updated_at, ai_run_id")
+        .select("id, chunk_index, document_ids, provider_job_id, state, updated_at, ai_run_id, error_message")
         .eq("job_id", job.id).order("chunk_index", { ascending: true });
       if (chunkRows && chunkRows.length) {
         return json(request, await advanceChunkedJob(admin, userClient, transport, job, userData.user.id, chunkRows));
@@ -1902,6 +2042,20 @@ Deno.serve(async (request) => {
       const message = `${PROVIDERS[provider].label} does not offer ${transport.model.id} to this key. ${modelCheck.detail}`;
       await markJobFailed(admin, job, message);
       return json(request, { error: message, code: "model_not_available", provider, model: transport.model.id, job_id: job.id }, 400);
+    }
+    /* And the ceiling this reading would ask for, checked against the number
+       the provider itself publishes for this model — not against a figure
+       copied from a page. A provider that reports no limit leaves this
+       unknown, and unknown is not permission: the reading proceeds, because
+       an over-large ceiling is refused by the provider before it generates
+       anything, and that refusal costs nothing and names the real number. */
+    if (modelCheck.outputLimit !== null && MAX_READING_OUTPUT_TOKENS > modelCheck.outputLimit) {
+      const message = `${PROVIDERS[provider].label} publishes an output limit of `
+        + `${modelCheck.outputLimit.toLocaleString("en-US")} tokens for ${transport.model.id}, and this reading asks for `
+        + `${MAX_READING_OUTPUT_TOKENS.toLocaleString("en-US")}. Nothing was sent. `
+        + "Lower the reading's output ceiling to that number or below.";
+      await markJobFailed(admin, job, message);
+      return json(request, { error: message, code: "output_limit_too_high", provider, model: transport.model.id, provider_output_limit: modelCheck.outputLimit, job_id: job.id }, 400);
     }
 
     const startedAt = new Date().toISOString();
