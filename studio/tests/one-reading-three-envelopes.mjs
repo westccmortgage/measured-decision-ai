@@ -161,6 +161,16 @@ check("each asset is uploaded to Gemini once and finalised in one command",
     && openAiBody.max_output_tokens === 32000 && anthropicBody.max_tokens === 32000 && googleBody.generationConfig.maxOutputTokens === 32000,
     JSON.stringify([openAiBody.max_output_tokens, anthropicBody.max_tokens, googleBody.generationConfig.maxOutputTokens]));
 
+  /* Thinking is billed against the same ceiling as the answer and is hidden
+     by default, so a reading that spends its ceiling reasoning would leave
+     no evidence in the partial answer this application keeps. */
+  check("Claude is asked to return the thinking it is billed for, so the kept evidence is not empty",
+    anthropicBody.thinking.type === "adaptive" && anthropicBody.thinking.display === "summarized",
+    JSON.stringify(anthropicBody.thinking));
+  check("and no reader is told how hard to think — every one runs at its own default",
+    !("output_config" in anthropicBody) && !("effort" in anthropicBody)
+    && !JSON.stringify(providerCatalogue()).includes("reasoning_effort"));
+
   check("no key appears in any body — the secret rides in the headers and nowhere else",
     ![openAiJson, anthropicText, googleText].some((body) => body.includes("test-key-do-not-log"))
     && anthropic.headers["x-api-key"] === "test-key-do-not-log" && google.headers["x-goog-api-key"] === "test-key-do-not-log");

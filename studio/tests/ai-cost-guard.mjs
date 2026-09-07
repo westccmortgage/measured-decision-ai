@@ -288,7 +288,12 @@ check("and one it never started is unknown too",
 /* The requeue is the dangerous part: a chunk put back to pending is relaunched
    by the next poll, with nobody asked and nothing said. */
 check("a chunk whose launch was lost is not silently requeued for relaunch",
-  /state: outcome === "outcome_unknown" \? "failed" : "pending"/.test(planSource));
+  /state: outcome === "outcome_unknown" \|\| stopped \? "failed" : "pending"/.test(planSource));
+/* Nor is one the provider answered and cut short at its own output ceiling:
+   that call was billed, and putting it back to pending would buy it again. */
+check("and neither is one stopped at its output ceiling — it stays failed, with its answer kept",
+  /provider_raw: stopped\.providerRaw/.test(planSource)
+  && /A stopped reading stays failed with its evidence attached/.test(planSource));
 
 console.log("\n── the sentence a person reads before paying again ──");
 const asked = await page.evaluate(async () => {

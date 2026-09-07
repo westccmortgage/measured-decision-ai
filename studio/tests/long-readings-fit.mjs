@@ -140,6 +140,31 @@ console.log("\n── one kit, the same for every reader ──");
     /planChunks\(orderedDocuments, CHUNK_BYTE_LIMIT, MAX_RENDER_IMAGES, tilesByDocument\)/.test(plan));
 }
 
+console.log("\n── a reading cut short by its own ceiling is a known failure ──");
+{
+  const ceiling = number("MAX_READING_OUTPUT_TOKENS");
+  /* Unchanged, and known to be too small: a ceiling that holds the answer may
+     not fit the worker's clock, so the size of it is a question about how a
+     reading executes, not a constant to nudge. What is fixed here is that
+     failing against it is legible. */
+  check("the output ceiling is left where it was, and the code says why raising it is not the fix",
+    ceiling === 32_000 && /Raising the number is not the fix and is not attempted here/.test(plan),
+    `${ceiling} tokens`);
+  check("a stop at that ceiling is recorded as a plain failure, never as an unknown outcome",
+    /throw readingStopped\(/.test(plan)
+    && /error\.readingOutcome = "failed";/.test(plan)
+    && /const outcome = stopped\s*\?\s*stopped\.readingOutcome/.test(plan));
+  check("and the usage the provider did report is kept, not thrown away with the error",
+    /error\.providerUsage = usage \|\| \{\};/.test(plan)
+    && /finishAiRun\(admin, ledger\.runId, outcome, stopped\?\.providerUsage \|\| \{\}/.test(plan));
+  check("the message says it is a limit of how the reading was asked for, not of how the plans were read",
+    /not a judgement of how the plans were read/.test(plan));
+  check("the single-request path classifies it the same way",
+    /const launchStopped = stoppedReading\(launchError\);/.test(plan));
+  check("the ceiling a reading was given is recorded, so a stop against it reads without guesswork",
+    /max_output_tokens: MAX_READING_OUTPUT_TOKENS/.test(plan));
+}
+
 console.log("\n── the kit that was sent is recorded, and can be compared ──");
 {
   check("the digest is taken over the very arrays the request carries",
@@ -182,7 +207,7 @@ console.log("\n── what each reading saw is recorded, so two readings are nev
 check("every reading records the enlargement budget it was given",
   /image_budget: readingImageBudget\(transport\.provider\)/.test(plan));
 check("and the task version it was read under",
-  /image_budget: readingImageBudget\(transport\.provider\),\n    agent_contract_version: AGENT_CONTRACT_VERSION,/.test(plan));
+  /max_output_tokens: MAX_READING_OUTPUT_TOKENS,\n    agent_contract_version: AGENT_CONTRACT_VERSION,/.test(plan));
 check("the coverage note names the budget of the reading that produced it, not a constant",
   /tileCoverageGaps\(coverage, maxImages = MAX_RENDER_IMAGES\)/.test(fs.readFileSync("supabase/functions/plan-analyze/chunking.js", "utf8")));
 
