@@ -1,11 +1,8 @@
 # Measured Decision AI
 
-Official static website for [MeasuredDecision.com](https://measureddecision.com).
+Official static website for [MeasuredDecision.ai](https://measureddecision.ai).
 
-## Current product foundations
 
-- [WalletWCCM](https://walletwccm.com) — closing-cost and cash-to-close clarity
-- [GRCRM](https://grcrm.com) — lead and workflow continuity
 
 ## Commercial + Residential proof stage
 
