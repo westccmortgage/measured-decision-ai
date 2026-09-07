@@ -176,6 +176,41 @@ console.log("── the result first ──");
   await context.close();
 }
 
+console.log("\n── the structural reading, once it exists ──");
+{
+  const w = world();
+  w.document_baselines[0].analysis.structural_members = [
+    { mark: "FB1", member_type: "beam", description: "3-1/2 x 11-7/8 LVL", size: "", spacing: "", material: "LVL", level: "Second Floor", location: "", unit: "each", count_scheduled: 2, count_drawn: 2, count_proposed: 2, count_confidence: "high", count_note: "", length_printed: "", detail_refs: ["S-6/4"], source_refs: ["S-3 (original p25)"] },
+    { mark: "HDR4", member_type: "header", description: "Parallam PSL 2.0E 3.50 x 18.0", size: "", spacing: "", material: "PSL", level: "", location: "", unit: "each", count_scheduled: 0, count_drawn: 3, count_proposed: 3, count_confidence: "high", count_note: "", length_printed: "", detail_refs: [], source_refs: ["S-3 (original p25)"] },
+    { mark: "F1", member_type: "footing", description: "24 x 24 x 12 concrete", size: "", spacing: "", material: "concrete", level: "", location: "", unit: "each", count_scheduled: 0, count_drawn: 4, count_proposed: 4, count_confidence: "high", count_note: "", length_printed: "", detail_refs: ["S-5/1"], source_refs: ["S-2 (original p24)"] },
+    { mark: "HDU4", member_type: "holdown", description: "Simpson HDU4", size: "", spacing: "", material: "", level: "", location: "", unit: "each", count_scheduled: 0, count_drawn: 0, count_proposed: 0, count_confidence: "none", count_note: "locations not read", length_printed: "", detail_refs: [], source_refs: ["S-5 (original p27)"] },
+  ];
+  w.document_baselines[0].analysis.framing_defaults = [
+    { rule: "ALL STUDS 2x4 #2 @ 16\" O.C. U.N.O.", applies_to: "bearing and non-bearing wood stud walls", exception: "unless noted otherwise", source_refs: ["S-3 (original p25), notes 5 and 7"] },
+  ];
+  const { context, page } = await openPlans(w);
+  const framing = await page.evaluate(() => {
+    const d = document.querySelector('[data-result-section="framing"]');
+    return { open: d.open, summary: d.querySelector("summary").textContent.replace(/\s+/g, " ").trim(), rows: [...d.querySelectorAll("tbody tr")].map((tr) => [...tr.children].map((td) => td.textContent.replace(/\s+/g, " ").trim())), rule: d.querySelector(".result-rules li")?.textContent.replace(/\s+/g, " ").trim() || "", provs: [...d.querySelectorAll("tbody .prov")].map((p) => p.className) };
+  });
+  check("Structural framing opens with its lines and its printed rule", framing.open && /2 lines · 1 printed rule/.test(framing.summary), framing.summary);
+  check("a scheduled beam is a printed fact; a header counted on the plan is a count",
+    framing.rows.some((r) => /beam FB1/.test(r[0]) && r[1] === "2" && r[2] === "each") && framing.provs.includes("prov printed")
+    && framing.rows.some((r) => /header HDR4/.test(r[0]) && r[1] === "3") && framing.provs.includes("prov counted"), JSON.stringify(framing.rows));
+  check("the printed stud rule is a project requirement with its exception, never our assumption",
+    /Printed rule/.test(framing.rule) && /ALL STUDS 2x4 #2 @ 16" O\.C\. U\.N\.O\./.test(framing.rule) && /\(unless noted otherwise\)/.test(framing.rule) && /S-3 · p25/.test(framing.rule), framing.rule);
+  check("the beam's detail is one of its sources", framing.rows.some((r) => /beam FB1/.test(r[0]) && /S-3 · p25, S-6\/4/.test(r[4])), JSON.stringify(framing.rows.map((r) => r[4])));
+  const foundation = await page.evaluate(() => {
+    const d = document.querySelector('[data-result-section="foundation"]');
+    return { open: d.open, summary: d.querySelector("summary").textContent.replace(/\s+/g, " ").trim(), rows: [...d.querySelectorAll("tbody tr")].map((tr) => tr.children[0].textContent.replace(/\s+/g, " ").trim()) };
+  });
+  check("Foundation holds the footing, counted for verification and said to be concrete",
+    foundation.open && /1 line/.test(foundation.summary) && foundation.rows.length === 1 && /footing F1: 24 x 24 x 12 concrete · not lumber — verification count/.test(foundation.rows[0]), JSON.stringify(foundation));
+  const takeoffGaps = await page.evaluate(() => document.getElementById("takeoff-section")?.textContent || "");
+  check("the hold-down nobody could count is a question in the takeoff, not a line", /hold-down HDU4/.test(takeoffGaps) && !foundation.rows.some((r) => /HDU4/.test(r)));
+  await context.close();
+}
+
 console.log("\n── nothing blocks ──");
 {
   const w = world();

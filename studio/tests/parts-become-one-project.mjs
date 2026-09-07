@@ -233,6 +233,23 @@ console.log("\n── one building, three levels ──");
   check("and so are chunks that are not parts of one file", notOneFile.levels.some((level) => level.building === "NOBLE APARTMENTS"));
 }
 
+console.log("\n── structural members and printed rules merge like schedule rows ──");
+{
+  const member = (mark, type, extra = {}) => ({ mark, member_type: type, description: `${type} ${mark}`, size: "", spacing: "", material: "", level: "", location: "", unit: "each",
+    count_scheduled: 1, count_drawn: 1, count_proposed: 1, count_confidence: "high", count_note: "", length_printed: "", detail_refs: [], source_refs: ["S-3"], ...extra });
+  const rule = { rule: "ALL STUDS 2x4 #2 @ 16 O.C. U.N.O.", applies_to: "stud walls", exception: "U.N.O.", source_refs: ["S-3 notes 5, 7"] };
+  const withMembers = mergeChunkAnalyses([
+    { ...structural, structural_members: [member("FB1", "beam"), member("F1", "footing", { count_scheduled: 0, count_drawn: 0, count_proposed: 0, count_confidence: "none" })], framing_defaults: [rule] },
+    { ...cover, structural_members: [member("FB1", "beam", { source_refs: ["S-4"] }), member("FB1", "header", { count_scheduled: 2, count_drawn: 2, count_proposed: 2 })], framing_defaults: [{ ...rule, rule: "all studs 2x4 #2 @ 16 O.C. U.N.O." }] },
+  ], chunkMeta);
+  const fb1 = withMembers.structural_members.filter((m) => m.mark === "FB1");
+  check("the same member read by two chunks is one row with both sources; a different type is another row",
+    fb1.length === 2 && fb1.some((m) => m.member_type === "beam" && m.source_refs.includes("S-3") && m.source_refs.includes("S-4") && m.read_in_chunks.length === 2)
+    && fb1.some((m) => m.member_type === "header"), JSON.stringify(fb1.map((m) => [m.member_type, m.source_refs, m.read_in_chunks])));
+  check("an uncounted footing survives as itself", withMembers.structural_members.some((m) => m.mark === "F1" && m.count_confidence === "none"));
+  check("a printed rule read by two chunks is one rule, spelling aside", withMembers.framing_defaults.length === 1 && withMembers.framing_defaults[0].exception === "U.N.O.");
+}
+
 console.log("\n── a part's summary loses only what was true of the part alone ──");
 {
   const withSummaries = mergeChunkAnalyses([

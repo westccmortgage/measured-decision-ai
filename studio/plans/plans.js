@@ -1296,8 +1296,11 @@ function takeoffDraft() {
   const decks = Array.isArray(state.baseline?.analysis?.framing_decks)
     ? state.baseline.analysis.framing_decks
     : [];
-  if ((!walls.length && !decks.length) || !window.MDAITakeoff360) return null;
-  return { walls, decks, result: window.MDAITakeoff360.takeoff(walls, decks) };
+  const members = Array.isArray(state.baseline?.analysis?.structural_members)
+    ? state.baseline.analysis.structural_members
+    : [];
+  if ((!walls.length && !decks.length && !members.length) || !window.MDAITakeoff360) return null;
+  return { walls, decks, members, result: window.MDAITakeoff360.takeoff(walls, decks, members) };
 }
 
 function takeoffOpenGaps(draft) {
@@ -2427,7 +2430,7 @@ function methodProvenance(method) {
 function parseSourceRef(ref) {
   const text = String(ref || "");
   const page = Number((text.match(/original\s+p(?:age\s*)?(\d+)/i) || [])[1] || 0);
-  const sheet = (text.match(/^([A-Z]{1,3}-?\d[\w.-]*)/i) || [])[1] || "";
+  const sheet = (text.match(/^([A-Z]{1,3}-?\d[\w./-]*)/i) || [])[1] || "";
   return { text, page, sheet };
 }
 
@@ -2491,19 +2494,34 @@ function renderScheduleTable(rows) {
 }
 
 /* Framing and foundation, from the deterministic takeoff the calculator
-   already draws — or an honest sentence when this reading had no field for
-   them. */
-function renderFramingSection(draft) {
-  const lines = draft?.result?.lines || [];
-  if (!lines.length) {
-    return `<p class="result-empty">Not yet read as a schedule. Beams, headers, joists, rafters, studs and their connectors printed on the structural sheets appear only as questions in the audit below until the structural reading is added; nothing here is measured by scale.</p>`;
-  }
+   already draws — scheduled members and printed dimensions — or an honest
+   sentence when this reading had no field for them. */
+const isFoundationLine = (line) => Boolean(window.MDAITakeoff360?.isFoundationMember?.(line.member_type));
+function renderLinesTable(lines) {
   return `<div class="result-table-wrap"><table class="result-table">
     <thead><tr><th>Item</th><th>Qty</th><th>Unit</th><th>How</th><th>Source</th></tr></thead>
     <tbody>${lines.map((line) => {
       const prov = methodProvenance(line.method);
       return `<tr><td>${escapeHtml(line.item || "")}</td><td class="qty">${line.quantity ?? "—"}</td><td>${escapeHtml(line.unit || "")}</td><td><span class="prov ${prov.kind}">${escapeHtml(prov.label)}</span></td><td>${sourceRefCell(line.source_refs)}</td></tr>`;
     }).join("")}</tbody></table></div>`;
+}
+/* A printed rule is a project requirement with its exception clause —
+   never an assumption of ours, and never a quantity. */
+function renderFramingRules(rules) {
+  if (!rules.length) return "";
+  return `<ul class="result-rules">${rules.map((rule) => `<li><span class="prov printed">Printed rule</span> <strong>${escapeHtml(rule.rule || "")}</strong>${rule.applies_to ? ` — ${escapeHtml(rule.applies_to)}` : ""}${rule.exception ? ` <em>(${escapeHtml(rule.exception)})</em>` : ""} <span class="result-rule-source">${sourceRefCell(rule.source_refs)}</span></li>`).join("")}</ul>`;
+}
+function renderFramingSection(lines, rules) {
+  if (!lines.length && !rules.length) {
+    return `<p class="result-empty">Not yet read as a schedule. Beams, headers, joists, rafters, studs and their connectors printed on the structural sheets appear only as questions in the audit below until the structural reading is added; nothing here is measured by scale.</p>`;
+  }
+  return `${renderFramingRules(rules)}${lines.length ? renderLinesTable(lines) : `<p class="result-empty">No scheduled framing member was read in this set.</p>`}`;
+}
+function renderFoundationSection(lines) {
+  if (!lines.length) {
+    return `<p class="result-empty">Footings, hold-downs and anchorage are printed in the structural schedules but this reading had no field for them. They appear only as questions in the audit below until the structural reading is added.</p>`;
+  }
+  return renderLinesTable(lines);
 }
 
 function renderResultSections() {
@@ -2518,15 +2536,21 @@ function renderResultSections() {
       <summary>${escapeHtml(section.title)} <small>${section.rows.length ? `${section.rows.length} scheduled item${section.rows.length === 1 ? "" : "s"}` : "none printed in this set"}</small></summary>
       ${section.rows.length ? renderScheduleTable(section.rows) : `<p class="result-empty">No ${section.title.toLowerCase()} schedule was read in this set.</p>`}
     </details>`).join("");
-  const framingLines = draft?.result?.lines || [];
+  const allLines = draft?.result?.lines || [];
+  const foundationLines = allLines.filter(isFoundationLine);
+  const framingLines = allLines.filter((line) => !isFoundationLine(line));
+  const rules = Array.isArray(analysis.framing_defaults) ? analysis.framing_defaults : [];
+  const framingCount = framingLines.length
+    ? `${framingLines.length} line${framingLines.length === 1 ? "" : "s"}${rules.length ? ` · ${rules.length} printed rule${rules.length === 1 ? "" : "s"}` : ""}`
+    : (rules.length ? `${rules.length} printed rule${rules.length === 1 ? "" : "s"}` : "not yet read as a schedule");
   const framing = `
-    <details class="result-section" ${framingLines.length ? "open" : ""} data-result-section="framing">
-      <summary>Structural framing <small>${framingLines.length ? `${framingLines.length} line${framingLines.length === 1 ? "" : "s"} from printed dimensions` : "not yet read as a schedule"}</small></summary>
-      ${renderFramingSection(draft)}
+    <details class="result-section" ${framingLines.length || rules.length ? "open" : ""} data-result-section="framing">
+      <summary>Structural framing <small>${framingCount}</small></summary>
+      ${renderFramingSection(framingLines, rules)}
     </details>
-    <details class="result-section" data-result-section="foundation">
-      <summary>Foundation <small>not yet read as a schedule</small></summary>
-      <p class="result-empty">Footings, hold-downs and anchorage are printed in the structural schedules but this reading had no field for them. They appear only as questions in the audit below until the structural reading is added.</p>
+    <details class="result-section" ${foundationLines.length ? "open" : ""} data-result-section="foundation">
+      <summary>Foundation <small>${foundationLines.length ? `${foundationLines.length} line${foundationLines.length === 1 ? "" : "s"}` : "not yet read as a schedule"}</small></summary>
+      ${renderFoundationSection(foundationLines)}
     </details>`;
   host.innerHTML = scheduled + framing;
   host.querySelectorAll("[data-open-sheet]").forEach((button) => {
