@@ -270,7 +270,7 @@ const schema = {
           mark: { type: "string" },
           category: {
             type: "string",
-            enum: ["door", "window", "plumbing_fixture", "electrical_fixture", "mechanical_equipment", "appliance", "other"],
+            enum: ["door", "window", "plumbing_fixture", "electrical_fixture", "electrical_device", "mechanical_equipment", "appliance", "other"],
           },
           description: { type: "string" },
           unit: { type: "string" },
@@ -296,6 +296,7 @@ const schema = {
         required: [
           "mark", "member_type", "description", "size", "spacing", "material", "level", "location",
           "count_scheduled", "count_drawn", "count_proposed", "count_confidence", "count_note",
+          "counted", "plies", "size_basis",
           "length_printed", "unit", "detail_refs", "source_refs",
         ],
         properties: {
@@ -318,6 +319,15 @@ const schema = {
           count_proposed: { type: "integer" },
           count_confidence: { type: "string", enum: ["high", "medium", "low", "none"] },
           count_note: { type: "string" },
+          /* What the number counts. A label is not a member, a framing zone
+             is not a rafter, an assembly of two plies is one member with
+             two pieces — the count says which, and nobody multiplies. */
+          counted: { type: "string", enum: ["members", "labels", "zones", "assemblies", "none"] },
+          plies: { type: "integer" },
+          /* How the mark on the plan reached its size: its own schedule
+             row, a printed rule the sheet states, only the plan's callout,
+             or not resolved at all. */
+          size_basis: { type: "string", enum: ["schedule_row", "printed_rule", "plan_label", "not_resolved"] },
           length_printed: { type: "string" },
           unit: { type: "string" },
           detail_refs: { type: "array", items: { type: "string" } },
@@ -334,9 +344,10 @@ const schema = {
       items: {
         type: "object",
         additionalProperties: false,
-        required: ["rule", "applies_to", "exception", "source_refs"],
+        required: ["rule", "kind", "applies_to", "exception", "source_refs"],
         properties: {
           rule: { type: "string" },
+          kind: { type: "string", enum: ["studs", "plates", "sheathing", "blocking", "nailing", "headers", "joists", "rafters", "connectors", "lumber", "other"] },
           applies_to: { type: "string" },
           exception: { type: "string" },
           source_refs: { type: "array", items: { type: "string" } },

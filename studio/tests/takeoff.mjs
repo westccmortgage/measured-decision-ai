@@ -257,6 +257,21 @@ console.log("\n── scheduled structural members ──");
   check("lines remember their member type, and foundation types are told apart", byMark("F1")?.member_type === "footing" && takeoff.length >= 0 && require("../takeoff360.js").isFoundationMember("footing") && !require("../takeoff360.js").isFoundationMember("beam"));
   check("a set with members and no walls is still a takeoff", result.lines.length === 3);
   check("and members beside decks merge into one list", takeoff([], [], members).lines.length === 3);
+
+  /* What the number counted. */
+  const counted = takeoff([], [], [
+    { mark: "R.R.1", member_type: "rafter", description: "2x10 #2 @ 16 O.C.", unit: "framing zone", count_scheduled: 0, count_drawn: 0, count_proposed: 12, count_confidence: "low", count_note: "", counted: "zones", plies: 0, source_refs: ["S-4"] },
+    { mark: "RIDGE BM 2", member_type: "ridge", description: "(2)-2x10 #2", unit: "each", count_scheduled: 0, count_drawn: 3, count_proposed: 3, count_confidence: "medium", count_note: "", counted: "assemblies", plies: 2, source_refs: ["S-4"] },
+    { mark: "RHDR", member_type: "header", description: "", unit: "each", count_scheduled: 0, count_drawn: 20, count_proposed: 20, count_confidence: "high", count_note: "", counted: "labels", plies: 0, size_basis: "not_resolved", source_refs: ["S-4"] },
+  ]);
+  const line = (mark) => counted.lines.find((l) => l.item.includes(` ${mark}:`));
+  check("twelve rafter zones are not twelve rafters: no line, a question that says zones and why",
+    !line("R.R.1") && counted.gaps.some((g) => /rafter R\.R\.1 .*12 zones on the plan; the count of members is not determined — pieces per zone follow from dimensions and spacing/.test(g)), JSON.stringify(counted.gaps));
+  check("three ridge assemblies are three, in an assembly unit that names the plies, never multiplied",
+    line("RIDGE BM 2")?.quantity === 3 && /^assembly of 2 plies/.test(line("RIDGE BM 2")?.unit || "") && line("RIDGE BM 2")?.method === "AI_PLAN_COUNT", JSON.stringify(line("RIDGE BM 2")));
+  check("twenty unnumbered labels are a question, not twenty headers",
+    !line("RHDR") && counted.gaps.some((g) => /header RHDR .*20 labels on the plan/.test(g)));
+  check("a reading made before the word existed still counts members", byMark("HDR4")?.quantity === 3);
 }
 
 console.log(bad ? `\n${bad} FAILURES` : "\nALL OK");
