@@ -123,7 +123,7 @@ People act through four functions, each of which checks the asker:
 | `core_v2_start_workflow` | owner, admin | Validates membership, validates that every named document belongs to that property, computes the source fingerprint server-side, refuses a second live workflow over the same sources unless authorised, and writes the workflow **and** its outbox row in one transaction. |
 | `core_v2_cancel_workflow` | owner, admin | Stops unsent work, leaves sent work to reconcile, returns the three counts, audits. |
 | `core_v2_authorize_task_retry` | owner, admin | The only path out of `outcome_unknown` / `failed_known`. |
-| `core_v2_resolve_disagreement` | owner, admin, reviewer | Accepts one competing claim or records a human correction, rejects the others without deleting them, and creates the immutable human decision that names all of them. |
+| `core_v2_resolve_disagreement` | owner, admin | Accepts one competing claim or records a human correction, rejects the others without deleting them, and creates the immutable human decision that names all of them. |
 
 `core_v2_source_set_fingerprint` is `SHA-256` over the ordered document ids with
 their storage path, byte size and revision label. A browser may state what it
@@ -191,7 +191,22 @@ together with an explicit exemption in the evidence rule, or require that a
 reject-all adjudication first accept a claim stating what the source does show.
 This matters from PR 5 onwards, not before.
 
-### 3. Columns added beyond §5, each because a stated rule had nowhere to live
+### 3. Who may settle a disagreement — §15 and §22 disagree, narrower implemented
+
+§22's deliverable 4 reads "owner/admin initiate/cancel/resolve". §15's
+`POST /v2/disagreements/{id}/resolve` reads "Owner/admin/reviewer action". The
+same call, two role sets, in the same specification.
+
+`core_v2_resolve_disagreement` implements the narrower one: owner and
+administrator. Widening a permission later is a one-line migration; narrowing one
+after people have relied on it is a conversation with customers. The product
+invariant — a human decision, recorded immutably, naming every claim it kept — is
+unaffected either way, which is why this was implemented rather than stopped on.
+
+**Minimal option if §15 is the intended rule:** add `'reviewer'` to the role array
+in that one function. Nothing else changes.
+
+### 4. Columns added beyond §5, each because a stated rule had nowhere to live
 
 | Column | Table | Why |
 |---|---|---|
@@ -201,7 +216,7 @@ This matters from PR 5 onwards, not before.
 | `supersedes_decision_id` | `decisions` | §8.6 says a decided record is superseded, never edited; the lineage needed somewhere to point. |
 | `organization_id`, `property_id` | `task_dependencies`, `decision_evidence`, `entity_relations`, `claim_assessments` | §5's preamble requires them on all V2 tables; the per-table column lists for these four name only the join columns. Carrying them keeps one uniform RLS rule instead of four different joins. |
 
-### 4. Choices the specification left to the implementation
+### 5. Choices the specification left to the implementation
 
 - **`text` + `check` rather than Postgres enums.** Migrations 048–057 use this
   idiom; adding a value is one line and takes no exclusive lock, and

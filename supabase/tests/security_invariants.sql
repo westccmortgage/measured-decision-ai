@@ -3343,7 +3343,14 @@ set local test.uid = '22222222-2222-2222-2222-222222222222';
 select pg_temp.refused('a contributor does not settle a disagreement',
   $$select public.core_v2_resolve_disagreement('1c0e0000-0000-0000-0000-000000000001',
       'accept_claim', 'looks right', '0e0e0000-0000-0000-0000-00000000000a')$$);
+-- Section 22 gives initiating, cancelling and resolving to owner and admin.
+-- Section 15 also names a reviewer on this one call; PR 1 implements the
+-- narrower rule and records the difference in docs/core-v2.md.
 set local test.uid = '33333333-3333-3333-3333-333333333333';
+select pg_temp.refused('nor, under the narrower rule this PR implements, does a reviewer',
+  $$select public.core_v2_resolve_disagreement('1c0e0000-0000-0000-0000-000000000001',
+      'accept_claim', 'looks right', '0e0e0000-0000-0000-0000-00000000000a')$$);
+set local test.uid = '11111111-1111-1111-1111-111111111111';
 select pg_temp.refused('and no one settles it with a claim that was never in dispute',
   $$select public.core_v2_resolve_disagreement('1c0e0000-0000-0000-0000-000000000001',
       'accept_claim', 'wrong claim', '0e0e0000-0000-0000-0000-000000000004')$$);
@@ -3365,7 +3372,7 @@ select pg_temp.check('the decision names both — what it rested on and what it 
     where decision_id = (select v from core_v2_ids where k = 'resolution') and link = 'contradicts') = 1);
 select pg_temp.check('a person settled it, and the record says which person',
   (select decided_by_user_id from public.decisions where id = (select v from core_v2_ids where k = 'resolution'))
-    = '33333333-3333-3333-3333-333333333333'
+    = '11111111-1111-1111-1111-111111111111'
   and (select status from public.decisions where id = (select v from core_v2_ids where k = 'resolution')) = 'human_decided');
 select pg_temp.check('the disagreement points at the decision that settled it',
   (select resolution_decision_id from public.disagreements where id = '1c0e0000-0000-0000-0000-000000000001')

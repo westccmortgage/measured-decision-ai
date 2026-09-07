@@ -1458,9 +1458,14 @@ declare
 begin
   select * into dis from public.disagreements where id = p_disagreement_id;
   if not found then raise exception 'core_v2: no such disagreement'; end if;
+  -- Section 22 of the specification says owner or administrator initiates,
+  -- cancels and resolves; section 15 also names a reviewer on this one call.
+  -- PR 1 implements the narrower of the two, because widening a permission
+  -- later is a one-line migration and narrowing one after people have relied
+  -- on it is not. Recorded in docs/core-v2.md for the architecture owner.
   if not public.has_org_role(dis.organization_id,
-        array['owner','admin','reviewer']::public.studio_role[]) then
-    raise exception 'core_v2: only an owner, an administrator or a reviewer settles a disagreement';
+        array['owner','admin']::public.studio_role[]) then
+    raise exception 'core_v2: only an owner or an administrator settles a disagreement';
   end if;
   if dis.state not in ('open','verifying','needs_human') then
     raise exception 'core_v2: disagreement % is % — it is not open', p_disagreement_id, dis.state;
