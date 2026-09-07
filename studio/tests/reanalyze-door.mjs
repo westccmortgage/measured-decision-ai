@@ -100,7 +100,12 @@ console.log("── the same set, under review ──");
 
   await page.click("#analyze-plans");
   await page.waitForTimeout(400);
-  const declined = await page.evaluate(() => ({ prompts: window.__prompts, jobs: window.__rpcCalls.filter((c) => c.name === "plan-analyze").length }));
+  /* Reading the catalogue of providers is free and sends no reading, so it
+     is not what "a No sends nothing" is about. */
+  const declined = await page.evaluate(() => ({
+    prompts: window.__prompts,
+    jobs: window.__rpcCalls.filter((c) => c.name === "plan-analyze" && c.args?.action !== "providers").length,
+  }));
   check("pressing asks the sentence that names the cost, and a No sends nothing",
     declined.prompts.length === 1 && declined.prompts[0] === "This will run AI again and may use additional credits." && declined.jobs === 0, JSON.stringify(declined));
 

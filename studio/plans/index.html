@@ -11,7 +11,7 @@ try{var t=localStorage.getItem("mdai-theme");document.documentElement.dataset.th
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
-    <link rel="stylesheet" href="plans.css?v=86dbc286d4">
+    <link rel="stylesheet" href="plans.css?v=5b46726340">
   </head>
   <body>
     <div class="boot-screen" id="boot-screen">
@@ -209,6 +209,21 @@ try{var t=localStorage.getItem("mdai-theme");document.documentElement.dataset.th
               </ol>
               <p class="analysis-estimate">Estimated progress. Completion is confirmed only when the governed baseline is saved.</p>
             </section>
+            <!-- Which reader. Owners and administrators choose; everybody
+                 else runs the project's default. A provider with no key in
+                 this project's secrets says so and cannot be run — the key
+                 itself never reaches this page. -->
+            <div class="reader-picker" id="reader-picker" hidden>
+              <div class="reader-choice">
+                <label for="reader-provider">Reader</label>
+                <select id="reader-provider"></select>
+              </div>
+              <div class="reader-choice">
+                <label for="reader-model">Model</label>
+                <select id="reader-model"></select>
+              </div>
+              <p class="reader-note" id="reader-note"></p>
+            </div>
             <button class="button ai-button" id="analyze-plans" type="button">Analyze current plan set <span>↗</span></button>
             <!-- Shown only once a reading of exactly these inputs exists. The
                  primary state is that the analysis is current; running it
@@ -245,6 +260,14 @@ try{var t=localStorage.getItem("mdai-theme");document.documentElement.dataset.th
                sections; the reading's own questions stand below it, all of
                them, under one disclosure. Three of those questions are put
                first by a rule, never by a model's sense of importance. -->
+          <!-- Every saved reading of this project, newest first. Switching
+               changes the whole result below: the schedules, the questions
+               and the sources of that reading and no other. -->
+          <div class="reading-switch" id="reading-switch" hidden>
+            <p class="reading-switch-label">Saved readings</p>
+            <div class="reading-list" id="reading-list" role="tablist"></div>
+            <p class="reading-run" id="reading-run"></p>
+          </div>
           <p class="result-status" id="result-status" role="status"></p>
           <p class="approval-guidance" id="approval-guidance" role="status" hidden></p>
           <div class="result-first">
@@ -485,6 +508,6 @@ try{var t=localStorage.getItem("mdai-theme");document.documentElement.dataset.th
     <script src="../page-renders.js?v=0f50a64fc6"></script>
     <script src="../pdf-split.js?v=daa41f13f8"></script>
     <script src="../ai-usage.js?v=92381d12a3"></script>
-    <script src="plans.js?v=b382563229"></script>
+    <script src="plans.js?v=4c80db1b0a"></script>
   </body>
 </html>

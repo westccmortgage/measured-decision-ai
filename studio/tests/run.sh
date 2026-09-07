@@ -69,6 +69,8 @@ run "interface and clarity"            studio/tests/clarity.mjs
 run "reading the same set again"       studio/tests/reanalyze-door.mjs
 run "every page keeps its tiles"       studio/tests/every-page-keeps-its-tiles.mjs
 run "the legend is scope"              studio/tests/legend-devices.mjs
+run "one reading, three envelopes"     studio/tests/one-reading-three-envelopes.mjs
+run "three readers in the Studio"      studio/tests/three-readers.mjs
 run "what the number counts"           studio/tests/what-the-number-counts.mjs
 run "the PDF that leaves"             studio/tests/pdf360.mjs
 run "the record leaves with its owner" studio/tests/e2e-export.mjs

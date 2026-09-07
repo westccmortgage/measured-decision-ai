@@ -993,3 +993,30 @@ body.view-visual .takeoff-section { display: none; }
 .rebuild-offer { margin-top: 12px; padding: 12px; border: 1px dashed var(--line); border-radius: 10px; }
 .rebuild-note { margin: 0 0 10px; font-size: 12px; color: var(--d91a8b8); }
 .rebuild-offer .button { width: 100%; }
+
+/* Which reader, and which saved reading.
+ *
+ * The picker is an administrator's control, so it is quiet: a line of two
+ * selects above the Analyze button, and one sentence under them that says
+ * what will run — or that a provider has no key in this project. */
+.reader-picker { display: flex; flex-wrap: wrap; gap: 12px 18px; align-items: end; margin: 0 0 12px; }
+.reader-choice { display: grid; gap: 4px; }
+.reader-choice label { font-size: 11px; letter-spacing: .08em; text-transform: uppercase; color: var(--muted); }
+.reader-choice select {
+  min-width: 190px; padding: 8px 10px; border-radius: 10px;
+  border: 1px solid var(--line); background: var(--panel); color: var(--ink); font: inherit;
+}
+.reader-note { flex: 1 1 240px; margin: 0; font-size: 12px; color: var(--muted); }
+.reader-note.warn { color: var(--warn, #d08b2c); }
+
+.reading-switch { display: grid; gap: 8px; margin: 0 0 14px; }
+.reading-switch-label { margin: 0; font-size: 11px; letter-spacing: .08em; text-transform: uppercase; color: var(--muted); }
+.reading-list { display: flex; flex-wrap: wrap; gap: 8px; }
+.reading-tab {
+  display: grid; gap: 2px; padding: 8px 12px; border-radius: 12px; text-align: left;
+  border: 1px solid var(--line); background: var(--panel); color: var(--ink); cursor: pointer; font: inherit;
+}
+.reading-tab strong { font-size: 13px; }
+.reading-tab small { font-size: 11px; color: var(--muted); }
+.reading-tab[aria-selected="true"] { border-color: var(--accent); box-shadow: 0 0 0 1px var(--accent) inset; }
+.reading-run { margin: 0; font-size: 12px; color: var(--muted); }
