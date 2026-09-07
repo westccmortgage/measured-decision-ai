@@ -1,31 +1,49 @@
 # Models, access, retention, budget
 
-Checked on 2026-09-07 against official documentation where the network allowed it. The proxy in this environment blocks `platform.openai.com`, `developers.openai.com`, `ai.google.dev` and `docs.cloud.google.com`; those facts come from search excerpts of the official pages and are marked **(search)**. Confirm each one against the provider's page before approving.
+Checked 2026-09-07. This environment's proxy blocks `platform.openai.com`, `developers.openai.com`, `ai.google.dev` and `docs.cloud.google.com`; Anthropic's documentation was read directly. For the other two providers only search excerpts of the official pages were readable. Every cell carries its status: **confirmed** (read on the official page), **excerpt** (official page seen only as a search excerpt), **own use** (proven by this product's production calls), **not confirmed**. Nothing in this table is assumed.
+
+## Model IDs and prices
 
 | | OpenAI | Anthropic | Google |
 |---|---|---|---|
-| Proposed model | `gpt-5.6-sol` (search: official model page) | `claude-opus-5` (official models overview) | `gemini-3.1-pro` (search: Google Cloud model page names this ID; several listings show `gemini-3.1-pro-preview` — confirm with the models list call before the run) |
-| Why | The app's current reader; the reading it made is the starting point, so the same model reading the same kit isolates the effect of the kit and prompt | Anthropic's recommended default; 1M context; high-resolution image tier (2576 px long edge, 4784 visual tokens per image), which is what dense drawings need | Google's most capable reasoning model; PDF and image input; `media_resolution` per image lets the kit's enlargements go in at high resolution |
-| Context / max output | 1,050,000 / 128,000 (search) | 1,000,000 / 128,000 | 1M (search) |
-| Inputs | text, image; PDF via `input_file` in Responses (the app already sends PDFs this way in production) | text, image (JPEG/PNG/GIF/WebP), PDF (32 MB and 600 pages per request; each page as text + image) | text, image, PDF up to 50 MB or 1000 pages (search) |
-| Price per 1M tokens | $4 in / $20 out, promotional through 2026-11-21 (search) | $5 in / $25 out | $2 in / $12 out under 200k prompt tokens; $4 / $18 above (third-party listings only — official page blocked; verify) |
-| Image tokens | patch-based; the calculator on the docs site gives the exact count; high detail resizes, original keeps dimensions (search) | ⌈w/28⌉ × ⌈h/28⌉ visual tokens, capped at 4784 per image after downscaling to 2576 px long edge | 258 tokens per 768×768 tile; `media_resolution` high raises the per-image budget (search) |
-| Access needed | API key with Responses API; the app's existing key can be used from the run script | API key (`ANTHROPIC_API_KEY`); no beta header needed for PDFs or images | API key for the Gemini Developer API (`GEMINI_API_KEY`) |
-| Files: retention | Abuse-monitoring logs kept up to 30 days by default; Files API uploads persist until deleted or `expires_after`; ZDR by approval (search) | Files API: persist until deleted or `expires_in_seconds` (1 h – 90 d); images sent inline are ephemeral; PDF processing is ZDR-eligible except Covered Models (Opus 5 is not one) | Files API uploads auto-delete after 48 hours (search) |
-| How the kit is sent | inline `input_image` (base64 data URLs) and the PDF as `input_file` base64 — nothing left in a file store | inline base64 `image` and `document` blocks — nothing left in a file store | inline `inlineData` — nothing left in a file store |
+| API model ID | `gpt-5.6-sol` — excerpt (official model page exists under that name); own use (the app's production reader) | `claude-opus-5` — confirmed | `gemini-3.1-pro-preview` — excerpt (an official Gemini API page names this ID and says it has no free tier); the Google Cloud model page is titled "Gemini 3.1 Pro". **Which string the Gemini Developer API accepts is not confirmed**; the runner lists models (a free call) and refuses to proceed if the configured ID is absent |
+| Context / max output | 1,050,000 / 128,000 — excerpt | 1,000,000 / 128,000 — confirmed | not confirmed |
+| Inputs | text + image — excerpt; PDF via `input_file` in the Responses API — own use | text, image, PDF (32 MB and 600 pages per request) — confirmed | text, image, PDF — excerpt; page limits not confirmed |
+| Price per 1M tokens (input / output) | $4 / $20, promotional through 2026-11-21 — excerpt | $5 / $25 — confirmed | **not confirmed** (only third-party listings were readable; they are not used here) |
+| Image token rule | not confirmed for this model; this product's own v3 run measured ≈ 4.7k input tokens per 200-dpi tile at `detail: high` — own use | ⌈w/28⌉ × ⌈h/28⌉ per image, downscaled to 2576 px long edge, ≤ 4784 tokens per image — confirmed | 258 tokens per 768×768 tile; `media_resolution` on Gemini 3 raises the per-image budget — excerpt; the exact count at `MEDIA_RESOLUTION_HIGH` is not confirmed |
+| Access needed | an API key with access to the Responses API and to this model (the app's key qualifies) | `ANTHROPIC_API_KEY` | `GEMINI_API_KEY` with paid tier enabled (the model has no free tier) |
+| Rate limits / availability | not confirmed for the key that will be used | not confirmed for the key that will be used | not confirmed |
 
-Sending everything inline keeps the retention posture the same for all three: no uploaded files remain with any provider after the call, only the provider's own request logging (OpenAI up to 30 days by default; Anthropic per its retention policy; Google per its API terms).
+## Retention — what "inline" does and does not mean
 
-## Cost estimate (estimate, not a quote)
+Sending pages and images inline (base64 in the request body) is the **transport**: it means the runner creates no object in a provider's file store, so there is nothing to delete afterwards. It is **not** a guarantee that the provider holds no copy. Each provider still logs the request and response under its own policy:
 
-Kit per provider: 3 structural pages as PDF + 3 full-page images + 12 enlargements (2×2 per sheet) + up to 4 architectural pages, and the prompt (~4k tokens). Output ~15k tokens per provider.
+| | OpenAI | Anthropic | Google |
+|---|---|---|---|
+| Request/response logging | abuse-monitoring logs kept up to 30 days by default; Zero Data Retention is by approval — excerpt. The runner sends `store: false` so the response is not kept as a retrievable object — excerpt (documented parameter) | files uploaded through the Files API persist until deleted or `expires_in_seconds`; PDF processing is ZDR-eligible (Opus 5 is not a Covered Model) — confirmed. The standard retention period for request logs was not read in this session — not confirmed | prompts and outputs retained 55 days for abuse monitoring on the paid tier; an in-memory cache with a 24-hour TTL; ZDR by request — excerpt |
+| File store | none used | none used | none used |
 
-| Provider | Input tokens (est.) | Input $ | Output tokens (est.) | Output $ | Per reading (est.) |
-|---|---|---|---|---|---|
-| OpenAI gpt-5.6-sol | ~90k (v3 measured ~5k tokens per 200-dpi image at high detail) | $0.36 | 15k | $0.30 | ~$0.70 |
-| Anthropic claude-opus-5 | ~75k (15 images × ≤4784 + PDF pages) | $0.38 | 15k | $0.38 | ~$0.80 |
-| Google gemini-3.1-pro | ~80k (258 tokens per 768-px tile, ~20 tiles per enlargement) | $0.16 | 15k | $0.18 | ~$0.35 |
+Conclusion: after the run, no file object remains with any provider, but each provider may hold the request content for its logging window (30 days OpenAI; not confirmed Anthropic; 55 days Google). If that is not acceptable for the Noble set, the run needs a ZDR arrangement with each provider first.
 
-Total estimate for three readings: about $2. **Proposed cap for the whole first experiment: $10**, enforced by the script (`--approve-budget=10`): it estimates before sending and refuses above the cap; after each call it records the provider's reported usage and the price table above.
+## Budget — recomputed from the kit, worst case
 
-Recorded per run: model, request bytes, usage (input/cached/output), computed cost, wall time, outcome (`succeeded` / `failed` / `outcome_unknown`). No automatic retry on any outcome.
+The kit is built by `kit/build-kit.mjs` and its exact contents are in `kit/out/manifest.json`. Until the source PDF is in place the kit does not exist; the numbers below are for the planned shape (three D-size structural sheets at 200 dpi ≈ 4800×7200 px, a 2×2 grid with 120 px overlap, plus up to four architectural pages as full pages) and are replaced by the runner's pre-flight figures, which read the real manifest.
+
+Per provider, worst case = every image at its maximum token count + PDF pages + prompt, and the **hard output cap** the request carries (`32,000` tokens), not an expected output.
+
+| Provider | Images | Input tokens (worst) | Input $ | Output cap | Output $ (worst) | Worst case |
+|---|---|---|---|---|---|---|
+| OpenAI gpt-5.6-sol | 3 full + 12 tiles + ≤4 arch = 19 × 5,000 | 95k + 7 PDF pages × 3k + 6k = 122k | $0.49 | 32k | $0.64 | **$1.13** |
+| Anthropic claude-opus-5 | 19 × 4,784 | 91k + 21k + 6k = 118k | $0.59 | 32k | $0.80 | **$1.39** |
+| Google gemini-3.1-pro-preview | 19 × 5,200 (upper bound) | 99k + 21k + 6k = 126k | price not confirmed | 32k | price not confirmed | **not computable** until the price is confirmed |
+
+Confirmed part of the worst case: $2.52 for OpenAI + Anthropic. Proposed cap for the whole first experiment: **$10**, which holds even if Google's unconfirmed price were four times the third-party figure.
+
+## How the cap is enforced
+
+1. The runner refuses to start without `--approve-budget=<usd>`.
+2. Before any call it computes the worst case per provider from the real manifest (image count × max tokens per image, PDF pages, prompt) and the output cap, and refuses if the sum exceeds the approved amount. A provider whose price is not confirmed cannot be estimated and is refused unless its price is entered in the table.
+3. Every request carries a hard output limit (`max_output_tokens` / `max_tokens` / `maxOutputTokens` = 32,000).
+4. Providers run one after another. Before each send the runner checks `spent so far (from reported usage) + next worst case ≤ cap`; otherwise it stops.
+5. A lost answer (`outcome_unknown`) stops the run. Nothing is retried automatically.
+6. Usage reported by the provider is written to `results/ledger.json` with the price table used; the sum is the experiment's cost of record.

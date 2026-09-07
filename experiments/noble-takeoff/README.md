@@ -27,12 +27,12 @@ repository root).
 
 ## Order of work
 
-1. Put the source PDF at `experiments/noble-takeoff/source/noble.pdf` (not committed; the folder is git-ignored).
+1. Put the source PDF at `experiments/noble-takeoff/source/noble.pdf` (not committed; the folder is git-ignored). Nothing under `source/`, `kit/out/` or `results/` (except the scoring template) is tracked, and `netlify.toml` answers 404 for `/experiments/*` so a future merge of this branch publishes no drawing, no enlargement and no reading.
 2. `node kit/build-kit.mjs` — writes `kit/out/` with `manifest.json`. Look at `kit/out/coverage.txt`: every page must read `edges: complete`.
 3. Re-verify `ground-truth.json` against `kit/out/*-full.png` and the enlargements; mark counts on the marked-up copies (`kit/out/marked/`), one member one mark. Anything not settled stays `disputed`.
 4. Approve models and budget in `models-and-budget.md`.
 5. `node run/run-comparison.mjs --approve-budget=10 --providers=openai,anthropic,google` — one reading per provider.
-6. Score in `results/scoring-template.csv`, per task, per axis. Fill `results/app-v3.json` from the saved baseline (already exported at the session's scratchpad as `noble-v3.json`; copy it in by hand).
+6. Score in `results/scoring-template.csv`, per task, per axis. Place the app's saved reading at `results/app-v3.json` by hand (export of baseline v3); `results/` is git-ignored except the template, so no project reading, no provider answer and no ledger is ever committed.
 
 ## Stop rules
 

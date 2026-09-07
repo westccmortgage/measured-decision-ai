@@ -1,3 +1,4 @@
 source/
 kit/out/
-results/*.raw.json
+results/*
+!results/scoring-template.csv
