@@ -1,355 +1,213 @@
 {
-  "_about": "Facts for scoring, checked on the kit built from the original PDF (2306-NA_231114 - PC Submittal Set.pdf, 30 pages, structural sheets 24x36 in, rendered at 200 dpi). status: verified = read by a person at tile resolution on the kit images; disputed = a count that is not yet settled on a marked-up sheet and goes to the owner. Counts are never taken from a model, from two models agreeing, or from the app's saved reading.",
-  "source": {
-    "file": "2306-NA_231114 - PC Submittal Set.pdf",
-    "pages": {
-      "S-1": 22,
-      "S-2": 24,
-      "S-3": 25,
-      "S-4": 26,
-      "S-5": 27,
-      "S-6": 28,
-      "S-7": 29,
-      "S-8": 30,
-      "A-210": 14
-    },
-    "kit": "kit/out (grid 2x3, overlap 150 px, 200 dpi)"
+ "_about": "Facts for scoring. status: verified = read by a person at native resolution on the kit built from the original PDF (2026-09-07); disputed = cannot be settled reliably yet, goes to the owner for a decision. Counts below are LABEL counts, each placed with page coordinates in kit/out/marked/p2X-labels.csv (one label, one mark); a member count is settled only where noted, never from a model or from two models agreeing. The app's saved reading is not ground truth.",
+ "source": {
+  "file": "2306-NA_231114 - PC Submittal Set.pdf",
+  "pages": {
+   "S-2": 24,
+   "S-3": 25,
+   "S-4": 26
   },
-  "facts": [
-    {
-      "task": "A",
-      "id": "A.FB1",
-      "status": "verified",
-      "sheet": "S-3",
-      "page": 25,
-      "where": "BEAM SCHEDULE (tile p25-r2c2)",
-      "mark": "FB 1",
-      "section": "4x12 #1"
-    },
-    {
-      "task": "A",
-      "id": "A.FB2",
-      "status": "verified",
-      "sheet": "S-3",
-      "page": 25,
-      "where": "BEAM SCHEDULE",
-      "mark": "FB 2",
-      "section": "6x12 #1"
-    },
-    {
-      "task": "A",
-      "id": "A.FB3",
-      "status": "verified",
-      "sheet": "S-3",
-      "page": 25,
-      "where": "BEAM SCHEDULE",
-      "mark": "FB 3",
-      "section": "PARALLAM PSL 2.0E 5.25\"x11.25\""
-    },
-    {
-      "task": "A",
-      "id": "A.FB4",
-      "status": "verified",
-      "sheet": "S-3",
-      "page": 25,
-      "where": "BEAM SCHEDULE",
-      "mark": "FB 4",
-      "section": "6x12 #1"
-    },
-    {
-      "task": "A",
-      "id": "A.FB5",
-      "status": "verified",
-      "sheet": "S-3",
-      "page": 25,
-      "where": "BEAM SCHEDULE",
-      "mark": "FB 5",
-      "section": "PARALLAM PSL 2.0E 5.25\"x11.25\""
-    },
-    {
-      "task": "A",
-      "id": "A.FB6",
-      "status": "verified",
-      "sheet": "S-3",
-      "page": 25,
-      "where": "BEAM SCHEDULE",
-      "mark": "FB 6",
-      "section": "PARALLAM PSL 2.0E (2)-5.25\"x11.25\"",
-      "plies": 2,
-      "detail": "7/S-6"
-    },
-    {
-      "task": "A",
-      "id": "A.FB7",
-      "status": "verified",
-      "sheet": "S-3",
-      "page": 25,
-      "where": "BEAM SCHEDULE",
-      "mark": "FB 7",
-      "section": "PARALLAM PSL 2.0E (2)-5.25\"x11.25\"",
-      "plies": 2,
-      "detail": "7/S-6"
-    },
-    {
-      "task": "A",
-      "id": "A.FB8",
-      "status": "verified",
-      "sheet": "S-3",
-      "page": 25,
-      "where": "BEAM SCHEDULE",
-      "mark": "FB 8",
-      "section": "PARALLAM PSL 2.0E 7.0\"x11.25\""
-    },
-    {
-      "task": "A",
-      "id": "A.FB9",
-      "status": "verified",
-      "sheet": "S-3",
-      "page": 25,
-      "where": "BEAM SCHEDULE",
-      "mark": "FB 9",
-      "section": "PARALLAM PSL 2.0E (2)-7.0\"x11.25\"",
-      "plies": 2,
-      "detail": "7/S-6"
-    },
-    {
-      "task": "A",
-      "id": "A.FB10",
-      "status": "verified",
-      "sheet": "S-3",
-      "page": 25,
-      "where": "BEAM SCHEDULE",
-      "mark": "FB 10",
-      "section": "6x10 #1"
-    },
-    {
-      "task": "A",
-      "id": "A.FB11",
-      "status": "verified",
-      "sheet": "S-3",
-      "page": 25,
-      "where": "BEAM SCHEDULE",
-      "mark": "FB 11",
-      "section": "4x10 #1"
-    },
-    {
-      "task": "A",
-      "id": "A.HDR1",
-      "status": "verified",
-      "sheet": "S-3",
-      "page": 25,
-      "where": "HEADER SCHEDULE",
-      "mark": "HDR 1",
-      "section": "4x12 #1"
-    },
-    {
-      "task": "A",
-      "id": "A.HDR2",
-      "status": "verified",
-      "sheet": "S-3",
-      "page": 25,
-      "where": "HEADER SCHEDULE",
-      "mark": "HDR 2",
-      "section": "4x14 #1"
-    },
-    {
-      "task": "A",
-      "id": "A.HDR3",
-      "status": "verified",
-      "sheet": "S-3",
-      "page": 25,
-      "where": "HEADER SCHEDULE",
-      "mark": "HDR 3",
-      "section": "PARALLAM PSL 2.0E 3.50\"x16.0\""
-    },
-    {
-      "task": "A",
-      "id": "A.HDR4",
-      "status": "verified",
-      "sheet": "S-3",
-      "page": 25,
-      "where": "HEADER SCHEDULE",
-      "mark": "HDR 4",
-      "section": "PARALLAM PSL 2.0E 3.50\"x18.0\"",
-      "note": "Printed. Absent from the app's v3 reading. Must be a row whether or not an instance is found."
-    },
-    {
-      "task": "A",
-      "id": "A.header_table",
-      "status": "verified",
-      "sheet": "S-3 and S-4",
-      "where": "HEADER SCHEDULE (U.N.O.) table",
-      "rule": "5'-0\" MAX: 2-2x6 OR 4x6 (2x4 studs) / 3-2x6 OR 6x6 (2x6) / 4-2x6 OR 8x6 (2x8); 8'-0\" MAX: 2-2x8 OR 4x8 / 3-2x8 OR 6x8 / 4-2x8 OR 8x8; OVER 8'-0\": SEE PLAN. NOTE: AT EXTERIOR AND INTERIOR WALLS, A 4x12 MIN. HEADER MAY BE USED IN LIEU OF THE HEADER NOTED IN THE TABLE. HEADER NOTED IN TABLE SHALL BE PROVIDED OVER ALL WINDOWS, DOORS, AND OTHER OPENING, UNLESS NOTED OTHERWISE.",
-      "note": "This is the printed rule an unnumbered HDR/RHDR label resolves through."
-    },
-    {
-      "task": "A",
-      "id": "A.joists",
-      "status": "verified",
-      "sheet": "S-3",
-      "page": 25,
-      "where": "FLOOR JOIST SCHEDULE",
-      "rows": {
-        "F.J. 1": "2x12 #2 @16\" O.C.",
-        "F.J. 2": "(2)-2x12 #2 @16\" O.C. (detail 10/S-6)",
-        "D.J. 1": "2x10 #2 @16\" O.C."
-      },
-      "note": "F.J.2 is an assembly of two plies per joist position; assemblies and pieces must be told apart."
-    },
-    {
-      "task": "A",
-      "id": "A.RR2",
-      "status": "verified",
-      "sheet": "S-3",
-      "page": 25,
-      "where": "ROOF RAFTER SCHEDULE",
-      "mark": "R.R. 2",
-      "section": "2x6 #2 @16\" O.C."
-    },
-    {
-      "task": "B",
-      "id": "B.area1",
-      "status": "verified_labels_disputed_members",
-      "sheet": "S-3",
-      "page": 25,
-      "area": "tile p25-r1c1, x 1350–2549, y 1050–2548 (page coordinates identical: r1c1 origin is 0,0)",
-      "marked": "kit/out/marked/p25-area-B1.png + p25-area-B1.csv",
-      "labels": {
-        "FB 1": 2,
-        "FB 3": 4,
-        "FB 11": 2,
-        "FB 10": 1,
-        "HDR 3": 1,
-        "HDR 1": 1,
-        "HDR (general)": 1
-      },
-      "placements": 11,
-      "note": "Eleven labels placed, one mark each. Labels 8–11 sit on member lines that continue south into tile r2c1; whether the same members carry a second label there is not yet checked, so the MEMBER count for FB 11, FB 10, HDR 1 and FB 3 in this area is disputed. The label count is settled."
-    },
-    {
-      "task": "B",
-      "id": "B.rest",
-      "status": "disputed",
-      "sheet": "S-3",
-      "page": 25,
-      "note": "Tiles r1c2, r1c3, r2c1 and the plan part of r2c2 are not yet marked. Labels seen but not yet placed one by one: FB 2 (several), FB 4, FB 5, FB 6, FB 7, FB 8, FB 9, HDR 1, HDR 2, many general HDR. To be marked next, area by area, before the run."
-    },
-    {
-      "task": "C",
-      "id": "C.schedule",
-      "status": "verified",
-      "sheet": "S-4",
-      "page": 26,
-      "where": "BEAM SCHEDULE / HEADER SCHEDULE / ROOF RAFTER SCHEDULE (tile p26-r2c2)",
-      "rows": {
-        "RIDGE BM 1": "PARALLAM PSL 2.0E 5.25\"x11.25\"",
-        "RIDGE BM 2": "(2)-2x10 #2 (detail 7/S-6)",
-        "HIP BM 1": "6x12 #1",
-        "HIP BM 2": "6x12 #1",
-        "RB 1": "4x10 #1",
-        "RB 2": "6x12 #1",
-        "RB 3": "PARALLAM PSL 2.0E 5.25\"x11.25\"",
-        "RHDR 1": "4x8 #2",
-        "RHDR 2": "4x12 #1",
-        "R.R. 1": "2x10 #2 @16\" O.C."
-      },
-      "note": "RIDGE BM 2 is an assembly of 2 plies. R.R.1 is a zone. Unnumbered RHDR labels resolve through the header table (A.header_table), not to RHDR 1."
-    },
-    {
-      "task": "C",
-      "id": "C.counts",
-      "status": "disputed",
-      "sheet": "S-4",
-      "page": 26,
-      "note": "Places, assemblies and pieces for RIDGE BM 1/2, HIP BM 1/2, RB 1/2/3, RHDR 1/2, R.R.1 zones: not yet marked. The advisor's visual reading (RIDGE BM 1: 2 places; HIP BM 1: 4; HIP BM 2: 6) and the app's v3 numbers are both unsettled until marked one by one on p26 tiles."
-    },
-    {
-      "task": "D",
-      "id": "D.schedule",
-      "status": "verified",
-      "sheet": "S-2",
-      "page": 24,
-      "where": "FOUNDATION SCHEDULE (tile p24-r2c2)",
-      "rows": {
-        "F1": "24\" x 24\" x 12\" w/ 3-#4 E.W.",
-        "F2": "36\" x 36\" x 12\" w/ 4-#4 E.W.",
-        "F3": "48\" x 48\" x 12\" w/ 6-#4 E.W.",
-        "F4": "48\" x 30\" x 18\" w/ #4 @6\" E.W. T&B"
-      }
-    },
-    {
-      "task": "D",
-      "id": "D.placement",
-      "status": "disputed",
-      "sheet": "S-2",
-      "page": 24,
-      "note": "Hexagon tags F1–F4 are drawn on the foundation plan; their placements are not yet marked. A schedule row is not evidence of a placement."
-    },
-    {
-      "task": "E",
-      "id": "E.S3.notes",
-      "status": "verified",
-      "sheet": "S-3",
-      "page": 25,
-      "where": "notes under 1ST FLOOR WALL + 2ND FLOOR FRAMING PLAN (tile p25-r2c3)",
-      "rules": {
-        "2": "FLOOR DIAPHRAGM TO BE 19/32\" PLYWOOD (PANEL INDEX 40/20) DOC PS 1 AND PS 2 W/ 10d COMMON NAILS @6/6/10 BLOCKED.",
-        "3": "PROVIDE 10d @6\" O.C. BOUNDARY NAILS AT THE PERIMETER OF BUILDING.",
-        "4": "PROVIDE 4xWIDTH OF BEAM POST OR EQUIVALENT MULTI STUDS UNDER THE BEAMS. & SEE DETAIL 2/S-7",
-        "5": "ALL STRUCTURAL STUDS TO BE 2x4 #2 STUDS @16\" O.C. U. N. O.",
-        "7": "ALL NON BEARING PARTITIONS TO BE 2x4 #2 STUDS @16\" O.C. U.N.O. & SEE DETAIL 11/S-1.1",
-        "8": "HDR : INDICATES HEADERS TO BE HEADER SCHEDULE U.N.O. & SEE DETAIL 1/S-7",
-        "9": "DRAG : INDICATES DRAGS TO BE 4x10 OR 4x BLOCK'G. U.N.O. & SEE DETAIL 13/S-1.1",
-        "10": "(solid square) : INDICATES 4x4 #1 POST WITH SIMPSON MST37 STRAP TIES U.N.O, & SEE DETAILS 1/S-6",
-        "11": "TRIMMERS : 1-2X4 TRIMMER REQUIRED FOR 4X8 HEADERS AND SMALLER. U.N.O. 4X4 TRIMMER REQUIRED FOR HEADERS LARGER THAN 4X8 U.N.O.",
-        "12": "PROVIDE DOUBLE FLOOR JOISTS UNDER ALL PARALLEL WALLS AND PROVIDE BLOCKING BELOW ALL PERPENDICULAR WALLS",
-        "14": "ROOF/FLOOR DIAPHRAGM NAILING TO BE INSPECTED BEFORE COVERING. FACE GRAIN OF PLYWOOD SHALL BE PERPENDICULAR TO SUPPORTS. FLOOR SHALL HAVE TONGUE AND GROOVE OR BLOCKED PANEL EDGES. PLYWOOD SPANS SHALL CONFORM WITH TABLE 2304.8",
-        "15": "ALL DIAPHRAGM AND SHEAR WALL NAILING SHALL UTILIZE COMMON NAILS OR GALVANIZED BOX.",
-        "16": "ALL BOLT HOLES SHALL BE DRILLED 1/32 TO 1/16\" OVERSIZED.",
-        "17": "PROVIDE 1/2\" PLYWOOD AT ALL EXTERIOR WALL U.N.O."
-      }
-    },
-    {
-      "task": "E",
-      "id": "E.S4.notes",
-      "status": "verified",
-      "sheet": "S-4",
-      "page": 26,
-      "where": "notes under 2ND FLOOR WALL + ROOF FRAMING PLAN",
-      "rules": {
-        "2": "ROOF DIAPHRAGM TO BE 15/32\" PLYWOOD (PANEL INDEX 32/16) DOC PS 1 AND PS 2 W/ 10d COMMON NAILS @6/6/12 UNBLOCKED.",
-        "5": "ALL STRUCTURAL STUDS TO BE 2x4 #2 STUDS @16\" O.C. U.N.O.",
-        "7": "ALL NON BEARING PARTITIONS TO BE 2x4 #2 STUDS @16\" O.C. U.N.O.",
-        "16": "USE FULL HEIGHT STUDS (BALLOON FRAME) ON EXTERIOR WALLS OF ROOMS WITH VAULTED CEILING.",
-        "17": "PROVIDE 1/2\" PLYWOOD AT ALL EXTERIOR WALL U.N.O."
-      },
-      "note": "Read from the full-page image; to be re-read at tile resolution (p26-r2c3) for exact wording of notes 3–15."
-    },
-    {
-      "task": "E",
-      "id": "E.S2.notes",
-      "status": "verified",
-      "sheet": "S-2",
-      "page": 24,
-      "where": "notes under FOUNDATION PLAN",
-      "rules": {
-        "2": "ALL ANCHOR BOLTS TO BE 5/8\" A.B. x 12\" LONG, 9\" EMBEDMENT @48\" O.C. U.N.O. SQUARE WASHER 3\"x3\"x1/4\" SHALL BE USED WITH ALL ANCHOR BOLTS.",
-        "3": "ALL STRUCTURAL STUDS TO BE 2x4 #2 @16\" O.C. FOR EXTERIOR WALL & 2x4 #2 @16\" O.C. FOR INTERIOR WALL.",
-        "10": "PROVIDE 1/2\" PLYWOOD AT ALL EXTERIOR WALL U.N.O."
-      },
-      "note": "Read from the full-page image; exact wording to be re-read at tile resolution (p24-r2c3)."
-    },
-    {
-      "task": "E",
-      "id": "E.material_table",
-      "status": "verified",
-      "sheet": "S-2, S-3, S-4",
-      "where": "MATERIAL TABLE",
-      "rows": {
-        "CONC SLAB & FOUNDATION": "f'c=2,500psi (28 DAYS)",
-        "REINFORCING STEEL": "A615 (fy=60ksi)",
-        "WOOD": "D-F LARCH"
-      }
-    }
+  "sheet_size_in": "24 x 36 landscape",
+  "kit_dpi": 200,
+  "page_px": "7197 x 4795"
+ },
+ "A_schedules": {
+  "status": "verified",
+  "S-3 BEAM SCHEDULE (p25)": {
+   "FB 1": "4x12 #1",
+   "FB 2": "6x12 #1",
+   "FB 3": "PARALLAM PSL 2.0E 5.25\"x11.25\"",
+   "FB 4": "6x12 #1",
+   "FB 5": "PARALLAM PSL 2.0E 5.25\"x11.25\"",
+   "FB 6": "PARALLAM PSL 2.0E (2)-5.25\"x11.25\" · detail 7/S-6",
+   "FB 7": "PARALLAM PSL 2.0E (2)-5.25\"x11.25\" · detail 7/S-6",
+   "FB 8": "PARALLAM PSL 2.0E 7.0\"x11.25\"",
+   "FB 9": "PARALLAM PSL 2.0E (2)-7.0\"x11.25\" · detail 7/S-6",
+   "FB 10": "6x10 #1",
+   "FB 11": "4x10 #1"
+  },
+  "S-3 HEADER SCHEDULE (p25)": {
+   "HDR 1": "4x12 #1",
+   "HDR 2": "4x14 #1",
+   "HDR 3": "PARALLAM PSL 2.0E 3.50\"x16.0\"",
+   "HDR 4": "PARALLAM PSL 2.0E 3.50\"x18.0\""
+  },
+  "S-3 FLOOR JOIST SCHEDULE": {
+   "F.J. 1": "2x12 #2 @16\" O.C.",
+   "F.J. 2": "(2)-2x12 #2 @16\" O.C. · detail 10/S-6",
+   "D.J. 1": "2x10 #2 @16\" O.C."
+  },
+  "S-3 ROOF RAFTER SCHEDULE": {
+   "R.R. 2": "2x6 #2 @16\" O.C."
+  },
+  "S-4 BEAM SCHEDULE (p26)": {
+   "RIDGE BM 1": "PARALLAM PSL 2.0E 5.25\"x11.25\"",
+   "RIDGE BM 2": "(2)-2x10 #2 · detail 7/S-6",
+   "HIP BM 1": "6x12 #1",
+   "HIP BM 2": "6x12 #1",
+   "RB 1": "4x10 #1",
+   "RB 2": "6x12 #1",
+   "RB 3": "PARALLAM PSL 2.0E 5.25\"x11.25\""
+  },
+  "S-4 HEADER SCHEDULE": {
+   "RHDR 1": "4x8 #2",
+   "RHDR 2": "4x12 #1"
+  },
+  "S-4 ROOF RAFTER SCHEDULE": {
+   "R.R. 1": "2x10 #2 @16\" O.C."
+  },
+  "HEADER SCHEDULE (U.N.O.) table, printed on S-3 and S-4": {
+   "5'-0\" max": {
+    "2x4 stud": "2-2x6 OR 4x6",
+    "2x6 stud": "3-2x6 OR 6x6",
+    "2x8 stud": "4-2x6 OR 8x6"
+   },
+   "8'-0\" max": {
+    "2x4 stud": "2-2x8 OR 4x8",
+    "2x6 stud": "3-2x8 OR 6x8",
+    "2x8 stud": "4-2x8 OR 8x8"
+   },
+   "over 8'-0\"": "SEE PLAN",
+   "note": "AT EXTERIOR AND INTERIOR WALLS, A 4x12 MIN. HEADER MAY BE USED IN LIEU OF THE HEADER NOTED IN THE TABLE. HEADER NOTED IN TABLE SHALL BE PROVIDED OVER ALL WINDOWS, DOORS, AND OTHER OPENING, UNLESS NOTED OTHERWISE."
+  },
+  "plies": {
+   "FB 6": 2,
+   "FB 7": 2,
+   "FB 9": 2,
+   "F.J. 2": 2,
+   "RIDGE BM 2": 2
+  },
+  "note": "HDR 4 is printed and is also drawn once on the plan (S-3, label at page 5320,1390)."
+ },
+ "B_S3_labels": {
+  "status": "verified as labels; member counts disputed where noted",
+  "placements": "kit/out/marked/p25-labels.csv (55 marks)",
+  "labels": {
+   "FB 1": 12,
+   "FB 2": 5,
+   "FB 3": 4,
+   "FB 4": 1,
+   "FB 5": 2,
+   "FB 6": 1,
+   "FB 7": 1,
+   "FB 8": 1,
+   "FB 9": 1,
+   "FB 10": 1,
+   "FB 11": 3,
+   "HDR 1": 4,
+   "HDR 2": 1,
+   "HDR 3": 1,
+   "HDR 4": 1,
+   "HDR (general, incl. one HDR(BELOW))": 16
+  },
+  "disputed_member_counts": [
+   "FB 1: two labels on one vertical line at x≈4590 (y 1040 and 1990) with a post between — one member or two; same at x≈3895 (y 1985 and 2400).",
+   "FB 3: two labels on one vertical line at x≈1960 (y 1440 and 2360) — one member or two.",
+   "FB 5: two labels on one horizontal line (x 2600 and 4990, y≈1155–1190) crossing the grid-3 wall — one member or two.",
+   "FB 11: three labels around the west porch (top, left, bottom) — probably three members.",
+   "General HDR labels resolve through the HEADER SCHEDULE (U.N.O.) table by opening width and stud size; none resolves to HDR 1 by default."
+  ],
+  "app_v3_for_contrast": {
+   "FB 1": 8,
+   "FB 2": 7,
+   "FB 3": 7,
+   "HDR 1": 7,
+   "HDR 2": 2,
+   "HDR 3": 2,
+   "HDR 4": "not read"
+  }
+ },
+ "C_S4_labels": {
+  "status": "verified as labels; places vs assemblies vs pieces disputed where noted",
+  "placements": "kit/out/marked/p26-labels.csv (63 marks)",
+  "labels": {
+   "HIP BM 1": 4,
+   "HIP BM 2": 4,
+   "RIDGE BM 1": 2,
+   "RIDGE BM 2": 3,
+   "RB 1": 2,
+   "RB 2": 2,
+   "RB 2? (vertical label beside the east RIDGE BM 2, reads 'BM 2')": 1,
+   "RB 3": 1,
+   "RHDR 1": 3,
+   "RHDR 2": 1,
+   "RHDR (general)": 28,
+   "R.R.1 zones": 12
+  },
+  "disputed": [
+   "HIP BM 2: 4 labels; the advisor's visual count was 6 diagonals — labels and diagonal segments are not the same thing; settle on the marked sheet.",
+   "RB 1 and RB 2: two labels each on one long vertical line through the west small roofs — one member or two.",
+   "RIDGE BM 2: three places (two west small roofs, one east); each is an assembly of (2)-2x10 per the schedule — 3 assemblies, 6 pieces if each place is one assembly; the plan callout near the small roofs must be read with detail 7/S-6 before this is settled.",
+   "RIDGE BM 1: two places (main roof and east wing) — probably two members; lengths not printed.",
+   "R.R.1: 12 zones, never 12 rafters; the number of rafters per zone is not readable without measuring, which is out of scope.",
+   "General RHDR labels: 28; each resolves through the HEADER SCHEDULE (U.N.O.) table, never to RHDR 1 by default."
+  ],
+  "app_v3_for_contrast": {
+   "RIDGE BM 1": 2,
+   "RIDGE BM 2": 3,
+   "HIP BM 1": 4,
+   "HIP BM 2": 6,
+   "RB 1": 8,
+   "RB 2": 3,
+   "RB 3": 1,
+   "RHDR 1": 20,
+   "RHDR 2": 1,
+   "R.R.1": "12 (zones)"
+  }
+ },
+ "D_S2": {
+  "status": "schedule verified; placements verified as tags",
+  "FOUNDATION SCHEDULE (p24)": {
+   "F1": "24\" x 24\" x 12\" w/ 3-#4 E.W.",
+   "F2": "36\" x 36\" x 12\" w/ 4-#4 E.W.",
+   "F3": "48\" x 48\" x 12\" w/ 6-#4 E.W.",
+   "F4": "48\" x 30\" x 18\" w/ #4 @6\" E.W. T&B"
+  },
+  "placements": "kit/out/marked/p24-labels.csv (20 marks)",
+  "tags": {
+   "F1": 3,
+   "F2": 11,
+   "F3": 2,
+   "F4": 4
+  },
+  "disputed": [
+   "A tag beside a dashed pad is taken as one footing; confirm on the marked sheet that no pad carries two tags and no tagged pad was missed (the plan is dense at the east stair)."
+  ],
+  "notes_S2": [
+   "2. ALL ANCHOR BOLTS TO BE 5/8\" A.B.x12\" LONG 9\" EMBEDMENT @48\" O.C. U.N.O. SQUARE WASHER 3\"x3\"x1/4\" SHALL BE USED WITH ALL ANCHOR BOLTS.",
+   "3. ALL STRUCTURAL STUDS TO BE 2x4 #2 @16\" O.C. FOR EXTERIOR WALL & 2x4 #2 @16\" O.C. FOR INTERIOR WALL.",
+   "6. ■ : INDICATES SIMPSON HOLD-DOWN HDU2 U.N.O. & SEE DETAIL 1/S-5",
+   "10. PROVIDE 1/2\" PLYWOOD AT ALL EXTERIOR WALL U.N.O."
   ]
+ },
+ "E_notes": {
+  "status": "verified",
+  "S-3 (p25) notes": {
+   "2": "FLOOR DIAPHRAGM TO BE 19/32\" PLYWOOD (PANEL INDEX 40/20) DOC PS 1 AND PS 2 W/ 10d COMMON NAILS @6/6/10 BLOCKED.",
+   "3": "PROVIDE 10d @6\" O.C. BOUNDARY NAILS AT THE PERIMETER OF BUILDING.",
+   "4": "PROVIDE 4xWIDTH OF BEAM POST OR EQUIVALENT MULTI STUDS UNDER THE BEAMS. & SEE DETAIL 2/S-7",
+   "5": "ALL STRUCTURAL STUDS TO BE 2x4 #2 STUDS @16\" O.C. U. N. O.",
+   "7": "ALL NON BEARING PARTITIONS TO BE 2x4 #2 STUDS @16\" O.C. U.N.O. & SEE DETAIL 11/S-1.1",
+   "8": "HDR : INDICATES HEADERS TO BE HEADER SCHEDULE U.N.O. & SEE DETAIL 1/S-7",
+   "9": "DRAG : INDICATES DRAGS TO BE 4x10 OR 4x BLOCK'G. U.N.O. & SEE DETAIL 13/S-1.1",
+   "10": "■ : INDICATES 4x4 #1 POST WITH SIMPSON MST37 STRAP TIES U.N.O, & SEE DETAILS 1/S-6",
+   "11": "TRIMMERS : 1-2X4 TRIMMER REQUIRED FOR 4X8 HEADERS AND SMALLER. U.N.O. 4X4 TRIMMER REQUIRED FOR HEADERS LARGER THAN 4X8 U.N.O.",
+   "12": "PROVIDE DOUBLE FLOOR JOISTS UNDER ALL PARALLEL WALLS AND PROVIDE BLOCKING BELOW ALL PERPENDICULAR WALLS",
+   "14": "ROOF/FLOOR DIAPHRAGM NAILING TO BE INSPECTED BEFORE COVERING. FACE GRAIN OF PLYWOOD SHALL BE PERPENDICULAR TO SUPPORTS. FLOOR SHALL HAVE TONGUE AND GROOVE OR BLOCKED PANEL EDGES. PLYWOOD SPANS SHALL CONFORM WITH TABLE 2304.8",
+   "15": "ALL DIAPHRAGM AND SHEAR WALL NAILING SHALL UTILIZE COMMON NAILS OR GALVANIZED BOX.",
+   "16": "ALL BOLT HOLES SHALL BE DRILLED 1/32 TO 1/16\" OVERSIZED.",
+   "17": "PROVIDE 1/2\" PLYWOOD AT ALL EXTERIOR WALL U.N.O."
+  },
+  "S-4 (p26) notes that differ from S-3": {
+   "2": "ROOF DIAPHRAGM TO BE 15/32\" PLYWOOD (PANEL INDEX 32/16) DOC PS 1 AND PS 2 W/ 10d COMMON NAILS @6/6/12 UNBLOCKED.",
+   "16": "USE FULL HEIGHT STUDS (BALLOON FRAME) ON EXTERIOR WALLS OF ROOMS WITH VAULTED CEILING.",
+   "17": "PROVIDE 1/2\" PLYWOOD AT ALL EXTERIOR WALL U.N.O."
+  },
+  "MATERIAL TABLE (S-2, S-3, S-4)": {
+   "CONC SLAB & FOUNDATION": "f'c=2,500psi (28 DAYS)",
+   "REINFORCING STEEL": "A615 (fy=60ksi)",
+   "WOOD": "D-F LARCH"
+  },
+  "correction": "The stud rule (2x4 #2 @16 O.C. U.N.O.) is printed on S-3 notes 5 and 7 and repeated on S-4 note 5 and S-2 note 3; the app's v3 cited S-4 only."
+ }
 }
