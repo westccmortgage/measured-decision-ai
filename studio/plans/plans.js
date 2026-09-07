@@ -38,6 +38,11 @@ const state = {
      — the key itself never reaches this page. */
   providers: [],
   reader: { provider: null, model: null },
+  /* The comparison of several readings of one plan set. Held separately from
+     the readings themselves, because a comparison is a finding about readers
+     and never becomes the project's baseline. */
+  comparison: null,
+  comparisonBusy: false,
   activeBaseline: null,
   readingRegister: null,
   readingWeakSpots: null,
@@ -656,6 +661,9 @@ async function openProperty(propertyId) {
   state.baseline =
     baselines.find((item) => item.id === requestedBaselineId) || baselines[0] || null;
   state.activeAnalysisJob = activeJobResult.data?.[0] || null;
+  /* A comparison already made of these readings is shown as it was saved,
+     without buying anything. */
+  await loadComparison();
   const analyzableDocumentIds = new Set(state.documents.filter(canAnalyzeDocument).map((document) => document.id));
   const baselineDocumentIds = (state.baseline?.source_document_ids || []).filter((id) => analyzableDocumentIds.has(id));
   state.selectedDocumentIds = new Set(baselineDocumentIds.length ? baselineDocumentIds : analyzableDocumentIds);
@@ -1536,6 +1544,13 @@ async function reviewTakeoffLine(lineKey, verdict, value) {
   }
 }
 
+$("#compare-readings")?.addEventListener("click", () => runComparison());
+$("#attach-truth")?.addEventListener("click", () => $("#truth-file")?.click());
+$("#truth-file")?.addEventListener("change", async (event) => {
+  const [file] = event.target.files || [];
+  event.target.value = "";
+  await attachControlMarkup(file);
+});
 $("#takeoff-expert-lines")?.addEventListener("click", (event) => {
   const button = event.target.closest("button[data-verdict]");
   if (!button) return;
@@ -2910,6 +2925,353 @@ function runLine(baseline) {
   return parts.join(" · ");
 }
 
+/* WHICH READINGS CAN BE COMPARED AT ALL.
+ *
+ * Readings of the same plan documents, under the same task version, at the
+ * same enlargement budget. Others are still offered — a person may want to
+ * see them side by side — but the screen says what differed and never calls
+ * the result a comparison of readers. */
+function readingsForComparison() {
+  const readings = (state.baselines || []).filter((item) => item.analysis_run || item.provider || item.model);
+  if (readings.length < 2) return [];
+  /* Newest first, one per reader: comparing two readings by the same reader
+     compares two runs, not two readers. */
+  const seen = new Set();
+  const picked = [];
+  for (const reading of readings) {
+    const who = reading.provider || reading.analysis_run?.provider || reading.model || reading.id;
+    if (seen.has(who)) continue;
+    seen.add(who);
+    picked.push(reading);
+  }
+  return picked.length >= 2 ? picked : [];
+}
+
+function comparisonIds() {
+  return readingsForComparison().map((item) => item.id);
+}
+
+function renderCompareBar() {
+  const bar = $("#compare-bar");
+  if (!bar) return;
+  const candidates = readingsForComparison();
+  bar.hidden = candidates.length < 2 || !mayChooseReader();
+  if (bar.hidden) return;
+  const button = $("#compare-readings");
+  const note = $("#compare-note");
+  const attach = $("#attach-truth");
+  if (attach) attach.disabled = state.busy || state.comparisonBusy;
+  const saved = state.comparison && sameIdList(state.comparison.baseline_ids, comparisonIds());
+  button.disabled = state.busy || state.comparisonBusy;
+  button.textContent = state.comparisonBusy
+    ? "Comparing…"
+    : saved ? "Show the comparison again" : "Compare AI results";
+  const readers = candidates.map((item) => item.analysis_run?.provider_label || item.provider || item.model || "a reader");
+  note.textContent = saved
+    ? "Already compared — reopening costs nothing."
+    : `${readers.join(", ")} · one checker call, on the same sheets these readings were made from.`;
+}
+
+function sameIdList(a, b) {
+  const left = [...(a || [])].sort().join(",");
+  const right = [...(b || [])].sort().join(",");
+  return Boolean(left) && left === right;
+}
+
+/* The saved comparison of the current readings, if there is one. Never buys
+   anything: this is the free half. */
+async function loadComparison() {
+  state.comparison = null;
+  const ids = comparisonIds();
+  if (ids.length < 2 || !mayChooseReader() || !state.property?.id) return;
+  try {
+    const { data, error } = await client.functions.invoke("compare-readings", {
+      body: { action: "status", property_id: state.property.id, baseline_ids: ids },
+    });
+    if (error) return;
+    state.comparison = data?.comparison || null;
+  } catch (error) {
+    console.warn("comparison", error);
+  }
+}
+
+async function runComparison() {
+  const ids = comparisonIds();
+  if (ids.length < 2 || state.comparisonBusy) return;
+  if (state.comparison && sameIdList(state.comparison.baseline_ids, ids)) {
+    renderComparison();
+    $("#comparison")?.scrollIntoView({ behavior: "smooth", block: "start" });
+    return;
+  }
+  state.comparisonBusy = true;
+  renderCompareBar();
+  const { provider, model } = chosenReader();
+  try {
+    const { data, error } = await client.functions.invoke("compare-readings", {
+      body: { action: "run", property_id: state.property.id, baseline_ids: ids, provider, model },
+    });
+    if (error) throw error;
+    if (data?.comparison) {
+      state.comparison = data.comparison;
+      state.comparisonBusy = false;
+      renderComparison();
+      renderCompareBar();
+      return;
+    }
+    /* The mechanical half is already on the screen while the checker reads
+       the sheets. Nothing is bought again by waiting. */
+    state.comparison = { pending: true, ...(data?.preview || {}) };
+    renderComparison();
+    await waitForComparison(ids, Number(data?.preview?.deadline_ms) || 480000);
+  } catch (error) {
+    notify(error?.message || "The comparison could not be started", "error");
+  } finally {
+    state.comparisonBusy = false;
+    renderCompareBar();
+  }
+}
+
+async function waitForComparison(ids, deadlineMs) {
+  const until = Date.now() + deadlineMs;
+  while (Date.now() < until) {
+    await new Promise((resolve) => setTimeout(resolve, 6000));
+    const { data } = await client.functions.invoke("compare-readings", {
+      body: { action: "status", property_id: state.property.id, baseline_ids: ids },
+    });
+    if (data?.comparison) {
+      state.comparison = data.comparison;
+      renderComparison();
+      return;
+    }
+  }
+  /* A check that never came back is not a check that failed silently. */
+  state.comparison = { ...(state.comparison || {}), pending: false, timed_out: true };
+  renderComparison();
+}
+
+/* A control markup, attached to this project.
+ *
+ * A JSON file of positions read off the real sheets by a person, each with
+ * the page it was found on. The server records which documents it was read
+ * from — with their size and page count — so it can never be quietly applied
+ * to a different revision of the drawings. */
+async function attachControlMarkup(file) {
+  if (!file) return;
+  let parsed;
+  try {
+    parsed = JSON.parse(await file.text());
+  } catch (error) {
+    notify("That file is not readable JSON, so nothing was attached.", "error");
+    return;
+  }
+  const entries = Array.isArray(parsed) ? parsed : parsed?.entries;
+  if (!Array.isArray(entries) || !entries.length) {
+    notify("That file carries no marked positions, so nothing was attached.", "error");
+    return;
+  }
+  const documentIds = Array.isArray(parsed?.source_document_ids) && parsed.source_document_ids.length
+    ? parsed.source_document_ids
+    : [...new Set(readingsForComparison().flatMap((reading) => reading.source_document_ids || []))];
+  if (!documentIds.length) {
+    notify("Name the plan documents this markup was read from — the readings on screen do not say.", "error");
+    return;
+  }
+  try {
+    const { data, error } = await client.functions.invoke("compare-readings", {
+      body: {
+        action: "attach_truth",
+        property_id: state.property.id,
+        label: parsed?.label || file.name,
+        source_document_ids: documentIds,
+        entries,
+      },
+    });
+    if (error) throw error;
+    const disputed = entries.filter((entry) => entry?.disputed).length;
+    notify(`Control markup attached — ${data?.entries || entries.length} marked positions`
+      + `${disputed ? `, ${disputed} of them disputed and never used to decide between readers` : ""}.`);
+  } catch (error) {
+    notify(error?.message || "The control markup could not be attached", "error");
+  }
+}
+
+const READER_LETTERS = ["A", "B", "C", "D", "E", "F"];
+
+/* THE SHEET A FINDING POINTS AT.
+ *
+ * A finding names a sheet and a page of the original set. A plan document may
+ * be a part cut from that set, so the page inside the file is not the page on
+ * the sheet — which is why the page numbers are translated here rather than
+ * handed to the viewer raw. A finding whose page belongs to no document in
+ * this comparison gets no button rather than a wrong one. */
+function findingSheet(comparison, finding) {
+  const page = Number(finding?.evidence?.page) || 0;
+  if (!page) return null;
+  for (const id of comparison?.plan_document_ids || []) {
+    const source = state.documents.find((row) => row.id === id);
+    if (!source) continue;
+    const range = partOf(source);
+    if (!range) return { id, page };
+    const from = Number(range.page_from) || 1;
+    const to = Number(range.page_to) || 0;
+    if (page >= from && (!to || page <= to)) return { id, page: page - from + 1 };
+  }
+  return null;
+}
+
+/* Who A, B and C actually were. The checker never knew; the person reading
+   the result must. */
+function readerName(comparison, blind) {
+  const baselineId = comparison?.blind_map?.[blind];
+  const reading = (state.baselines || []).find((item) => item.id === baselineId);
+  if (!reading) return blind;
+  const who = reading.analysis_run?.provider_label || reading.provider || reading.model || "a reader";
+  return `${who} (v${reading.version})`;
+}
+
+function renderComparison() {
+  const panel = $("#comparison");
+  if (!panel) return;
+  const comparison = state.comparison;
+  panel.hidden = !comparison;
+  if (!comparison) return;
+
+  const verdict = comparison.verdict || {};
+  const mechanical = comparison.mechanical || {};
+  const heading = $("#comparison-verdict");
+  const reason = $("#comparison-reason");
+
+  if (comparison.pending) {
+    heading.textContent = "Checking the answers against the sheets";
+    reason.textContent = "The differences below were found without looking at the drawings. The checker is reading the sheets now; nothing else is being bought.";
+  } else if (comparison.timed_out) {
+    heading.textContent = "Comparison incomplete";
+    reason.textContent = "The checker did not answer in time. It was not started again — that is a decision for a person.";
+  } else if (comparison.state === "incomplete") {
+    heading.textContent = "Comparison incomplete";
+    reason.textContent = comparison.incomplete_reason || "One of the readings could not be compared.";
+  } else {
+    /* The leader this application counted from findings that carried
+       evidence — never the number of rows anybody wrote. */
+    const leader = verdict.tally?.leader || null;
+    const recommended = leader ? readerName(comparison, leader) : null;
+    heading.textContent = recommended ? `Recommended for this set: ${recommended}` : "No clear winner";
+    if (leader) {
+      reason.textContent = [verdict.recommendation_reason || "", `Counted ${verdict.tally?.reason || ""}.`].filter(Boolean).join(" ");
+    } else {
+      /* The checker may still have had a preference. Saying so, and saying
+         it was not enough, is more useful than hiding it — and it is not the
+         same as naming a winner. */
+      const leaned = ["A", "B", "C"].includes(verdict.recommended_reader)
+        ? `The checker leaned towards ${readerName(comparison, verdict.recommended_reader)}${verdict.recommendation_reason ? ` — ${verdict.recommendation_reason}` : ""} `
+          + "— but that is not enough checked evidence to recommend a reader for this set."
+        : "";
+      reason.textContent = ["The checked findings do not separate these readers.", leaned].filter(Boolean).join(" ");
+    }
+  }
+
+  const conditions = $("#comparison-conditions");
+  const differences = comparison.conditions?.differences || [];
+  conditions.hidden = !differences.length;
+  if (differences.length) {
+    conditions.textContent = `These readings were not made under the same conditions — ${differences.join("; ")}. `
+      + "What follows compares circumstances as much as readers, so it is not a fair comparison of the readers themselves.";
+  }
+
+  const run = $("#comparison-run");
+  const runDetail = verdict.run || {};
+  const truth = comparison.truth || {};
+  run.textContent = [
+    comparison.judge_model ? `Checked by ${runDetail.provider_label || comparison.judge_provider || ""} ${comparison.judge_model}`.trim() : "",
+    comparison.agent_contract_version ? `task ${comparison.agent_contract_version}` : "",
+    runDetail.duration_ms ? `${Math.max(1, Math.round(runDetail.duration_ms / 1000))} s` : "",
+    Number.isFinite(Number(runDetail.usage?.input_tokens))
+      ? `${Number(runDetail.usage.input_tokens).toLocaleString()} in / ${Number(runDetail.usage.output_tokens || 0).toLocaleString()} out tokens` : "",
+    typeof runDetail.cost_usd === "number" ? `$${runDetail.cost_usd.toFixed(2)}` : (comparison.judge_model ? "cost unknown — tariff not confirmed" : ""),
+    truth.absent ? "no control markup for this plan set — this is a reader's recommendation, not measured accuracy" : "",
+    (verdict.tally?.set_aside_as_disputed || []).length
+      ? `${verdict.tally.set_aside_as_disputed.length} finding${verdict.tally.set_aside_as_disputed.length === 1 ? "" : "s"} left out of the count — the reference count for those marks is itself disputed`
+      : "",
+    "the checker was not told which system wrote which answer, which reduces bias and does not make the check independent",
+  ].filter(Boolean).join(" · ");
+
+  const sectionRows = (mechanical.sections || []).map((section) => {
+    const judged = (verdict.sections || []).find((item) => item.section === section.section);
+    const best = judged?.best && !["none", "tie"].includes(judged.best) ? readerName(comparison, judged.best) : (judged?.best === "tie" ? "no difference found" : "not separated");
+    return `<tr>
+      <th scope="row">${escapeHtml(label(section.section))}</th>
+      <td class="numeric">${section.positions}</td>
+      <td class="numeric">${section.all_three}</td>
+      <td class="numeric">${section.count_differences} counts · ${section.unit_differences} units · ${section.scope_flags} scope</td>
+      <td>${escapeHtml(best)}</td>
+      <td>${escapeHtml(judged?.why || "")}</td>
+    </tr>`;
+  }).join("");
+  const table = $("#comparison-sections");
+  if (table) table.querySelector("tbody").innerHTML = sectionRows
+    || `<tr><td colspan="6">Nothing lined up between these readings yet.</td></tr>`;
+
+  /* The three that matter most: a wrong verdict outranks an unverified one,
+     and a disagreement nobody could settle is still worth seeing. */
+  const findings = (verdict.findings || []);
+  const rank = { wrong: 0, could_not_verify: 1, verified: 2 };
+  const top = [...findings].sort((a, b) => (rank[a.verdict] ?? 3) - (rank[b.verdict] ?? 3)).slice(0, 3);
+  $("#comparison-top").innerHTML = top.length
+    ? top.map((finding) => `<article class="comparison-finding">
+        <strong>${escapeHtml(finding.mark || finding.section || "")} — ${escapeHtml(label(finding.verdict || ""))}</strong>
+        <span>${escapeHtml(finding.claim || "")}</span>
+        <span>${escapeHtml(finding.why || "")}</span>
+        <small>${escapeHtml([
+          finding.reader && finding.reader !== "all" ? readerName(comparison, finding.reader) : "all readers",
+          finding.evidence?.sheet || "",
+          finding.evidence?.page ? `page ${finding.evidence.page}` : "",
+          finding.evidence?.tile || "",
+          (finding.evidence?.marks || []).length ? `${finding.evidence.marks.length} marks identified` : "no individual marks identified",
+        ].filter(Boolean).join(" · "))}</small>
+        ${findingSheet(comparison, finding)
+          ? `<button class="ghost" type="button" data-open-sheet="${escapeHtml(findingSheet(comparison, finding).id)}" data-open-page="${findingSheet(comparison, finding).page}">Open ${escapeHtml(finding.evidence?.sheet || "the sheet")} at page ${finding.evidence.page}</button>`
+          : ""}
+      </article>`).join("")
+    : (comparison.pending ? "" : `<p class="comparison-coverage">The checker reported no finding it could place on a sheet.</p>`);
+
+  const coverage = verdict.check_coverage || {};
+  const truthCoverage = truth.coverage || {};
+  $("#comparison-coverage").textContent = [
+    Number.isFinite(Number(coverage.positions_checked)) ? `${coverage.positions_checked} positions checked against the sheets, ${coverage.positions_not_checked || 0} not checked` : "",
+    coverage.what_stayed_unresolved || "",
+    truthCoverage.entries_total
+      ? `Control markup: ${truthCoverage.entries_scored} of ${truthCoverage.entries_total} entries used, ${truthCoverage.entries_disputed} left out as disputed, ${truthCoverage.missed_by_all} missed by every reader.`
+      : "",
+    (verdict.missed_by_all || []).length
+      ? `${verdict.missed_by_all.length} position${verdict.missed_by_all.length === 1 ? "" : "s"} the checker found that no reading reported.` : "",
+    mechanical.caveat || "",
+  ].filter(Boolean).join(" ");
+
+  /* The same viewer the rest of this screen uses: the sheet, at its page, in
+     the file that holds it. */
+  $("#comparison-top").querySelectorAll("[data-open-sheet]").forEach((button) => {
+    button.addEventListener("click", () => openSheet(button.dataset.openSheet, Number(button.dataset.openPage || 0)));
+  });
+
+  const downgrades = verdict.evidence_downgrades || [];
+  $("#comparison-evidence").innerHTML = [
+    `<p>Readers: ${READER_LETTERS.slice(0, (comparison.baseline_ids || []).length)
+      .map((letter) => `${letter} = ${escapeHtml(readerName(comparison, letter))}`).join(" · ")}</p>`,
+    findings.length ? `<ul>${findings.map((finding) => `<li>${escapeHtml([
+      finding.reader && finding.reader !== "all" ? readerName(comparison, finding.reader) : "all readers",
+      finding.mark || "",
+      label(finding.verdict || ""),
+      finding.evidence?.sheet || "",
+      finding.evidence?.page ? `page ${finding.evidence.page}` : "",
+      finding.why || "",
+    ].filter(Boolean).join(" — "))}</li>`).join("")}</ul>` : "",
+    downgrades.length
+      ? `<p>${downgrades.length} of the checker's findings were not accepted as checked, because a place on a sheet — or, for a count, the individual marks — was not named: ${escapeHtml(downgrades.join("; "))}</p>`
+      : "",
+    `<p>The winner does not become this project's baseline, and no rows of one reading were merged into another.</p>`,
+  ].filter(Boolean).join("");
+}
+
 function renderReadingSwitch() {
   const wrap = $("#reading-switch");
   if (!wrap) return;
@@ -2932,6 +3294,8 @@ function renderReadingSwitch() {
   }
   const runNote = $("#reading-run");
   if (runNote) runNote.textContent = runLine(state.baseline);
+  renderCompareBar();
+  renderComparison();
 }
 
 /* Switching readings reloads everything that belongs to a baseline — its

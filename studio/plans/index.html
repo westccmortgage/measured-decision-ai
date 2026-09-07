@@ -11,7 +11,7 @@ try{var t=localStorage.getItem("mdai-theme");document.documentElement.dataset.th
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
-    <link rel="stylesheet" href="plans.css?v=5b46726340">
+    <link rel="stylesheet" href="plans.css?v=e435de1c50">
   </head>
   <body>
     <div class="boot-screen" id="boot-screen">
@@ -267,7 +267,44 @@ try{var t=localStorage.getItem("mdai-theme");document.documentElement.dataset.th
             <p class="reading-switch-label">Saved readings</p>
             <div class="reading-list" id="reading-list" role="tablist"></div>
             <p class="reading-run" id="reading-run"></p>
+            <!-- Which of these readings read the set better. The button only
+                 appears once there is more than one reading to compare; the
+                 comparison itself is only bought when it is pressed, and
+                 re-opening a comparison already made shows what was saved. -->
+            <div class="compare-bar" id="compare-bar" hidden>
+              <button class="secondary" id="compare-readings" type="button">Compare AI results</button>
+              <!-- A control markup: positions read off the real sheets by a
+                   person, with the page each was found on. It is the only
+                   thing that can say what every reader missed. Without one the
+                   comparison says so, and calls itself a recommendation. -->
+              <button class="ghost" id="attach-truth" type="button">Attach control markup</button>
+              <input type="file" id="truth-file" accept="application/json,.json" hidden>
+              <span class="compare-note" id="compare-note"></span>
+            </div>
           </div>
+          <!-- The comparison. Nothing here changes the active baseline, and
+               no rows of one answer are merged into another. -->
+          <section class="comparison" id="comparison" hidden aria-live="polite">
+            <header class="comparison-head">
+              <h3 id="comparison-verdict">Comparing</h3>
+              <p class="comparison-reason" id="comparison-reason"></p>
+              <p class="comparison-conditions" id="comparison-conditions" hidden></p>
+              <p class="comparison-run" id="comparison-run"></p>
+            </header>
+            <div class="comparison-table-wrap">
+              <table class="comparison-table" id="comparison-sections">
+                <caption>By section — a different reader may read a different section better.</caption>
+                <thead><tr><th scope="col">Section</th><th scope="col">Positions</th><th scope="col">Agreed by all</th><th scope="col">Differences</th><th scope="col">Better here</th><th scope="col">Why</th></tr></thead>
+                <tbody></tbody>
+              </table>
+            </div>
+            <div class="comparison-top" id="comparison-top"></div>
+            <p class="comparison-coverage" id="comparison-coverage"></p>
+            <details class="comparison-evidence">
+              <summary>The evidence behind this</summary>
+              <div id="comparison-evidence"></div>
+            </details>
+          </section>
           <p class="result-status" id="result-status" role="status"></p>
           <p class="approval-guidance" id="approval-guidance" role="status" hidden></p>
           <div class="result-first">
@@ -508,6 +545,6 @@ try{var t=localStorage.getItem("mdai-theme");document.documentElement.dataset.th
     <script src="../page-renders.js?v=0f50a64fc6"></script>
     <script src="../pdf-split.js?v=28cecd16c7"></script>
     <script src="../ai-usage.js?v=92381d12a3"></script>
-    <script src="plans.js?v=4c80db1b0a"></script>
+    <script src="plans.js?v=6012dc0541"></script>
   </body>
 </html>

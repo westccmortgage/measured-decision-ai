@@ -29,3 +29,6 @@ verify_jwt = true
 
 [functions.document-classify]
 verify_jwt = true
+
+[functions.compare-readings]
+verify_jwt = true

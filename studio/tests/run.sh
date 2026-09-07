@@ -72,6 +72,8 @@ run "the legend is scope"              studio/tests/legend-devices.mjs
 run "one reading, three envelopes"     studio/tests/one-reading-three-envelopes.mjs
 run "three readers in the Studio"      studio/tests/three-readers.mjs
 run "long readings fit the function" studio/tests/long-readings-fit.mjs
+run "comparing three readings"        studio/tests/comparing-three-readings.mjs
+run "the comparison in the Studio"    studio/tests/compare-in-the-studio.mjs
 run "what the number counts"           studio/tests/what-the-number-counts.mjs
 run "the PDF that leaves"             studio/tests/pdf360.mjs
 run "the record leaves with its owner" studio/tests/e2e-export.mjs
