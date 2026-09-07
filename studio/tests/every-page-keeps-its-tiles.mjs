@@ -4,10 +4,19 @@
  * not available in one high-resolution tile", "requires full uncropped
  * framing-plan review" — and raised questions to the designer over it.
  * The drawings were whole. The first part carried 167 page tiles into a
- * request that holds 80: pages 1–11 arrived whole, page 12 in part, and
- * the door, window, fixture and framing schedules on pages 14–25 arrived
+ * request that then held eighty, and everything past the eightieth arrived
  * at the provider's own rasterisation. Our request was cropped, not the
  * plan — and the reading said the opposite.
+ *
+ * The budget is now twenty, one number for all three readers, so that three
+ * readings of one set are readings of the same drawings. A smaller budget
+ * would cost coverage if nothing else changed, so everything else did: the
+ * splitter cuts parts to twenty, the chunker splits on tiles as well as
+ * bytes, and a set is read in more parts each carrying all of its own tiles.
+ * Coverage goes up, not down. What stays exactly the same is the honesty:
+ * a reading names the pages it could not see at drawing-desk resolution,
+ * calls that our limit rather than the drawing's, and never asks the
+ * designer about it.
  *
  * Now: a part is cut so that every one of its pages keeps its tiles; the
  * site and the server agree on the budget; a reading names the pages it
@@ -40,23 +49,30 @@ console.log("── the budget, spent the way the request is composed ──");
 {
   const noble = [{ id: "p1", filename: "Set (pages 1-25).pdf", tiles: [...tilesOf([...Array(21)].map((_, i) => i + 1), 7), ...tilesOf([22, 23, 24, 25], 5)] }];
   const budget = tileCoverage(noble);
-  check("the site and the server hold the same number", split.PART_MAX_IMAGES === MAX_RENDER_IMAGES && MAX_RENDER_IMAGES === 80);
-  check("Noble part 1: 167 tiles, 80 carried, 87 left behind", budget.kept.length === 80 && budget.omitted === 87, `${budget.kept.length} kept, ${budget.omitted} omitted`);
+  check("the site and the server hold the same number, and it is the one every reader gets",
+    split.PART_MAX_IMAGES === MAX_RENDER_IMAGES && MAX_RENDER_IMAGES === 20);
+  check("a 25-sheet part carries twenty of its 167 tiles — which is why a part this size is no longer cut",
+    budget.kept.length === 20 && budget.omitted === 147, `${budget.kept.length} kept, ${budget.omitted} omitted`);
   const cov = budget.coverage[0];
-  check("pages 1–11 whole, 12 in part, 13–25 not at all — the schedules and the framing plans",
-    pageRanges(cov.pages_whole) === "1–11" && pageRanges(cov.pages_partial) === "12" && pageRanges(cov.pages_without) === "13–25",
+  check("and the reading knows exactly how far it got: two sheets whole, the third in part, the rest not at all",
+    pageRanges(cov.pages_whole) === "1–2" && pageRanges(cov.pages_partial) === "3" && pageRanges(cov.pages_without) === "4–25",
     JSON.stringify([cov.pages_whole, cov.pages_partial, cov.pages_without]));
   check("a page's overview goes before its quadrants", budget.kept[0].name === "p1-full.jpg" && budget.kept[1].name === "p1-r1c1.jpg");
-  const second = tileCoverage([{ id: "p2", filename: "Set (pages 26-30).pdf", tiles: tilesOf([26, 27, 28, 29, 30], 5) }]);
-  check("Noble part 2 fits whole — which is why S-4's hip and ridge counts were the ones that checked out",
-    second.omitted === 0 && pageRanges(second.coverage[0].pages_whole) === "26–30");
+  /* The comparison kit: S-2, S-3 and S-4 at four quadrants and an overview
+     each. Fifteen images, under the budget — so all three readers carry
+     every tile of every sheet, and nothing is left behind to compare. */
+  const kit = tileCoverage([{ id: "kit", filename: "S-2 S-3 S-4.pdf", tiles: tilesOf([24, 25, 26], 5) }]);
+  check("three structural sheets are fifteen images, so the kit fits every reader whole",
+    kit.kept.length === 15 && kit.omitted === 0 && pageRanges(kit.coverage[0].pages_whole) === "24–26",
+    `${kit.kept.length} images`);
   const lines = tileCoverageLines(budget.coverage);
-  check("the reading is told exactly which pages it cannot see", lines.length === 1 && lines[0] === "Set (pages 1-25).pdf: page 12 in part; pages 13–25 not at all", lines[0]);
+  check("the reading is told exactly which pages it cannot see",
+    lines.length === 1 && lines[0] === "Set (pages 1-25).pdf: page 3 in part; pages 4–25 not at all", lines[0]);
   const gaps = tileCoverageGaps(budget.coverage);
   check("and the result keeps it as a gap that is ours, blocks nothing, and says the sheets are whole",
     gaps.length === 1 && gaps[0].origin === "reader" && gaps[0].blocks_activation === false
       && /not a gap in the drawings: the sheets are whole/.test(gaps[0].question) && /Split the set into finer parts/.test(gaps[0].question), gaps[0]?.question);
-  check("a reading that carries everything keeps no such gap", tileCoverageGaps(second.coverage).length === 0);
+  check("a reading that carries everything keeps no such gap", tileCoverageGaps(kit.coverage).length === 0);
   check("page runs read as a person writes them", pageRanges([1, 2, 3, 5, 9, 10]) === "1–3, 5, 9–10");
 }
 
@@ -69,9 +85,10 @@ console.log("\n── a part is cut so every page keeps its tiles ──");
   const pageImages = [...Array(21).fill(7), ...Array(9).fill(5)];
   const parts = split.planParts({ pageCount: 30, byteSize: 30 * 1024 * 1024, pageImages });
   const images = (p) => pageImages.slice(p.from - 1, p.to).reduce((a, b) => a + b, 0);
-  check("Noble at 30 pages becomes three parts, each within the budget, the first closing before page 12 — where v3 went blind",
-    parts.length === 3 && parts[0].to === 11 && parts.every((p) => images(p) <= 80) && parts[parts.length - 1].to === 30
-      && parts.every((p, i) => i === 0 || p.from === parts[i - 1].to + 1),
+  check("Noble at 30 pages becomes thirteen parts, every one inside the budget, every page keeping its tiles",
+    parts.length === 13 && parts.every((p) => images(p) <= split.PART_MAX_IMAGES) && parts[parts.length - 1].to === 30
+      && parts.every((p, i) => i === 0 || p.from === parts[i - 1].to + 1)
+      && parts.reduce((sum, p) => sum + images(p), 0) === pageImages.reduce((a, b) => a + b, 0),
     JSON.stringify(parts.map((p) => [p.from, p.to, images(p)])));
   const light = split.planParts({ pageCount: 200, byteSize: 10 * 1024 * 1024, pageImages: Array(200).fill(1) });
   check("a set of letter pages cuts by the image budget, which is now the tighter cap", light.every((p) => p.to - p.from + 1 <= split.PART_MAX_IMAGES) && light[0].to === split.PART_MAX_IMAGES, JSON.stringify(light[0]));
@@ -79,8 +96,9 @@ console.log("\n── a part is cut so every page keeps its tiles ──");
   check("a page over the budget on its own still travels, alone", JSON.stringify(huge) === '[{"from":1,"to":1},{"from":2,"to":3}]', JSON.stringify(huge));
   const without = split.planParts({ pageCount: 30, byteSize: 30 * 1024 * 1024 });
   check("without page measurements the planner is what it was", without.length === 1 && without[0].to === 30);
-  const stamped = split.derivedFrom({ documentId: "d", from: 1, to: 11, pagesTotal: 30, part: 1, parts: 3, generation: 2, imagesBudget: 80 });
-  check("a part cut to the budget says so, and which generation it is", stamped.generation === 2 && stamped.images_budget === 80);
+  const stamped = split.derivedFrom({ documentId: "d", from: 1, to: 2, pagesTotal: 30, part: 1, parts: 13, generation: 2, imagesBudget: split.PART_MAX_IMAGES });
+  check("a part cut to the budget says so, and which generation it is",
+    stamped.generation === 2 && stamped.images_budget === split.PART_MAX_IMAGES);
   check("a part cut without the budget carries no such promise", !("images_budget" in split.derivedFrom({ documentId: "d", from: 1, to: 25, pagesTotal: 30, part: 1, parts: 2 })));
 }
 
