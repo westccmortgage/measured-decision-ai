@@ -14,6 +14,24 @@ Checked 2026-09-07. This environment's proxy blocks `platform.openai.com`, `deve
 | Access needed | an API key with access to the Responses API and to this model (the app's key qualifies) | `ANTHROPIC_API_KEY` | `GEMINI_API_KEY` with paid tier enabled (the model has no free tier) |
 | Rate limits / availability | not confirmed for the key that will be used | not confirmed for the key that will be used | not confirmed |
 
+## Reachability from the session that runs this
+
+Measured on 2026-09-07 from a Claude Code on the web container, one request per
+host with no key, reading only the status code. This is the environment's egress
+policy, not a provider decision, and it is separate from whether a key is set.
+
+| Host | Result | Meaning |
+|---|---|---|
+| `api.anthropic.com` | 401, "x-api-key header is required" | reachable; the request arrived at Anthropic |
+| `generativelanguage.googleapis.com` | 403, "Method doesn't allow unregistered callers" | reachable; the request arrived at Google |
+| `api.openai.com` | 403, "Host not in allowlist: api.openai.com" — answered by the egress proxy, which recorded `connect_rejected` for the host | **not reachable**; nothing left the container |
+
+So the OpenAI reading cannot be taken from this environment even with a valid
+key. Either `api.openai.com` is added to the environment's network egress
+settings at claude.ai/code, or OpenAI is left out of `--providers` and the
+comparison records it as not run for that reason. The runner does not work
+around a refused host and should not be made to.
+
 ## Retention — what "inline" does and does not mean
 
 Sending pages and images inline (base64 in the request body) is the **transport**: it means the runner creates no object in a provider's file store, so there is nothing to delete afterwards. It is **not** a guarantee that the provider holds no copy. Each provider still logs the request and response under its own policy:
