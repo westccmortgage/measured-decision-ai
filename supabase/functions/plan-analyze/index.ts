@@ -9,7 +9,7 @@ import { openAITransport } from "../_shared/openai-transport.ts";
 import {
   DEFAULT_PROVIDER, isProviderKey, modelOptionOrUnknown, openAIRequestBody, PROVIDERS,
   ProviderNotConfigured, providerCatalogue, providerErrorMessage, providerTransport, readAnswer,
-  readingEffort, readingImageBudget, readingRefusal, releaseGoogleFiles, syncRequest, uploadToGoogle, usageCost,
+  readingImageBudget, readingRefusal, releaseGoogleFiles, syncRequest, uploadToGoogle, usageCost,
   verifyModelId, waitForGoogleFiles,
   type ProviderKey, type ProviderTransport, type ReadingContent, type UploadedAsset,
 } from "../_shared/ai-providers.ts";
@@ -40,21 +40,20 @@ function corsHeaders(request: Request) {
    reader is given does not differ between them. A reading stopped at this
    limit is an error with its reason on the screen, never a partial result
    presented as finished. */
-/* THE CEILING HAS TO HOLD THE THINKING TOO.
+/* One reading's output ceiling, the same for every provider, so the task a
+   reader is given does not differ between them.
  *
- * Thirty-two thousand was not enough. The first real Claude reading of three
- * structural sheets ran the full five and a half minutes and then stopped at
- * this limit with the answer unfinished — because on Claude Opus 5 max_tokens
- * is "a hard limit on total output (thinking plus response text)", and the
- * model thinks by default at high effort. The ceiling was being spent on
- * reasoning before the schedule was written.
- *
- * Sixty-four thousand is the largest number all three readers accept: Claude
- * Opus 5 and GPT-5.6 Sol both publish a 128k maximum output, and Gemini 3.1
- * Pro publishes 64k — the binding one. Google's own page could not be reached
- * from here to confirm it, so if that figure is wrong the request is rejected
- * before anything is generated, which costs nothing and says so. */
-const MAX_READING_OUTPUT_TOKENS = 64000;
+ * It is known to be too small. The first real Claude reading of three
+ * structural sheets ran five and a half minutes and stopped here with the
+ * answer unfinished, because on Claude Opus 5 max_tokens is a hard limit on
+ * total output — thinking and response text together — and the model thinks
+ * by default. Raising the number is not the fix and is not attempted here:
+ * a ceiling large enough to hold the answer may not fit the worker's clock,
+ * and that trade is a question about how a reading executes, not a constant
+ * to nudge. What this file does now is fail against it legibly — a known
+ * failure with its usage, its partial answer and its reason kept — so the
+ * decision can be made on evidence rather than on a guess. */
+const MAX_READING_OUTPUT_TOKENS = 32000;
 
 /* A SYNCHRONOUS READER DOES NOT FIT IN A REQUEST.
  *
@@ -841,9 +840,8 @@ function runMetrics(
     /* How many enlargements a reading carries — the same for every reader,
        so three readings of one set are three readings of the same drawings. */
     image_budget: readingImageBudget(transport.provider),
-    /* Two readings asked to think differently are not the same reading, so
-       what each was told is recorded beside what it cost. */
-    reasoning_effort: readingEffort(transport.provider),
+    /* The ceiling this reading was given, so a stop against it can be read
+       later without guessing what the limit was at the time. */
     max_output_tokens: MAX_READING_OUTPUT_TOKENS,
     agent_contract_version: AGENT_CONTRACT_VERSION,
     /* And the digest of the pages and enlargements this reading actually

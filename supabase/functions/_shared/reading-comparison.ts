@@ -481,11 +481,6 @@ export type ReadingConditions = {
      The budget says what it was allowed; this says what it got. */
   image_fingerprint: string | null;
   images_sent: number | null;
-  /* What this reader was told about how much to think before answering. A
-     reader left at its own default and one we turned down are not the same
-     reader — shown here rather than folded into a verdict, because it is a
-     difference in configuration, not in the drawings they were given. */
-  reasoning_effort: string | null;
   state: string;
 };
 
@@ -532,7 +527,6 @@ export function conditionsVerdict(readings: ReadingConditions[]) {
       image_budget: reading.image_budget,
       image_fingerprint: reading.image_fingerprint,
       images_sent: reading.images_sent,
-      reasoning_effort: reading.reasoning_effort || "provider default",
     })),
   };
 }

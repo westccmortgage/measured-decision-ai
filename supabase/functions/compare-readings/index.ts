@@ -487,7 +487,6 @@ Deno.serve(async (request) => {
       image_budget: row.analysis_run?.image_budget ?? null,
       image_fingerprint: row.analysis_run?.image_fingerprint ?? null,
       images_sent: row.analysis_run?.images_sent ?? null,
-      reasoning_effort: row.analysis_run?.reasoning_effort ?? null,
       state: row.state,
     } as ReadingConditions)));
 

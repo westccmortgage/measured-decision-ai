@@ -51,14 +51,6 @@ export type ProviderDefinition = {
   mode: ProviderMode;
   baseUrl: string;
   models: ModelOption[];
-  /* HOW HARD THIS READER IS ASKED TO THINK.
-   *
-   * Every reader thinks before it answers, and every reader decides for
-   * itself how much — except where we say otherwise. This records what we
-   * said, so a comparison can show it rather than hide it: a reader running
-   * at its own default and a reader we turned down are not the same reader,
-   * and the screen should not pretend they are. */
-  reasoningEffort: string;
   /* Where the model ids and prices in this row were read. */
   source: string;
 };
@@ -95,7 +87,6 @@ export const PROVIDERS: Record<ProviderKey, ProviderDefinition> = {
     secret: "OPENAI_API_KEY",
     mode: "background",
     baseUrl: "https://api.openai.com/v1",
-    reasoningEffort: "provider default",
     source: "developers.openai.com/api/docs/models/gpt-5.6-sol",
     models: [
       {
@@ -114,7 +105,6 @@ export const PROVIDERS: Record<ProviderKey, ProviderDefinition> = {
     secret: "ANTHROPIC_API_KEY",
     mode: "sync",
     baseUrl: "https://api.anthropic.com/v1",
-    reasoningEffort: "medium",
     source: "platform.claude.com/docs/en/about-claude/models/overview",
     models: [
       {
@@ -133,7 +123,6 @@ export const PROVIDERS: Record<ProviderKey, ProviderDefinition> = {
     secret: "GEMINI_API_KEY",
     mode: "sync",
     baseUrl: "https://generativelanguage.googleapis.com/v1beta",
-    reasoningEffort: "provider default",
     source: "ai.google.dev/gemini-api/docs/generate-content/gemini-3",
     models: [
       {
@@ -204,7 +193,6 @@ export function providerCatalogue() {
     mode: definition.mode,
     configured: providerConfigured(definition.key),
     image_budget: READING_IMAGE_BUDGET,
-    reasoning_effort: definition.reasoningEffort,
     source: definition.source,
     models: definition.models.map((model) => ({ ...model })),
   }));
@@ -215,12 +203,6 @@ export function providerCatalogue() {
    is deliberately the same for all three, and a test holds it that way. */
 export function readingImageBudget(_key?: ProviderKey) {
   return READING_IMAGE_BUDGET;
-}
-
-/* What this reader was told about how much to think. Recorded with every
-   reading; never inferred from the answer. */
-export function readingEffort(key: ProviderKey) {
-  return PROVIDERS[key].reasoningEffort;
 }
 
 export class ProviderNotConfigured extends Error {
@@ -564,12 +546,12 @@ export function syncRequest(
            own recommended control for response time and token cost; it is
            recorded with the reading, so a comparison shows that this reader
            was asked to think less than one running at its own default. */
-        output_config: { effort: PROVIDERS.anthropic.reasoningEffort },
         /* Thinking is billed as output and counts against max_tokens, and on
            Claude Opus 5 its text is omitted by default — so a reading that
            spends its ceiling on reasoning leaves no evidence of where the
-           ceiling went. Asking for the summary costs nothing extra and puts
-           that evidence in the answer we keep. */
+           ceiling went, and the partial answer this application now keeps
+           would say nothing about it. Asking for the summary changes neither
+           the task nor the price; it makes the kept evidence legible. */
         thinking: { type: "adaptive", display: "summarized" },
         system: content.instructions,
         messages: [{ role: "user", content: blocks }],
