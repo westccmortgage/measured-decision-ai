@@ -270,7 +270,7 @@ const schema = {
           mark: { type: "string" },
           category: {
             type: "string",
-            enum: ["door", "window", "plumbing_fixture", "electrical_fixture", "mechanical_equipment", "appliance", "other"],
+            enum: ["door", "window", "plumbing_fixture", "electrical_fixture", "electrical_device", "mechanical_equipment", "appliance", "other"],
           },
           description: { type: "string" },
           unit: { type: "string" },

@@ -728,6 +728,7 @@ const RESULT_SECTIONS = [
   { category: "door", title: "Doors" },
   { category: "window", title: "Windows" },
   { category: "electrical_fixture", title: "Lighting and electrical" },
+  { category: "electrical_device", title: "Electrical devices" },
   { category: "plumbing_fixture", title: "Plumbing fixtures" },
   { category: "mechanical_equipment", title: "Mechanical equipment" },
   { category: "appliance", title: "Appliances" },
