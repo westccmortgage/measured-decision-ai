@@ -19,6 +19,85 @@
 
 export const CHUNK_BYTE_LIMIT = 49 * 1024 * 1024;
 
+/* How many page images one reading carries. The Studio renders every sheet
+   into ~200 dpi tiles (an E-size sheet is six quadrants and an overview, a
+   D-size sheet four and one); the request can hold this many of them. The
+   number also lives in studio/pdf-split.js, so a part is cut to fit it —
+   the site and the server must agree, and a test holds them to it. */
+export const MAX_RENDER_IMAGES = 80;
+
+/* Which tiles a reading actually carries, and which pages it therefore
+   reads at PDF resolution only. `documents` arrive in reading order, each
+   with its stored tiles ({ name, page }); the budget is spent page by page
+   in that order, a page's overview before its quadrants, exactly as the
+   request is composed. Nothing here decides what to read — it says, out
+   loud, what the reading could see. On 4423 Noble the first part carried
+   167 tiles into an 80-image budget: pages 1–11 arrived whole, page 12 in
+   part, and the door, window, fixture and framing schedules on pages
+   14–25 arrived at the provider's own rasterisation. The reader then wrote
+   "the plan is cropped" — the plan was whole; our request was not. */
+export function tileCoverage(documents, maxImages = MAX_RENDER_IMAGES) {
+  const kept = [];
+  const coverage = [];
+  let omitted = 0;
+  let used = 0;
+  const overviewFirst = (name) => (/-full\.jpg$/.test(String(name)) ? 0 : 1);
+  for (const doc of documents) {
+    const pages = new Map();
+    const sorted = [...list(doc.tiles)].sort((a, b) =>
+      (a.page - b.page) || (overviewFirst(a.name) - overviewFirst(b.name)) || String(a.name).localeCompare(String(b.name)));
+    for (const tile of sorted) {
+      const entry = pages.get(tile.page) || { total: 0, kept: 0 };
+      entry.total += 1;
+      if (used < maxImages) { kept.push({ document_id: doc.id, name: tile.name }); entry.kept += 1; used += 1; }
+      else omitted += 1;
+      pages.set(tile.page, entry);
+    }
+    const whole = [], partial = [], none = [];
+    for (const [page, entry] of [...pages.entries()].sort((a, b) => a[0] - b[0])) {
+      if (entry.kept === entry.total) whole.push(page);
+      else if (entry.kept > 0) partial.push(page);
+      else none.push(page);
+    }
+    coverage.push({ id: doc.id, filename: doc.filename, pages_whole: whole, pages_partial: partial, pages_without: none });
+  }
+  return { kept, coverage, omitted };
+}
+
+/* "13–25" for a run, "3, 7" for scattered pages. */
+export function pageRanges(pages) {
+  const sorted = [...new Set(list(pages).map(Number).filter(Number.isFinite))].sort((a, b) => a - b);
+  const runs = [];
+  for (const page of sorted) {
+    const last = runs[runs.length - 1];
+    if (last && page === last[1] + 1) last[1] = page;
+    else runs.push([page, page]);
+  }
+  return runs.map(([from, to]) => (from === to ? String(from) : `${from}–${to}`)).join(", ");
+}
+
+/* The sentence a reading gets about what it cannot see — and the gap the
+   result keeps, so a person reads "our request", never "your drawing". */
+export function tileCoverageLines(coverage) {
+  return list(coverage)
+    .filter((entry) => list(entry.pages_without).length || list(entry.pages_partial).length)
+    .map((entry) => {
+      const parts = [];
+      if (list(entry.pages_partial).length) parts.push(`page${entry.pages_partial.length === 1 ? "" : "s"} ${pageRanges(entry.pages_partial)} in part`);
+      if (list(entry.pages_without).length) parts.push(`page${entry.pages_without.length === 1 ? "" : "s"} ${pageRanges(entry.pages_without)} not at all`);
+      return `${entry.filename}: ${parts.join("; ")}`;
+    });
+}
+export function tileCoverageGaps(coverage) {
+  return tileCoverageLines(coverage).map((line) => ({
+    severity: "important",
+    question: `Read without high-resolution tiles — ${line}. This is the limit of one reading's image budget (${MAX_RENDER_IMAGES} images), not a gap in the drawings: the sheets are whole. Counts and fine print on these pages came from the PDF at the provider's own resolution. Split the set into finer parts and read again to count them.`,
+    source_refs: [],
+    blocks_activation: false,
+    origin: "reader",
+  }));
+}
+
 /* Greedy, order-preserving partition. Documents arrive in the owner's
    selection order — usually discipline order — and staying in order keeps a
    discipline's schedules in the same chunk as its plans whenever they fit.

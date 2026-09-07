@@ -376,6 +376,29 @@ function partOf(document) {
 function partsOf(document) {
   return state.documents.filter((item) => partOf(item)?.document_id === document?.id);
 }
+/* Parts are cut in generations. A finer split supersedes the parts before
+   it: they stay in the record — a baseline was read from them — but they
+   are no longer what gets read. */
+function partGeneration(document) {
+  return Number(partOf(document)?.generation || 1);
+}
+function currentPartsOf(document) {
+  const parts = partsOf(document);
+  const newest = Math.max(1, ...parts.map(partGeneration));
+  return parts.filter((part) => partGeneration(part) === newest);
+}
+function isStalePart(document) {
+  const part = partOf(document);
+  if (!part) return false;
+  const original = state.documents.find((item) => item.id === part.document_id);
+  return original ? !currentPartsOf(original).some((current) => current.id === document.id) : false;
+}
+/* Parts cut before the reading's image budget was known carry no promise
+   that every page keeps its tiles; the site offers a finer split. */
+function needsFinerSplit(document) {
+  const current = currentPartsOf(document);
+  return current.length > 0 && !current.every((part) => Number(partOf(part)?.images_budget || 0) > 0);
+}
 /* Over the provider's per-file limit: it cannot be sent whole, only as parts. */
 function isOversizedDocument(document) {
   return Number(document?.byte_size || 0) > AI_INPUT_LIMIT_BYTES;
@@ -385,7 +408,9 @@ function canAnalyzeDocument(document) {
   return ANALYZABLE_DOCUMENT_STATUSES.has(document?.status)
     && !isPaperworkDocument(document)
     /* The original of a split set is read through its parts, never whole. */
-    && !isOversizedDocument(document);
+    && !isOversizedDocument(document)
+    /* A part a finer split has superseded is history, not input. */
+    && !isStalePart(document);
 }
 
 function sameDocumentSet(left = [], right = []) {
@@ -878,6 +903,8 @@ function renderDocuments() {
         ? (parts.length
           ? `Analysed through its ${parts.length} parts — select those`
           : "Larger than the AI provider accepts in one file — split it for analysis first")
+      : isStalePart(document)
+        ? "Superseded by a finer split — select the newer parts"
       : document.status === "failed"
         ? "Select to retry analysis"
         : selectable
@@ -922,9 +949,9 @@ function renderDocuments() {
        been split says it is read through its parts. Both are derived
        copies — the original file is never altered. */
     const partLine = part
-      ? `<small class="document-part">Part ${part.part} of ${part.parts} · pages ${part.page_from}–${part.page_to} of ${part.pages_total} · derived for analysis</small>`
+      ? `<small class="document-part">Part ${part.part} of ${part.parts} · pages ${part.page_from}–${part.page_to} of ${part.pages_total} · ${isStalePart(document) ? "superseded by a finer split · kept in the record" : "derived for analysis"}</small>`
       : parts.length
-        ? `<small class="document-part">Analysed as ${parts.length} parts · the original is kept whole</small>`
+        ? `<small class="document-part">Analysed as ${currentPartsOf(document).length} parts · the original is kept whole${needsFinerSplit(document) ? " · these parts were cut before the image budget was known: some pages lose their high-resolution tiles" : ""}</small>`
         : "";
     return `
     <article class="document-row">
@@ -964,15 +991,19 @@ function renderDocuments() {
 /* The way through for a file the provider will not take whole. Offered only
    where it applies: an oversized plan that has no parts yet. */
 function splitAction(document, parts = partsOf(document)) {
-  if (!isOversizedDocument(document) || isPaperworkDocument(document) || parts.length || partOf(document)) return "";
-  const title = `Copy ${document.original_filename} into parts the AI can read — the original stays exactly as uploaded`;
-  return `<div class="document-reread-cell"><button class="document-reread" type="button" data-document-split="${document.id}" title="${escapeHtml(title)}">Split for analysis</button></div>`;
+  if (!isOversizedDocument(document) || isPaperworkDocument(document) || partOf(document)) return "";
+  if (parts.length && !needsFinerSplit(document)) return "";
+  const again = parts.length > 0;
+  const title = again
+    ? `Copy ${document.original_filename} into finer parts so every page keeps its high-resolution tiles — the earlier parts and the original stay exactly as they are`
+    : `Copy ${document.original_filename} into parts the AI can read — the original stays exactly as uploaded`;
+  return `<div class="document-reread-cell"><button class="document-reread" type="button" data-document-split="${document.id}" title="${escapeHtml(title)}">${again ? "Split again for full resolution" : "Split for analysis"}</button></div>`;
 }
 
 /* Copies a plan's pages into parts that fit one AI reading each and stores
    every part as a derived document beside the original. `bytes` is the file
    as uploaded; nothing here writes to it. */
-async function splitAndUploadParts({ bytes, original, onProgress = () => {} }) {
+async function splitAndUploadParts({ bytes, original, generation = 1, onProgress = () => {} }) {
   if (!window.MDAIPdfSplit) throw new Error("The PDF splitter did not load. Reload the page and retry.");
   const { parts, skipped, pageCount } = await window.MDAIPdfSplit.splitPdf({
     bytes, byteSize: original.byte_size || bytes.byteLength, onProgress,
@@ -998,6 +1029,7 @@ async function splitAndUploadParts({ bytes, original, onProgress = () => {} }) {
           derived_from: window.MDAIPdfSplit.derivedFrom({
             documentId: original.id, from: part.from, to: part.to,
             pagesTotal: pageCount, part: index + 1, parts: parts.length,
+            generation, imagesBudget: window.MDAIPdfSplit.PART_MAX_IMAGES,
           }),
         },
       },
@@ -1010,8 +1042,9 @@ async function splitAndUploadParts({ bytes, original, onProgress = () => {} }) {
 /* The row action: fetch the original once, split it, store the parts. */
 async function splitDocumentForAnalysis(documentId) {
   const document = state.documents.find((item) => item.id === documentId);
-  if (!document || state.busy || partsOf(document).length) return;
-  await window.MDAIAiUsage.once(`split:${document.id}`, async () => {
+  if (!document || state.busy || (partsOf(document).length && !needsFinerSplit(document))) return;
+  const generation = Math.max(0, ...partsOf(document).map(partGeneration)) + 1;
+  await window.MDAIAiUsage.once(`split:${document.id}:${generation}`, async () => {
     setBusy(true, `Reading ${document.original_filename} for splitting…`);
     try {
       let url = "";
@@ -1027,7 +1060,7 @@ async function splitDocumentForAnalysis(documentId) {
       if (!response.ok) throw new Error(`The plan PDF could not be read (${response.status})`);
       const bytes = await response.arrayBuffer();
       const outcome = await splitAndUploadParts({
-        bytes, original: document,
+        bytes, original: document, generation,
         onProgress: (line) => setBusy(true, line),
       });
       notify(`${document.original_filename} copied into ${outcome.parts} part${outcome.parts === 1 ? "" : "s"} for analysis — the original is untouched.`
@@ -2754,7 +2787,7 @@ function renderBaseline() {
   const auditSummary = $("#result-audit-summary");
   if (auditSummary) auditSummary.textContent = `Audit · every question this reading raised (${gaps.length})`;
   $("#gap-list").innerHTML = gaps.length
-    ? gaps.map((gap) => `<div class="gap-item ${escapeHtml(gap.severity)}"><i></i><span>${escapeHtml(gap.question)}${gap.blocks_activation ? " · Blocks activation" : ""}</span></div>`).join("")
+    ? gaps.map((gap) => `<div class="gap-item ${escapeHtml(gap.severity)}"><i></i><span>${gap.origin === "reader" ? "<b>Our reading, not the drawings</b> · " : ""}${escapeHtml(gap.question)}${gap.blocks_activation ? " · Blocks activation" : ""}</span></div>`).join("")
     : '<div class="gap-item"><i></i><span>No unresolved gaps were reported. Human review is still required.</span></div>';
 }
 

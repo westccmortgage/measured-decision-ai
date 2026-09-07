@@ -57,7 +57,7 @@ console.log("── which pages go in which part ──");
     split.partFilename("2306-NA_231114 - PC Submittal Set.pdf", 91, 180) === "2306-NA_231114 - PC Submittal Set (pages 91-180).pdf");
   check("and remembers exactly where it came from",
     JSON.stringify(split.derivedFrom({ documentId: "d1", from: 91, to: 180, pagesTotal: 412, part: 2, parts: 5 }))
-      === '{"document_id":"d1","page_from":91,"page_to":180,"pages_total":412,"part":2,"parts":5}');
+      === '{"document_id":"d1","page_from":91,"page_to":180,"pages_total":412,"part":2,"parts":5,"generation":1}');
 }
 
 console.log("\n── a real split, with the shipping library ──");
@@ -167,7 +167,7 @@ const BIG = 200 * 1024 * 1024;
   const partOf = (part, from, to) => planDocument({
     id: `doc-big-p${part}`, original_filename: `2306-NA_231114 - PC Submittal Set (pages ${from}-${to}).pdf`,
     document_type: "structural", status: "uploaded", byte_size: 40 * 1024 * 1024,
-    source_metadata: { derived_from: { document_id: "doc-big", page_from: from, page_to: to, pages_total: 250, part, parts: 3 } },
+    source_metadata: { derived_from: { document_id: "doc-big", page_from: from, page_to: to, pages_total: 250, part, parts: 3, generation: 1, images_budget: 80 } },
   });
   world.project_documents = [...(world.project_documents || []),
     planDocument({ id: "doc-big", original_filename: "2306-NA_231114 - PC Submittal Set.pdf", document_type: "structural", status: "uploaded", byte_size: BIG }),
