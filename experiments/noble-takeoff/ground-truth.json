@@ -1,0 +1,28 @@
+{
+  "_about": "Facts for scoring. status: verified = checked against the PDF by a person; to_reverify = stated by the advisor from the PDF, to be checked again on the kit images before the run; disputed = cannot be settled reliably yet, goes to the owner for a decision. Counts are never taken from a model or from two models agreeing. A count is settled only on a marked-up sheet, one member one mark.",
+  "source": { "file": "2306-NA_231114 - PC Submittal Set.pdf", "pages": { "S-2": 24, "S-3": 25, "S-4": 26 } },
+  "facts": [
+    { "task": "A", "id": "A.HDR4", "status": "to_reverify", "sheet": "S-3", "page": 25, "where": "HEADER SCHEDULE", "mark": "HDR4", "material": "PARALLAM PSL 2.0E", "section": "3-1/2 x 18", "note": "Absent from the app's v3 reading; must be a row even with no instance found." },
+    { "task": "A", "id": "A.FB1", "status": "to_reverify", "sheet": "S-3", "page": 25, "where": "BEAM SCHEDULE", "mark": "FB1", "material": "DF #1", "section": "4x12" },
+    { "task": "A", "id": "A.FB2", "status": "to_reverify", "sheet": "S-3", "page": 25, "where": "BEAM SCHEDULE", "mark": "FB2", "material": "DF #1", "section": "6x12" },
+    { "task": "A", "id": "A.FB3", "status": "to_reverify", "sheet": "S-3", "page": 25, "where": "BEAM SCHEDULE", "mark": "FB3", "material": "PARALLAM PSL 2.0E", "section": "5-1/4 x 11-1/4" },
+    { "task": "A", "id": "A.FB5", "status": "to_reverify", "sheet": "S-3", "page": 25, "where": "BEAM SCHEDULE", "mark": "FB5", "material": "PARALLAM PSL 2.0E", "section": "5-1/4 x 11-1/4" },
+    { "task": "A", "id": "A.FB6", "status": "to_reverify", "sheet": "S-3", "page": 25, "where": "BEAM SCHEDULE", "mark": "FB6", "material": "PARALLAM PSL 2.0E", "section": "(2) 5-1/4 x 11-1/4", "plies": 2 },
+    { "task": "A", "id": "A.FB7", "status": "to_reverify", "sheet": "S-3", "page": 25, "where": "BEAM SCHEDULE", "mark": "FB7", "material": "PARALLAM PSL 2.0E", "section": "(2) 5-1/4 x 11-1/4", "plies": 2 },
+    { "task": "A", "id": "A.FB9", "status": "to_reverify", "sheet": "S-3", "page": 25, "where": "BEAM SCHEDULE", "mark": "FB9", "material": "PARALLAM PSL 2.0E", "section": "(2) 7 x 11-1/4", "plies": 2 },
+    { "task": "A", "id": "A.rows", "status": "to_reverify", "sheet": "S-3", "page": 25, "note": "FB4, FB8, FB10, FB11, HDR1–HDR3: sections to be copied from the schedule onto this list before the run. The app's v3 read FB4 6x12, FB8 PSL 7x11-1/4, FB10 6x10, FB11 4x10, HDR1 4x12, HDR2 4x14, HDR3 PSL 3.5x16 — read without high-resolution tiles, so re-check each." },
+    { "task": "B", "id": "B.areas", "status": "disputed", "sheet": "S-3", "page": 25, "note": "Areas to count are chosen on the kit images: propose two enlargements (r1c1, r2c2) of S-3 and count FB and HDR labels there on a marked-up copy. Until the marked-up copy exists every count is disputed. The app's v3 counts (FB1 8, FB2 7, FB3 7, HDR1 7 …) are NOT ground truth." },
+    { "task": "C", "id": "C.RR1", "status": "to_reverify", "sheet": "S-4", "page": 26, "mark": "R.R.1", "kind": "zone", "section": "2x10 #2 @ 16 O.C.", "note": "The number of R.R.1 callouts is a number of zones, never rafters." },
+    { "task": "C", "id": "C.RIDGE_BM2", "status": "to_reverify", "sheet": "S-4", "page": 26, "mark": "RIDGE BM 2", "kind": "assembly", "section": "(2)-2x10 #2", "plies": 2, "note": "Plan callouts near the three small roofs read '2x RIDGE BM2'; resolve with the cited detail before treating places as assemblies or pieces. Places: disputed until marked." },
+    { "task": "C", "id": "C.RIDGE_BM1", "status": "disputed", "sheet": "S-4", "page": 26, "mark": "RIDGE BM 1", "note": "Advisor sees two labelled ridge lines; that supports a preliminary count of two applied places, not a purchase count." },
+    { "task": "C", "id": "C.HIP", "status": "disputed", "sheet": "S-4", "page": 26, "note": "Advisor's visual count: HIP BM1 4, HIP BM2 6 labelled diagonals. Preliminary; to be marked one by one." },
+    { "task": "C", "id": "C.RHDR", "status": "to_reverify", "sheet": "S-4", "page": 26, "note": "Many unnumbered RHDR labels; a header table/rule is printed on the sheet. An RHDR label resolves through that table, not to RHDR1 (4x8) by default." },
+    { "task": "D", "id": "D.schedule", "status": "to_reverify", "sheet": "S-2", "page": 24, "where": "FOUNDATION SCHEDULE", "rows": { "F1": "24 x 24 x 12 w/ 3-#4 E.W.", "F2": "36 x 36 x 12 w/ 4-#4 E.W.", "F3": "48 x 48 x 12 w/ 6-#4 E.W.", "F4": "48 x 30 x 18 w/ #4 @ 6 E.W. T&B" }, "note": "Sizes as the app's v3 read them; re-check against the kit. Placement counts: disputed until marked." },
+    { "task": "E", "id": "E.studs", "status": "to_reverify", "sheet": "S-4", "page": 26, "where": "general notes 5, 7", "rule": "ALL STRUCTURAL STUDS TO BE 2x4 #2 STUDS @ 16 O.C. U.N.O.", "exception": "U.N.O." },
+    { "task": "E", "id": "E.floor_ply", "status": "to_reverify", "sheet": "S-3", "page": 25, "rule": "FLOOR DIAPHRAGM 19/32 PLYWOOD", "note": "Nailing and panel index as printed on the sheet." },
+    { "task": "E", "id": "E.roof_ply", "status": "to_reverify", "sheet": "S-4", "page": 26, "rule": "ROOF DIAPHRAGM 15/32 PLYWOOD" },
+    { "task": "E", "id": "E.wall_ply", "status": "to_reverify", "sheet": "S-3 / S-4", "rule": "1/2 PLYWOOD AT ALL EXTERIOR WALLS U.N.O.", "exception": "as printed on the sheets" },
+    { "task": "E", "id": "E.double_joists", "status": "to_reverify", "sheet": "S-3", "page": 25, "rule": "double joists under parallel walls", "note": "Copy the sentence verbatim from the notes." },
+    { "task": "E", "id": "E.blocking", "status": "to_reverify", "sheet": "S-3 / S-4", "rule": "blocking and fastening requirements as printed", "note": "Copy each note verbatim; there may be several." }
+  ]
+}
