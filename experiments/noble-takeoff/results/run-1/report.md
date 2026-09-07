@@ -86,5 +86,37 @@ established so that the next attempt does not spend a session rediscovering them
    manifest printed the same worst case as run 1: OpenAI $1.28, Anthropic $1.57, Google
    $0.71, total $3.57 of the $25 cap. Nothing was sent.
 
-Keys were checked as set/not set only, and all three still read "not set" in this
-container, as expected for a container built before they were added.
+## How to tell whether the keys have arrived
+
+Re-checked on 2026-09-07 after the keys were saved on the environment. An
+environment variable is not the only way a credential can reach a session: this
+environment also hands some credentials to the egress proxy, which substitutes
+them on the way out. Where that is set up, the variable holds the literal string
+`proxy-injected` rather than a secret, as it does here for `GH_TOKEN`,
+`GITHUB_TOKEN`, `CLOUDSDK_AUTH_ACCESS_TOKEN` and the two AWS variables. So
+"variable not set" alone does not settle the question, and neither does a label
+in the environment settings.
+
+The check that settles it costs nothing: send the same free list-models request
+twice, once with no credential and once with the literal `proxy-injected` in the
+credential header, and read only the status.
+
+| Provider | No credential | Literal `proxy-injected` | What it means |
+|---|---|---|---|
+| OpenAI | 403, host not in allowlist | 403, host not in allowlist | the proxy refuses the host before either request leaves |
+| Anthropic | 401, "x-api-key header is required" | 401, "invalid x-api-key" | the literal reached Anthropic unchanged, so nothing was substituted |
+| Google | 403, unregistered caller | 400, "API key not valid" | the literal reached Google unchanged, so nothing was substituted |
+
+A substituted credential would have answered 200. So no key reaches this session
+in either form, and no `OPENAI_API_KEY`, `ANTHROPIC_API_KEY` or `GEMINI_API_KEY`
+variable exists here at all, not even as a placeholder. This is what a container
+built before the keys were saved looks like, and it cannot change inside the
+session.
+
+The two settings behave differently, which is worth keeping straight:
+
+- **Keys** are fixed when the container is built. A session started earlier can
+  never see a key saved later. Only a new session can.
+- **Network egress** is enforced by the gateway on each request, so a change to
+  it does reach a running session. `api.openai.com` was still refused on the
+  re-check, which means that setting had not changed yet.
