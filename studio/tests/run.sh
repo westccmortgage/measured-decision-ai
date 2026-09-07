@@ -66,6 +66,7 @@ run "the parts of one file, one project" studio/tests/parts-become-one-project.m
 run "rebuilt from the saved parts"      studio/tests/rebuild-from-saved-readings.mjs
 run "the result first"                 studio/tests/the-result-first.mjs
 run "interface and clarity"            studio/tests/clarity.mjs
+run "reading the same set again"       studio/tests/reanalyze-door.mjs
 run "the PDF that leaves"             studio/tests/pdf360.mjs
 run "the record leaves with its owner" studio/tests/e2e-export.mjs
 run "only what a person approved"     studio/tests/e2e-owner-view.mjs
