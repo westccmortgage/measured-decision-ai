@@ -21,6 +21,7 @@ import {
   mergeChunkAnalyses,
   normaliseName,
   orderForReading,
+  retryableLaunchRefusal,
 } from "../../supabase/functions/plan-analyze/chunking.js";
 
 let bad = 0;
@@ -261,6 +262,15 @@ console.log("\n── a part's summary loses only what was true of the part alon
   check("a sentence that calls the other part unavailable is dropped — those pages were read", !/pages 1-25 are unavailable/.test(summary) && !/missing original pages 26-30/.test(summary));
   check("a sentence about a file no chunk held stays", /soils report is missing/.test(summary));
   check("and what the part actually read stays, cover first", /^NOBLE RESIDENCE is a two-story dwelling\./.test(summary) && /roof framing plan/.test(summary), summary);
+}
+
+console.log("\n── a launch the provider could not fetch is tried once more ──");
+{
+  const refusal = "Unable to download content from the provided URL before the timeout. Check that the URL is publicly accessible and responds promptly, or upload the file and provide a file_id instead.";
+  check("the download refusal, refused before anything was read, is retried once", retryableLaunchRefusal(refusal, "failed", 1) === true);
+  check("but not twice", retryableLaunchRefusal(refusal, "failed", 2) === false);
+  check("a lost answer is never retried on its own — it may have been billed", retryableLaunchRefusal(refusal, "outcome_unknown", 1) === false);
+  check("any other refusal keeps the caution it had", retryableLaunchRefusal("Invalid file format", "failed", 1) === false && retryableLaunchRefusal("", "failed", 1) === false);
 }
 
 console.log("\n── what did not change ──");
