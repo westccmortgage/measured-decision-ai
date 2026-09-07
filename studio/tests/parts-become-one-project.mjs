@@ -233,6 +233,19 @@ console.log("\n── one building, three levels ──");
   check("and so are chunks that are not parts of one file", notOneFile.levels.some((level) => level.building === "NOBLE APARTMENTS"));
 }
 
+console.log("\n── a part's summary loses only what was true of the part alone ──");
+{
+  const withSummaries = mergeChunkAnalyses([
+    { ...structural, project_summary: "Chunk-limited structural roadmap based on original pages 26-30. The sheets show a roof framing plan. Activation is blocked because pages 1-25 are unavailable, and the sheets are marked NOT FOR CONSTRUCTION. The soils report is missing from the set." },
+    { ...cover, project_summary: "NOBLE RESIDENCE is a two-story dwelling. Activation is blocked pending reconciliation of missing original pages 26-30 and the sprinkler notes." },
+  ], chunkMeta);
+  const summary = withSummaries.project_summary;
+  check("a sentence about the chunk itself is dropped", !/Chunk-limited/.test(summary));
+  check("a sentence that calls the other part unavailable is dropped — those pages were read", !/pages 1-25 are unavailable/.test(summary) && !/missing original pages 26-30/.test(summary));
+  check("a sentence about a file no chunk held stays", /soils report is missing/.test(summary));
+  check("and what the part actually read stays, cover first", /^NOBLE RESIDENCE is a two-story dwelling\./.test(summary) && /roof framing plan/.test(summary), summary);
+}
+
 console.log("\n── what did not change ──");
 {
   check("the chunking is still admitted as a gap and an assumption",

@@ -173,7 +173,7 @@ function renderAnalysisProgress(percent, stageIndex, options = {}) {
     : options.failed
       ? "Analysis stopped"
       : "Analysis in progress";
-  elements.analysisProgressValue.textContent = `${bounded}%`;
+  elements.analysisProgressValue.textContent = options.success ? (options.valueLabel || "Saved") : `${bounded}%`;
   elements.analysisProgressFill.style.width = `${bounded}%`;
   elements.analysisProgressTrack.setAttribute("aria-valuenow", String(bounded));
   elements.analysisStageTitle.textContent = options.title || stage.title;
@@ -243,7 +243,7 @@ function finishAnalysisProgress(success, detail = "") {
   if (success) {
     renderAnalysisProgress(100, analysisStages.length - 1, {
       success: true,
-      title: "Baseline ready for review",
+      title: "Analysis complete · Review required",
       detail: detail || "The roadmap was saved and is ready for human approval.",
     });
     return;
@@ -793,7 +793,7 @@ function render() {
     const approved = state.baseline.state === "approved";
     renderAnalysisProgress(100, analysisStages.length - 1, {
       success: true,
-      title: approved ? "Roadmap active" : "Baseline ready for review",
+      title: approved ? "Roadmap active" : "Analysis complete · Review required",
       detail: approved
         ? "The governed roadmap is active. Open Field Operations to continue."
         : "The roadmap is saved and ready for human approval.",
@@ -2371,6 +2371,214 @@ function sendBlockedReason(task) {
   return "";
 }
 
+/* The result first.
+ *
+ * A reading of a plan set produces two things: what the sheets state, and
+ * what the reader could not settle. The screen used to lead with the
+ * second — a column of the reader's own questions, in the reader's own
+ * words — and the doors, windows and fixtures it had copied from the
+ * schedules were nowhere on it. Now the sections come first, one per kind
+ * of thing the plans schedule, each row with its mark, its printed
+ * description, its quantity, its unit, where it came from, and a word for
+ * how the quantity was arrived at. Every question the reading raised is
+ * still here, all of it, under one disclosure. */
+
+/* The names a person uses for what the reader calls a category. */
+const RESULT_SECTIONS = [
+  { category: "door", title: "Doors" },
+  { category: "window", title: "Windows" },
+  { category: "electrical_fixture", title: "Lighting and electrical" },
+  { category: "plumbing_fixture", title: "Plumbing fixtures" },
+  { category: "mechanical_equipment", title: "Mechanical equipment" },
+  { category: "appliance", title: "Appliances" },
+  { category: "other", title: "Other scheduled items" },
+];
+
+/* How a scheduled row's quantity was arrived at. Four words, in the order
+   a buyer trusts them: printed on a schedule, counted on the plan, proposed
+   by the reader with a stated confidence, or not determinable. Nothing
+   here is measured by scale. */
+function scheduleProvenance(row) {
+  const scheduled = Number(row.count_scheduled || 0);
+  const drawn = Number(row.count_drawn || 0);
+  const proposed = Number(row.count_proposed || 0);
+  if (scheduled > 0) return { kind: "printed", label: "Printed quantity", quantity: scheduled };
+  if (drawn > 0) return { kind: "counted", label: "Counted on plan", quantity: drawn };
+  if (proposed > 0) return { kind: "proposed", label: `Proposed · ${row.count_confidence || "low"} confidence`, quantity: proposed };
+  return { kind: "unknown", label: "Not determinable", quantity: null };
+}
+
+/* How a takeoff line's quantity was arrived at — the calculator's own
+   method words, in the same four classes plus the two a person adds. */
+function methodProvenance(method) {
+  switch (method) {
+    case "PRINTED_FACT": return { kind: "printed", label: "Printed" };
+    case "AI_PLAN_COUNT": return { kind: "counted", label: "Counted on plan" };
+    case "DERIVED_FROM_PRINTED_DIMENSIONS": return { kind: "calculated", label: "Calculated from printed dimensions" };
+    case "ESTIMATOR_ALLOWANCE": return { kind: "assumption", label: "Purchasing allowance" };
+    case "AI_SCALED_ESTIMATE": return { kind: "assumption", label: "Scaled estimate · field verify" };
+    case "HUMAN_CONFIRMED": return { kind: "printed", label: "Confirmed by a person" };
+    default: return { kind: "unknown", label: "Not determinable" };
+  }
+}
+
+/* A source reference the reader wrote — "A-710 (original p20), Door
+   Schedule" — read for the sheet and the page it names. */
+function parseSourceRef(ref) {
+  const text = String(ref || "");
+  const page = Number((text.match(/original\s+p(?:age\s*)?(\d+)/i) || [])[1] || 0);
+  const sheet = (text.match(/^([A-Z]{1,3}-?\d[\w.-]*)/i) || [])[1] || "";
+  return { text, page, sheet };
+}
+
+/* Which document holds an original page — a part of a split file, by its
+   page range, or the whole file when it was never split. */
+function documentForPage(page) {
+  if (!page) return null;
+  const part = state.documents.find((doc) => {
+    const range = partOf(doc);
+    return range && Number(range.page_from) <= page && page <= Number(range.page_to);
+  });
+  if (part) return { document: part, pageInFile: page - Number(partOf(part).page_from) + 1 };
+  const whole = state.documents.find((doc) => !partOf(doc) && !isPaperworkDocument(doc) && !partsOf(doc).length);
+  return whole ? { document: whole, pageInFile: page } : null;
+}
+
+/* Three questions, first, by a rule that is written on the screen: the
+   first critical questions that block activation, then the first
+   important ones, never one the reading itself marked as answered by
+   another chunk. */
+function settleFirst(gaps, limit = 3) {
+  const open = gaps.filter((gap) => gap && gap.blocks_activation === true && !gap.read_in_chunk);
+  const critical = open.filter((gap) => gap.severity === "critical");
+  const important = open.filter((gap) => gap.severity === "important");
+  return [...critical, ...important].slice(0, limit);
+}
+
+/* The rows of one result section, from the schedule rows of the analysis. */
+function resultSectionRows(analysis, category) {
+  const rows = Array.isArray(analysis?.component_schedules) ? analysis.component_schedules : [];
+  return rows.filter((row) => (row.category || "other") === category);
+}
+
+function sourceRefCell(refs) {
+  const list = Array.isArray(refs) ? refs : [];
+  if (!list.length) return '<span class="result-no-source">Not cited</span>';
+  return list.map((ref) => {
+    const parsed = parseSourceRef(ref);
+    const where = documentForPage(parsed.page);
+    const text = parsed.sheet ? `${parsed.sheet}${parsed.page ? ` · p${parsed.page}` : ""}` : (parsed.page ? `p${parsed.page}` : parsed.text.slice(0, 40));
+    return where
+      ? `<button class="source-link" type="button" data-open-sheet="${escapeHtml(where.document.id)}" data-open-page="${where.pageInFile}" title="${escapeHtml(parsed.text)}">${escapeHtml(text)}</button>`
+      : `<span title="${escapeHtml(parsed.text)}">${escapeHtml(text)}</span>`;
+  }).join(", ");
+}
+
+function renderScheduleTable(rows) {
+  return `<div class="result-table-wrap"><table class="result-table">
+    <thead><tr><th>Mark</th><th>Description</th><th>Qty</th><th>Unit</th><th>How</th><th>Source</th></tr></thead>
+    <tbody>${rows.map((row) => {
+      const prov = scheduleProvenance(row);
+      return `<tr data-mark="${escapeHtml(row.mark || "")}">
+        <td class="mark">${escapeHtml(row.mark || "—")}</td>
+        <td>${escapeHtml(row.description || "")}${row.count_note ? `<small class="line-meta">${escapeHtml(row.count_note)}</small>` : ""}</td>
+        <td class="qty">${prov.quantity === null ? "—" : prov.quantity}</td>
+        <td>${escapeHtml(row.unit || "each")}</td>
+        <td><span class="prov ${prov.kind}">${escapeHtml(prov.label)}</span></td>
+        <td>${sourceRefCell(row.source_refs)}</td>
+      </tr>`;
+    }).join("")}</tbody></table></div>`;
+}
+
+/* Framing and foundation, from the deterministic takeoff the calculator
+   already draws — or an honest sentence when this reading had no field for
+   them. */
+function renderFramingSection(draft) {
+  const lines = draft?.result?.lines || [];
+  if (!lines.length) {
+    return `<p class="result-empty">Not yet read as a schedule. Beams, headers, joists, rafters, studs and their connectors printed on the structural sheets appear only as questions in the audit below until the structural reading is added; nothing here is measured by scale.</p>`;
+  }
+  return `<div class="result-table-wrap"><table class="result-table">
+    <thead><tr><th>Item</th><th>Qty</th><th>Unit</th><th>How</th><th>Source</th></tr></thead>
+    <tbody>${lines.map((line) => {
+      const prov = methodProvenance(line.method);
+      return `<tr><td>${escapeHtml(line.item || "")}</td><td class="qty">${line.quantity ?? "—"}</td><td>${escapeHtml(line.unit || "")}</td><td><span class="prov ${prov.kind}">${escapeHtml(prov.label)}</span></td><td>${sourceRefCell(line.source_refs)}</td></tr>`;
+    }).join("")}</tbody></table></div>`;
+}
+
+function renderResultSections() {
+  const host = $("#result-sections");
+  if (!host) return;
+  const analysis = state.baseline?.analysis || {};
+  const draft = takeoffDraft();
+  const sections = RESULT_SECTIONS.map(({ category, title }) => ({ title, rows: resultSectionRows(analysis, category), category }))
+    .filter((section) => section.rows.length || ["door", "window", "electrical_fixture"].includes(section.category));
+  const scheduled = sections.map((section) => `
+    <details class="result-section" ${section.rows.length ? "open" : ""} data-result-section="${escapeHtml(section.category)}">
+      <summary>${escapeHtml(section.title)} <small>${section.rows.length ? `${section.rows.length} scheduled item${section.rows.length === 1 ? "" : "s"}` : "none printed in this set"}</small></summary>
+      ${section.rows.length ? renderScheduleTable(section.rows) : `<p class="result-empty">No ${section.title.toLowerCase()} schedule was read in this set.</p>`}
+    </details>`).join("");
+  const framingLines = draft?.result?.lines || [];
+  const framing = `
+    <details class="result-section" ${framingLines.length ? "open" : ""} data-result-section="framing">
+      <summary>Structural framing <small>${framingLines.length ? `${framingLines.length} line${framingLines.length === 1 ? "" : "s"} from printed dimensions` : "not yet read as a schedule"}</small></summary>
+      ${renderFramingSection(draft)}
+    </details>
+    <details class="result-section" data-result-section="foundation">
+      <summary>Foundation <small>not yet read as a schedule</small></summary>
+      <p class="result-empty">Footings, hold-downs and anchorage are printed in the structural schedules but this reading had no field for them. They appear only as questions in the audit below until the structural reading is added.</p>
+    </details>`;
+  host.innerHTML = scheduled + framing;
+  host.querySelectorAll("[data-open-sheet]").forEach((button) => {
+    button.addEventListener("click", () => openSheet(button.dataset.openSheet, Number(button.dataset.openPage || 0)));
+  });
+}
+
+/* A sheet, at its page, in the file that holds it. */
+async function openSheet(documentId, page) {
+  const source = state.documents.find((row) => row.id === documentId);
+  if (!source) { notify("That source document is unavailable in this project."); return; }
+  try {
+    let url;
+    if (source.storage_provider === "aws-s3") {
+      url = await window.MDAIObjectStorage.getSignedUrl(client, "project_document", source.id);
+    } else {
+      const { data, error } = await client.storage.from(source.storage_bucket || "project-documents")
+        .createSignedUrl(source.storage_path, 3600);
+      if (error) throw error;
+      url = data?.signedUrl;
+    }
+    if (!url) throw new Error("Source link unavailable");
+    const anchored = page ? `${url}#page=${page}` : url;
+    document.getElementById("search-source-dialog")?.remove();
+    const dialog = document.createElement("dialog");
+    dialog.id = "search-source-dialog";
+    dialog.style.cssText = "width:90vw;height:85vh;padding:16px";
+    const title = document.createElement("h2");
+    title.textContent = source.original_filename;
+    const note = document.createElement("p");
+    const range = partOf(source);
+    note.textContent = page
+      ? `Page ${page} of this file${range ? ` — original page ${page + Number(range.page_from) - 1} of the set` : ""}.`
+      : "Whole document.";
+    const close = document.createElement("button");
+    close.textContent = "Close source";
+    close.onclick = () => dialog.close();
+    const link = document.createElement("a");
+    link.textContent = "Open in a new tab";
+    link.href = anchored; link.target = "_blank"; link.rel = "noopener";
+    const frame = document.createElement("iframe");
+    frame.title = source.original_filename; frame.src = anchored;
+    frame.style.cssText = "width:100%;height:65vh;border:0";
+    dialog.append(title, note, close, link, frame);
+    dialog.addEventListener("close", () => dialog.remove());
+    document.body.append(dialog); dialog.showModal();
+  } catch (error) {
+    notify("The source could not be opened. Please try again.");
+    console.warn("sheet source", error);
+  }
+}
+
 function renderBaseline() {
   elements.baselineSection.hidden = !state.baseline;
   if (!state.baseline) return;
@@ -2390,8 +2598,15 @@ function renderBaseline() {
     : "Approve this reviewed baseline and activate field capture tasks.";
   approvalGuidance.hidden = !blockingGaps.length;
   approvalGuidance.textContent = blockingGaps.length
-    ? `AI reported ${blockingGaps.length} blocking plan question${blockingGaps.length === 1 ? "" : "s"}. If this is the official approved set, an authorized manager can acknowledge those items, record the approval reference, and activate the roadmap.`
+    ? "If this is the official approved set, an authorized manager can acknowledge the blocking questions, record the approval reference, and activate the roadmap."
     : "";
+  const approved = state.baseline.state === "approved";
+  const status = $("#result-status");
+  if (status) {
+    status.innerHTML = approved
+      ? `Analysis complete · Roadmap active · v${state.baseline.version}`
+      : `Analysis complete · Review required${blockingGaps.length ? ` · <span class="blocking">${blockingGaps.length} question${blockingGaps.length === 1 ? "" : "s"} block${blockingGaps.length === 1 ? "s" : ""} activation</span>` : ""}`;
+  }
   $("#project-summary").textContent = state.baseline.project_summary;
   const analysis = state.baseline.analysis || {};
   const chips = [
@@ -2402,6 +2617,18 @@ function renderBaseline() {
   ];
   $("#structure-summary").innerHTML = `<div class="structure-chips">${chips.map((chip) => `<span>${escapeHtml(chip)}</span>`).join("")}</div>`;
   const gaps = Array.isArray(state.baseline.gaps) ? state.baseline.gaps : [];
+  const first = settleFirst(gaps);
+  const conflicts = $("#result-conflicts");
+  if (conflicts) {
+    conflicts.innerHTML = first.length
+      ? first.map((gap) => `<li class="${escapeHtml(gap.severity)}">${escapeHtml(gap.question)}</li>`).join("")
+      : '<li class="none">Nothing blocks activation. Human review is still required.</li>';
+    const rule = $("#result-rule");
+    if (rule) rule.textContent = first.length ? "Chosen by rule: the first critical questions that block activation, then the first important ones." : "";
+  }
+  renderResultSections();
+  const auditSummary = $("#result-audit-summary");
+  if (auditSummary) auditSummary.textContent = `Audit · every question this reading raised (${gaps.length})`;
   $("#gap-list").innerHTML = gaps.length
     ? gaps.map((gap) => `<div class="gap-item ${escapeHtml(gap.severity)}"><i></i><span>${escapeHtml(gap.question)}${gap.blocks_activation ? " · Blocks activation" : ""}</span></div>`).join("")
     : '<div class="gap-item"><i></i><span>No unresolved gaps were reported. Human review is still required.</span></div>';
@@ -3425,16 +3652,22 @@ async function loadRebuildOffer(propertyId) {
     .eq("property_id", propertyId)
     .eq("state", "completed")
     .order("created_at", { ascending: false })
-    .limit(1);
-  const job = jobError ? null : (jobs || [])[0];
-  if (!job) return;
-  const { data: chunks, error: chunkError } = await client.from("plan_analysis_chunks")
-    .select("id, state, chunk_index")
-    .eq("job_id", job.id)
-    .order("chunk_index", { ascending: true });
-  const parts = chunkError ? [] : (chunks || []);
-  if (!parts.length || parts.some((chunk) => chunk.state !== "complete")) return;
-  state.rebuildOffer = { jobId: job.id, parts: parts.length, baselineId: job.baseline_id };
+    .limit(6);
+  if (jobError) return;
+  /* A rebuild is itself a completed reading without parts; the offer looks
+     past it to the newest reading that was made in parts, so the parts can
+     be brought together again as often as the merge improves. */
+  for (const job of jobs || []) {
+    const { data: chunks, error: chunkError } = await client.from("plan_analysis_chunks")
+      .select("id, state, chunk_index")
+      .eq("job_id", job.id)
+      .order("chunk_index", { ascending: true });
+    const parts = chunkError ? [] : (chunks || []);
+    if (!parts.length) continue;
+    if (parts.some((chunk) => chunk.state !== "complete")) return;
+    state.rebuildOffer = { jobId: job.id, parts: parts.length, baselineId: job.baseline_id };
+    return;
+  }
 }
 
 function renderRebuildOffer() {

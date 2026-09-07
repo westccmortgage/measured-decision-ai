@@ -164,13 +164,35 @@ function readElsewhere(gap, position, chunkMeta) {
       const filename = text(doc.filename).toLowerCase();
       let hit = (id && question.includes(id)) || (filename && question.includes(filename));
       if (!hit && part) {
-        const ranges = [...question.matchAll(/original pages?\s*(\d+)\s*[-–—]\s*(\d+)/g)];
-        hit = ranges.some(([, a, b]) => Number(a) >= Number(part.page_from) && Number(b) <= Number(part.page_to));
+        /* "original pages 3-5" inside the part's range, or "pages 1-25"
+           that is exactly the part's range — a civil sheet's own "pages
+           2-3" is neither. */
+        const within = [...question.matchAll(/original pages?\s*(\d+)\s*[-–—]\s*(\d+)/g)];
+        const exact = [...question.matchAll(/\bpages?\s*(\d+)\s*[-–—]\s*(\d+)/g)];
+        hit = within.some(([, a, b]) => Number(a) >= Number(part.page_from) && Number(b) <= Number(part.page_to))
+          || exact.some(([, a, b]) => Number(a) === Number(part.page_from) && Number(b) === Number(part.page_to));
       }
       if (hit) return { sibling, doc, part };
     }
   }
   return null;
+}
+
+/* A part's summary, with the sentences that were true of the part and are
+   false of the whole taken out: "pages 1-25 are unavailable", "chunk-limited
+   … based on original pages 26-30". They are dropped only when the pages
+   they speak of were read by another chunk of this same reading; a sentence
+   about a file no chunk held stays. Everything else the part wrote stands. */
+function cleanSummary(summary, position, chunkMeta) {
+  const sentences = text(summary).trim().split(/(?<=[.!?])\s+/).filter(Boolean);
+  const kept = sentences.filter((sentence) => {
+    const lower = sentence.toLowerCase();
+    if (/\bchunk(-limited|s?\b)/.test(lower)) return false;
+    const speaksOfAbsence = /(unavailable|not attached|unattached|missing|not analy[sz]ed)/.test(lower);
+    if (!speaksOfAbsence) return true;
+    return !readElsewhere({ question: sentence }, position, chunkMeta);
+  });
+  return kept.join(" ").trim();
 }
 
 const CONFIDENCE_RANK = { high: 1, medium: 2, low: 3, none: 4 };
@@ -303,7 +325,7 @@ export function mergeChunkAnalyses(analyses, chunks = []) {
   const spaceKey = (space) => `${lower(space.building)}|${normaliseName(space.level)}|${lower(space.name)}`;
 
   const summaries = dedupeBy(
-    readings.map((reading) => text(reading.project_summary).trim()).filter(Boolean),
+    readings.map((reading, index) => cleanSummary(reading.project_summary, index, orderedMeta)).filter(Boolean),
     (summary) => summary,
   );
 
