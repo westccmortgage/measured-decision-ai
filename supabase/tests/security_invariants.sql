@@ -2639,4 +2639,21 @@ select pg_temp.check('a state the row has no word for is still refused',
                where conname = 'field_quality_checks_state_check'
                  and pg_get_constraintdef(oid) like '%queued_for_retry%'));
 
+-- ═════════════════════ THE SAME KIT FOR EVERY READER ═══════════════════════
+--
+-- Three readers are only comparable if they were shown the same drawings.
+-- That has to be a fact in the record, not a property of the code that wrote
+-- it — so every reading stores the digest of the pages and enlargements it
+-- actually sent, and how many there were.
+select pg_temp.check('a chunk records the kit its request actually carried',
+  exists (select 1 from information_schema.columns
+           where table_name = 'plan_analysis_chunks' and column_name = 'image_fingerprint')
+  and exists (select 1 from information_schema.columns
+               where table_name = 'plan_analysis_chunks' and column_name = 'images_sent'));
+select pg_temp.check('and so does a reading that took only one request',
+  exists (select 1 from information_schema.columns
+           where table_name = 'plan_analysis_jobs' and column_name = 'image_fingerprint')
+  and exists (select 1 from information_schema.columns
+               where table_name = 'plan_analysis_jobs' and column_name = 'images_sent'));
+
 rollback;

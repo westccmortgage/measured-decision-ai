@@ -4,7 +4,7 @@ import {
   PLAN_WORKFLOW_INSTRUCTIONS,
 } from "../_shared/agent-contracts.ts";
 import { buildFingerprint, claimAiRun, finishAiRun, outcomeForStatus, RunProgress, usageFrom } from "../_shared/ai-run-ledger.ts";
-import { signedObjectReadUrl } from "../_shared/aws-object-store.ts";
+import { gatherReadingAssets, listPageTiles } from "../_shared/reading-assets.ts";
 import { openAITransport } from "../_shared/openai-transport.ts";
 import {
   DEFAULT_PROVIDER, isProviderKey, modelOptionOrUnknown, openAIRequestBody, PROVIDERS,
@@ -13,7 +13,7 @@ import {
   verifyModelId, waitForGoogleFiles,
   type ProviderKey, type ProviderTransport, type ReadingContent, type UploadedAsset,
 } from "../_shared/ai-providers.ts";
-import { CHUNK_BYTE_LIMIT, chunkNote, chunkRegister, MAX_RENDER_IMAGES, mergeChunkAnalyses, orderForReading, planChunks, rebuildableFrom, retryableLaunchRefusal, tileCoverage, tileCoverageGaps, tileCoverageLines } from "./chunking.js";
+import { CHUNK_BYTE_LIMIT, chunkNote, chunkRegister, MAX_RENDER_IMAGES, mergeChunkAnalyses, orderForReading, planChunks, rebuildableFrom, retryableLaunchRefusal, tileCoverage, tileCoverageGaps, heldReadingVerdict, workerBudget } from "./chunking.js";
 
 const allowedOrigins = new Set([
   "https://measureddecision.ai",
@@ -57,9 +57,42 @@ const MAX_READING_OUTPUT_TOKENS = 32000;
  * at its wall clock, and a chunk still sitting at `processing` past the
  * deadline below is recorded as an unknown outcome — sent, possibly billed,
  * never silently retried. */
+/* THE WORKER'S OWN CLOCK.
+ *
+ * Confirmed for this project on 2026-09-07: organisation Pegasus Lenders
+ * Group LLC is on the Pro plan, and Supabase's published runtime limits give
+ * a paid plan a 400 second wall clock — the time a worker stays alive, across
+ * every request it serves and every `waitUntil` promise it holds. The
+ * documentation is explicit that `waitUntil` prevents an idle worker being
+ * retired early but does NOT extend that ceiling.
+ *
+ * Two consequences this file has to live with:
+ *
+ *   the clock starts when the worker boots, not when a reading starts, so a
+ *   warm worker may have seconds left rather than minutes;
+ *   a worker killed at the ceiling takes an unfinished reading with it, and
+ *   that reading was still sent and may still be billed.
+ *
+ * So: a reading is never started on a worker without room to finish it, and
+ * a reading that is started is cut off inside the worker's remaining life
+ * rather than at a fixed number that might outlast it. */
+const WORKER_WALL_CLOCK_MS = 400_000;
+/* Left for the reading to record its own result after the answer arrives. */
+const WORKER_SAFETY_MS = 25_000;
+/* Below this much remaining life, nothing is bought: the chunk stays pending
+   and the next poll lands on a worker with room. A reading cut off halfway
+   costs exactly as much as one that finishes. */
+const MIN_READING_MS = 150_000;
+/* When the worker booted. Module scope, so this is the worker's own start. */
+const WORKER_BOOTED_AT = Date.now();
+/* The longest a single reading may run even on a fresh worker. */
 const SYNC_READING_TIMEOUT_MS = 340_000;
 /* Past this, no worker that could still be holding the reading is alive. */
 const SYNC_CHUNK_DEADLINE_MS = 8 * 60 * 1000;
+
+function workerRoom() {
+  return workerBudget(WORKER_BOOTED_AT, Date.now(), WORKER_WALL_CLOCK_MS, WORKER_SAFETY_MS, MIN_READING_MS);
+}
 /* What stands in a chunk's provider_job_id while this worker holds the
    reading itself. There is no provider-side id to hold: the answer comes
    back into the same invocation that sent it. */
@@ -523,6 +556,10 @@ type PlanJob = {
   requested_by: string;
   provider: string | null;
   provider_job_id: string | null;
+  /* The digest of the pages and enlargements this reading carried, and how
+     many of them, recorded when the request went out. */
+  image_fingerprint?: string | null;
+  images_sent?: number | null;
   ai_run_id: string | null;
   model: string | null;
   baseline_id: string | null;
@@ -673,7 +710,7 @@ async function rebuildFromSavedReadings(
     progress_percent: 80,
     started_at: startedAt,
     last_heartbeat_at: startedAt,
-  }).select("id, organization_id, property_id, document_ids, state, requested_by, provider, provider_job_id, model, baseline_id, progress_stage, progress_percent, started_at, completed_at, error_code, error_message, ai_run_id").single();
+  }).select("id, organization_id, property_id, document_ids, state, requested_by, provider, provider_job_id, model, baseline_id, progress_stage, progress_percent, started_at, completed_at, error_code, error_message, ai_run_id, image_fingerprint, images_sent").single();
   if (jobError || !rebuildJob) return { body: { error: "The rebuild could not be recorded as a job", job_id: source.id }, status: 500 };
 
   try {
@@ -715,31 +752,49 @@ async function chunkRunMetrics(
   jobId: string,
   transport: ProviderTransport,
 ) {
+  const { data: chunkRows } = await admin.from("plan_analysis_chunks")
+    .select("id, chunk_index, image_fingerprint, images_sent")
+    .eq("job_id", jobId).order("chunk_index", { ascending: true });
   const { data: runs } = await admin.from("ai_runs")
     .select("input_tokens, output_tokens, total_tokens, duration_ms, usage_available")
     .eq("job_table", "plan_analysis_chunks")
-    .in("job_id", (await admin.from("plan_analysis_chunks").select("id").eq("job_id", jobId)).data?.map((row) => row.id) || []);
+    .in("job_id", (chunkRows || []).map((row) => row.id));
   const usage = (runs || []).reduce((sum, run) => ({
     input_tokens: sum.input_tokens + (Number(run.input_tokens) || 0),
     output_tokens: sum.output_tokens + (Number(run.output_tokens) || 0),
   }), { input_tokens: 0, output_tokens: 0 });
   const durationMs = (runs || []).reduce((sum, run) => sum + (Number(run.duration_ms) || 0), 0);
   const reported = (runs || []).some((run) => run.usage_available);
-  return runMetrics(transport, reported ? usage : {}, durationMs);
+  /* The kit of a chunked reading is the kits of its chunks in order. Two
+     readings of one set carried the same drawings only if this matches. */
+  return runMetrics(transport, reported ? usage : {}, durationMs, {
+    fingerprint: (chunkRows || []).map((row) => row.image_fingerprint || "?").join("+"),
+    images_sent: (chunkRows || []).reduce((sum, row) => sum + (Number(row.images_sent) || 0), 0),
+    documents_sent: 0,
+  });
 }
 
-function runMetrics(transport: ProviderTransport, usage: Record<string, unknown>, durationMs: number) {
+function runMetrics(
+  transport: ProviderTransport,
+  usage: Record<string, unknown>,
+  durationMs: number,
+  manifest: ReadingManifestRecord | null = null,
+) {
   const cost = usageCost(transport.model, usage);
   return {
     provider: transport.provider,
     provider_label: PROVIDERS[transport.provider].label,
     model: transport.model.id,
     model_label: transport.model.label,
-    /* How many enlargements this reader was allowed to carry. Two readings
-       taken under different budgets did not see the same drawings, and a
-       comparison between them is not a comparison of readers. */
+    /* How many enlargements a reading carries — the same for every reader,
+       so three readings of one set are three readings of the same drawings. */
     image_budget: readingImageBudget(transport.provider),
     agent_contract_version: AGENT_CONTRACT_VERSION,
+    /* And the digest of the pages and enlargements this reading actually
+       carried, so "they were given the same kit" can be checked against the
+       record instead of assumed. */
+    image_fingerprint: manifest?.fingerprint || null,
+    images_sent: manifest?.images_sent ?? null,
     usage,
     duration_ms: durationMs || null,
     ...cost,
@@ -956,19 +1011,6 @@ async function finalizeAnalysis(
   }
 }
 
-/* The stored tiles of one document, named p<page>-full / p<page>-r<row>c<col>,
-   with the original set's page numbers. */
-async function listPageTiles(admin: ReturnType<typeof createClient>, row: DocumentRow) {
-  const { data: renderRecord } = await admin.from("plan_page_renders")
-    .select("document_id").eq("document_id", row.id).maybeSingle();
-  if (!renderRecord) return [];
-  const prefix = `${row.organization_id}/page-renders/${row.id}`;
-  const { data: objects } = await admin.storage.from("project-documents").list(prefix, { limit: 1000 });
-  return (objects || [])
-    .filter((object) => object.name.endsWith(".jpg"))
-    .map((object) => ({ name: object.name, page: Number((object.name.match(/^p(\d+)-/) || [])[1] || 0) }));
-}
-
 /* What each reading of this job could not see at drawing-desk resolution,
    as gaps the result keeps. Computed the same way the request was composed,
    per reading, so a rebuild from saved readings says it too — the saved
@@ -1008,73 +1050,29 @@ async function buildReadingContent(
   /* Each reader's own limit on enlargements, recorded with the reading so
      two readings taken under different budgets are never called equal. */
   imageBudget = MAX_RENDER_IMAGES,
-): Promise<{ content: ReadingContent; unseen: string[] }> {
-  const signedDocuments: Array<{ row: DocumentRow; url: string }> = [];
-  for (const row of documents) {
-    if (row.storage_provider === "aws-s3") {
-      signedDocuments.push({ row, url: await signedObjectReadUrl(row.storage_path, 3600) });
-    } else {
-      const { data: signed, error: signedError } = await admin.storage
-        .from(row.storage_bucket || "project-documents")
-        .createSignedUrl(row.storage_path, 3600);
-      if (signedError || !signed?.signedUrl) throw new Error(`Could not read ${row.original_filename}`);
-      signedDocuments.push({ row, url: signed.signedUrl });
-    }
-  }
-
-  /* Drawing-desk resolution. The Studio renders each plan page into
-     high-resolution tiles before analysis, because a provider's own PDF
-     rasteriser draws an E-size sheet too small to read a schedule or count
-     a pile mark. When tiles exist they ride along as images; when they do
-     not, the PDFs still go alone — reduced sharpness, never a dead end.
-     The budget is per reading, so a chunked large set gets a full tile
-     budget for every chunk instead of one budget stretched over 200 sheets. */
-  const withTiles: Array<{ id: string; filename: string; tiles: Array<{ name: string; page: number }> }> = [];
-  for (const { row } of signedDocuments) {
-    withTiles.push({ id: row.id, filename: row.original_filename, tiles: await listPageTiles(admin, row) });
-  }
-  const budget = tileCoverage(withTiles, imageBudget);
-  const images: ReadingContent["images"] = [];
-  for (const tile of budget.kept) {
-    const row = signedDocuments.find((entry) => entry.row.id === tile.document_id)?.row;
-    if (!row) continue;
-    const prefix = `${row.organization_id}/page-renders/${row.id}`;
-    const { data: signedTile } = await admin.storage.from("project-documents")
-      .createSignedUrl(`${prefix}/${tile.name}`, 3600);
-    if (signedTile?.signedUrl) {
-      images.push({ label: `${row.original_filename} · ${tile.name}`, url: signedTile.signedUrl, mediaType: "image/jpeg" });
-    }
-  }
-  const unseen = tileCoverageLines(budget.coverage);
-  const imageNote = images.length
-    ? [
-      "A document whose register entry has part_of is a page range copied from a larger file; treat all parts of one file as one set, and cite pages by the numbers in their tile names, which are the original file's page numbers.",
-      "High-resolution page renders accompany the PDFs, in this order:",
-      ...images.map((image, index) => `${index + 1}. ${image.label}`),
-      "Tile names: p<page>-r<row>c<col> is one quadrant of that page at ~200 dpi; p<page>-full is the whole page. "
-      + "Read fine print — schedules, legends, keynotes, title blocks — from these tiles, and count drawn marks tile by tile, summing across a page without double-counting the overlap-free tile edges.",
-      ...(unseen.length ? [
-        `Pages whose high-resolution tiles this request could not carry — ${unseen.join(" · ")}. `
-        + "That is the limit of this reading's image budget, not a gap in the drawings: those sheets are whole and are attached in the PDF at the provider's own resolution. "
-        + "Read them there. Where a count or a line of fine print on such a page is not legible at that resolution, write \"not legible at this reading's resolution\" in the row's count_note with count_confidence none — "
-        + "never describe the sheet as cropped, partial or unavailable, and never raise it as a question to the designer.",
-      ] : []),
-    ].filter(Boolean).join("\n")
-    : null;
-
+): Promise<{ content: ReadingContent; unseen: string[]; manifest: ReadingManifestRecord }> {
+  /* The pages and the enlargements come from the one place that gathers
+     them, so a later check of this reading looks at exactly what the reader
+     looked at — and the fingerprint of what was sent travels with it. */
+  const assets = await gatherReadingAssets(admin, documents, imageBudget);
   return {
+    manifest: {
+      fingerprint: assets.fingerprint,
+      images_sent: assets.imagesSent,
+      documents_sent: assets.documents.length,
+    },
     content: {
       instructions: PLAN_WORKFLOW_INSTRUCTIONS,
       taskText: `Analyze this project document set. Database source register:\n${registerText}`,
       registerText,
       chunkNote,
-      imageNote,
-      documents: signedDocuments.map(({ row, url }) => ({ label: row.original_filename, url, mediaType: "application/pdf" })),
-      images,
+      imageNote: assets.imageNote,
+      documents: assets.documents,
+      images: assets.images,
       schema,
       maxOutputTokens: MAX_READING_OUTPUT_TOKENS,
     },
-    unseen,
+    unseen: assets.unseen,
   };
 }
 
@@ -1083,9 +1081,12 @@ async function buildReadingContent(
  * A background provider answers with an identifier and is retrieved later.
  * A synchronous provider answers here, inside this invocation — so its
  * answer, its usage and its raw payload come back together. */
+type ReadingManifestRecord = { fingerprint: string; images_sent: number; documents_sent: number };
+
 type ProviderReading =
-  | { kind: "background"; id: string; status: string }
+  | { kind: "background"; id: string; status: string; manifest: ReadingManifestRecord }
   | {
+    manifest: ReadingManifestRecord;
     kind: "sync";
     analysis: Record<string, unknown>;
     raw: Record<string, unknown>;
@@ -1105,7 +1106,7 @@ async function createProviderReading(
      billing — a reading we then lost the handle to. */
   progress?: RunProgress,
 ): Promise<ProviderReading> {
-  const { content } = await buildReadingContent(
+  const { content, manifest } = await buildReadingContent(
     admin, documents, registerText, chunkNote, readingImageBudget(transport.provider));
 
   /* A reading this reader cannot be asked for honestly is refused before it
@@ -1128,7 +1129,7 @@ async function createProviderReading(
       throw new Error(payload?.error?.message || `${PROVIDERS[transport.provider].label} request failed (${response.status})`);
     }
     if (!payload?.id) throw new Error(`${PROVIDERS[transport.provider].label} did not return a background response identifier`);
-    return { kind: "background", id: String(payload.id), status: String(payload.status || "") };
+    return { kind: "background", id: String(payload.id), status: String(payload.status || ""), manifest };
   }
 
   /* Synchronous readers. Neither is given the bytes in the request: Claude
@@ -1141,10 +1142,24 @@ async function createProviderReading(
      response has already gone back — and a request cut off at the deadline
      may already have run and been billed, which is why it is reported as an
      unknown outcome and never quietly retried. */
+  /* A reading is never started on a worker without the life left to finish
+     it. Half a reading costs what a whole one costs. */
+  const room = workerRoom();
+  if (!room.enough) {
+    throw new Error(
+      `NOT_ENOUGH_WORKER_TIME: this worker has ${Math.round(room.remaining_ms / 1000)} seconds of its `
+      + `${Math.round(WORKER_WALL_CLOCK_MS / 1000)} second life left, which is not enough to finish a reading. `
+      + "Nothing was sent and nothing was bought; the next poll starts it on a worker with room.",
+    );
+  }
   const uploads: UploadedAsset[] = [];
   const startedAt = Date.now();
   const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), SYNC_READING_TIMEOUT_MS);
+  /* Bounded by whichever runs out first: the reading's own ceiling, or this
+     worker's remaining life. `waitUntil` holds the worker open; it does not
+     make it immortal. */
+  const deadlineMs = Math.min(SYNC_READING_TIMEOUT_MS, room.remaining_ms);
+  const timer = setTimeout(() => controller.abort(), deadlineMs);
   try {
     if (transport.provider === "google") {
       for (const asset of [...content.documents, ...content.images]) {
@@ -1165,7 +1180,7 @@ async function createProviderReading(
     } catch (error) {
       if (controller.signal.aborted) {
         throw new Error(
-          `${PROVIDERS[transport.provider].label} did not answer within ${Math.round(SYNC_READING_TIMEOUT_MS / 1000)} seconds. `
+          `${PROVIDERS[transport.provider].label} did not answer within ${Math.round(deadlineMs / 1000)} seconds. `
           + "The request was sent, so it may already have run and been billed — running it again needs confirmation.",
         );
       }
@@ -1194,6 +1209,7 @@ async function createProviderReading(
     }
     return {
       kind: "sync",
+      manifest,
       analysis,
       raw: payload as Record<string, unknown>,
       usage: answer.usage,
@@ -1287,6 +1303,8 @@ async function launchNextPendingChunk(
           await admin.from("plan_analysis_chunks").update({
             provider_job_id: reading.id,
             ai_run_id: ledger.runId,
+            image_fingerprint: reading.manifest.fingerprint,
+            images_sent: reading.manifest.images_sent,
             updated_at: new Date().toISOString(),
           }).eq("id", claimed.id);
           return;
@@ -1302,6 +1320,8 @@ async function launchNextPendingChunk(
           provider_raw: reading.raw,
           provider_job_id: null,
           ai_run_id: ledger.runId,
+          image_fingerprint: reading.manifest.fingerprint,
+          images_sent: reading.manifest.images_sent,
           duration_ms: reading.durationMs,
           model_reported: reading.modelReported || null,
           error_message: null,
@@ -1321,6 +1341,18 @@ async function launchNextPendingChunk(
     }
     const error = lastError;
     const message = String(error instanceof Error ? error.message : error);
+    /* A reading refused because this worker was too near the end of its own
+       life was never sent. Nothing was bought, so the chunk simply goes back
+       to pending and the next poll starts it on a worker with room. */
+    if (/^NOT_ENOUGH_WORKER_TIME/.test(message)) {
+      await finishAiRun(admin, ledger.runId, "failed", {}, "worker_out_of_time");
+      await admin.from("plan_analysis_chunks").update({
+        state: "pending", provider_job_id: null, error_message: null,
+        updated_at: new Date().toISOString(),
+      }).eq("id", claimed.id);
+      console.warn(`Chunk ${claimed.chunk_index + 1}: ${message}`);
+      return;
+    }
     /* A reading that timed out mid-flight was sent and may be billed, even
        though nothing came back. It is an unknown outcome, not a free retry. */
     const outcome = /may already have run and been billed/i.test(message) ? "outcome_unknown" : progress.outcome();
@@ -1450,10 +1482,11 @@ async function advanceChunkedJob(
        lives — that we know no one is still holding it, and then the reading
        was sent and may have been billed, so it is an unknown outcome a
        person decides about, never a silent retry. */
-    const heldFor = processing.updated_at ? Date.now() - new Date(processing.updated_at).valueOf() : 0;
-    if (heldFor > SYNC_CHUNK_DEADLINE_MS) {
-      return await failChunk(processing,
-        "this chunk was sent to the provider and the reading ended before an answer came back.", "outcome_unknown");
+    const held = heldReadingVerdict(
+      processing.updated_at ? new Date(processing.updated_at).valueOf() : Date.now(),
+      Date.now(), SYNC_CHUNK_DEADLINE_MS);
+    if (held.state === "outcome_unknown") {
+      return await failChunk(processing, held.message, "outcome_unknown");
     }
     await admin.from("plan_analysis_jobs").update({
       progress_stage: "reading_documents",
@@ -1601,7 +1634,7 @@ Deno.serve(async (request) => {
 
     const { data: jobRow, error: jobError } = await userClient
       .from("plan_analysis_jobs")
-      .select("id, organization_id, property_id, document_ids, state, requested_by, provider, provider_job_id, model, baseline_id, progress_stage, progress_percent, started_at, completed_at, error_code, error_message, ai_run_id")
+      .select("id, organization_id, property_id, document_ids, state, requested_by, provider, provider_job_id, model, baseline_id, progress_stage, progress_percent, started_at, completed_at, error_code, error_message, ai_run_id, image_fingerprint, images_sent")
       .eq("id", jobId)
       .single();
     if (jobError || !jobRow) return json(request, { error: "Analysis job not found" }, 404);
@@ -1773,7 +1806,8 @@ Deno.serve(async (request) => {
         admin, job, documents as DocumentRow[],
         withGaps(analysis, await tileCoverageGapsFor(admin, [documents as DocumentRow[]], readingImageBudget(transport.provider))),
         transport, userData.user.id,
-        runMetrics(transport, usageFrom(providerPayload), job.started_at ? Date.now() - new Date(job.started_at).valueOf() : 0),
+        runMetrics(transport, usageFrom(providerPayload), job.started_at ? Date.now() - new Date(job.started_at).valueOf() : 0,
+          job.image_fingerprint ? { fingerprint: job.image_fingerprint, images_sent: Number(job.images_sent) || 0, documents_sent: 0 } : null),
       );
       return json(request, result);
     }
@@ -1909,7 +1943,7 @@ Deno.serve(async (request) => {
           admin, job, orderedDocuments,
           withGaps(reading.analysis as Record<string, any>, await tileCoverageGapsFor(admin, [orderedDocuments], readingImageBudget(transport.provider))),
           transport, userData.user.id,
-          runMetrics(transport, reading.usage, reading.durationMs),
+          runMetrics(transport, reading.usage, reading.durationMs, reading.manifest),
         );
         return json(request, result);
       }
@@ -1917,6 +1951,8 @@ Deno.serve(async (request) => {
       await admin.from("plan_analysis_jobs").update({
         provider_job_id: reading.id,
         ai_run_id: ledger.runId,
+        image_fingerprint: reading.manifest.fingerprint,
+        images_sent: reading.manifest.images_sent,
         progress_stage: reading.status === "queued" ? "provider_queued" : "reading_documents",
         progress_percent: reading.status === "queued" ? 18 : 32,
         last_heartbeat_at: acceptedAt,
@@ -1934,7 +1970,17 @@ Deno.serve(async (request) => {
        finished chunk is a checkpoint; a rerun after a failure keeps the
        finished readings and requeues only the rest — a 200-sheet set never
        depends on one context window or one uninterrupted run. */
-    const partition = planChunks(orderedDocuments);
+    /* Chunked mode splits on tiles as well as bytes. A set uploaded whole
+       carries more enlargements than one reading may hold, and splitting on
+       bytes alone would leave the later sheets without their tiles — the
+       coverage cut this budget must never cause. Split on tiles and the
+       sheets that no longer fit this chunk are read whole in the next one,
+       at the same resolution. */
+    const tilesByDocument = new Map<string, number>();
+    for (const row of orderedDocuments) {
+      tilesByDocument.set(row.id, (await listPageTiles(admin, row)).length);
+    }
+    const partition = planChunks(orderedDocuments, CHUNK_BYTE_LIMIT, MAX_RENDER_IMAGES, tilesByDocument);
     if (!partition.length) throw new Error("No readable plan documents were selected.");
     const { data: existingChunks } = await admin.from("plan_analysis_chunks")
       .select("id, chunk_index, document_ids, state")

@@ -19,12 +19,19 @@
 
 export const CHUNK_BYTE_LIMIT = 49 * 1024 * 1024;
 
-/* How many page images one reading carries. The Studio renders every sheet
-   into ~200 dpi tiles (an E-size sheet is six quadrants and an overview, a
-   D-size sheet four and one); the request can hold this many of them. The
-   number also lives in studio/pdf-split.js, so a part is cut to fit it —
-   the site and the server must agree, and a test holds them to it. */
-export const MAX_RENDER_IMAGES = 80;
+/* How many page images one reading carries — the same number for every
+   reader, so three readings of one set are three readings of the same
+   drawings and not of three different subsets of them. It is the strictest
+   of the three readers' own rules (see READING_IMAGE_BUDGET in
+   _shared/ai-providers.ts): above twenty images Claude requires every image
+   to be under 2000 px per side, which our ~200 dpi tiles are drawn past so
+   a schedule stays legible.
+   The number also lives in studio/pdf-split.js, so an uploaded part is cut
+   to fit it, and in planChunks below, so a set already uploaded whole is
+   read in as many chunks as its tiles need. A smaller budget therefore
+   means more parts, each carrying all of its own tiles — more sheets read
+   at drawing-desk resolution, not fewer. Tests hold the three in step. */
+export const MAX_RENDER_IMAGES = 20;
 
 /* Which tiles a reading actually carries, and which pages it therefore
    reads at PDF resolution only. `documents` arrive in reading order, each
@@ -103,20 +110,89 @@ export function tileCoverageGaps(coverage, maxImages = MAX_RENDER_IMAGES) {
    discipline's schedules in the same chunk as its plans whenever they fit.
    A single document over the limit is the caller's error to refuse; this
    function assumes each fits alone. */
-export function planChunks(documents, byteLimit = CHUNK_BYTE_LIMIT) {
+export function planChunks(documents, byteLimit = CHUNK_BYTE_LIMIT, maxImages = MAX_RENDER_IMAGES, tilesByDocument = null) {
   const chunks = [];
-  let current = { document_ids: [], bytes: 0 };
+  const tilesOf = (doc) => {
+    if (!tilesByDocument) return 0;
+    const value = tilesByDocument instanceof Map ? tilesByDocument.get(doc.id) : tilesByDocument[doc.id];
+    return Math.max(0, Number(value) || 0);
+  };
+  let current = { document_ids: [], bytes: 0, images: 0 };
   for (const doc of documents) {
     const size = Number(doc.byte_size || 0);
-    if (current.document_ids.length && current.bytes + size > byteLimit) {
+    const tiles = tilesOf(doc);
+    /* A chunk closes before the document that would carry it over either
+       limit — the bytes one request may hold, or the enlargements one
+       reading carries. Splitting on tiles is what keeps a smaller image
+       budget from costing coverage: the sheets that no longer fit this
+       chunk are read whole in the next one, at the same resolution, rather
+       than arriving without their tiles. */
+    const overBytes = current.bytes + size > byteLimit;
+    const overImages = tiles > 0 && current.images + tiles > maxImages;
+    if (current.document_ids.length && (overBytes || overImages)) {
       chunks.push(current);
-      current = { document_ids: [], bytes: 0 };
+      current = { document_ids: [], bytes: 0, images: 0 };
     }
     current.document_ids.push(doc.id);
     current.bytes += size;
+    current.images += tiles;
   }
   if (current.document_ids.length) chunks.push(current);
   return chunks;
+}
+
+/* A READING THIS WORKER IS STILL HOLDING, OR ONE NOBODY IS.
+ *
+ * A synchronous reading runs on after its request has been answered, inside
+ * the worker that started it. That worker has a hard life of its own — the
+ * platform's wall clock — and `EdgeRuntime.waitUntil` keeps it from being
+ * retired early but does not extend that ceiling. So a chunk marked as held
+ * has exactly two honest readings:
+ *
+ *   under the deadline — a worker may still be holding it, and a poll that
+ *   failed the chunk here would abandon a reading that is about to answer;
+ *   past the deadline — longer than any worker lives, so nobody is holding
+ *   it. The request was sent and may have been billed. That is an unknown
+ *   outcome for a person to decide about, never a free retry.
+ *
+ * The deadline is deliberately longer than the wall clock: being late is
+ * cheap, and giving up on a live reading is not. */
+export function heldReadingVerdict(heldSinceMs, nowMs, deadlineMs) {
+  const since = Number(heldSinceMs);
+  const now = Number(nowMs);
+  /* A row with no readable timestamp says nothing about how long anyone has
+     held it. Reading that silence as "long enough to give up" would abandon
+     a live reading, so it reads as running and the next poll asks again. */
+  if (heldSinceMs === null || heldSinceMs === undefined || heldSinceMs === ""
+    || !Number.isFinite(since) || !Number.isFinite(now)) {
+    return { state: "running", held_ms: 0 };
+  }
+  const held = Math.max(0, now - since);
+  if (held <= Number(deadlineMs)) return { state: "running", held_ms: held };
+  return {
+    state: "outcome_unknown",
+    held_ms: held,
+    message: "this chunk was sent to the provider and the reading ended before an answer came back.",
+  };
+}
+
+/* WHETHER THIS WORKER HAS ENOUGH LIFE LEFT TO FINISH A READING.
+ *
+ * A worker serves several requests over one wall clock, so a warm one may
+ * have seconds left rather than minutes. Starting a paid reading on it buys
+ * an answer that will be cut off. This says no before the money moves; the
+ * chunk simply stays pending and the next poll lands on a worker with room.
+ *
+ * `floorMs` is what a reading of one chunk needs at the low end. Below it,
+ * nothing is bought. */
+export function workerBudget(bootedAtMs, nowMs, wallClockMs, safetyMs, floorMs) {
+  const elapsed = Math.max(0, Number(nowMs) - Number(bootedAtMs));
+  const remaining = Math.max(0, Number(wallClockMs) - elapsed - Number(safetyMs));
+  return {
+    elapsed_ms: elapsed,
+    remaining_ms: remaining,
+    enough: remaining >= Number(floorMs),
+  };
 }
 
 const text = (value) => (typeof value === "string" ? value : "");

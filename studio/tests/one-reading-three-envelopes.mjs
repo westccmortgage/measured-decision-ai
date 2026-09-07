@@ -182,9 +182,14 @@ console.log("\n── every copy is taken back ──");
 
 console.log("\n── a reading that cannot be asked for honestly is refused before it is bought ──");
 {
-  check("each reader carries its own enlargement budget, Claude's set by its own many-image rule",
-    readingImageBudget("openai") === 80 && readingImageBudget("anthropic") === MANY_IMAGE_THRESHOLD && readingImageBudget("google") === MANY_IMAGE_THRESHOLD,
+  check("every reader carries the same enlargement budget, set by the strictest of their own rules",
+    readingImageBudget("openai") === MANY_IMAGE_THRESHOLD
+    && readingImageBudget("anthropic") === MANY_IMAGE_THRESHOLD
+    && readingImageBudget("google") === MANY_IMAGE_THRESHOLD,
     `${readingImageBudget("openai")} / ${readingImageBudget("anthropic")} / ${readingImageBudget("google")}`);
+  check("so the catalogue the Studio shows names one budget, not three",
+    new Set(providerCatalogue().map((entry) => entry.image_budget)).size === 1,
+    JSON.stringify(providerCatalogue().map((entry) => entry.image_budget)));
   const tooMany = { ...content, images: Array.from({ length: MANY_IMAGE_THRESHOLD + 1 }, (_, i) => ({ label: `t${i}`, url: `https://files.example/t${i}`, mediaType: "image/jpeg" })) };
   const refusal = readingRefusal(anthropic, tooMany);
   check("above the threshold Claude is refused with the reason and the way round it",

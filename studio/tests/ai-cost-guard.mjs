@@ -259,9 +259,20 @@ for (const worker of ALL_WORKERS) {
      exactly the case that carries its usage. */
   const hardcodedFailures = (source.replace(/\n/g, " ")
     .match(/finishAiRun\([^)]*?,\s*"failed"[^)]*?\)/g) || []);
-  check(`${worker} closes a call as failed only on the provider's own word`,
-    hardcodedFailures.every((call) => /usageFrom\(providerPayload\)/.test(call)),
+  /* One other shape is honest, and only one: a run refused before a request
+     was ever built. Nothing was sent, so nothing can be on the invoice, and
+     the work is safe to start again on a worker with room. It is allowed
+     here by its own reason string, and the branch it sits on is held to
+     "nothing was sent" by studio/tests/long-readings-fit.mjs. */
+  const nothingWasSent = /"worker_out_of_time"/;
+  check(`${worker} closes a call as failed only on the provider's own word, or where nothing was sent`,
+    hardcodedFailures.every((call) => /usageFrom\(providerPayload\)/.test(call) || nothingWasSent.test(call)),
     hardcodedFailures.join(" | ") || "none");
+  if (nothingWasSent.test(source)) {
+    check(`${worker} only says that where the request was refused before it was built`,
+      source.indexOf("NOT_ENOUGH_WORKER_TIME") < source.indexOf('"worker_out_of_time"')
+      && /Nothing was sent and nothing was bought/.test(source));
+  }
 }
 
 /* The one worker that can actually go back for a lost answer. */

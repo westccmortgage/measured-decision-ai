@@ -51,11 +51,6 @@ export type ProviderDefinition = {
   mode: ProviderMode;
   baseUrl: string;
   models: ModelOption[];
-  /* How many drawing-desk enlargements one reading may carry to this
-     provider. Not a taste — each number is the provider's own rule at our
-     tile resolution, and it is recorded with every reading so two readings
-     taken under different budgets are never called equal. */
-  imageBudget: number;
   /* Where the model ids and prices in this row were read. */
   source: string;
 };
@@ -64,6 +59,23 @@ export type ProviderDefinition = {
    size limit (2000 px per side) than our ~200 dpi tiles satisfy. A reading
    that would cross it is refused before it is bought, not silently degraded. */
 export const MANY_IMAGE_THRESHOLD = 20;
+
+/* ONE KIT, FOR EVERY READER.
+ *
+ * How many drawing-desk enlargements one reading carries — the same number
+ * for all three readers, because a comparison between readers who were shown
+ * different drawings is a comparison of what they were shown. The number is
+ * the strictest of the three readers' own rules: above twenty images Claude
+ * requires every image to be under 2000 px per side, and our ~200 dpi tiles
+ * are drawn larger than that so a schedule stays legible.
+ *
+ * A smaller budget does not mean less of the drawings is read. It means a
+ * set is read in more parts, each carrying all of its own tiles — which
+ * covers more sheets at drawing-desk resolution than one large budget
+ * stretched thin, not fewer. The splitter in studio/pdf-split.js and the
+ * chunker in plan-analyze/chunking.js both cut to this number; tests hold
+ * the three in step. */
+export const READING_IMAGE_BUDGET = MANY_IMAGE_THRESHOLD;
 
 /* Checked 2026-09-07 on each provider's own documentation. `verifyModelId`
    re-checks the id against the provider's live model list before a paid
@@ -75,7 +87,6 @@ export const PROVIDERS: Record<ProviderKey, ProviderDefinition> = {
     secret: "OPENAI_API_KEY",
     mode: "background",
     baseUrl: "https://api.openai.com/v1",
-    imageBudget: 80,
     source: "developers.openai.com/api/docs/models/gpt-5.6-sol",
     models: [
       {
@@ -94,7 +105,6 @@ export const PROVIDERS: Record<ProviderKey, ProviderDefinition> = {
     secret: "ANTHROPIC_API_KEY",
     mode: "sync",
     baseUrl: "https://api.anthropic.com/v1",
-    imageBudget: MANY_IMAGE_THRESHOLD,
     source: "platform.claude.com/docs/en/about-claude/models/overview",
     models: [
       {
@@ -113,7 +123,6 @@ export const PROVIDERS: Record<ProviderKey, ProviderDefinition> = {
     secret: "GEMINI_API_KEY",
     mode: "sync",
     baseUrl: "https://generativelanguage.googleapis.com/v1beta",
-    imageBudget: MANY_IMAGE_THRESHOLD,
     source: "ai.google.dev/gemini-api/docs/generate-content/gemini-3",
     models: [
       {
@@ -183,15 +192,17 @@ export function providerCatalogue() {
     label: definition.label,
     mode: definition.mode,
     configured: providerConfigured(definition.key),
-    image_budget: definition.imageBudget,
+    image_budget: READING_IMAGE_BUDGET,
     source: definition.source,
     models: definition.models.map((model) => ({ ...model })),
   }));
 }
 
-/* How many enlargements this reader may be given in one reading. */
-export function readingImageBudget(key: ProviderKey) {
-  return PROVIDERS[key].imageBudget;
+/* How many enlargements a reading carries. The parameter is here so every
+   call site reads as "this reader's budget" and can be checked; the answer
+   is deliberately the same for all three, and a test holds it that way. */
+export function readingImageBudget(_key?: ProviderKey) {
+  return READING_IMAGE_BUDGET;
 }
 
 export class ProviderNotConfigured extends Error {

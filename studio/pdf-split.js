@@ -30,7 +30,7 @@
      part is cut so that every one of its pages keeps its tiles: a reading
      that drops the tiles of its last sheets reads the schedules at the
      provider's own resolution and calls whole drawings "cropped". */
-  const PART_MAX_IMAGES = 80;
+  const PART_MAX_IMAGES = 20;
   const SCRIPT_URL = (typeof document !== "undefined" && document.currentScript?.src) || "";
 
   /* Pure geometry, tested on its own: which pages go in which part.
