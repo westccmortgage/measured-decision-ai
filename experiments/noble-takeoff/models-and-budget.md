@@ -25,24 +25,24 @@ Sending pages and images inline (base64 in the request body) is the **transport*
 
 Conclusion: after the run, no file object remains with any provider, but each provider may hold the request content for its logging window (30 days OpenAI; not confirmed Anthropic; 55 days Google). If that is not acceptable for the Noble set, the run needs a ZDR arrangement with each provider first.
 
-## Budget — recomputed from the kit, worst case
+## Budget — recomputed from the real kit, worst case
 
-The kit is built by `kit/build-kit.mjs` and its exact contents are in `kit/out/manifest.json`. Until the source PDF is in place the kit does not exist; the numbers below are for the planned shape (three D-size structural sheets at 200 dpi ≈ 4800×7200 px, a 2×2 grid with 120 px overlap, plus up to four architectural pages as full pages) and are replaced by the runner's pre-flight figures, which read the real manifest.
+The kit is built (`kit/out/manifest.json`): S-2, S-3, S-4 at 200 dpi (7197×4795 px each), each as one full page plus six enlargements (2×3 grid, 150 px overlap; every page edge covered, `coverage.txt`), plus five reference pages as full pages (A-210 p14, S-1 p22, S-5 p27, S-6 p28, S-7 p29): **26 images and 8 PDF pages** per provider.
 
-Per provider, worst case = every image at its maximum token count + PDF pages + prompt, and the **hard output cap** the request carries (`32,000` tokens), not an expected output.
+Worst case per provider = every image at its maximum token count + 8 PDF pages at 3,000 + 6,000 prompt, and the **hard output cap** every request carries (32,000 tokens). The runner recomputes this from the manifest before sending (`--dry-run` shows it).
 
-| Provider | Images | Input tokens (worst) | Input $ | Output cap | Output $ (worst) | Worst case |
-|---|---|---|---|---|---|---|
-| OpenAI gpt-5.6-sol | 3 full + 12 tiles + ≤4 arch = 19 × 5,000 | 95k + 7 PDF pages × 3k + 6k = 122k | $0.49 | 32k | $0.64 | **$1.13** |
-| Anthropic claude-opus-5 | 19 × 4,784 | 91k + 21k + 6k = 118k | $0.59 | 32k | $0.80 | **$1.39** |
-| Google gemini-3.1-pro-preview | 19 × 5,200 (upper bound) | 99k + 21k + 6k = 126k | price not confirmed | 32k | price not confirmed | **not computable** until the price is confirmed |
+| Provider | Input tokens (worst) | Input $ | Output cap | Output $ (worst) | Worst case |
+|---|---|---|---|---|---|
+| OpenAI gpt-5.6-sol | 26 × 5,000 + 24,000 + 6,000 = 160,000 | $0.64 | 32,000 | $0.64 | **$1.28** |
+| Anthropic claude-opus-5 | 26 × 4,784 + 24,000 + 6,000 = 154,384 | $0.77 | 32,000 | $0.80 | **$1.57** |
+| Google gemini-3.1-pro-preview | 26 × 5,200 + 30,000 = 165,200 | not confirmed | 32,000 | not confirmed | **not computable** until the price is confirmed on the official page |
 
-Confirmed part of the worst case: $2.52 for OpenAI + Anthropic. Proposed cap for the whole first experiment: **$10**, which holds even if Google's unconfirmed price were four times the third-party figure.
+Confirmed part of the worst case: **$2.85** (OpenAI + Anthropic; `run-comparison.mjs --dry-run` prints the same). Proposed cap for the whole first experiment: **$10**.
 
 ## How the cap is enforced
 
 1. The runner refuses to start without `--approve-budget=<usd>`.
-2. Before any call it computes the worst case per provider from the real manifest (image count × max tokens per image, PDF pages, prompt) and the output cap, and refuses if the sum exceeds the approved amount. A provider whose price is not confirmed cannot be estimated and is refused unless its price is entered in the table.
+2. Before any call it computes the worst case per provider from the real manifest and the output cap, and refuses if the sum exceeds the approved amount. A provider without a confirmed price cannot be estimated and is refused until a person enters the price in the table.
 3. Every request carries a hard output limit (`max_output_tokens` / `max_tokens` / `maxOutputTokens` = 32,000).
 4. Providers run one after another. Before each send the runner checks `spent so far (from reported usage) + next worst case ≤ cap`; otherwise it stops.
 5. A lost answer (`outcome_unknown`) stops the run. Nothing is retried automatically.

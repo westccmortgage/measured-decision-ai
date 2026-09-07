@@ -28,7 +28,7 @@ repository root).
 ## Order of work
 
 1. Put the source PDF at `experiments/noble-takeoff/source/noble.pdf` (not committed; the folder is git-ignored). Nothing under `source/`, `kit/out/` or `results/` (except the scoring template) is tracked, and `netlify.toml` answers 404 for `/experiments/*` so a future merge of this branch publishes no drawing, no enlargement and no reading.
-2. `node kit/build-kit.mjs` — writes `kit/out/` with `manifest.json`. Look at `kit/out/coverage.txt`: every page must read `edges: complete`.
+2. `node kit/build-kit.mjs --pages=24,25,26 --extra=14,22,27,28,29 --dpi=200 --grid=2x3 --overlap=150` — the command the kit was built with; writes `kit/out/` with `manifest.json`. `kit/out/coverage.txt` must read `edges: complete` for every structural page (it does: 7197×4795 px, 6 tiles each).
 3. Re-verify `ground-truth.json` against `kit/out/*-full.png` and the enlargements; mark counts on the marked-up copies (`kit/out/marked/`), one member one mark. Anything not settled stays `disputed`.
 4. Approve models and budget in `models-and-budget.md`.
 5. `node run/run-comparison.mjs --approve-budget=10 --providers=openai,anthropic,google` — one reading per provider.
