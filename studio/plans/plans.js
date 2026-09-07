@@ -3189,6 +3189,9 @@ function renderComparison() {
       ? `${Number(runDetail.usage.input_tokens).toLocaleString()} in / ${Number(runDetail.usage.output_tokens || 0).toLocaleString()} out tokens` : "",
     typeof runDetail.cost_usd === "number" ? `$${runDetail.cost_usd.toFixed(2)}` : (comparison.judge_model ? "cost unknown — tariff not confirmed" : ""),
     truth.absent ? "no control markup for this plan set — this is a reader's recommendation, not measured accuracy" : "",
+    (verdict.tally?.set_aside_as_disputed || []).length
+      ? `${verdict.tally.set_aside_as_disputed.length} finding${verdict.tally.set_aside_as_disputed.length === 1 ? "" : "s"} left out of the count — the reference count for those marks is itself disputed`
+      : "",
     "the checker was not told which system wrote which answer, which reduces bias and does not make the check independent",
   ].filter(Boolean).join(" · ");
 

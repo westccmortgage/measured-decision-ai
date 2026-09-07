@@ -2688,6 +2688,5 @@ select pg_temp.check('a comparison says whether the readings were made under the
 select pg_temp.check('and a comparison a reader could not finish has a word for it',
   (select pg_get_constraintdef(oid) like '%incomplete%'
      from pg_constraint where conname = 'reading_comparisons_state_check'));
-rollback;
 
 rollback;

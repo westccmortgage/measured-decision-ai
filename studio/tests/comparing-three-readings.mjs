@@ -130,7 +130,7 @@ console.log("\n── a position all three missed ──");
 
 console.log("\n── readings made under different conditions ──");
 {
-  const base = { provider: "openai", model: "m", version: 1, source_document_ids: ["doc-1", "doc-2"], agent_contract_version: "2026-09-07.1", image_budget: 20, state: "review" };
+  const base = { provider: "openai", model: "m", version: 1, source_document_ids: ["doc-1", "doc-2"], agent_contract_version: "2026-09-07.1", image_budget: 20, image_fingerprint: "a1b2c3", images_sent: 15, state: "review" };
   check("the same documents, budget and task version compare as equals",
     conditionsVerdict([
       { ...base, id: "a" },
@@ -153,8 +153,34 @@ console.log("\n── readings made under different conditions ──");
     { ...base, id: "a" },
     { ...base, id: "b", provider: "anthropic", image_budget: 80 },
   ]);
-  check("and so is a different enlargement budget — the readers did not see the same drawings",
+  check("and so is a different enlargement budget — the readers were not allowed the same drawings",
     differentBudget.differences.includes("different enlargement budgets"));
+  /* The budget says what a reading was allowed to carry. The fingerprint says
+     what it carried. Equal budgets and different fingerprints is the case a
+     budget alone would hide. */
+  const differentKit = conditionsVerdict([
+    { ...base, id: "a" },
+    { ...base, id: "b", provider: "anthropic", image_fingerprint: "d4e5f6" },
+  ]);
+  check("equal budgets but different pages or enlargements is still not an equal comparison",
+    !differentKit.comparable && differentKit.differences.includes("the readers were given different pages or enlargements"),
+    differentKit.differences.join("; "));
+  check("and the fingerprints are carried into the detail so a person can check them",
+    differentKit.detail.map((row) => row.image_fingerprint).join(",") === "a1b2c3,d4e5f6");
+  const noKitRecorded = conditionsVerdict([
+    { ...base, id: "a" },
+    { ...base, id: "b", provider: "anthropic", image_fingerprint: null },
+  ]);
+  check("a reading that never recorded what it carried is not assumed to match",
+    !noKitRecorded.comparable
+    && noKitRecorded.differences.some((line) => /did not record which pages and enlargements/.test(line)),
+    noKitRecorded.differences.join("; "));
+  check("three readings of one kit, at one budget, under one task, do compare as equals",
+    conditionsVerdict([
+      { ...base, id: "a" },
+      { ...base, id: "b", provider: "anthropic" },
+      { ...base, id: "c", provider: "google" },
+    ]).comparable);
   check("two readings by the same reader are two runs, not two readers",
     conditionsVerdict([{ ...base, id: "a" }, { ...base, id: "b" }]).differences.some((line) => /same reader/.test(line)));
 }
@@ -212,6 +238,71 @@ console.log("\n── a finding without evidence is not a finding ──");
     verdict.findings[2].verdict === "could_not_verify" && downgraded.length === 2, JSON.stringify(downgraded));
 }
 
+console.log("\n── a disputed reference decides nothing ──");
+{
+  const findings = {
+    findings: [
+      { reader: "A", mark: "FB 1", verdict: "verified" },
+      { reader: "A", mark: "HIP BM 2", verdict: "verified" },
+      { reader: "A", mark: "HIP BM 2", verdict: "verified" },
+      { reader: "B", mark: "FB 1", verdict: "verified" },
+    ],
+  };
+  const counted = tallyFindings(findings, ["A", "B", "C"]);
+  check("without a markup, every finding counts and A leads on the disputed marks",
+    counted.leader === "A" && counted.per_reader.A.verified === 3, JSON.stringify(counted.per_reader));
+  const settled = tallyFindings(findings, ["A", "B", "C"], ["HIP BM 2"]);
+  check("with the markup, findings about a disputed mark are set aside and the lead disappears",
+    settled.leader === null && settled.per_reader.A.verified === 1 && settled.set_aside_as_disputed.length === 2,
+    JSON.stringify(settled));
+  check("and what was set aside is named rather than silently dropped",
+    settled.set_aside_as_disputed.every((line) => /HIP BM 2/.test(line)), settled.set_aside_as_disputed.join(", "));
+  check("the mark is matched however it is punctuated, so HIPBM2 does not slip past",
+    tallyFindings({ findings: [{ reader: "A", mark: "HIP-BM-2", verdict: "verified" }] }, ["A"], ["HIP BM 2"]).per_reader.A.verified === 0);
+  check("a disputed count is left out of the reason on the screen too",
+    /leaving out 2 findings about marks whose reference count is disputed/.test(
+      tallyFindings({ findings: [
+        { reader: "A", mark: "FB 1", verdict: "verified" }, { reader: "A", mark: "FB 2", verdict: "verified" },
+        { reader: "A", mark: "HIP BM 2", verdict: "verified" }, { reader: "B", mark: "HIP BM 2", verdict: "wrong" },
+      ] }, ["A", "B"], ["HIP BM 2"]).reason));
+}
+
+console.log("\n── the Noble markup counts labels, not members ──");
+{
+  const markup = JSON.parse(fs.readFileSync("experiments/noble-takeoff/control-markup.json", "utf8"));
+  const labels = markup.entries.reduce((sum, entry) => sum + entry.count, 0);
+  check("it says in the file itself that a count is a count of printed labels",
+    /count of PRINTED LABELS/.test(markup.what_the_count_is) && /not a count of building members/.test(markup.what_the_count_is));
+  check("every entry says what it counted, and none of them claims members",
+    markup.entries.every((entry) => entry.counted === "labels" || entry.counted === "zones")
+    && !markup.entries.some((entry) => entry.counted === "members"),
+    [...new Set(markup.entries.map((entry) => entry.counted))].join(","));
+  check("the 138 marks are 138 labels across three sheets, and are never presented as 138 members",
+    labels === 138 && new Set(markup.entries.map((entry) => entry.sheet)).size === 3, `${labels} labels`);
+  check("R.R.1 is recorded as framing zones, which is what is drawn",
+    markup.entries.find((entry) => entry.mark === "R.R.1").counted === "zones");
+  check("every label can be opened at the enlargement it was read from",
+    markup.entries.every((entry) => entry.places.length === entry.count
+      && entry.places.every((place) => /^p\d+-r[12]c[12]\.jpg$/.test(place.tile) && place.x > 0 && place.y > 0)));
+  check("six groups are marked disputed, with the reason on each",
+    markup.entries.filter((entry) => entry.disputed).length === 6
+    && markup.entries.filter((entry) => entry.disputed).every((entry) => entry.note.length > 20));
+  /* The one thing the markup must never do: decide a winner on a number
+     nobody has settled. */
+  const report = compareReadings([
+    { id: "a", blind: "A", analysis: reading([member({ mark: "HIP BM 2", count_proposed: 4, counted: "labels" })]) },
+    { id: "b", blind: "B", analysis: reading([member({ mark: "HIP BM 2", count_proposed: 6, counted: "labels" })]) },
+  ]);
+  const truth = againstTruth(report, markup.entries.filter((entry) => entry.mark === "HIP BM 2"), ["A", "B"]);
+  check("a reading that matches the disputed number earns nothing for it",
+    truth.coverage.entries_scored === 0 && truth.per_reading.A.matches === 0 && truth.per_reading.B.matches === 0,
+    JSON.stringify(truth.coverage));
+  const scoredMarks = markup.entries.filter((entry) => !entry.disputed);
+  check("what is left to score by is stated plainly: 26 undisputed groups, 75 labels",
+    scoredMarks.length === 26 && scoredMarks.reduce((sum, entry) => sum + entry.count, 0) === 75,
+    `${scoredMarks.length} groups / ${scoredMarks.reduce((sum, entry) => sum + entry.count, 0)} labels`);
+}
+
 console.log("\n── no clear winner is a real answer ──");
 {
   const separated = tallyFindings({ findings: [
@@ -237,7 +328,7 @@ console.log("\n── what the worker itself is held to ──");
 {
   const worker = fs.readFileSync("supabase/functions/compare-readings/index.ts", "utf8");
   const studio = fs.readFileSync("studio/plans/plans.js", "utf8");
-  const migration = fs.readFileSync("supabase/migrations/056_the_comparison_of_readings.sql", "utf8");
+  const migration = fs.readFileSync("supabase/migrations/057_the_comparison_of_readings.sql", "utf8");
 
   check("the three answers reach the checker as letters, shuffled, and which is which stays on the server",
     /blind_map: blindMap/.test(worker) && /Math\.random\(\)/.test(worker)
@@ -256,7 +347,14 @@ console.log("\n── what the worker itself is held to ──");
   check("a reader that failed makes the comparison incomplete and is never run again by this worker",
     /state: incompleteReason \? "incomplete" : "complete"/.test(worker)
     && /The missing reading was not run again/.test(worker)
-    && !/plan-analyze/.test(worker));
+    /* It cannot re-run one either: it never invokes the plan reader, and the
+       only thing it takes from that worker is the pure clock arithmetic both
+       share, which cannot start anything. */
+    && !/invoke\(\s*["']plan-analyze/.test(worker)
+    && !/functions\/v1\/plan-analyze/.test(worker)
+    && !/launchNextPendingChunk|createProviderReading/.test(worker)
+    && (worker.match(/from "\.\.\/plan-analyze\/[^"]+"/g) || []).every((line) => line.includes("chunking.js"))
+    && /import \{ workerBudget \} from "\.\.\/plan-analyze\/chunking\.js";/.test(worker));
   check("nothing here changes the project's active baseline or merges rows into a new schedule",
     !/active_baseline_id/.test(worker) && !/material_takeoffs/.test(worker)
     && /does not become this project's baseline/.test(studio));

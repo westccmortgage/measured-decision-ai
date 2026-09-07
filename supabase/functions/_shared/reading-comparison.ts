@@ -477,6 +477,10 @@ export type ReadingConditions = {
   source_document_ids: string[];
   agent_contract_version: string;
   image_budget: number | null;
+  /* The digest of the pages and enlargements this reading actually carried.
+     The budget says what it was allowed; this says what it got. */
+  image_fingerprint: string | null;
+  images_sent: number | null;
   state: string;
 };
 
@@ -496,6 +500,17 @@ export function conditionsVerdict(readings: ReadingConditions[]) {
   if (new Set(readings.map((reading) => String(reading.image_budget ?? ""))).size > 1) {
     differences.push("different enlargement budgets");
   }
+  /* The budget is what a reading was allowed to carry; the fingerprint is
+     what it carried. Equal budgets and different fingerprints means the
+     readers were shown different drawings — which is the difference that
+     matters, and the one a budget alone would hide. A reading taken before
+     this was recorded has no fingerprint, and an absence is not a match. */
+  const fingerprints = readings.map((reading) => reading.image_fingerprint || "");
+  if (fingerprints.some((value) => !value)) {
+    differences.push("one or more readings did not record which pages and enlargements they were given");
+  } else if (new Set(fingerprints).size > 1) {
+    differences.push("the readers were given different pages or enlargements");
+  }
   if (new Set(readings.map((reading) => reading.provider || "")).size !== readings.length) {
     differences.push("two of these readings came from the same reader");
   }
@@ -510,6 +525,8 @@ export function conditionsVerdict(readings: ReadingConditions[]) {
       documents: (reading.source_document_ids || []).length,
       agent_contract_version: reading.agent_contract_version,
       image_budget: reading.image_budget,
+      image_fingerprint: reading.image_fingerprint,
+      images_sent: reading.images_sent,
     })),
   };
 }
@@ -544,13 +561,26 @@ export function sanitiseVerdict(verdict: Record<string, any>) {
  * findings that survived the evidence rule, so a recommendation can never
  * rest on findings the application itself refused to accept — and so nobody
  * wins for writing more rows. */
-export function tallyFindings(verdict: Record<string, any>, blinds: string[]) {
+export function tallyFindings(
+  verdict: Record<string, any>,
+  blinds: string[],
+  /* Marks whose reference count is itself unsettled. A finding about one of
+     them is shown and never counted: deciding between readers on a number
+     nobody has established is deciding on nothing. */
+  disputedMarks: string[] = [],
+) {
+  const disputed = new Set(disputedMarks.map(markKey).filter(Boolean));
   const tally: Record<string, { verified: number; wrong: number; could_not_verify: number }> = {};
   for (const blind of blinds) tally[blind] = { verified: 0, wrong: 0, could_not_verify: 0 };
+  const setAside: string[] = [];
   for (const finding of (Array.isArray(verdict?.findings) ? verdict.findings : [])) {
     const reader = text(finding?.reader);
     const bucket = tally[reader];
     if (!bucket) continue;
+    if (disputed.has(markKey(finding?.mark))) {
+      setAside.push(`${text(finding?.mark)} (${reader})`);
+      continue;
+    }
     if (finding.verdict === "verified") bucket.verified += 1;
     else if (finding.verdict === "wrong") bucket.wrong += 1;
     else bucket.could_not_verify += 1;
@@ -564,8 +594,12 @@ export function tallyFindings(verdict: Record<string, any>, blinds: string[]) {
     /* No winner is a real result. It is given whenever the checked findings
        do not separate the readers, whatever the checker itself concluded. */
     leader: decided ? ranked[0].blind : null,
+    /* Shown so a person can see what was left out and why, rather than
+       wondering where a finding went. */
+    set_aside_as_disputed: setAside,
     reason: decided
       ? "counted from the findings that named a place on a sheet, and — for quantities — the marks counted"
+        + (setAside.length ? `, leaving out ${setAside.length} finding${setAside.length === 1 ? "" : "s"} about marks whose reference count is disputed` : "")
       : "the checked findings do not separate the readers",
   };
 }

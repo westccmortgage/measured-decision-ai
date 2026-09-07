@@ -44,6 +44,7 @@ import {
 } from "../_shared/ai-providers.ts";
 import { openAITransport } from "../_shared/openai-transport.ts";
 import { gatherReadingAssets } from "../_shared/reading-assets.ts";
+import { workerBudget } from "../plan-analyze/chunking.js";
 import {
   againstTruth, compareReadings, conditionsVerdict, positionsOf, sanitiseVerdict, tallyFindings,
   type ReadingConditions, type TruthEntry,
@@ -82,6 +83,15 @@ const safeText = (value: unknown, fallback = "") =>
 const CHECK_TIMEOUT_MS = 340_000;
 const CHECK_DEADLINE_MS = 8 * 60 * 1000;
 const CHECK_OUTPUT_TOKENS = 16000;
+/* The checker runs after its response like every long reading, so it lives
+   under the same ceiling: the worker's wall clock — 400 seconds on this
+   project's plan — counted from when the worker booted, which `waitUntil`
+   holds open but does not extend. A check is not started on a worker without
+   the life left to finish it, and nothing is bought when it is refused. */
+const WORKER_WALL_CLOCK_MS = 400_000;
+const WORKER_SAFETY_MS = 25_000;
+const MIN_CHECK_MS = 150_000;
+const WORKER_BOOTED_AT = Date.now();
 const BLIND_LABELS = ["A", "B", "C", "D", "E", "F"];
 
 function runAfterResponse(work: Promise<unknown>) {
@@ -284,12 +294,23 @@ async function runCheck(
   const refusal = readingRefusal(transport, content);
   if (refusal) throw new Error(refusal);
 
+  const room = workerBudget(WORKER_BOOTED_AT, Date.now(), WORKER_WALL_CLOCK_MS, WORKER_SAFETY_MS, MIN_CHECK_MS);
+  if (!room.enough) {
+    throw new Error(
+      `NOT_ENOUGH_WORKER_TIME: this worker has ${Math.round(room.remaining_ms / 1000)} seconds left of its `
+      + `${Math.round(WORKER_WALL_CLOCK_MS / 1000)} second life, which is not enough to finish a check. `
+      + "Nothing was sent and nothing was bought; pressing Compare again starts it on a worker with room.",
+    );
+  }
   const startedAt = Date.now();
   const uploads: UploadedAsset[] = [];
   const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), CHECK_TIMEOUT_MS);
+  /* Whichever runs out first: the check's own ceiling, or this worker's
+     remaining life. */
+  const deadlineMs = Math.min(CHECK_TIMEOUT_MS, room.remaining_ms);
+  const timer = setTimeout(() => controller.abort(), deadlineMs);
   const abortMessage = () => new Error(
-    `${PROVIDERS[transport.provider].label} did not answer within ${Math.round(CHECK_TIMEOUT_MS / 1000)} seconds. `
+    `${PROVIDERS[transport.provider].label} did not answer within ${Math.round(deadlineMs / 1000)} seconds. `
     + "The request was sent, so it may already have run and been billed — running it again needs confirmation.");
 
   if (transport.mode === "background") {
@@ -464,6 +485,8 @@ Deno.serve(async (request) => {
       source_document_ids: row.source_document_ids || [],
       agent_contract_version: row.agent_contract_version || "",
       image_budget: row.analysis_run?.image_budget ?? null,
+      image_fingerprint: row.analysis_run?.image_fingerprint ?? null,
+      images_sent: row.analysis_run?.images_sent ?? null,
       state: row.state,
     } as ReadingConditions)));
 
@@ -586,7 +609,11 @@ Deno.serve(async (request) => {
       const { verdict, downgraded } = sanitiseVerdict(parsed);
       const usage = answer.usage;
       const cost = usageCost(transport.model, usage);
-      const tally = tallyFindings(verdict, blinded.map((item) => item.blind));
+      /* Marks the control markup itself does not settle are kept out of the
+         count entirely. A reader cannot be credited or faulted on a number
+         nobody has established. */
+      const disputedMarks = truthEntries.filter((entry) => entry?.disputed).map((entry) => String(entry.mark || ""));
+      const tally = tallyFindings(verdict, blinded.map((item) => item.blind), disputedMarks);
 
       await finishAiRun(admin, ledger.runId, "succeeded", usage, null);
       const { data: saved, error: saveError } = await admin.from("reading_comparisons").upsert({
@@ -633,7 +660,11 @@ Deno.serve(async (request) => {
       return saved;
     })().catch(async (error) => {
       const message = error instanceof Error ? error.message : String(error);
-      const outcome = /may already have run and been billed/i.test(message) ? "outcome_unknown" : progress.outcome();
+      /* A check refused before a request was built cost nothing. It is a
+         failure that can simply be pressed again, not an unknown outcome. */
+      const outcome = /^NOT_ENOUGH_WORKER_TIME/.test(message)
+        ? "failed"
+        : /may already have run and been billed/i.test(message) ? "outcome_unknown" : progress.outcome();
       await finishAiRun(admin, ledger.runId, outcome, {}, message.slice(0, 200));
       await admin.from("reading_comparisons").upsert({
         organization_id: property.organization_id,

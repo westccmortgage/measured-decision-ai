@@ -48,32 +48,34 @@ const CATALOGUE = {
   default_provider: "openai",
 };
 
-const run = (provider, label, model, budget = 20) => ({
+const run = (provider, label, model, budget = 20, fingerprint = "a1b2c3d4") => ({
   provider, provider_label: label, model, model_label: model, image_budget: budget,
+  image_fingerprint: fingerprint, images_sent: 15,
   agent_contract_version: "2026-09-07.1",
   usage: { input_tokens: 120000, output_tokens: 14000 }, duration_ms: 96000,
   cost_usd: 0.95, price_status: "confirmed", price_note: "",
 });
 
 /* One project, three readings of the same three sheets. */
-function world({ role = "owner", budgets = [20, 20, 20], analyses = [true, true, true] } = {}) {
+function world({ role = "owner", budgets = [20, 20, 20], kits = null, analyses = [true, true, true] } = {}) {
   const w = deckTakeoffRows();
   w.properties[0].name = "4423 Noble";
   w.organization_members[0].role = role;
   const property = w.properties[0].id;
   const org = w.properties[0].organization_id;
   w.project_documents = [planDocument({ id: "doc-a", original_filename: "S-2 S-3 S-4.pdf", document_type: "structural", status: "ready", byte_size: 4 * 1024 * 1024 })];
-  const reading = (id, version, provider, label, model, budget, hasAnalysis) => ({
+  const kit = (index) => (kits ? kits[index] : "a1b2c3d4");
+  const reading = (id, version, provider, label, model, budget, hasAnalysis, fingerprint) => ({
     id, organization_id: org, property_id: property, version, state: "review",
     source_document_ids: ["doc-a"], project_summary: `${label} read this set.`,
     analysis: hasAnalysis ? { framing_walls: [], framing_decks: [], levels: [], systems: [], component_schedules: [], structural_members: [] } : {},
-    gaps: [], model, provider, analysis_run: run(provider, label, model, budget),
+    gaps: [], model, provider, analysis_run: run(provider, label, model, budget, fingerprint),
     agent_contract_version: "2026-09-07.1", created_at: "2026-09-07T05:00:00Z", approved_at: null,
   });
   w.document_baselines = [
-    reading("bl-google", 4, "google", "Gemini", "gemini-3.1-pro-preview", budgets[2], analyses[2]),
-    reading("bl-claude", 3, "anthropic", "Claude", "claude-opus-5", budgets[1], analyses[1]),
-    reading("bl-openai", 2, "openai", "OpenAI", "gpt-5.6-sol", budgets[0], analyses[0]),
+    reading("bl-google", 4, "google", "Gemini", "gemini-3.1-pro-preview", budgets[2], analyses[2], kit(2)),
+    reading("bl-claude", 3, "anthropic", "Claude", "claude-opus-5", budgets[1], analyses[1], kit(1)),
+    reading("bl-openai", 2, "openai", "OpenAI", "gpt-5.6-sol", budgets[0], analyses[0], kit(0)),
   ];
   w.material_takeoffs = [];
   return w;
@@ -112,7 +114,7 @@ function comparison(over = {}) {
       missed_by_all: [{ mark: "F2", section: "structural_members", sheet: "S-2", page: 24, what_is_drawn: "a footing near the east stair" }],
       check_coverage: { positions_checked: 34, positions_not_checked: 15, what_stayed_unresolved: "The unnumbered headers need the printed header table." },
       evidence_downgrades: [],
-      tally: { per_reader: { A: { verified: 2, wrong: 0, could_not_verify: 0 }, B: { verified: 0, wrong: 1, could_not_verify: 0 }, C: { verified: 0, wrong: 0, could_not_verify: 1 } }, leader: "A", reason: "counted from the findings that named a place on a sheet, and — for quantities — the marks counted" },
+      tally: { per_reader: { A: { verified: 2, wrong: 0, could_not_verify: 0 }, B: { verified: 0, wrong: 1, could_not_verify: 0 }, C: { verified: 0, wrong: 0, could_not_verify: 1 } }, leader: "A", set_aside_as_disputed: ["HIP BM 2 (A)", "HIP BM 2 (B)"], reason: "counted from the findings that named a place on a sheet, and — for quantities — the marks counted" },
       run: { provider: "openai", provider_label: "OpenAI", model: "gpt-5.6-sol", duration_ms: 141000, usage: { input_tokens: 210000, output_tokens: 9000 }, cost_usd: 1.02, price_status: "promotional" },
     },
     ...over,
@@ -263,6 +265,8 @@ console.log("\n── pressing it, and what comes back ──");
     /not measured accuracy/.test(shown.runLine), shown.runLine);
   check("and it says plainly what blinding does and does not buy",
     /reduces bias and does not make the check independent/.test(shown.runLine), shown.runLine);
+  check("findings left out because the reference is disputed are said out loud, not hidden",
+    /2 findings left out of the count — the reference count for those marks is itself disputed/.test(shown.runLine), shown.runLine);
   check("coverage says what was checked, what was not, and what no reader reported",
     /34 positions checked/.test(shown.coverage) && /15 not checked/.test(shown.coverage) && /1 position the checker found that no reading reported/.test(shown.coverage), shown.coverage);
   check("the evidence discloses who A, B and C were",
@@ -309,12 +313,12 @@ console.log("\n── readings that were not made under the same conditions ─�
 {
   const unequal = comparison({
     comparable: false,
-    conditions: { comparable: false, differences: ["different enlargement budgets", "different task versions"], detail: [] },
+    conditions: { comparable: false, differences: ["the readers were given different pages or enlargements", "different task versions"], detail: [] },
   });
-  const { context, page } = await open(world({ budgets: [80, 20, 20] }), { status: { comparison: unequal, saved: true } });
+  const { context, page } = await open(world({ kits: ["a1b2c3d4", "9999zzzz", "a1b2c3d4"] }), { status: { comparison: unequal, saved: true } });
   const shown = await view(page);
   check("the difference is on the screen, named",
-    shown.conditionsHidden === false && /different enlargement budgets/.test(shown.conditions) && /different task versions/.test(shown.conditions), shown.conditions);
+    shown.conditionsHidden === false && /different pages or enlargements/.test(shown.conditions) && /different task versions/.test(shown.conditions), shown.conditions);
   check("and the result is not called a fair comparison of the readers",
     /not a fair comparison of the readers/.test(shown.conditions), shown.conditions);
   await context.close();

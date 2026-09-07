@@ -1,4 +1,4 @@
--- 056 · Which reader read this set better, and on what evidence.
+-- 057 · Which reader read this set better, and on what evidence.
 --
 -- Three readers have read one plan set. A person now wants an answer to a
 -- question the three answers cannot give on their own: who read it better,
