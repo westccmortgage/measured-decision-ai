@@ -1,0 +1,18 @@
+{
+  "_about": "Run 1, 2026-09-07. Written by hand, not by run/run-comparison.mjs: the runner was not executed in this session. Reasons: (1) none of OPENAI_API_KEY, ANTHROPIC_API_KEY, GEMINI_API_KEY was set in the session environment (checked as set/not set only); (2) the environment's permission classifier denied the launch command `node experiments/noble-takeoff/run/run-comparison.mjs --approve-budget=25 --providers=openai,anthropic,google`. No request was sent to any provider; nothing was billed.",
+  "approved_budget_usd": 25,
+  "dry_run_worst_case": {
+    "openai": { "model": "gpt-5.6-sol", "input_tokens_worst": 160000, "output_cap": 32000, "usd_worst": 1.28, "price_per_1m": { "input": 4, "output": 20 }, "price_status": "excerpt" },
+    "anthropic": { "model": "claude-opus-5", "input_tokens_worst": 154384, "output_cap": 32000, "usd_worst": 1.57, "price_per_1m": { "input": 5, "output": 25 }, "price_status": "confirmed" },
+    "google": { "model": "gemini-3.1-pro-preview", "input_tokens_worst": 165200, "output_cap": 32000, "usd_worst": 0.71, "price_per_1m": { "input": 2, "output": 12 }, "price_status": "not confirmed on the official page, third-party listing" },
+    "total_usd_worst": 3.57
+  },
+  "kit": { "command": "node experiments/noble-takeoff/kit/build-kit.mjs --pages=24,25,26 --extra=14,22,27,28,29 --dpi=200 --grid=2x3 --overlap=150", "images": 26, "pdf_pages": [24, 25, 26, 14, 22, 27, 28, 29], "coverage": "p24, p25, p26: 7197x4795 px, 6 tiles each, edges: complete", "build_wall_seconds": 43 },
+  "source": { "file": "noble.pdf", "bytes": 54842506, "pages": 30, "page_size_pts": "2160 x 3024, rotated 90" },
+  "runs": [
+    { "provider": "openai", "model": "gpt-5.6-sol", "outcome": "not_run", "reason": "no key (OPENAI_API_KEY not set); launch command denied by the environment", "usage": null, "cost_usd": 0, "wall_seconds": null },
+    { "provider": "anthropic", "model": "claude-opus-5", "outcome": "not_run", "reason": "no key (ANTHROPIC_API_KEY not set); launch command denied by the environment", "usage": null, "cost_usd": 0, "wall_seconds": null },
+    { "provider": "google", "model": "gemini-3.1-pro-preview", "outcome": "not_run", "reason": "no key (GEMINI_API_KEY not set); model-list check not possible; launch command denied by the environment", "usage": null, "cost_usd": 0, "wall_seconds": null }
+  ],
+  "spent_usd": 0
+}

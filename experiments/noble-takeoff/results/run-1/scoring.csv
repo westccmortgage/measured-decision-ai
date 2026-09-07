@@ -1,0 +1,21 @@
+result,task,correct,wrong,empty,confident_wrong,found,missed,rows_verifiable,rows_total,placements_on_label,placements_total,cost_usd,wall_seconds,rows_fixed_by_hand,notes
+app-v3,A,,,,,,,,,,,0,,,not scored: results/app-v3.json not present in the repository
+app-v3,B,,,,,,,,,,,0,,,not scored: results/app-v3.json not present in the repository
+app-v3,C,,,,,,,,,,,0,,,not scored: results/app-v3.json not present in the repository
+app-v3,D,,,,,,,,,,,0,,,not scored: results/app-v3.json not present in the repository
+app-v3,E,,,,,,,,,,,0,,,not scored: results/app-v3.json not present in the repository
+openai,A,,,,,,,,,,,0,,,not run: no API key in the session environment; launch denied by the environment
+openai,B,,,,,,,,,,,0,,,not run: no API key in the session environment; launch denied by the environment
+openai,C,,,,,,,,,,,0,,,not run: no API key in the session environment; launch denied by the environment
+openai,D,,,,,,,,,,,0,,,not run: no API key in the session environment; launch denied by the environment
+openai,E,,,,,,,,,,,0,,,not run: no API key in the session environment; launch denied by the environment
+anthropic,A,,,,,,,,,,,0,,,not run: no API key in the session environment; launch denied by the environment
+anthropic,B,,,,,,,,,,,0,,,not run: no API key in the session environment; launch denied by the environment
+anthropic,C,,,,,,,,,,,0,,,not run: no API key in the session environment; launch denied by the environment
+anthropic,D,,,,,,,,,,,0,,,not run: no API key in the session environment; launch denied by the environment
+anthropic,E,,,,,,,,,,,0,,,not run: no API key in the session environment; launch denied by the environment
+google,A,,,,,,,,,,,0,,,not run: no API key in the session environment; launch denied by the environment
+google,B,,,,,,,,,,,0,,,not run: no API key in the session environment; launch denied by the environment
+google,C,,,,,,,,,,,0,,,not run: no API key in the session environment; launch denied by the environment
+google,D,,,,,,,,,,,0,,,not run: no API key in the session environment; launch denied by the environment
+google,E,,,,,,,,,,,0,,,not run: no API key in the session environment; launch denied by the environment

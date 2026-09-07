@@ -22,8 +22,8 @@ const PDF = args.pdf || path.join(ROOT, "source", "noble.pdf");
 const MODELS = {
   openai: { id: "gpt-5.6-sol", input: 4, output: 20, key: "OPENAI_API_KEY", confirmed: "excerpt" },
   anthropic: { id: "claude-opus-5", input: 5, output: 25, key: "ANTHROPIC_API_KEY", confirmed: "confirmed" },
-  /* Price not confirmed on an official page: null refuses the run until a person enters it. */
-  google: { id: "gemini-3.1-pro-preview", input: null, output: null, key: "GEMINI_API_KEY", confirmed: "not confirmed" },
+  /* Price not confirmed on the official page, third-party listing ($2 / $12 per 1M tokens); entered so the run is not refused. */
+  google: { id: "gemini-3.1-pro-preview", input: 2, output: 12, key: "GEMINI_API_KEY", confirmed: "not confirmed on the official page, third-party listing" },
 };
 /* Worst-case tokens per image for the pre-flight check (see models-and-budget.md). */
 const IMAGE_TOKENS = { openai: 5000, anthropic: 4784, google: 5200 };
