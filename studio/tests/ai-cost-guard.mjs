@@ -335,8 +335,15 @@ for (const worker of ["spatial-analyze", "document-classify", "document-evidence
   const source = fs.readFileSync(`supabase/functions/${worker}/index.ts`, "utf8");
   check(`${worker} still sends store:false`, /store: false/.test(source));
 }
+/* The OpenAI request body moved into the shared provider registry when the
+   Studio gained three readers; the posture it carries did not. */
+const providerSource = fs.readFileSync("supabase/functions/_shared/ai-providers.ts", "utf8");
 check("plan-analyze still stores its background response, as it must to retrieve it",
-  /background: true,\s*store: true/.test(planSource));
+  /background: true,\s*store: true/.test(providerSource + planSource));
+check("the two synchronous readers send the pages inline and upload nothing to a provider file store",
+  !/\/files\b/.test(providerSource) && /inlineData/.test(providerSource) && /"type":"base64"/.test(providerSource));
+check("no provider key is ever written into a request body — only into headers",
+  /headers\["x-api-key"\] = secret/.test(providerSource) && !/body[^\n]*secret/.test(providerSource));
 
 
 /* ── the decision, taken through the real block ────────────────────────────

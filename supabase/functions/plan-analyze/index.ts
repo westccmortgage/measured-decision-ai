@@ -6,6 +6,12 @@ import {
 import { buildFingerprint, claimAiRun, finishAiRun, outcomeForStatus, RunProgress, usageFrom } from "../_shared/ai-run-ledger.ts";
 import { signedObjectReadUrl } from "../_shared/aws-object-store.ts";
 import { openAITransport } from "../_shared/openai-transport.ts";
+import {
+  DEFAULT_PROVIDER, isProviderKey, jsonStreamBody, modelOptionOrUnknown, openAIRequestBody, PROVIDERS,
+  ProviderNotConfigured, providerCatalogue, providerErrorMessage, providerTransport, readAnswer, syncRequest,
+  usageCost, verifyModelId,
+  type ProviderKey, type ProviderTransport, type ReadingContent,
+} from "../_shared/ai-providers.ts";
 import { CHUNK_BYTE_LIMIT, chunkNote, chunkRegister, MAX_RENDER_IMAGES, mergeChunkAnalyses, orderForReading, planChunks, rebuildableFrom, retryableLaunchRefusal, tileCoverage, tileCoverageGaps, tileCoverageLines } from "./chunking.js";
 
 const allowedOrigins = new Set([
@@ -28,6 +34,14 @@ function corsHeaders(request: Request) {
     Vary: "Origin",
   };
 }
+
+/* One reading's output ceiling, the same for every provider, so the task a
+   reader is given does not differ between them. A reading stopped at this
+   limit is an error with its reason on the screen, never a partial result
+   presented as finished. */
+const MAX_READING_OUTPUT_TOKENS = 32000;
+/* How long a synchronous provider may take inside one invocation. */
+const SYNC_READING_TIMEOUT_MS = 220_000;
 
 const json = (request: Request, body: unknown, status = 200) =>
   new Response(JSON.stringify(body), {
@@ -581,7 +595,7 @@ async function rebuildFromSavedReadings(
   userClient: ReturnType<typeof createClient>,
   source: PlanJob,
   userId: string,
-  model: string,
+  transport: ProviderTransport,
 ): Promise<{ body: Record<string, unknown>; status: number }> {
   const { data: chunks } = await admin.from("plan_analysis_chunks")
     .select("id, chunk_index, state, analysis, document_ids")
@@ -629,7 +643,14 @@ async function rebuildFromSavedReadings(
   if (jobError || !rebuildJob) return { body: { error: "The rebuild could not be recorded as a job", job_id: source.id }, status: 500 };
 
   try {
-    const result = await finalizeAnalysis(admin, rebuildJob as PlanJob, orderedDocuments, withGaps(merged, await tileCoverageGapsFor(admin, chunkDocuments)), source.model || model, userId);
+    const result = await finalizeAnalysis(
+      admin, rebuildJob as PlanJob, orderedDocuments,
+      withGaps(merged, await tileCoverageGapsFor(admin, chunkDocuments)),
+      transport, userId,
+      /* A rebuild reads the saved answers again; no provider call is made,
+         so this one really did cost nothing. */
+      { ...runMetrics(transport, {}, 0), cost_usd: 0, price_note: "Rebuilt from readings already paid for — no provider call was made.", rebuilt_from_job: source.id },
+    );
     await admin.from("audit_events").insert({
       organization_id: source.organization_id,
       actor_id: userId,
@@ -652,13 +673,48 @@ async function rebuildFromSavedReadings(
   }
 }
 
+/* What one reading cost and how long it took, gathered from the chunks that
+   made it. Cost is null — never zero — where the model's published price
+   could not be confirmed or the provider reported no usage. */
+async function chunkRunMetrics(
+  admin: ReturnType<typeof createClient>,
+  jobId: string,
+  transport: ProviderTransport,
+) {
+  const { data: runs } = await admin.from("ai_runs")
+    .select("input_tokens, output_tokens, total_tokens, duration_ms, usage_available")
+    .eq("job_table", "plan_analysis_chunks")
+    .in("job_id", (await admin.from("plan_analysis_chunks").select("id").eq("job_id", jobId)).data?.map((row) => row.id) || []);
+  const usage = (runs || []).reduce((sum, run) => ({
+    input_tokens: sum.input_tokens + (Number(run.input_tokens) || 0),
+    output_tokens: sum.output_tokens + (Number(run.output_tokens) || 0),
+  }), { input_tokens: 0, output_tokens: 0 });
+  const durationMs = (runs || []).reduce((sum, run) => sum + (Number(run.duration_ms) || 0), 0);
+  const reported = (runs || []).some((run) => run.usage_available);
+  return runMetrics(transport, reported ? usage : {}, durationMs);
+}
+
+function runMetrics(transport: ProviderTransport, usage: Record<string, unknown>, durationMs: number) {
+  const cost = usageCost(transport.model, usage);
+  return {
+    provider: transport.provider,
+    provider_label: PROVIDERS[transport.provider].label,
+    model: transport.model.id,
+    model_label: transport.model.label,
+    usage,
+    duration_ms: durationMs || null,
+    ...cost,
+  };
+}
+
 async function finalizeAnalysis(
   admin: ReturnType<typeof createClient>,
   job: PlanJob,
   documents: DocumentRow[],
   analysis: Record<string, any>,
-  model: string,
+  transport: ProviderTransport,
   userId: string,
+  metrics: Record<string, unknown>,
 ) {
   if (!Array.isArray(analysis.phases) || !analysis.phases.length) {
     throw new Error("The supplied documents did not support a construction evidence phase. Add the governing plan sheets and retry.");
@@ -700,7 +756,9 @@ async function finalizeAnalysis(
         project_summary: analysis.project_summary,
         analysis,
         gaps: analysis.gaps,
-        model,
+        model: transport.model.id,
+        provider: transport.provider,
+        analysis_run: metrics,
         agent_key: "plan_interpreter",
         agent_contract_version: AGENT_CONTRACT_VERSION,
         created_by: userId,
@@ -893,18 +951,17 @@ function withGaps(analysis: Record<string, any>, gaps: Array<Record<string, unkn
    tiles, compose the request, launch it as a background response. Shared by
    the single-shot path and by every chunk of a large set — a chunk is not a
    different kind of analysis, it is the same reading over fewer files. */
-async function createProviderReading(
+/* Every reader gets the same reading.
+ *
+ * The pages, the enlargements in their order, the register, the task and the
+ * result schema are assembled once, here, and handed to whichever provider
+ * was chosen. What differs downstream is only the envelope each API wants. */
+async function buildReadingContent(
   admin: ReturnType<typeof createClient>,
-  aiTransport: { baseUrl: string; headers: Record<string, string> },
-  model: string,
   documents: DocumentRow[],
   registerText: string,
   chunkNote: string | null,
-  /* Marked as the request moves, so the caller's catch can tell a launch that
-     never left the building from one that may have created — and started
-     billing — a background response we then lost the handle to. */
-  progress?: RunProgress,
-) {
+): Promise<{ content: ReadingContent; unseen: string[] }> {
   const signedDocuments: Array<{ row: DocumentRow; url: string }> = [];
   for (const row of documents) {
     if (row.storage_provider === "aws-s3") {
@@ -919,7 +976,7 @@ async function createProviderReading(
   }
 
   /* Drawing-desk resolution. The Studio renders each plan page into
-     high-resolution tiles before analysis, because the provider's own PDF
+     high-resolution tiles before analysis, because a provider's own PDF
      rasteriser draws an E-size sheet too small to read a schedule or count
      a pile mark. When tiles exist they ride along as images; when they do
      not, the PDFs still go alone — reduced sharpness, never a dead end.
@@ -930,81 +987,157 @@ async function createProviderReading(
     withTiles.push({ id: row.id, filename: row.original_filename, tiles: await listPageTiles(admin, row) });
   }
   const budget = tileCoverage(withTiles, MAX_RENDER_IMAGES);
-  const renderImages: Array<{ label: string; url: string }> = [];
+  const images: ReadingContent["images"] = [];
   for (const tile of budget.kept) {
     const row = signedDocuments.find((entry) => entry.row.id === tile.document_id)?.row;
     if (!row) continue;
     const prefix = `${row.organization_id}/page-renders/${row.id}`;
     const { data: signedTile } = await admin.storage.from("project-documents")
       .createSignedUrl(`${prefix}/${tile.name}`, 3600);
-    if (signedTile?.signedUrl) renderImages.push({ label: `${row.original_filename} · ${tile.name}`, url: signedTile.signedUrl });
-  }
-  const unseen = tileCoverageLines(budget.coverage);
-
-  const userContent: Array<Record<string, unknown>> = [
-    {
-      type: "input_text",
-      text: `Analyze this project document set. Database source register:\n${registerText}`,
-    },
-  ];
-  if (chunkNote) userContent.push({ type: "input_text", text: chunkNote });
-  userContent.push(...signedDocuments.map(({ url }) => ({
-    type: "input_file",
-    file_url: url,
-  })));
-  if (renderImages.length) {
-    userContent.push({
-      type: "input_text",
-      text: [
-        "A document whose register entry has part_of is a page range copied from a larger file; treat all parts of one file as one set, and cite pages by the numbers in their tile names, which are the original file's page numbers.",
-        "High-resolution page renders accompany the PDFs, in this order:",
-        ...renderImages.map((image, index) => `${index + 1}. ${image.label}`),
-        "Tile names: p<page>-r<row>c<col> is one quadrant of that page at ~200 dpi; p<page>-full is the whole page. "
-        + "Read fine print — schedules, legends, keynotes, title blocks — from these tiles, and count drawn marks tile by tile, summing across a page without double-counting the overlap-free tile edges.",
-        ...(unseen.length ? [
-          `Pages whose high-resolution tiles this request could not carry — ${unseen.join(" · ")}. `
-          + "That is the limit of this reading's image budget, not a gap in the drawings: those sheets are whole and are attached in the PDF at the provider's own resolution. "
-          + "Read them there. Where a count or a line of fine print on such a page is not legible at that resolution, write \"not legible at this reading's resolution\" in the row's count_note with count_confidence none — "
-          + "never describe the sheet as cropped, partial or unavailable, and never raise it as a question to the designer.",
-        ] : []),
-      ].filter(Boolean).join("\n"),
-    });
-    for (const image of renderImages) {
-      userContent.push({ type: "input_image", image_url: image.url, detail: "high" });
+    if (signedTile?.signedUrl) {
+      images.push({ label: `${row.original_filename} · ${tile.name}`, url: signedTile.signedUrl, mediaType: "image/jpeg" });
     }
   }
+  const unseen = tileCoverageLines(budget.coverage);
+  const imageNote = images.length
+    ? [
+      "A document whose register entry has part_of is a page range copied from a larger file; treat all parts of one file as one set, and cite pages by the numbers in their tile names, which are the original file's page numbers.",
+      "High-resolution page renders accompany the PDFs, in this order:",
+      ...images.map((image, index) => `${index + 1}. ${image.label}`),
+      "Tile names: p<page>-r<row>c<col> is one quadrant of that page at ~200 dpi; p<page>-full is the whole page. "
+      + "Read fine print — schedules, legends, keynotes, title blocks — from these tiles, and count drawn marks tile by tile, summing across a page without double-counting the overlap-free tile edges.",
+      ...(unseen.length ? [
+        `Pages whose high-resolution tiles this request could not carry — ${unseen.join(" · ")}. `
+        + "That is the limit of this reading's image budget, not a gap in the drawings: those sheets are whole and are attached in the PDF at the provider's own resolution. "
+        + "Read them there. Where a count or a line of fine print on such a page is not legible at that resolution, write \"not legible at this reading's resolution\" in the row's count_note with count_confidence none — "
+        + "never describe the sheet as cropped, partial or unavailable, and never raise it as a question to the designer.",
+      ] : []),
+    ].filter(Boolean).join("\n")
+    : null;
 
-  progress?.sent();
-  const openAIResponse = await fetch(`${aiTransport.baseUrl}/responses`, {
-    method: "POST",
-    headers: aiTransport.headers,
-    body: JSON.stringify({
-      model,
-      background: true,
-      store: true,
-      input: [
-        { role: "system", content: [{ type: "input_text", text: PLAN_WORKFLOW_INSTRUCTIONS }] },
-        { role: "user", content: userContent },
-      ],
-      text: {
-        format: {
-          type: "json_schema",
-          name: "construction_plan_baseline",
-          strict: true,
-          schema,
-        },
-      },
-    }),
-  });
-  const openAIPayload = await openAIResponse.json();
-  if (!openAIResponse.ok) {
-    /* A rejected request created nothing. A 5xx or a rate limit may have
-       created a background response whose id we never saw. */
-    if (outcomeForStatus(openAIResponse.status) === "failed") progress?.refused();
-    throw new Error(openAIPayload?.error?.message || `OpenAI request failed (${openAIResponse.status})`);
+  return {
+    content: {
+      instructions: PLAN_WORKFLOW_INSTRUCTIONS,
+      taskText: `Analyze this project document set. Database source register:\n${registerText}`,
+      registerText,
+      chunkNote,
+      imageNote,
+      documents: signedDocuments.map(({ row, url }) => ({ label: row.original_filename, url, mediaType: "application/pdf" })),
+      images,
+      schema,
+      maxOutputTokens: MAX_READING_OUTPUT_TOKENS,
+    },
+    unseen,
+  };
+}
+
+/* One reading, launched or run.
+ *
+ * A background provider answers with an identifier and is retrieved later.
+ * A synchronous provider answers here, inside this invocation — so its
+ * answer, its usage and its raw payload come back together. */
+type ProviderReading =
+  | { kind: "background"; id: string; status: string }
+  | {
+    kind: "sync";
+    analysis: Record<string, unknown>;
+    raw: Record<string, unknown>;
+    usage: Record<string, unknown>;
+    modelReported: string;
+    durationMs: number;
+  };
+
+async function createProviderReading(
+  admin: ReturnType<typeof createClient>,
+  transport: ProviderTransport,
+  documents: DocumentRow[],
+  registerText: string,
+  chunkNote: string | null,
+  /* Marked as the request moves, so the caller's catch can tell a launch that
+     never left the building from one that may have created — and started
+     billing — a reading we then lost the handle to. */
+  progress?: RunProgress,
+): Promise<ProviderReading> {
+  const { content } = await buildReadingContent(admin, documents, registerText, chunkNote);
+
+  if (transport.mode === "background") {
+    progress?.sent();
+    const response = await fetch(`${transport.baseUrl}/responses`, {
+      method: "POST",
+      headers: transport.headers,
+      body: JSON.stringify(openAIRequestBody(transport, content)),
+    });
+    const payload = await response.json();
+    if (!response.ok) {
+      /* A rejected request created nothing. A 5xx or a rate limit may have
+         created a background response whose id we never saw. */
+      if (outcomeForStatus(response.status) === "failed") progress?.refused();
+      throw new Error(payload?.error?.message || `${PROVIDERS[transport.provider].label} request failed (${response.status})`);
+    }
+    if (!payload?.id) throw new Error(`${PROVIDERS[transport.provider].label} did not return a background response identifier`);
+    return { kind: "background", id: String(payload.id), status: String(payload.status || "") };
   }
-  if (!openAIPayload?.id) throw new Error("OpenAI did not return a background response identifier");
-  return openAIPayload as { id: string; status: string };
+
+  /* Synchronous providers: one request with the same assets inline, streamed
+     so that eighty tiles never sit in memory at once. The deadline is this
+     invocation's, and a request cut off at the deadline may already have run
+     and been billed — which is why it is reported as an unknown outcome and
+     never quietly retried. */
+  const request = syncRequest(transport, content);
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), SYNC_READING_TIMEOUT_MS);
+  const startedAt = Date.now();
+  progress?.sent();
+  let response: Response;
+  try {
+    response = await fetch(request.url, {
+      method: "POST",
+      headers: transport.headers,
+      body: jsonStreamBody(request.parts),
+      signal: controller.signal,
+      /* A streamed request body needs the half-duplex opt-in. */
+      ...({ duplex: "half" } as Record<string, unknown>),
+    });
+  } catch (error) {
+    clearTimeout(timer);
+    if (controller.signal.aborted) {
+      throw new Error(
+        `${PROVIDERS[transport.provider].label} did not answer within ${Math.round(SYNC_READING_TIMEOUT_MS / 1000)} seconds. `
+        + "The request was sent, so it may already have run and been billed — running it again needs confirmation.",
+      );
+    }
+    throw error;
+  }
+  clearTimeout(timer);
+  const payload = await response.json().catch(() => ({}));
+  if (!response.ok) {
+    if (outcomeForStatus(response.status) === "failed") progress?.refused();
+    throw new Error(providerErrorMessage(transport.provider, payload, `${PROVIDERS[transport.provider].label} request failed (${response.status})`));
+  }
+  const answer = readAnswer(transport.provider, payload);
+  if (/max_tokens|MAX_TOKENS|length/i.test(answer.stopReason || "")) {
+    throw new Error(
+      `${PROVIDERS[transport.provider].label} stopped at the output limit before finishing the reading (${answer.stopReason}). `
+      + "The reading was paid for and is incomplete; nothing was saved as a result.",
+    );
+  }
+  let analysis: Record<string, unknown>;
+  try {
+    analysis = JSON.parse(answer.text);
+  } catch {
+    throw new Error(
+      `${PROVIDERS[transport.provider].label} answered with something that is not the agreed result format. `
+      + "The raw answer is kept with the run so it can be read.",
+    );
+  }
+  return {
+    kind: "sync",
+    analysis,
+    raw: payload as Record<string, unknown>,
+    usage: answer.usage,
+    modelReported: answer.modelReported,
+    durationMs: Date.now() - startedAt,
+  };
 }
 
 /* One reading of one set of documents. A chunk is the same reading over
@@ -1012,6 +1145,7 @@ async function createProviderReading(
    a duplicate of chunk 1, and paying for both is correct. */
 function planFingerprintParts(
   job: { organization_id: string; property_id: string },
+  provider: ProviderKey,
   model: string,
   documents: DocumentRow[],
   chunkIndex: number | null,
@@ -1023,7 +1157,9 @@ function planFingerprintParts(
     model,
     contractVersion: AGENT_CONTRACT_VERSION,
     inputs: documents.map((row) => `${row.id}@${row.revision_label || ""}@${row.issued_at || ""}`),
-    settings: { chunk: chunkIndex === null ? "single" : String(chunkIndex) },
+    /* The provider is part of what was bought: the same files read by two
+       providers are two readings, and neither is a duplicate of the other. */
+    settings: { chunk: chunkIndex === null ? "single" : String(chunkIndex), provider },
   };
 }
 
@@ -1032,8 +1168,7 @@ function planFingerprintParts(
    when another poll got there first (or nothing is pending). */
 async function launchNextPendingChunk(
   admin: ReturnType<typeof createClient>,
-  aiTransport: { baseUrl: string; headers: Record<string, string> },
-  model: string,
+  transport: ProviderTransport,
   job: PlanJob,
   orderedDocuments: DocumentRow[],
   chunkTotal: number,
@@ -1055,10 +1190,10 @@ async function launchNextPendingChunk(
      file being read, not a file to ask for. */
   const registerText = JSON.stringify(chunkRegister(orderedDocuments, claimed.document_ids as string[], claimed.chunk_index, chunkTotal), null, 2);
   const ledger = await claimAiRun(admin, {
-    ...planFingerprintParts(job, model, chunkDocuments, claimed.chunk_index),
+    ...planFingerprintParts(job, transport.provider, transport.model.id, chunkDocuments, claimed.chunk_index),
     jobTable: "plan_analysis_chunks",
     jobId: claimed.id,
-    transport: aiTransport.transport,
+    transport: transport.transport,
     /* A chunk relaunched after a failure is the same purchase the person
        already asked for, so it is allowed through rather than refused as a
        duplicate of the failed one. */
@@ -1074,14 +1209,33 @@ async function launchNextPendingChunk(
     attempt += 1;
     progress = new RunProgress();
     try {
-      const payload = await createProviderReading(
-        admin, aiTransport, model, chunkDocuments, registerText,
+      const reading = await createProviderReading(
+        admin, transport, chunkDocuments, registerText,
         chunkNote(claimed.chunk_index, chunkTotal, chunkDocuments, orderedDocuments.filter((row) => !attachedIds.has(row.id))),
         progress,
       );
+      if (reading.kind === "background") {
+        await admin.from("plan_analysis_chunks").update({
+          provider_job_id: reading.id,
+          ai_run_id: ledger.runId,
+          updated_at: new Date().toISOString(),
+        }).eq("id", claimed.id);
+        return claimed;
+      }
+      /* A synchronous provider has already answered. The chunk is a
+         checkpoint the moment its reading is saved — raw payload included,
+         so what the model returned and what this app made of it stay
+         separable. */
+      await finishAiRun(admin, ledger.runId, "succeeded", reading.usage, null);
       await admin.from("plan_analysis_chunks").update({
-        provider_job_id: payload.id,
+        state: "complete",
+        analysis: reading.analysis,
+        provider_raw: reading.raw,
+        provider_job_id: null,
         ai_run_id: ledger.runId,
+        duration_ms: reading.durationMs,
+        model_reported: reading.modelReported || null,
+        error_message: null,
         updated_at: new Date().toISOString(),
       }).eq("id", claimed.id);
       return claimed;
@@ -1098,20 +1252,21 @@ async function launchNextPendingChunk(
   }
   {
     const error = lastError;
-    const outcome = progress.outcome();
-    await finishAiRun(admin, ledger.runId, outcome, {},
-      String(error instanceof Error ? error.message : error).slice(0, 200));
+    const message = String(error instanceof Error ? error.message : error);
+    /* A reading that timed out mid-flight was sent and may be billed, even
+       though nothing came back. It is an unknown outcome, not a free retry. */
+    const outcome = /may already have run and been billed/i.test(message) ? "outcome_unknown" : progress.outcome();
+    await finishAiRun(admin, ledger.runId, outcome, {}, message.slice(0, 200));
     /* A launch that never left the building costs nothing, so the chunk goes
        back to pending and a later poll retries it. A launch whose answer was
-       lost may already have created a billed background response — requeueing
-       that would buy the same chunk twice, which is the whole point of this
-       state. It stays failed until a person authorises the retry. */
+       lost may already have created a billed reading — requeueing that would
+       buy the same chunk twice, which is the whole point of this state. */
     await admin.from("plan_analysis_chunks").update({
       state: outcome === "outcome_unknown" ? "failed" : "pending",
       provider_job_id: null,
       error_message: (outcome === "outcome_unknown"
         ? "This chunk was sent to the provider and its answer was lost. It may already have run and been billed — confirm before running it again. "
-        : "") + String(error instanceof Error ? error.message : error).slice(0, 600),
+        : "") + message.slice(0, 600),
       updated_at: new Date().toISOString(),
     }).eq("id", claimed.id);
     throw error;
@@ -1125,8 +1280,7 @@ async function launchNextPendingChunk(
 async function advanceChunkedJob(
   admin: ReturnType<typeof createClient>,
   userClient: ReturnType<typeof createClient>,
-  aiTransport: { baseUrl: string; headers: Record<string, string> },
-  model: string,
+  transport: ProviderTransport,
   job: PlanJob,
   userId: string,
   chunks: Array<Record<string, any>>,
@@ -1172,7 +1326,7 @@ async function advanceChunkedJob(
       })),
     );
     const chunkDocuments = (freshChunks || []).map((chunk) => ((chunk.document_ids || []) as string[]).map((id) => documentsById.get(id)).filter(Boolean) as DocumentRow[]);
-    return await finalizeAnalysis(admin, job, orderedDocuments, withGaps(merged, await tileCoverageGapsFor(admin, chunkDocuments)), job.model || model, userId);
+    return await finalizeAnalysis(admin, job, orderedDocuments, withGaps(merged, await tileCoverageGapsFor(admin, chunkDocuments)), transport, userId, await chunkRunMetrics(admin, job.id, transport));
   };
 
   /* `outcome` is the honest half of this: 'failed' where the provider told us
@@ -1203,19 +1357,27 @@ async function advanceChunkedJob(
   };
 
   const processing = chunks.find((chunk) => chunk.state === "processing");
+  if (processing && transport.mode === "sync") {
+    /* A synchronous provider finishes its chunk inside the invocation that
+       started it. A chunk still marked processing means that invocation
+       ended without an answer — the request was sent and may be billed, so
+       it is an unknown outcome a person decides about, never a silent retry. */
+    return await failChunk(processing,
+      "this chunk was sent to the provider and the reading ended before an answer came back.", "outcome_unknown");
+  }
   if (processing && !processing.provider_job_id) {
     /* The worker died between claiming the chunk and launching it. Requeue
        and relaunch — nothing was bought, nothing is lost. */
     await admin.from("plan_analysis_chunks").update({
       state: "pending", updated_at: new Date().toISOString(),
     }).eq("id", processing.id).eq("state", "processing");
-    await launchNextPendingChunk(admin, aiTransport, model, job, orderedDocuments, total);
+    await launchNextPendingChunk(admin, transport, job, orderedDocuments, total);
     return progress();
   }
   if (processing) {
     const providerResponse = await fetch(
-      `${aiTransport.baseUrl}/responses/${encodeURIComponent(processing.provider_job_id)}`,
-      { headers: aiTransport.headers },
+      `${transport.baseUrl}/responses/${encodeURIComponent(processing.provider_job_id)}`,
+      { headers: transport.headers },
     );
     const providerPayload = await providerResponse.json();
     if (providerResponse.status === 404) {
@@ -1256,7 +1418,7 @@ async function advanceChunkedJob(
       state: "complete", analysis: chunkAnalysis, error_message: null,
       updated_at: new Date().toISOString(),
     }).eq("id", processing.id);
-    await launchNextPendingChunk(admin, aiTransport, model, job, orderedDocuments, total);
+    await launchNextPendingChunk(admin, transport, job, orderedDocuments, total);
     const done = await finalizeIfDone();
     if (done) return done;
     return { ...progress(), chunks_complete: completeCount + 1, progress_percent: 20 + Math.floor(60 * ((completeCount + 1) / total)) };
@@ -1265,7 +1427,7 @@ async function advanceChunkedJob(
   const done = await finalizeIfDone();
   if (done) return done;
   /* Nothing processing, something pending — a poll after a restart. */
-  await launchNextPendingChunk(admin, aiTransport, model, job, orderedDocuments, total);
+  await launchNextPendingChunk(admin, transport, job, orderedDocuments, total);
   return progress();
 }
 
@@ -1276,19 +1438,27 @@ Deno.serve(async (request) => {
   const supabaseUrl = Deno.env.get("SUPABASE_URL");
   const anonKey = Deno.env.get("SUPABASE_ANON_KEY") || Deno.env.get("SUPABASE_PUBLISHABLE_KEY");
   const serviceKey = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY");
-  const model = Deno.env.get("OPENAI_PLAN_MODEL") || Deno.env.get("OPENAI_MODEL") || "gpt-5.6-sol";
-  let aiTransport: ReturnType<typeof openAITransport>;
-  try {
-    /* Direct when a key is configured. Plan analysis is a background response:
-       created once, retrieved by id, and both calls must land on the same
-       billing identity. The gateway's managed billing has proven itself for
-       synchronous work and not for this — a background job created through it
-       sat in "queued" for forty minutes while the same workload, sent
-       directly, completed in minutes the day before. */
-    aiTransport = openAITransport({ preferDirect: true });
-  } catch {
-    return json(request, { error: "Server configuration is incomplete" }, 500);
-  }
+  const defaultOpenAiModel = Deno.env.get("OPENAI_PLAN_MODEL") || Deno.env.get("OPENAI_MODEL") || PROVIDERS.openai.models[0].id;
+
+  /* One reading, one reader. OpenAI keeps the transport it has always used —
+     direct when a key is configured, the Cloudflare gateway otherwise —
+     because plan analysis is a background response created once and retrieved
+     by id, and both calls must land on the same billing identity. The other
+     two providers are their own direct wires. */
+  const resolveTransport = (provider: ProviderKey, modelId: string | null): ProviderTransport => {
+    if (provider === "openai") {
+      const legacy = openAITransport({ preferDirect: true });
+      return {
+        provider: "openai",
+        mode: "background",
+        baseUrl: legacy.baseUrl,
+        headers: legacy.headers,
+        model: modelOptionOrUnknown("openai", modelId || defaultOpenAiModel),
+        transport: legacy.transport,
+      };
+    }
+    return providerTransport(provider, modelId);
+  };
   if (!supabaseUrl || !anonKey || !serviceKey) {
     return json(request, { error: "Server configuration is incomplete" }, 500);
   }
@@ -1310,6 +1480,26 @@ Deno.serve(async (request) => {
     const body = await request.json();
     const jobId = safeText(body?.job_id, "");
     const action = safeText(body?.action, "start");
+
+    /* Which readers this project can use, and which have a key. The answer
+       carries no secret — only a yes or no per provider — and it is the only
+       thing the browser ever learns about the keys. */
+    if (action === "providers") {
+      const organizationId = safeText(body?.organization_id, "");
+      if (!organizationId) return json(request, { error: "organization_id is required" }, 400);
+      const { data: membership } = await userClient
+        .from("organization_members")
+        .select("role")
+        .eq("organization_id", organizationId)
+        .eq("user_id", userData.user.id)
+        .maybeSingle();
+      /* Choosing the reader is an owner's or an administrator's decision. */
+      if (!membership || !["owner", "admin"].includes(membership.role)) {
+        return json(request, { error: "Not authorized to choose a reader" }, 403);
+      }
+      return json(request, { providers: providerCatalogue(), default_provider: DEFAULT_PROVIDER });
+    }
+
     if (!jobId) return json(request, { error: "job_id is required" }, 400);
 
     const { data: jobRow, error: jobError } = await userClient
@@ -1330,8 +1520,33 @@ Deno.serve(async (request) => {
       return json(request, { error: "Not authorized for plan analysis" }, 403);
     }
 
+    /* The reader for this job. A running job keeps the one it started with;
+       a new run may name another, and only owners and administrators may. */
+    const requestedProvider = isProviderKey(body?.provider) ? (body.provider as ProviderKey) : null;
+    const requestedModel = safeText(body?.model, "") || null;
+    if (requestedProvider && action === "start" && !["owner", "admin"].includes(membership.role)) {
+      return json(request, { error: "Not authorized to choose a reader" }, 403);
+    }
+    const provider: ProviderKey = action === "start"
+      ? (requestedProvider || (isProviderKey(job.provider) ? job.provider : DEFAULT_PROVIDER))
+      : (isProviderKey(job.provider) ? job.provider : DEFAULT_PROVIDER);
+    const modelId = action === "start" ? (requestedModel || job.model || null) : (job.model || null);
+    let transport: ProviderTransport;
+    try {
+      transport = resolveTransport(provider, modelId);
+    } catch (error) {
+      if (error instanceof ProviderNotConfigured) {
+        return json(request, {
+          error: `Provider not configured — ${PROVIDERS[provider].label} has no key in this project's secrets.`,
+          code: "provider_not_configured",
+          provider,
+        }, 400);
+      }
+      return json(request, { error: "Server configuration is incomplete" }, 500);
+    }
+
     if (action === "rebuild") {
-      const rebuilt = await rebuildFromSavedReadings(admin, userClient, job, userData.user.id, model);
+      const rebuilt = await rebuildFromSavedReadings(admin, userClient, job, userData.user.id, transport);
       return json(request, rebuilt.body, rebuilt.status);
     }
 
@@ -1364,7 +1579,7 @@ Deno.serve(async (request) => {
         .select("id, chunk_index, document_ids, provider_job_id, state, updated_at, ai_run_id")
         .eq("job_id", job.id).order("chunk_index", { ascending: true });
       if (chunkRows && chunkRows.length) {
-        return json(request, await advanceChunkedJob(admin, userClient, aiTransport, model, job, userData.user.id, chunkRows));
+        return json(request, await advanceChunkedJob(admin, userClient, transport, job, userData.user.id, chunkRows));
       }
       if (!job.provider_job_id) {
         const legacyAge = job.started_at ? Date.now() - new Date(job.started_at).valueOf() : 0;
@@ -1386,8 +1601,8 @@ Deno.serve(async (request) => {
         return json(request, { job_id: job.id, state: "processing", progress_stage: "finalizing", progress_percent: 90 });
       }
 
-      const providerResponse = await fetch(`${aiTransport.baseUrl}/responses/${encodeURIComponent(job.provider_job_id)}`, {
-        headers: aiTransport.headers,
+      const providerResponse = await fetch(`${transport.baseUrl}/responses/${encodeURIComponent(job.provider_job_id)}`, {
+        headers: transport.headers,
       });
       const providerPayload = await providerResponse.json();
       if (providerResponse.status === 404) {
@@ -1457,7 +1672,12 @@ Deno.serve(async (request) => {
         throw new Error("One or more project documents are missing or outside this project");
       }
       const analysis = JSON.parse(responseText(providerPayload));
-      const result = await finalizeAnalysis(admin, job, documents as DocumentRow[], withGaps(analysis, await tileCoverageGapsFor(admin, [documents as DocumentRow[]])), job.model || model, userData.user.id);
+      const result = await finalizeAnalysis(
+        admin, job, documents as DocumentRow[],
+        withGaps(analysis, await tileCoverageGapsFor(admin, [documents as DocumentRow[]])),
+        transport, userData.user.id,
+        runMetrics(transport, usageFrom(providerPayload), job.started_at ? Date.now() - new Date(job.started_at).valueOf() : 0),
+      );
       return json(request, result);
     }
 
@@ -1492,9 +1712,20 @@ Deno.serve(async (request) => {
       );
     }
 
+    /* Free, and before any money moves: the provider must list the model we
+       are about to buy a reading under. A rename shows up here as an error,
+       never as a charge under a name nobody checked. */
+    const modelCheck = await verifyModelId(transport);
+    if (!modelCheck.ok) {
+      const message = `${PROVIDERS[provider].label} does not offer ${transport.model.id} to this key. ${modelCheck.detail}`;
+      await markJobFailed(admin, job, message);
+      return json(request, { error: message, code: "model_not_available", provider, model: transport.model.id, job_id: job.id }, 400);
+    }
+
     const startedAt = new Date().toISOString();
     await admin.from("plan_analysis_jobs").update({
-      state: "processing", provider: "openai", provider_job_id: null, model,
+      state: "processing", provider, provider_job_id: null, model: transport.model.id,
+      agent_contract_version: AGENT_CONTRACT_VERSION,
       progress_stage: "securing_sources", progress_percent: 8,
       started_at: startedAt, completed_at: null, last_heartbeat_at: startedAt,
       error_code: null, error_message: null,
@@ -1524,10 +1755,10 @@ Deno.serve(async (request) => {
          reading. Two Analyze presses on an unchanged plan set both arrive
          here; one is claimed and one is told the reading already exists. */
       const ledger = await claimAiRun(admin, {
-        ...planFingerprintParts(job, model, orderedDocuments, null),
+        ...planFingerprintParts(job, transport.provider, transport.model.id, orderedDocuments, null),
         jobTable: "plan_analysis_jobs",
         jobId: job.id,
-        transport: aiTransport.transport,
+        transport: transport.transport,
         force: Boolean(body?.force),
       });
       if (ledger.verdict !== "CLAIMED") {
@@ -1548,29 +1779,51 @@ Deno.serve(async (request) => {
               : "identical_reading_exists",
         }, 200);
       }
-      let openAIPayload;
+      let reading;
       const launchProgress = new RunProgress();
       try {
-        openAIPayload = await createProviderReading(
-          admin, aiTransport, model, orderedDocuments, registerText, null, launchProgress);
+        reading = await createProviderReading(
+          admin, transport, orderedDocuments, registerText, null, launchProgress);
       } catch (launchError) {
-        await finishAiRun(admin, ledger.runId, launchProgress.outcome(), {},
-          String(launchError instanceof Error ? launchError.message : launchError).slice(0, 200));
+        const launchMessage = String(launchError instanceof Error ? launchError.message : launchError);
+        await finishAiRun(admin, ledger.runId,
+          /may already have run and been billed/i.test(launchMessage) ? "outcome_unknown" : launchProgress.outcome(),
+          {}, launchMessage.slice(0, 200));
         throw launchError;
+      }
+      if (reading.kind === "sync") {
+        /* The reader has already answered. Its usage closes the ledger row,
+           its raw payload is kept beside the parsed result, and the baseline
+           is created here rather than on a later poll. */
+        await finishAiRun(admin, ledger.runId, "succeeded", reading.usage, null);
+        await admin.from("plan_analysis_jobs").update({
+          ai_run_id: ledger.runId,
+          provider_raw: reading.raw,
+          progress_stage: "finalizing",
+          progress_percent: 90,
+          last_heartbeat_at: new Date().toISOString(),
+        }).eq("id", job.id);
+        const result = await finalizeAnalysis(
+          admin, job, orderedDocuments,
+          withGaps(reading.analysis as Record<string, any>, await tileCoverageGapsFor(admin, [orderedDocuments])),
+          transport, userData.user.id,
+          runMetrics(transport, reading.usage, reading.durationMs),
+        );
+        return json(request, result);
       }
       const acceptedAt = new Date().toISOString();
       await admin.from("plan_analysis_jobs").update({
-        provider_job_id: openAIPayload.id,
+        provider_job_id: reading.id,
         ai_run_id: ledger.runId,
-        progress_stage: openAIPayload.status === "queued" ? "provider_queued" : "reading_documents",
-        progress_percent: openAIPayload.status === "queued" ? 18 : 32,
+        progress_stage: reading.status === "queued" ? "provider_queued" : "reading_documents",
+        progress_percent: reading.status === "queued" ? 18 : 32,
         last_heartbeat_at: acceptedAt,
       }).eq("id", job.id);
       return json(request, {
         job_id: job.id,
         state: "processing",
-        progress_stage: openAIPayload.status === "queued" ? "provider_queued" : "reading_documents",
-        progress_percent: openAIPayload.status === "queued" ? 18 : 32,
+        progress_stage: reading.status === "queued" ? "provider_queued" : "reading_documents",
+        progress_percent: reading.status === "queued" ? 18 : 32,
       }, 202);
     }
 
@@ -1610,7 +1863,7 @@ Deno.serve(async (request) => {
         }
       }
     }
-    await launchNextPendingChunk(admin, aiTransport, model, job, orderedDocuments, partition.length);
+    await launchNextPendingChunk(admin, transport, job, orderedDocuments, partition.length);
     const resumedComplete = partitionMatches
       ? (existingChunks || []).filter((row) => row.state === "complete").length
       : 0;

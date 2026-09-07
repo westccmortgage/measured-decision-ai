@@ -33,6 +33,11 @@ const state = {
   selectedRequirementId: null,
   requestedBaselineId: new URLSearchParams(window.location.search).get("baseline"),
   baselines: [],
+  /* Which readers this project can use, and which one the next reading will
+     be bought from. The catalogue says only whether each provider has a key
+     — the key itself never reaches this page. */
+  providers: [],
+  reader: { provider: null, model: null },
   activeBaseline: null,
   readingRegister: null,
   readingWeakSpots: null,
@@ -425,6 +430,10 @@ function formatMegabytes(bytes = 0) {
 
 function analyzeSelectionState() {
   if (!canAnalyzePlans()) return { disabled: true, label: "Analysis unavailable for this role", message: "A project contributor or reviewer can run plan analysis.", kind: "info" };
+  /* A reader with no key in this project cannot be run, and the button says
+     which one rather than failing after the press. */
+  const blocked = readerBlock();
+  if (blocked) return { disabled: true, label: blocked.label, message: blocked.message, kind: "info" };
   if (state.activeAnalysisJob) return { disabled: true, label: "Analysis is running", message: "The saved analysis is running in the background. No action is needed.", kind: "info" };
   if (state.busy) return { disabled: true, label: "Working…", message: "", kind: "info" };
 
@@ -502,6 +511,7 @@ function analyzeSelectionState() {
 }
 
 function updateAnalyzeAction({ updateMessage = false } = {}) {
+  renderReaderPicker();
   const selection = analyzeSelectionState();
   elements.analyze.disabled = selection.disabled;
   elements.analyze.dataset.action = selection.action || "analyze";
@@ -543,6 +553,9 @@ async function initialize() {
   }
   state.organizationId = membership.organization_id;
   state.role = membership.role;
+  /* The reader picker is an administrator's control, so its catalogue is
+     fetched only for the people who may use it. */
+  await loadProviders();
   const { data: properties, error: propertiesError } = await client
     .from("properties")
     .select("id, name, address, workflow_state, active_baseline_id, created_at")
@@ -613,7 +626,7 @@ async function openProperty(propertyId) {
       .eq("property_id", propertyId)
       .order("created_at", { ascending: false }),
     client.from("document_baselines")
-      .select("id, version, state, source_document_ids, project_summary, analysis, gaps, model, created_at, approved_at")
+      .select("id, version, state, source_document_ids, project_summary, analysis, gaps, model, provider, analysis_run, agent_contract_version, created_at, approved_at")
       .eq("organization_id", state.organizationId)
       .eq("property_id", propertyId)
       .order("version", { ascending: false })
@@ -2350,6 +2363,17 @@ function renderVisualPanel() {
 $("#summary-download")?.addEventListener("click", () => $("#download-ai-takeoff")?.click());
 $("#summary-visual")?.addEventListener("click", () => exitSummaryMode("#visual-panel", "visual"));
 $("#summary-full")?.addEventListener("click", () => exitSummaryMode("#takeoff-section", "technical"));
+$("#reader-provider")?.addEventListener("change", (event) => {
+  state.reader.provider = event.target.value;
+  state.reader.model = null;
+  renderReaderPicker();
+  updateAnalyzeAction({ updateMessage: true });
+});
+$("#reader-model")?.addEventListener("change", (event) => {
+  state.reader.model = event.target.value;
+  renderReaderPicker();
+  updateAnalyzeAction({ updateMessage: true });
+});
 $("#summary-rfis")?.addEventListener("click", () => {
   if (takeoffDraft()) { exitSummaryMode("#takeoff-gaps", "technical"); return; }
   exitSummaryMode("#baseline-section", "technical");
@@ -2778,6 +2802,147 @@ function renderHero() {
   ].filter(Boolean).join(" · ");
 }
 
+/* WHICH READER, AND WHICH SAVED READING.
+ *
+ * Choosing the reader is an owner's or an administrator's decision, so the
+ * picker is theirs alone; everybody else runs the project's default. The
+ * catalogue comes from the server, which is the only place that knows
+ * whether a provider has a key — the answer is a yes or a no, never a key.
+ *
+ * A reading is never replaced. Each one is its own baseline version, and the
+ * switcher moves the whole screen — schedules, questions, sources — from one
+ * to another. */
+function mayChooseReader() {
+  return ["owner", "admin"].includes(state.role);
+}
+
+function providerEntry(key) {
+  return state.providers.find((entry) => entry.provider === key) || null;
+}
+
+function chosenReader() {
+  const provider = state.reader.provider || state.providers[0]?.provider || "openai";
+  const entry = providerEntry(provider);
+  const model = state.reader.model || entry?.models?.[0]?.id || null;
+  return { provider, model, entry, modelEntry: entry?.models?.find((item) => item.id === model) || null };
+}
+
+async function loadProviders() {
+  if (!mayChooseReader() || !state.organizationId) { state.providers = []; return; }
+  try {
+    const { data, error } = await client.functions.invoke("plan-analyze", {
+      body: { action: "providers", organization_id: state.organizationId },
+    });
+    if (error || !data?.providers) return;
+    state.providers = data.providers;
+    if (!state.reader.provider) state.reader.provider = data.default_provider || data.providers[0]?.provider || null;
+  } catch (error) {
+    /* A picker that could not load is not a reason to block the door: the
+       project's default reader still runs. */
+    console.warn("provider catalogue", error);
+  }
+}
+
+function priceLine(modelEntry) {
+  if (!modelEntry) return "";
+  if (modelEntry.input_per_mtok === null || modelEntry.output_per_mtok === null) {
+    return "Tariff not confirmed — cost will be reported as unknown, not as zero.";
+  }
+  return `$${modelEntry.input_per_mtok}/M in · $${modelEntry.output_per_mtok}/M out${modelEntry.price_status === "promotional" ? " (promotional)" : ""}`;
+}
+
+function renderReaderPicker() {
+  const picker = $("#reader-picker");
+  if (!picker) return;
+  picker.hidden = !mayChooseReader() || !state.providers.length;
+  if (picker.hidden) return;
+  const { provider, model, entry, modelEntry } = chosenReader();
+  const providerSelect = $("#reader-provider");
+  providerSelect.innerHTML = state.providers.map((item) => `
+    <option value="${escapeHtml(item.provider)}" ${item.provider === provider ? "selected" : ""}>
+      ${escapeHtml(item.label)}${item.configured ? "" : " — not configured"}
+    </option>`).join("");
+  const modelSelect = $("#reader-model");
+  modelSelect.innerHTML = (entry?.models || []).map((item) => `
+    <option value="${escapeHtml(item.id)}" ${item.id === model ? "selected" : ""}>${escapeHtml(item.label)}</option>`).join("");
+  const note = $("#reader-note");
+  if (entry && !entry.configured) {
+    note.textContent = `Provider not configured — ${entry.label} has no key in this project's secrets. Add it in Supabase and reload.`;
+    note.classList.add("warn");
+  } else {
+    note.classList.remove("warn");
+    note.textContent = [
+      modelEntry ? `Model ${modelEntry.id}` : "",
+      priceLine(modelEntry),
+      entry?.mode === "sync" ? "Read in one call per part; a part that does not finish is shown as unfinished." : "Read in the background; long sets keep their finished parts.",
+    ].filter(Boolean).join(" · ");
+  }
+}
+
+/* The reader a press of Analyze would use, and whether it can run at all. */
+function readerBlock() {
+  if (!mayChooseReader() || !state.providers.length) return null;
+  const { entry } = chosenReader();
+  if (entry && !entry.configured) {
+    return { label: "Provider not configured", message: `${entry.label} has no key in this project's secrets, so it cannot be run.` };
+  }
+  return null;
+}
+
+function runLine(baseline) {
+  const run = baseline?.analysis_run || {};
+  const usage = run.usage || {};
+  const parts = [];
+  if (run.provider_label || run.provider) parts.push(`${run.provider_label || run.provider}${run.model ? ` · ${run.model}` : ""}`);
+  else if (baseline?.model) parts.push(baseline.model);
+  if (baseline?.agent_contract_version) parts.push(`task ${baseline.agent_contract_version}`);
+  if (run.duration_ms) parts.push(`${Math.max(1, Math.round(run.duration_ms / 1000))} s`);
+  const input = Number(usage.input_tokens);
+  const output = Number(usage.output_tokens);
+  if (Number.isFinite(input) || Number.isFinite(output)) {
+    parts.push(`${Number.isFinite(input) ? input.toLocaleString() : "—"} in / ${Number.isFinite(output) ? output.toLocaleString() : "—"} out tokens`);
+  }
+  /* An unknown price is said in words. A zero here would be a lie about
+     money, which is the one thing this screen must never tell. */
+  if (run.cost_usd === 0) parts.push("no provider call — $0.00");
+  else if (typeof run.cost_usd === "number") parts.push(`$${run.cost_usd.toFixed(2)}${run.price_status === "promotional" ? " (promotional rate)" : ""}`);
+  else if (Object.keys(run).length) parts.push("cost unknown — tariff not confirmed");
+  return parts.join(" · ");
+}
+
+function renderReadingSwitch() {
+  const wrap = $("#reading-switch");
+  if (!wrap) return;
+  const readings = state.baselines || [];
+  wrap.hidden = readings.length < 2;
+  const list = $("#reading-list");
+  if (list) {
+    list.innerHTML = readings.map((item) => {
+      const run = item.analysis_run || {};
+      const who = run.provider_label || run.provider || item.provider || "reading";
+      const selected = item.id === state.baseline?.id;
+      return `<button class="reading-tab" type="button" role="tab" aria-selected="${selected}" data-reading="${escapeHtml(item.id)}">
+        <strong>v${item.version} · ${escapeHtml(String(who))}</strong>
+        <small>${escapeHtml(run.model || item.model || "")} · ${escapeHtml(label(item.state))}</small>
+      </button>`;
+    }).join("");
+    list.querySelectorAll("[data-reading]").forEach((button) => {
+      button.addEventListener("click", () => switchReading(button.dataset.reading));
+    });
+  }
+  const runNote = $("#reading-run");
+  if (runNote) runNote.textContent = runLine(state.baseline);
+}
+
+/* Switching readings reloads everything that belongs to a baseline — its
+   schedules, its questions, its sources — so nothing of the other reading
+   can survive on the screen. */
+async function switchReading(baselineId) {
+  if (!baselineId || baselineId === state.baseline?.id || state.busy) return;
+  state.requestedBaselineId = baselineId;
+  await openProperty(state.property.id);
+}
+
 function renderBaseline() {
   elements.baselineSection.hidden = !state.baseline;
   if (!state.baseline) return;
@@ -2806,6 +2971,7 @@ function renderBaseline() {
       ? `Analysis complete · Roadmap active · v${state.baseline.version}`
       : `Analysis complete · Review required${blockingGaps.length ? ` · <span class="blocking">${blockingGaps.length} question${blockingGaps.length === 1 ? "" : "s"} block${blockingGaps.length === 1 ? "s" : ""} activation</span>` : ""}`;
   }
+  renderReadingSwitch();
   $("#project-summary").textContent = state.baseline.project_summary;
   const analysis = state.baseline.analysis || {};
   const chips = [
@@ -3648,6 +3814,9 @@ function unknownKey() {
 }
 
 async function analyzePlans(options = {}) {
+  /* Which reader this press buys a reading from. Owners and administrators
+     choose; everybody else runs the project's default. */
+  const chosenProvider = chosenReader();
   const eligibility = analyzeSelectionState();
   if (eligibility.disabled) {
     if (eligibility.message) setMessage(eligibility.message, eligibility.kind);
@@ -3709,11 +3878,16 @@ async function analyzePlans(options = {}) {
       document_ids: activeDocuments.map((document) => document.id),
       state: "queued",
       requested_by: state.session.user.id,
+      provider: chosenProvider.provider,
+      model: chosenProvider.model,
     }).select("id").single();
     if (jobError) throw jobError;
     state.activeAnalysisJob = { id: job.id, state: "queued", progress_stage: "queued", progress_percent: 4 };
     const { data, error } = await client.functions.invoke("plan-analyze", {
-      body: { action: "start", job_id: job.id, force: Boolean(options.force) },
+      body: {
+        action: "start", job_id: job.id, force: Boolean(options.force),
+        provider: chosenProvider.provider, model: chosenProvider.model,
+      },
     });
     const refused = window.MDAIAiUsage?.skippedVerdict(data);
     if (refused) {
