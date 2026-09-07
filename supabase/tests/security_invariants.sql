@@ -1237,10 +1237,13 @@ values ('eeeeeeee-0000-0000-0000-000000000053','aaaaaaaa-0000-0000-0000-00000000
     "structural_members":[
      {"mark":"FB1","member_type":"beam","description":"3-1/2 x 11-7/8 LVL","size":"3-1/2 x 11-7/8","spacing":"","material":"LVL","level":"Second Floor","location":"over garage","count_scheduled":2,"count_drawn":2,"count_proposed":2,"count_confidence":"high","count_note":"","length_printed":"","unit":"each","detail_refs":["S-6/4"],"source_refs":["S-3 (original p25)"]},
      {"mark":"HDR4","member_type":"header","description":"Parallam PSL 2.0E 3.50 x 18.0","size":"3.50 x 18.0","spacing":"","material":"PSL","level":"First Floor","location":"","count_scheduled":0,"count_drawn":3,"count_proposed":3,"count_confidence":"high","count_note":"counted on S-3","length_printed":"","unit":"each","detail_refs":[],"source_refs":["S-3 (original p25)"]},
-     {"mark":"F1","member_type":"footing","description":"24 x 24 x 12 w/ 3-#4 e.w.","size":"24x24x12","spacing":"","material":"concrete","level":"Foundation","location":"","count_scheduled":0,"count_drawn":0,"count_proposed":0,"count_confidence":"none","count_note":"footing plan locations not read","length_printed":"","unit":"each","detail_refs":["S-5/1"],"source_refs":["S-2 (original p24)"]}
+     {"mark":"F1","member_type":"footing","description":"24 x 24 x 12 w/ 3-#4 e.w.","size":"24x24x12","spacing":"","material":"concrete","level":"Foundation","location":"","count_scheduled":0,"count_drawn":0,"count_proposed":0,"count_confidence":"none","count_note":"footing plan locations not read","length_printed":"","unit":"each","detail_refs":["S-5/1"],"source_refs":["S-2 (original p24)"]},
+     {"mark":"R.R.1","member_type":"rafter","description":"2x10 #2 @ 16 O.C.","size":"2x10","spacing":"16 O.C.","material":"DF #2","level":"Roof","location":"","count_scheduled":0,"count_drawn":0,"count_proposed":12,"count_confidence":"low","count_note":"twelve R.R.1 zones","counted":"zones","plies":0,"size_basis":"schedule_row","length_printed":"","unit":"framing zone","detail_refs":[],"source_refs":["S-4"]},
+     {"mark":"RIDGE BM 2","member_type":"ridge","description":"(2)-2x10 #2","size":"(2)-2x10","spacing":"","material":"DF #2","level":"Roof","location":"small roofs","count_scheduled":0,"count_drawn":3,"count_proposed":3,"count_confidence":"medium","count_note":"","counted":"assemblies","plies":2,"size_basis":"schedule_row","length_printed":"","unit":"each","detail_refs":[],"source_refs":["S-4"]},
+     {"mark":"RHDR","member_type":"header","description":"","size":"","spacing":"","material":"","level":"Roof","location":"","count_scheduled":0,"count_drawn":20,"count_proposed":20,"count_confidence":"high","count_note":"unnumbered RHDR labels","counted":"labels","plies":0,"size_basis":"not_resolved","length_printed":"","unit":"each","detail_refs":[],"source_refs":["S-4"]}
    ],
     "framing_defaults":[
-     {"rule":"ALL STUDS 2x4 #2 @ 16 O.C. U.N.O.","applies_to":"bearing and non-bearing wood stud walls","exception":"U.N.O.","source_refs":["S-3 notes 5, 7"]}
+     {"rule":"ALL STUDS 2x4 #2 @ 16 O.C. U.N.O.","kind":"studs","applies_to":"bearing and non-bearing wood stud walls","exception":"U.N.O.","source_refs":["S-3 notes 5, 7"]}
    ]}'::jsonb,
   '11111111-1111-1111-1111-111111111111');
 
@@ -1263,6 +1266,18 @@ select pg_temp.check('a footing nobody could count stays an open RFI, never a gu
 select pg_temp.check('and the lighting F1 keeps its own key beside the footing F1',
   exists (select 1 from public.project_requirements
           where baseline_id = 'eeeeeeee-0000-0000-0000-000000000053' and component_key = 'F1' and state = 'active' and quantity = 36));
+select pg_temp.check('twelve rafter zones are not twelve rafters: an open RFI that says what was counted (054)',
+  exists (select 1 from public.project_requirements
+          where baseline_id = 'eeeeeeee-0000-0000-0000-000000000053' and component_key = 'R.R.1' and state = 'active'
+            and quantity is null and method = 'OPEN_RFI' and description like '%12 zones on plan; member count not determined'));
+select pg_temp.check('three ridge assemblies are three, with their plies in the description and never multiplied (054)',
+  exists (select 1 from public.project_requirements
+          where baseline_id = 'eeeeeeee-0000-0000-0000-000000000053' and component_key = 'RIDGE BM 2' and state = 'active'
+            and quantity = 3 and unit = 'assembly' and method = 'AI_PLAN_COUNT' and description like '%(2) plies per assembly%'));
+select pg_temp.check('twenty unnumbered labels with no resolved size are a question, not twenty headers (054)',
+  exists (select 1 from public.project_requirements
+          where baseline_id = 'eeeeeeee-0000-0000-0000-000000000053' and component_key = 'RHDR' and state = 'active'
+            and quantity is null and method = 'OPEN_RFI' and description like '%20 labels on plan%'));
 select pg_temp.check('a printed rule is not turned into a counted row',
   not exists (select 1 from public.project_requirements
           where baseline_id = 'eeeeeeee-0000-0000-0000-000000000053' and state = 'active' and description ilike '%U.N.O.%'));

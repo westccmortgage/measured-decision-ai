@@ -25,23 +25,52 @@
      copied resources and the request envelope around it. */
   const PART_MAX_BYTES = 45 * 1024 * 1024;
   const PART_MAX_PAGES = 90;
+  /* One reading carries this many page images (MAX_RENDER_IMAGES in
+     supabase/functions/plan-analyze/chunking.js — the two must agree). A
+     part is cut so that every one of its pages keeps its tiles: a reading
+     that drops the tiles of its last sheets reads the schedules at the
+     provider's own resolution and calls whole drawings "cropped". */
+  const PART_MAX_IMAGES = 80;
   const SCRIPT_URL = (typeof document !== "undefined" && document.currentScript?.src) || "";
 
   /* Pure geometry, tested on its own: which pages go in which part.
      Pages are 1-based and inclusive, in order, with nothing skipped and
      nothing repeated. The byte estimate is an average per page — only a
      guess, which is why splitPdf re-checks every part after it is written. */
-  function planParts({ pageCount, byteSize, maxBytes = PART_MAX_BYTES, maxPages = PART_MAX_PAGES }) {
+  function planParts({ pageCount, byteSize, maxBytes = PART_MAX_BYTES, maxPages = PART_MAX_PAGES, pageImages = null, maxImages = PART_MAX_IMAGES }) {
     const pages = Math.max(0, Math.floor(Number(pageCount) || 0));
     if (!pages) return [];
     const perPage = Math.max(1, Math.ceil((Number(byteSize) || 0) / pages));
     const byBytes = Math.max(1, Math.floor(maxBytes / perPage));
     const span = Math.max(1, Math.min(maxPages, byBytes));
+    /* Images per page, when the caller measured the pages: a part closes
+       before the page that would carry it over the reading's image budget.
+       A single page over the budget still travels alone — its overview and
+       first quadrants go, the rest is said out loud by the reader. */
+    const imagesOf = (page) => (Array.isArray(pageImages) ? Math.max(0, Number(pageImages[page - 1]) || 0) : 0);
     const parts = [];
-    for (let from = 1; from <= pages; from += span) {
-      parts.push({ from, to: Math.min(pages, from + span - 1) });
+    let from = 1;
+    while (from <= pages) {
+      let to = from;
+      let images = imagesOf(from);
+      while (to + 1 <= pages && to + 1 - from < span && images + imagesOf(to + 1) <= maxImages) {
+        to += 1;
+        images += imagesOf(to);
+      }
+      parts.push({ from, to });
+      from = to + 1;
     }
     return parts;
+  }
+
+  /* How many images the renderer makes of one page: its quadrants and, when
+     there is more than one, an overview. The geometry is the renderer's own. */
+  function imagesForPage(widthPt, heightPt) {
+    const renders = (typeof window !== "undefined" && window.MDAIPageRenders)
+      || (typeof require === "function" ? require("./page-renders.js") : null);
+    if (!renders?.tileLayout) return 1;
+    const layout = renders.tileLayout(widthPt, heightPt);
+    return layout.tiles.length + (layout.tiles.length > 1 ? 1 : 0);
   }
 
   /* The name a part wears — the original's name with its page range, so a
@@ -53,8 +82,13 @@
   }
 
   /* What a derived document remembers about where it came from. */
-  function derivedFrom({ documentId, from, to, pagesTotal, part, parts }) {
-    return { document_id: documentId, page_from: from, page_to: to, pages_total: pagesTotal, part, parts };
+  function derivedFrom({ documentId, from, to, pagesTotal, part, parts, generation = 1, imagesBudget = null }) {
+    const record = { document_id: documentId, page_from: from, page_to: to, pages_total: pagesTotal, part, parts, generation };
+    /* A part cut to the reading's image budget says so; one cut before the
+       budget was known carries no such promise, and the site offers a finer
+       split instead of pretending. */
+    if (imagesBudget) record.images_budget = imagesBudget;
+    return record;
   }
 
   async function loadPdfLib() {
@@ -85,11 +119,12 @@
      Returns { parts: [{ from, to, bytes }], skipped: [pageNumber…], pageCount }.
      A range that comes out over the limit is halved and retried; a single
      page that is over the limit on its own is skipped and reported. */
-  async function splitPdf({ bytes, byteSize, maxBytes = PART_MAX_BYTES, maxPages = PART_MAX_PAGES, onProgress = () => {}, lib = null }) {
+  async function splitPdf({ bytes, byteSize, maxBytes = PART_MAX_BYTES, maxPages = PART_MAX_PAGES, maxImages = PART_MAX_IMAGES, onProgress = () => {}, lib = null }) {
     const PDFLib = lib || await loadPdfLib();
     const source = await PDFLib.PDFDocument.load(bytes, { ignoreEncryption: true, updateMetadata: false });
     const pageCount = source.getPageCount();
-    const queue = planParts({ pageCount, byteSize: byteSize ?? bytes.byteLength, maxBytes, maxPages });
+    const pageImages = source.getPages().map((page) => { const { width, height } = page.getSize(); return imagesForPage(width, height); });
+    const queue = planParts({ pageCount, byteSize: byteSize ?? bytes.byteLength, maxBytes, maxPages, pageImages, maxImages });
     const parts = [];
     const skipped = [];
     while (queue.length) {
@@ -112,7 +147,7 @@
     return { parts, skipped, pageCount };
   }
 
-  const api = { planParts, partFilename, derivedFrom, splitPdf, loadPdfLib, PART_MAX_BYTES, PART_MAX_PAGES };
+  const api = { planParts, partFilename, derivedFrom, splitPdf, loadPdfLib, imagesForPage, PART_MAX_BYTES, PART_MAX_PAGES, PART_MAX_IMAGES };
   if (typeof window !== "undefined") window.MDAIPdfSplit = api;
   if (typeof module !== "undefined" && module.exports) module.exports = api;
 })();
