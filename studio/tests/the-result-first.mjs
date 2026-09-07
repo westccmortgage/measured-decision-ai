@@ -193,21 +193,24 @@ console.log("\n── the structural reading, once it exists ──");
     const d = document.querySelector('[data-result-section="framing"]');
     return { open: d.open, summary: d.querySelector("summary").textContent.replace(/\s+/g, " ").trim(), rows: [...d.querySelectorAll("tbody tr")].map((tr) => [...tr.children].map((td) => td.textContent.replace(/\s+/g, " ").trim())), rule: d.querySelector(".result-rules li")?.textContent.replace(/\s+/g, " ").trim() || "", provs: [...d.querySelectorAll("tbody .prov")].map((p) => p.className) };
   });
-  check("Structural framing opens with its lines and its printed rule", framing.open && /2 lines · 1 printed rule/.test(framing.summary), framing.summary);
-  check("a scheduled beam is a printed fact; a header counted on the plan is a count",
-    framing.rows.some((r) => /beam FB1/.test(r[0]) && r[1] === "2" && r[2] === "each") && framing.provs.includes("prov printed")
-    && framing.rows.some((r) => /header HDR4/.test(r[0]) && r[1] === "3") && framing.provs.includes("prov counted"), JSON.stringify(framing.rows));
+  check("Structural framing opens with every member it recorded and its printed rule", framing.open && /2 members · 2 with a quantity · 1 printed rule/.test(framing.summary), framing.summary);
+  check("a scheduled beam is a printed quantity; a header counted on the plan is a count",
+    framing.rows.some((r) => r[0] === "FB1" && /^beam · 3-1\/2 x 11-7\/8 LVL/.test(r[1]) && r[2] === "2" && r[3] === "each") && framing.provs.includes("prov printed")
+    && framing.rows.some((r) => r[0] === "HDR4" && /^header · /.test(r[1]) && r[2] === "3") && framing.provs.includes("prov counted"), JSON.stringify(framing.rows));
   check("the printed stud rule is a project requirement with its exception, never our assumption",
     /Printed rule/.test(framing.rule) && /ALL STUDS 2x4 #2 @ 16" O\.C\. U\.N\.O\./.test(framing.rule) && /\(unless noted otherwise\)/.test(framing.rule) && /S-3 · p25/.test(framing.rule), framing.rule);
-  check("the beam's detail is one of its sources", framing.rows.some((r) => /beam FB1/.test(r[0]) && /S-3 · p25, S-6\/4/.test(r[4])), JSON.stringify(framing.rows.map((r) => r[4])));
+  check("the beam's detail is one of its sources", framing.rows.some((r) => r[0] === "FB1" && /S-3 · p25, S-6\/4/.test(r[5])), JSON.stringify(framing.rows.map((r) => r[5])));
   const foundation = await page.evaluate(() => {
     const d = document.querySelector('[data-result-section="foundation"]');
-    return { open: d.open, summary: d.querySelector("summary").textContent.replace(/\s+/g, " ").trim(), rows: [...d.querySelectorAll("tbody tr")].map((tr) => tr.children[0].textContent.replace(/\s+/g, " ").trim()) };
+    return { open: d.open, summary: d.querySelector("summary").textContent.replace(/\s+/g, " ").trim(), rows: [...d.querySelectorAll("tbody tr")].map((tr) => [...tr.children].map((td) => td.textContent.replace(/\s+/g, " ").trim())), provs: [...d.querySelectorAll("tbody .prov")].map((p) => p.className) };
   });
-  check("Foundation holds the footing, counted for verification and said to be concrete",
-    foundation.open && /1 line/.test(foundation.summary) && foundation.rows.length === 1 && /footing F1: 24 x 24 x 12 concrete · not lumber — verification count/.test(foundation.rows[0]), JSON.stringify(foundation));
+  check("Foundation holds the footing, counted on the plan, and the hold-down nobody could count — as a row that says so",
+    foundation.open && /2 members · 1 with a quantity/.test(foundation.summary) && foundation.rows.length === 2
+    && foundation.rows.some((r) => r[0] === "F1" && /^footing · 24 x 24 x 12 concrete/.test(r[1]) && r[2] === "4")
+    && foundation.rows.some((r) => r[0] === "HDU4" && /^hold-down · Simpson HDU4/.test(r[1]) && r[2] === "—" && /locations not read/.test(r[1]))
+    && foundation.provs.includes("prov counted") && foundation.provs.includes("prov unknown"), JSON.stringify(foundation));
   const takeoffGaps = await page.evaluate(() => document.getElementById("takeoff-section")?.textContent || "");
-  check("the hold-down nobody could count is a question in the takeoff, not a line", /hold-down HDU4/.test(takeoffGaps) && !foundation.rows.some((r) => /HDU4/.test(r)));
+  check("and the takeoff still carries it as a question, not a line", /hold-down HDU4/.test(takeoffGaps));
   await context.close();
 }
 

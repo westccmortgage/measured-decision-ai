@@ -2558,7 +2558,35 @@ function renderScheduleTable(rows) {
 /* Framing and foundation, from the deterministic takeoff the calculator
    already draws — scheduled members and printed dimensions — or an honest
    sentence when this reading had no field for them. */
-const isFoundationLine = (line) => Boolean(window.MDAITakeoff360?.isFoundationMember?.(line.member_type));
+const MEMBER_WORDS = {
+  beam: "beam", header: "header", joist: "joist", rafter: "rafter", ridge: "ridge beam", post: "post", column: "column",
+  stud: "stud", blocking: "blocking", ledger: "ledger", strap: "strap", holdown: "hold-down", anchor: "anchor",
+  shear_wall: "shear wall", footing: "footing", grade_beam: "grade beam", pier: "pier", slab: "slab", other: "member",
+};
+/* Every scheduled member the reader recorded, as a row — a printed
+   quantity, a count made on the plan, a proposal with its confidence, or
+   nothing determinable — with its sheets and the detail it points to. A
+   member whose count could not be read is still a member the plans
+   schedule; hiding it would say the plans do not. */
+function renderMemberTable(members) {
+  return `<div class="result-table-wrap"><table class="result-table">
+    <thead><tr><th>Mark</th><th>Member</th><th>Qty</th><th>Unit</th><th>How</th><th>Source</th></tr></thead>
+    <tbody>${members.map((member) => {
+      const prov = scheduleProvenance(member);
+      const word = MEMBER_WORDS[member.member_type] || "member";
+      const where = [member.level, member.location].filter(Boolean).join(" · ");
+      return `<tr data-mark="${escapeHtml(member.mark || "")}">
+        <td class="mark">${escapeHtml(member.mark || "—")}</td>
+        <td>${escapeHtml(word)} · ${escapeHtml(member.description || "")}${where ? `<small class="line-meta">${escapeHtml(where)}</small>` : ""}${member.count_note ? `<small class="line-meta">${escapeHtml(member.count_note)}</small>` : ""}</td>
+        <td class="qty">${prov.quantity === null ? "—" : prov.quantity}</td>
+        <td>${escapeHtml(member.unit || "each")}</td>
+        <td><span class="prov ${prov.kind}">${escapeHtml(prov.label)}</span></td>
+        <td>${sourceRefCell([...new Set([...(member.source_refs || []), ...(member.detail_refs || [])])])}</td>
+      </tr>`;
+    }).join("")}</tbody></table></div>`;
+}
+/* Lines the calculator derives from printed wall and deck dimensions —
+   the lumber a plan implies, beside the members it schedules. */
 function renderLinesTable(lines) {
   return `<div class="result-table-wrap"><table class="result-table">
     <thead><tr><th>Item</th><th>Qty</th><th>Unit</th><th>How</th><th>Source</th></tr></thead>
@@ -2573,18 +2601,31 @@ function renderFramingRules(rules) {
   if (!rules.length) return "";
   return `<ul class="result-rules">${rules.map((rule) => `<li><span class="prov printed">Printed rule</span> <strong>${escapeHtml(rule.rule || "")}</strong>${rule.applies_to ? ` — ${escapeHtml(rule.applies_to)}` : ""}${rule.exception ? ` <em>(${escapeHtml(rule.exception)})</em>` : ""} <span class="result-rule-source">${sourceRefCell(rule.source_refs)}</span></li>`).join("")}</ul>`;
 }
-function renderFramingSection(lines, rules) {
-  if (!lines.length && !rules.length) {
+function renderFramingSection(members, derived, rules) {
+  if (!members.length && !derived.length && !rules.length) {
     return `<p class="result-empty">Not yet read as a schedule. Beams, headers, joists, rafters, studs and their connectors printed on the structural sheets appear only as questions in the audit below until the structural reading is added; nothing here is measured by scale.</p>`;
   }
-  return `${renderFramingRules(rules)}${lines.length ? renderLinesTable(lines) : `<p class="result-empty">No scheduled framing member was read in this set.</p>`}`;
+  return `${renderFramingRules(rules)}${members.length ? renderMemberTable(members) : ""}${derived.length ? renderLinesTable(derived) : ""}${!members.length && !derived.length ? `<p class="result-empty">No scheduled framing member was read in this set.</p>` : ""}`;
 }
-function renderFoundationSection(lines) {
-  if (!lines.length) {
+function renderFoundationSection(members) {
+  if (!members.length) {
     return `<p class="result-empty">Footings, hold-downs and anchorage are printed in the structural schedules but this reading had no field for them. They appear only as questions in the audit below until the structural reading is added.</p>`;
   }
-  return renderLinesTable(lines);
+  return renderMemberTable(members);
 }
+/* The members a reading recorded, told apart by where they sit. */
+function structuralMembers(analysis) {
+  const members = Array.isArray(analysis?.structural_members) ? analysis.structural_members : [];
+  const foundation = members.filter((member) => window.MDAITakeoff360?.isFoundationMember?.(member.member_type));
+  return { framing: members.filter((member) => !foundation.includes(member)), foundation };
+}
+const memberCount = (list, rules = 0) => {
+  const settled = list.filter((member) => scheduleProvenance(member).kind !== "unknown").length;
+  const words = [`${list.length} member${list.length === 1 ? "" : "s"}`];
+  if (list.length) words.push(`${settled} with a quantity`);
+  if (rules) words.push(`${rules} printed rule${rules === 1 ? "" : "s"}`);
+  return words.join(" · ");
+};
 
 function renderResultSections() {
   const host = $("#result-sections");
@@ -2598,21 +2639,22 @@ function renderResultSections() {
       <summary>${escapeHtml(section.title)} <small>${section.rows.length ? `${section.rows.length} scheduled item${section.rows.length === 1 ? "" : "s"}` : "none printed in this set"}</small></summary>
       ${section.rows.length ? renderScheduleTable(section.rows) : `<p class="result-empty">No ${section.title.toLowerCase()} schedule was read in this set.</p>`}
     </details>`).join("");
-  const allLines = draft?.result?.lines || [];
-  const foundationLines = allLines.filter(isFoundationLine);
-  const framingLines = allLines.filter((line) => !isFoundationLine(line));
+  const members = structuralMembers(analysis);
+  /* The calculator's own lines — from printed wall and deck dimensions —
+     without the ones it made from members, which are shown as members. */
+  const derived = (draft?.result?.lines || []).filter((line) => !line.member_type);
   const rules = Array.isArray(analysis.framing_defaults) ? analysis.framing_defaults : [];
-  const framingCount = framingLines.length
-    ? `${framingLines.length} line${framingLines.length === 1 ? "" : "s"}${rules.length ? ` · ${rules.length} printed rule${rules.length === 1 ? "" : "s"}` : ""}`
+  const framingCount = members.framing.length || derived.length
+    ? [members.framing.length ? memberCount(members.framing) : "", derived.length ? `${derived.length} calculated line${derived.length === 1 ? "" : "s"}` : "", rules.length ? `${rules.length} printed rule${rules.length === 1 ? "" : "s"}` : ""].filter(Boolean).join(" · ")
     : (rules.length ? `${rules.length} printed rule${rules.length === 1 ? "" : "s"}` : "not yet read as a schedule");
   const framing = `
-    <details class="result-section" ${framingLines.length || rules.length ? "open" : ""} data-result-section="framing">
+    <details class="result-section" ${members.framing.length || derived.length || rules.length ? "open" : ""} data-result-section="framing">
       <summary>Structural framing <small>${framingCount}</small></summary>
-      ${renderFramingSection(framingLines, rules)}
+      ${renderFramingSection(members.framing, derived, rules)}
     </details>
-    <details class="result-section" ${foundationLines.length ? "open" : ""} data-result-section="foundation">
-      <summary>Foundation <small>${foundationLines.length ? `${foundationLines.length} line${foundationLines.length === 1 ? "" : "s"}` : "not yet read as a schedule"}</small></summary>
-      ${renderFoundationSection(foundationLines)}
+    <details class="result-section" ${members.foundation.length ? "open" : ""} data-result-section="foundation">
+      <summary>Foundation <small>${members.foundation.length ? memberCount(members.foundation) : "not yet read as a schedule"}</small></summary>
+      ${renderFoundationSection(members.foundation)}
     </details>`;
   host.innerHTML = scheduled + framing;
   host.querySelectorAll("[data-open-sheet]").forEach((button) => {
@@ -2672,9 +2714,9 @@ function readingCounts() {
   const rows = Array.isArray(analysis.component_schedules) ? analysis.component_schedules : [];
   const byKind = RESULT_SECTIONS.map(({ category, title }) => ({ category, title, count: rows.filter((row) => (row.category || "other") === category).length }))
     .filter((entry) => entry.count > 0);
-  const draft = takeoffDraft();
-  const lines = draft?.result?.lines || [];
-  return { rows: rows.length, byKind, framing: lines.filter((line) => !isFoundationLine(line)).length, foundation: lines.filter(isFoundationLine).length };
+  const members = structuralMembers(analysis);
+  const derived = (takeoffDraft()?.result?.lines || []).filter((line) => !line.member_type);
+  return { rows: rows.length, byKind, framing: members.framing.length + derived.length, foundation: members.foundation.length };
 }
 
 function renderHero() {
@@ -2697,7 +2739,7 @@ function renderHero() {
   copy.textContent = [
     approved ? "Roadmap active" : "Analysis complete · Review required",
     counts.rows ? `${counts.rows} scheduled item${counts.rows === 1 ? "" : "s"} read` : "",
-    counts.framing || counts.foundation ? `${counts.framing + counts.foundation} structural line${counts.framing + counts.foundation === 1 ? "" : "s"}` : "",
+    counts.framing || counts.foundation ? `${counts.framing + counts.foundation} structural member${counts.framing + counts.foundation === 1 ? "" : "s"}` : "",
     blockers ? `${blockers} question${blockers === 1 ? "" : "s"} block${blockers === 1 ? "s" : ""} activation` : "",
   ].filter(Boolean).join(" · ");
 }
