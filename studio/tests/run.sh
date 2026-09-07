@@ -68,6 +68,7 @@ run "the result first"                 studio/tests/the-result-first.mjs
 run "interface and clarity"            studio/tests/clarity.mjs
 run "reading the same set again"       studio/tests/reanalyze-door.mjs
 run "the legend is scope"              studio/tests/legend-devices.mjs
+run "what the number counts"           studio/tests/what-the-number-counts.mjs
 run "the PDF that leaves"             studio/tests/pdf360.mjs
 run "the record leaves with its owner" studio/tests/e2e-export.mjs
 run "only what a person approved"     studio/tests/e2e-owner-view.mjs

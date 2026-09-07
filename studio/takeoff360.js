@@ -261,14 +261,28 @@
       const drawn = Number(member.count_drawn) || 0;
       const proposed = Number(member.count_proposed) || 0;
       const base = { item, member_type: member.member_type || "other", category: notLumber(description) ? "not_lumber" : "lumber", status: "ready", source_refs: refs };
+      /* What the number counted. A zone is not a member and a label is not
+         a row: their counts are a question with the count in it, never a
+         line. An assembly is one member of several plies — the plies ride
+         along in the unit and are never multiplied here. */
+      const counted = String(member.counted || "members");
+      const plies = Number(member.plies) || 0;
+      if ((counted === "zones" || counted === "labels") && scheduled === 0) {
+        const seen = Math.max(drawn, proposed);
+        const gapText = `${word} ${mark} (${description}): ${seen || "no"} ${counted} on the plan; the count of members is not determined${counted === "zones" ? " — pieces per zone follow from dimensions and spacing, which this takeoff does not measure by scale" : ""}`.replace(/\s+/g, " ").trim();
+        gaps.push(gapText);
+        steps.push(`${mark || word}: ${seen} ${counted} on the plan, not members`);
+        continue;
+      }
+      const unitWord = counted === "assemblies" ? `assembly${plies > 1 ? ` of ${plies} plies` : ""}` : null;
       if (scheduled > 0) {
-        lines.push({ ...base, quantity: scheduled, unit: String(member.unit || "each"), method: "PRINTED_FACT" });
+        lines.push({ ...base, quantity: scheduled, unit: unitWord || String(member.unit || "each"), method: "PRINTED_FACT" });
         steps.push(`${mark || word}: ${scheduled} printed in the schedule`);
         continue;
       }
       if (drawn > 0) {
-        lines.push({ ...base, quantity: drawn, unit: "drawn on plan", method: "AI_PLAN_COUNT" });
-        steps.push(`${mark || word}: ${drawn} drawn on the plan`);
+        lines.push({ ...base, quantity: drawn, unit: unitWord ? `${unitWord} · drawn on plan` : "drawn on plan", method: "AI_PLAN_COUNT" });
+        steps.push(`${mark || word}: ${drawn} ${unitWord ? "assemblies" : ""} drawn on the plan`.replace(/\s+/g, " "));
         continue;
       }
       const gapText = `${word} ${mark} (${description}) is scheduled but its count was not read with certainty`;
@@ -276,7 +290,7 @@
       if (proposed > 0) {
         proposals.push({
           question: gapText,
-          proposed: `${proposed} × ${word} ${mark}`.trim(),
+          proposed: `${proposed} × ${unitWord ? `${unitWord} ` : ""}${word} ${mark}`.trim(),
           confidence: String(member.count_confidence || "low"),
           basis: String(member.count_note || "").trim() || "counted on the plan",
         });
