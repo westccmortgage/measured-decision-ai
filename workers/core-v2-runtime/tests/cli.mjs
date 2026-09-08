@@ -128,9 +128,20 @@ t.section("a simulation runs the whole chain through the three adapters, answere
   t.check("nothing was accepted on the strength of two readings matching",
     says(agree, /disagreements\s+1 — 1 needs_human/), (agree.out.match(/disagreements\s+.*/) ?? [])[0]);
 
-  const seeded = run(["--simulate", "--seed", "another-world"]);
-  t.check("a seed names a world: another seed is another run, not a fixed string",
-    seeded.status === 0 && seeded.out !== differ.out);
+  /* A seed names a world. What a simulation PRINTS is counts, and two worlds
+     can happen to have the same counts — the domains no longer differ,
+     because a provider's domain is now derived from its own id and survives a
+     restart. So the thing to compare is the plan, which names the assignments
+     the seed produced. */
+  const plannedHere = run(["--dry-run", "--seed", "one-world"]);
+  const plannedThere = run(["--dry-run", "--seed", "another-world"]);
+  const assignmentsOf = (outcome) => (outcome.out.match(/^ {2}[0-9a-f]{8} .*$/gm) ?? []).join("\n");
+  t.check("a seed names a world: another seed plans other assignments, not a fixed string",
+    plannedHere.status === 0 && plannedThere.status === 0
+    && assignmentsOf(plannedHere).length > 0 && assignmentsOf(plannedHere) !== assignmentsOf(plannedThere),
+    assignmentsOf(plannedHere).slice(0, 60));
+  t.check("and the same seed twice is the same plan — nothing about a run is drawn",
+    assignmentsOf(run(["--dry-run", "--seed", "one-world"])) === assignmentsOf(plannedHere));
 }
 
 /* ══════════════════════════════════════ 4 · the simulation against a record */

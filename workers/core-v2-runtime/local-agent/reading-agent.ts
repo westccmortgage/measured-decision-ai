@@ -1,0 +1,469 @@
+/* A STAND-IN THAT ANSWERS FROM THE REQUEST, AND FROM NOTHING ELSE.
+ *
+ * This is not a model and does not pretend to be one. It is the smallest
+ * thing that can take a request an adapter actually built — the words, and
+ * the material attached to them — and produce an envelope, WITHOUT looking
+ * anything up.
+ *
+ * That last part is the whole point. An earlier version of this package
+ * answered by finding a prepared result under the task id in the request.
+ * That proves a transport works and proves nothing about whether an agent
+ * can read evidence: the answer existed before the request did. This one is
+ * handed a question and some bytes and has to read them. Change a number in
+ * the table and the claim changes. Take the material away and it can only
+ * say it was given nothing.
+ *
+ * What it reads:
+ *   · the assignment, as the compiler wrote it — the identity to copy back,
+ *     the material it may read, the claims it was shown, the verdicts on
+ *     them, the contested subject;
+ *   · the material, as the adapter attached it — text as text, an image by
+ *     decoding the pixels this repository's fixture renderer wrote.
+ *
+ * What it never does: consult a truth object, a task id, a fixture map or
+ * anything else outside the request. There is no parameter for one.
+ *
+ * A real deployment replaces this file with a provider. Everything else —
+ * resolve, verify, attach, send, parse, validate, persist — is the same.
+ */
+import type { ClaimValue } from "../../core-v2/kernel/contracts.ts";
+import { readTextFromImage } from "../../core-v2/domains/synthetic-records/material.ts";
+import { parseMaterialHeading } from "../providers/provider.ts";
+
+/* ─────────────────────────────────────────── what arrives with a request */
+
+export type AgentPart =
+  | { kind: "text"; text: string }
+  | { kind: "image"; mimeType: string; bytes: Uint8Array };
+
+export type AgentQuestion = {
+  system: string;
+  parts: AgentPart[];
+};
+
+/* One piece of material, paired with the heading that says what it is. */
+type Attached = {
+  sourceId: string;
+  segmentId: string | null;
+  mediaKind: string;
+  mimeType: string;
+  contentHash: string;
+  byteLength: number;
+  text: string;
+};
+
+/* ──────────────────────────────────────────── reading the assignment back */
+
+type Anchor = { anchorId: string; sourceKind: string; sourceId: string | null; segmentId: string | null; locator: Record<string, unknown>; quotedText: string | null };
+type Claim = { ref: string; subjectType: string; subjectKey: string; predicate: string; value: ClaimValue; unit: string | null; status: string; anchors: Anchor[] };
+type Assessment = { claimRef: string; assessment: string; reasonCode: string; anchorIds: string[]; proposedValue: ClaimValue | null; proposedUnit: string | null };
+type Disagreement = { disagreementId: string; kind: string; severity: string; claimRefs: string[] };
+type SourceBlock = { sourceId: string; segmentId: string | null; parentSegmentId: string | null; segmentKind: string | null; label: string | null; ordinal: number; locator: Record<string, unknown>; contentHash: string };
+
+export type Assignment = {
+  packetVersion: string;
+  taskId: string;
+  roleKey: string;
+  roleVersion: string;
+  /* What this assignment is ABOUT, as the assignment says it. A decision is
+     titled by its subject, so reading it from anywhere else — the first
+     claim, say — would title a decision after whatever happened to be shown
+     first. */
+  subjectKey: string;
+  sources: SourceBlock[];
+  claims: Claim[];
+  assessments: Assessment[];
+  disagreements: Disagreement[];
+};
+
+const after = (line: string, label: string): string => line.slice(line.indexOf(label) + label.length).trim();
+const jsonOr = <T>(text: string, fallback: T): T => { try { return JSON.parse(text) as T; } catch { return fallback; } };
+
+export function parseAssignment(text: string): Assignment {
+  const lines = text.split("\n");
+  const first = (pattern: RegExp): string => {
+    for (const line of lines) { const m = line.match(pattern); if (m) return m[1]; }
+    return "";
+  };
+  const assignment: Assignment = {
+    packetVersion: first(/^packetVersion: (.+)$/),
+    taskId: first(/^taskId: (.+)$/),
+    roleKey: first(/^roleKey: (.+)$/),
+    roleVersion: first(/^roleVersion: (.+)$/),
+    subjectKey: first(/^subject: (.+)$/),
+    sources: [], claims: [], assessments: [], disagreements: [],
+  };
+
+  let source: SourceBlock | null = null;
+  let claim: Claim | null = null;
+  let assessment: Assessment | null = null;
+  const closeSource = () => { if (source) assignment.sources.push(source); source = null; };
+  const closeClaim = () => { if (claim) assignment.claims.push(claim); claim = null; };
+  const closeAssessment = () => { if (assessment) assignment.assessments.push(assessment); assessment = null; };
+
+  for (const line of lines) {
+    if (/^ {2}material \d+ — /.test(line)) {
+      closeSource(); closeClaim(); closeAssessment();
+      source = { sourceId: "", segmentId: null, parentSegmentId: null, segmentKind: null, label: null, ordinal: 0, locator: {}, contentHash: "" };
+      continue;
+    }
+    if (/^ {2}claim /.test(line)) {
+      closeSource(); closeClaim(); closeAssessment();
+      claim = { ref: line.trim().slice("claim ".length), subjectType: "", subjectKey: "", predicate: "", value: { known: false, quantity: null, text: null }, unit: null, status: "", anchors: [] };
+      continue;
+    }
+    if (/^ {2}assessment of claim /.test(line)) {
+      closeSource(); closeClaim(); closeAssessment();
+      const m = line.match(/^ {2}assessment of claim (\S+): (\S+) \((.+)\)$/);
+      if (m) assessment = { claimRef: m[1], assessment: m[2], reasonCode: m[3], anchorIds: [], proposedValue: null, proposedUnit: null };
+      continue;
+    }
+    if (/^ {2}contested subject /.test(line)) {
+      closeSource(); closeClaim(); closeAssessment();
+      const m = line.match(/^ {2}contested subject (\S+): (\S+), (\S+)$/);
+      if (m) assignment.disagreements.push({ disagreementId: m[1], kind: m[2], severity: m[3], claimRefs: [] });
+      continue;
+    }
+    if (/^ {4}over claims: /.test(line)) {
+      const last = assignment.disagreements[assignment.disagreements.length - 1];
+      if (last) last.claimRefs = after(line, "over claims:").split(",").map((x) => x.trim()).filter(Boolean);
+      continue;
+    }
+
+    if (source) {
+      if (line.startsWith("    sourceId: ")) source.sourceId = after(line, "sourceId:");
+      else if (line.startsWith("    segmentId: ")) { const v = after(line, "segmentId:"); source.segmentId = v.startsWith("none") ? null : v; }
+      else if (line.startsWith("    parentSegmentId: ")) source.parentSegmentId = after(line, "parentSegmentId:");
+      else if (line.startsWith("    segmentKind: ")) source.segmentKind = after(line, "segmentKind:");
+      else if (line.startsWith("    label: ")) { const v = after(line, "label:"); source.label = v === "none" ? null : v; }
+      else if (line.startsWith("    ordinal: ")) source.ordinal = Number(after(line, "ordinal:"));
+      else if (line.startsWith("    locator: ")) source.locator = jsonOr(after(line, "locator:"), {});
+      else if (line.startsWith("    contentHash: ")) source.contentHash = after(line, "contentHash:");
+      continue;
+    }
+    if (claim) {
+      if (line.startsWith("    subject: ")) {
+        const rest = after(line, "subject:").split(" ");
+        claim.subjectType = rest[0] ?? "";
+        claim.subjectKey = rest.slice(1).join(" ");
+      } else if (line.startsWith("    predicate: ")) claim.predicate = after(line, "predicate:");
+      else if (line.startsWith("    value: ")) claim.value = jsonOr(after(line, "value:"), claim.value);
+      else if (line.startsWith("    unit: ")) { const v = after(line, "unit:"); claim.unit = v === "none given" ? null : v; }
+      else if (line.startsWith("    status: ")) claim.status = after(line, "status:");
+      else if (line.startsWith("    anchor ")) {
+        const m = line.match(/^ {4}anchor (\S+): (\S+) sourceId=(\S+) segmentId=(\S+) locator=(\{.*?\})(?: quoted=(.*))?$/);
+        if (m) {
+          claim.anchors.push({
+            anchorId: m[1], sourceKind: m[2],
+            sourceId: m[3] === "none" ? null : m[3], segmentId: m[4] === "none" ? null : m[4],
+            locator: jsonOr(m[5], {}), quotedText: m[6] === undefined ? null : jsonOr<string | null>(m[6], null),
+          });
+        }
+      }
+      continue;
+    }
+    if (assessment) {
+      if (line.startsWith("    anchors: ")) assessment.anchorIds = after(line, "anchors:").split(",").map((x) => x.trim()).filter(Boolean);
+      else if (line.startsWith("    read instead: ")) {
+        const rest = after(line, "read instead:");
+        const split = rest.indexOf("} unit ");
+        if (split >= 0) {
+          assessment.proposedValue = jsonOr<ClaimValue | null>(rest.slice(0, split + 1), null);
+          assessment.proposedUnit = rest.slice(split + " unit ".length + 1).trim();
+        } else {
+          assessment.proposedValue = jsonOr<ClaimValue | null>(rest, null);
+        }
+      }
+      continue;
+    }
+  }
+  closeSource(); closeClaim(); closeAssessment();
+  return assignment;
+}
+
+/* ───────────────────────────────────────────── reading what was attached */
+
+export function attachedMaterial(parts: AgentPart[]): Attached[] {
+  const out: Attached[] = [];
+  for (let i = 0; i < parts.length; i++) {
+    const part = parts[i];
+    if (part.kind !== "text") continue;
+    const heading = parseMaterialHeading(part.text);
+    if (!heading) continue;
+    const content = parts[i + 1];
+    if (!content) continue;
+    i++;
+    const text = content.kind === "text" ? content.text : readTextFromImage(content.bytes);
+    out.push({ ...heading, text });
+  }
+  return out;
+}
+
+/* ─────────────────────────────────────────────── what the material says */
+
+type Row = { id: string; category: string; quantity: number; unit: string };
+
+function tableRows(text: string): Row[] {
+  const rows: Row[] = [];
+  for (const line of text.split("\n")) {
+    const m = line.match(/^(\S+)\s+(\S+)\s+(-?\d+(?:\.\d+)?)\s+(\S+)\s*$/);
+    if (!m || m[1] === "entry") continue;
+    rows.push({ id: m[1], category: m[2], quantity: Number(m[3]), unit: m[4] });
+  }
+  return rows;
+}
+
+function noteOf(text: string): { entryId: string; status: string } | null {
+  const m = text.match(/^note: (\S+) is (\S+)\s*$/m);
+  return m ? { entryId: m[1], status: m[2] } : null;
+}
+
+type SheetRegion = { kind: string; label: string; ordinal: number; bbox: number[]; contentHash: string };
+
+function sheetRegions(text: string): SheetRegion[] {
+  const out: SheetRegion[] = [];
+  for (const line of text.split("\n")) {
+    if (line.startsWith("#") || line.startsWith("kind")) continue;
+    const columns = line.split(/\s{2,}/).map((x) => x.trim()).filter(Boolean);
+    if (columns.length !== 5) continue;
+    out.push({ kind: columns[0], label: columns[1], ordinal: Number(columns[2]), bbox: columns[3].split(",").map(Number), contentHash: columns[4] });
+  }
+  return out;
+}
+
+/* A box for row i of n inside the region's own box: a reading points at the
+   line it was read from, not at the whole table. */
+function rowBox(outer: number[], i: number, n: number): number[] {
+  const [x0, y0, x1, y1] = outer as [number, number, number, number];
+  const h = (y1 - y0) / Math.max(1, n);
+  const top = y0 + i * h;
+  const round = (v: number) => Math.round(v * 1e6) / 1e6;
+  return [round(x0), round(top), round(x1), round(Math.min(y1, top + h))];
+}
+
+/* ────────────────────────────────────────────────────── the answer */
+
+type Envelope = Record<string, unknown>;
+
+function envelope(assignment: Assignment): Envelope {
+  return {
+    packetVersion: assignment.packetVersion,
+    taskId: assignment.taskId,
+    roleKey: assignment.roleKey,
+    roleVersion: assignment.roleVersion,
+    outcome: "completed",
+    claims: [], anchors: [], segments: [], assessments: [], disagreements: [], requestedActions: [],
+    limitations: [], rawResponseReference: null, adjudication: null, decisions: [], calculations: [],
+  };
+}
+
+function nothingToRead(assignment: Assignment, why: string): Envelope {
+  const env = envelope(assignment);
+  env.outcome = "insufficient_evidence";
+  env.limitations = [why];
+  return env;
+}
+
+const same = (a: string | null | undefined, b: string | null | undefined) => (a ?? "").trim().toLowerCase() === (b ?? "").trim().toLowerCase();
+
+export function answerFromRequest(question: AgentQuestion): Envelope {
+  const prompt = question.parts.find((p) => p.kind === "text" && p.text.includes("taskId: "));
+  if (!prompt || prompt.kind !== "text") throw new Error("core-v2-runtime: the request carries no assignment");
+  const assignment = parseAssignment(prompt.text);
+  const material = attachedMaterial(question.parts);
+  const forSegment = (segmentId: string | null) => material.find((m) => m.segmentId === segmentId) ?? null;
+
+  switch (assignment.roleKey) {
+    case "region_discoverer": {
+      const sheet = assignment.sources[0];
+      const shown = sheet ? forSegment(sheet.segmentId) : null;
+      if (!sheet || !shown) return nothingToRead(assignment, "no sheet was attached to this assignment");
+      const env = envelope(assignment);
+      env.segments = sheetRegions(shown.text).map((r) => ({
+        segmentKey: `${r.kind}-${r.ordinal}`, sourceId: sheet.sourceId, parentSegmentId: sheet.segmentId,
+        segmentKind: r.kind, label: r.label, ordinal: r.ordinal, locator: { bbox: r.bbox }, contentHash: r.contentHash,
+      }));
+      if ((env.segments as unknown[]).length === 0) env.limitations = ["the sheet lists no regions"];
+      return env;
+    }
+
+    case "table_reader": {
+      const ref = assignment.sources[0];
+      const shown = ref ? forSegment(ref.segmentId) : null;
+      if (!ref || !shown) return nothingToRead(assignment, "no table was attached to this assignment");
+      const rows = tableRows(shown.text);
+      if (rows.length === 0) return nothingToRead(assignment, "the material attached is not a table this reader can read");
+      const box = (ref.locator.bbox as number[] | undefined) ?? [0, 0, 1, 1];
+      const env = envelope(assignment);
+      const anchors: unknown[] = [];
+      const claims: unknown[] = [];
+      rows.forEach((row, i) => {
+        const key = `row-${i}`;
+        anchors.push({
+          anchorKey: key, sourceKind: "segment_locator", sourceId: ref.sourceId, segmentId: ref.segmentId,
+          locator: { bbox: rowBox(box, i, rows.length) }, quotedText: `${row.id} ${row.category} ${row.quantity} ${row.unit}`,
+        });
+        claims.push({
+          claimKey: key, subjectType: "entry", subjectKey: `entry/${row.id}`, predicate: "quantity",
+          value: { known: true, quantity: row.quantity, text: `${row.quantity} ${row.unit}`, attributes: { category: row.category } },
+          unit: row.unit, observationBasis: "observed", scope: { segment: ref.label ?? "" }, anchorKeys: [key], machineConfidence: 0.9,
+        });
+      });
+      env.anchors = anchors;
+      env.claims = claims;
+      return env;
+    }
+
+    case "note_reader": {
+      const ref = assignment.sources[0];
+      const shown = ref ? forSegment(ref.segmentId) : null;
+      if (!ref || !shown) return nothingToRead(assignment, "no note was attached to this assignment");
+      const note = noteOf(shown.text);
+      if (!note) return nothingToRead(assignment, "the material attached does not read as a note");
+      const box = (ref.locator.bbox as number[] | undefined) ?? [0, 0, 1, 1];
+      const env = envelope(assignment);
+      env.anchors = [{
+        anchorKey: "note", sourceKind: "segment_locator", sourceId: ref.sourceId, segmentId: ref.segmentId,
+        locator: { bbox: rowBox(box, 0, 1) }, quotedText: `${note.entryId}: ${note.status}`,
+      }];
+      env.claims = [{
+        claimKey: "note", subjectType: "entry", subjectKey: `entry/${note.entryId}`, predicate: "revision_status",
+        value: { known: true, quantity: null, text: note.status }, unit: null, observationBasis: "observed",
+        scope: { segment: ref.label ?? "" }, anchorKeys: ["note"], machineConfidence: 0.85,
+      }];
+      return env;
+    }
+
+    case "evidence_critic":
+    case "disagreement_verifier": {
+      const env = envelope(assignment);
+      const anchors: unknown[] = [];
+      const assessments: unknown[] = [];
+      for (const claim of assignment.claims) {
+        const at = claim.anchors[0];
+        const key = `at-${claim.ref}`;
+        if (!at) {
+          assessments.push({ claimRef: claim.ref, assessment: "unreadable", reasonCode: "no_anchor", explanation: "the claim points nowhere; there is nothing to reopen", anchorKeys: [] });
+          continue;
+        }
+        const shown = forSegment(at.segmentId);
+        if (!shown) {
+          assessments.push({ claimRef: claim.ref, assessment: "unreadable", reasonCode: "place_unreadable", explanation: "the place the claim names was not attached to this assignment", anchorKeys: [] });
+          continue;
+        }
+        anchors.push({ anchorKey: key, sourceKind: at.sourceKind, sourceId: at.sourceId, segmentId: at.segmentId, locator: at.locator, quotedText: at.quotedText });
+        const entryId = claim.subjectKey.replace(/^entry\//, "");
+        const verdict = readVerdict(claim, entryId, shown.text);
+        assessments.push({ claimRef: claim.ref, ...verdict, anchorKeys: [key] });
+      }
+      env.anchors = anchors;
+      env.assessments = assessments;
+      if (assignment.claims.length === 0) env.limitations = ["nothing to assess"];
+      return env;
+    }
+
+    case "evidence_arbiter": {
+      const env = envelope(assignment);
+      env.adjudication = adjudicate(assignment);
+      return env;
+    }
+
+    case "decision_composer": {
+      const env = envelope(assignment);
+      env.decisions = [compose(assignment)];
+      return env;
+    }
+
+    default:
+      return nothingToRead(assignment, `this stand-in has no behaviour for ${assignment.roleKey}`);
+  }
+}
+
+/* What the reopened material says about one claim. */
+function readVerdict(claim: Claim, entryId: string, text: string): { assessment: string; reasonCode: string; explanation: string; proposedValue?: ClaimValue | null; proposedUnit?: string | null } {
+  if (claim.predicate === "quantity") {
+    const row = tableRows(text).find((r) => r.id === entryId);
+    if (!row) return { assessment: "contradicts", reasonCode: "not_in_source", explanation: "the material holds nothing for this subject at this place", proposedValue: null, proposedUnit: null };
+    const value: ClaimValue = { known: true, quantity: row.quantity, text: `${row.quantity} ${row.unit}`, attributes: { category: row.category } };
+    if (claim.value.quantity === row.quantity && same(claim.unit, row.unit)) {
+      return { assessment: "supports", reasonCode: "matches_source", explanation: "the material shows this value at this place" };
+    }
+    if (claim.value.quantity === row.quantity) {
+      return { assessment: "wrong_unit", reasonCode: "unit_differs", explanation: `the material gives ${row.unit}`, proposedValue: value, proposedUnit: row.unit };
+    }
+    return { assessment: "contradicts", reasonCode: "value_differs", explanation: `the material shows ${row.quantity} ${row.unit}`, proposedValue: value, proposedUnit: row.unit };
+  }
+  if (claim.predicate === "revision_status") {
+    const note = noteOf(text);
+    if (!note || note.entryId !== entryId) return { assessment: "contradicts", reasonCode: "not_in_source", explanation: "the material holds nothing for this subject at this place", proposedValue: null, proposedUnit: null };
+    if (same(claim.value.text, note.status)) return { assessment: "supports", reasonCode: "matches_source", explanation: "the material shows this value at this place" };
+    return { assessment: "contradicts", reasonCode: "value_differs", explanation: `the material shows ${note.status}`, proposedValue: { known: true, quantity: null, text: note.status }, proposedUnit: null };
+  }
+  return { assessment: "insufficient", reasonCode: "not_readable_here", explanation: "this stand-in cannot judge that predicate from the material it was given" };
+}
+
+const NEGATIVE = new Set(["contradicts", "wrong_scope", "wrong_unit", "duplicate", "insufficient", "unreadable"]);
+const REJECTING = new Set(["contradicts", "wrong_scope", "wrong_unit", "duplicate"]);
+
+/* One outcome, from the verdicts and nothing else. It never counts readers,
+   because it is never told how many there were. */
+function adjudicate(assignment: Assignment): Record<string, unknown> {
+  const dispute = assignment.disagreements[0];
+  const refs = dispute?.claimRefs.length ? dispute.claimRefs : assignment.claims.map((c) => c.ref);
+  const of = (ref: string) => assignment.assessments.filter((a) => a.claimRef === ref);
+  const anchorsOf = (ref: string) => assignment.claims.find((c) => c.ref === ref)?.anchors.map((a) => a.anchorId) ?? [];
+  const base = {
+    disagreementId: dispute?.disagreementId ?? "", acceptedClaimRef: null as string | null,
+    correctedValue: null as ClaimValue | null, correctedUnit: null as string | null,
+    evidenceAnchorIds: [] as string[], followUp: null as unknown,
+  };
+
+  const supported = refs.filter((r) => of(r).some((a) => a.assessment === "supports") && !of(r).some((a) => NEGATIVE.has(a.assessment)));
+  if (supported.length === 1) {
+    const ref = supported[0];
+    const supporting = of(ref).filter((a) => a.assessment === "supports").flatMap((a) => a.anchorIds);
+    return { ...base, outcome: "accept_claim", acceptedClaimRef: ref, evidenceAnchorIds: [...new Set([...anchorsOf(ref), ...supporting])], rationale: "the reopened source supports one reading at its own anchor; the others were read against" };
+  }
+  if (supported.length > 1) {
+    return { ...base, outcome: "needs_human", rationale: "the source was read as supporting more than one competing reading; a person decides" };
+  }
+  const proposals = assignment.assessments.filter((a) => refs.includes(a.claimRef) && a.proposedValue && a.proposedValue.known);
+  const distinct = [...new Set(proposals.map((a) => JSON.stringify({ v: a.proposedValue, u: a.proposedUnit ?? null })))];
+  if (proposals.length > 0 && distinct.length === 1) {
+    const p = proposals[0];
+    return { ...base, outcome: "correct", correctedValue: p.proposedValue, correctedUnit: p.proposedUnit ?? null, evidenceAnchorIds: [...new Set(proposals.flatMap((a) => a.anchorIds))], rationale: "the reopened source shows a value none of the readings reported; the correction is what was read there" };
+  }
+  const allRejected = refs.length > 0 && refs.every((r) => of(r).some((a) => REJECTING.has(a.assessment)));
+  if (allRejected) {
+    return { ...base, outcome: "reject_all", evidenceAnchorIds: [...new Set(refs.flatMap((r) => of(r).filter((a) => REJECTING.has(a.assessment)).flatMap((a) => a.anchorIds)))], rationale: "the reopened source was read against every reading and shows no value to correct to" };
+  }
+  return { ...base, outcome: "needs_human", rationale: "the verdicts settle nothing; a person decides" };
+}
+
+/* What is known, from the accepted claims it was shown and nothing else. */
+function compose(assignment: Assignment): Record<string, unknown> {
+  const accepted = assignment.claims.filter((c) => c.status === "accepted");
+  const disputes = assignment.disagreements.length;
+  const subject = assignment.subjectKey || assignment.claims[0]?.subjectKey || "this subject";
+  if (accepted.length === 0) {
+    return {
+      decisionType: "hold", title: `${subject}: not yet evidenced`,
+      summary: {
+        known: "nothing about this subject is accepted evidence",
+        conflicts: disputes ? `${disputes} disagreement(s) await a person` : "none recorded",
+        canProceed: "nothing", mustWait: "everything about this subject", supportingEvidence: "none accepted",
+      },
+      supportingClaimIds: [], contradictingClaimIds: [], riskLevel: "high", actions: [{ actionType: "review", ownerRole: "reviewer" }],
+    };
+  }
+  const lines = accepted.map((c) => `${c.subjectKey} ${c.predicate} = ${c.value.text ?? c.value.quantity}${c.unit ? ` ${c.unit}` : ""}`);
+  return {
+    decisionType: "proceed", title: `${subject}: evidenced`,
+    summary: {
+      known: lines.join("; "), conflicts: disputes ? `${disputes} disagreement(s) on record` : "none",
+      canProceed: subject, mustWait: disputes ? "what the disagreements cover" : "nothing",
+      supportingEvidence: `${accepted.length} accepted claim(s), each anchored in its source`,
+    },
+    supportingClaimIds: accepted.map((c) => c.ref), contradictingClaimIds: [], riskLevel: "normal", actions: [{ actionType: "proceed", ownerRole: "reviewer" }],
+  };
+}

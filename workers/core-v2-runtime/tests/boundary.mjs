@@ -175,6 +175,42 @@ t.section("the door out is shut unless somebody opens it");
     refused !== null && !/authorization|api[_-]?key/i.test(String(refused.message)));
 }
 
+t.section("the door that CAN be opened is opened in one place, by one factory");
+{
+  /* There is now a transport that can reach a provider. Two rules keep it
+     from being an accident: it refuses to be built unless every gate is
+     open, and nothing in this package builds one. A runtime gets the sealed
+     transport unless somebody, somewhere else, deliberately makes the other
+     kind and passes it in. */
+  const builders = [...text].filter(([p]) => p.startsWith("workers/core-v2-runtime/") && p !== SELF)
+    /* Code only. The README is allowed — indeed required — to say the factory
+       exists and what it refuses; what may not happen is a file of this
+       package calling it. */
+    .filter(([p]) => !p.endsWith(".md"))
+    .filter(([p]) => !p.startsWith("workers/core-v2-runtime/transport/") && !p.startsWith("workers/core-v2-runtime/tests/"))
+    .filter(([, body]) => /createHttpsTransport|new HttpsTransport/.test(body))
+    .map(([p]) => p);
+  t.check("no file of this package builds the transport that can reach a provider — not the dispatcher, not the command line",
+    builders.length === 0, list(builders));
+
+  const { createHttpsTransport } = await import("../transport/https.ts");
+  const { NetworkNotAuthorized } = await import("../transport/transport.ts");
+  const { NO_PAID_CALLS } = await import("../runtime-config.ts");
+  const configuration = {
+    providerId: "somebody", baseUrl: "https://nowhere.invalid", apiKeyEnvironmentVariable: "CORE_V2_BOUNDARY_KEY",
+    models: ["m"], defaultModel: "m", maximumOutputTokens: 1, maximumInputTokens: 1, requestTimeoutMs: 1,
+    maximumMaterialBytes: 1, maximumMaterialBytesPerItem: 1, supportedMediaTypes: ["text/plain"],
+    capabilities: { m: { forcedToolChoice: true, strictSchema: true, images: false, thinking: "optional" } },
+  };
+  let refused = null;
+  try {
+    createHttpsTransport({ config: { providers: [configuration], pricing: [], authorization: NO_PAID_CALLS, dispatcherName: "boundary" } });
+  } catch (error) { refused = error; }
+  t.check("and it refuses to be built at all by a process that is not authorised",
+    refused instanceof NetworkNotAuthorized && refused.refusals.length >= 4,
+    refused ? `${refused.refusals?.length} reasons` : "one was built");
+}
+
 t.section("no paid call is authorised by default");
 {
   const { NO_PAID_CALLS, paidCallRefusals } = await import("../runtime-config.ts");

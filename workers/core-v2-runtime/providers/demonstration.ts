@@ -31,14 +31,27 @@ const ALPHA = "alpha-reader-1";
 const BETA = "beta-reader-1";
 const GAMMA = "gamma-reader-1";
 
-const CEILINGS = { maximumOutputTokens: 4096, maximumInputTokens: 60_000, requestTimeoutMs: 30_000 };
+const CEILINGS = {
+  maximumOutputTokens: 4096,
+  maximumInputTokens: 60_000,
+  requestTimeoutMs: 30_000,
+  /* Bounded on purpose and small: a demonstration reads a segment, never a
+     book. Anything larger refuses before submission. */
+  maximumMaterialBytes: 512 * 1024,
+  maximumMaterialBytesPerItem: 256 * 1024,
+  supportedMediaTypes: ["text/plain; charset=utf-8", "text/plain", "image/png"],
+};
+
+/* What each invented model can be asked to do. An operator writes this; this
+   package infers nothing from a model's name. */
+const CAN_DO_EVERYTHING = { forcedToolChoice: true, strictSchema: true, images: true, thinking: "optional" as const };
 const RATES = { effectiveFrom: "2026-01-01", currency: "USD", inputPerMillionTokens: 3, outputPerMillionTokens: 15 };
 
 export const DEMONSTRATION_CONFIG: RuntimeConfig = {
   providers: [
-    { providerId: ANTHROPIC_PROVIDER_ID, baseUrl: "https://alpha.invalid", apiKeyEnvironmentVariable: "CORE_V2_DEMONSTRATION_KEY_ALPHA", models: [ALPHA], defaultModel: ALPHA, ...CEILINGS },
-    { providerId: OPENAI_PROVIDER_ID, baseUrl: "https://beta.invalid", apiKeyEnvironmentVariable: "CORE_V2_DEMONSTRATION_KEY_BETA", models: [BETA], defaultModel: BETA, ...CEILINGS },
-    { providerId: GOOGLE_PROVIDER_ID, baseUrl: "https://gamma.invalid", apiKeyEnvironmentVariable: "CORE_V2_DEMONSTRATION_KEY_GAMMA", models: [GAMMA], defaultModel: GAMMA, ...CEILINGS },
+    { providerId: ANTHROPIC_PROVIDER_ID, baseUrl: "https://alpha.invalid", apiKeyEnvironmentVariable: "CORE_V2_DEMONSTRATION_KEY_ALPHA", models: [ALPHA], defaultModel: ALPHA, ...CEILINGS, capabilities: { [ALPHA]: CAN_DO_EVERYTHING } },
+    { providerId: OPENAI_PROVIDER_ID, baseUrl: "https://beta.invalid", apiKeyEnvironmentVariable: "CORE_V2_DEMONSTRATION_KEY_BETA", models: [BETA], defaultModel: BETA, ...CEILINGS, capabilities: { [BETA]: CAN_DO_EVERYTHING } },
+    { providerId: GOOGLE_PROVIDER_ID, baseUrl: "https://gamma.invalid", apiKeyEnvironmentVariable: "CORE_V2_DEMONSTRATION_KEY_GAMMA", models: [GAMMA], defaultModel: GAMMA, ...CEILINGS, capabilities: { [GAMMA]: CAN_DO_EVERYTHING } },
   ],
   pricing: [
     { providerId: ANTHROPIC_PROVIDER_ID, model: ALPHA, ...RATES },

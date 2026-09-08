@@ -30,6 +30,8 @@ import type { ProviderConfiguration, RuntimeConfig } from "../runtime-config.ts"
 import { configurationProblems, paidCallRefusals } from "../runtime-config.ts";
 import type { HttpRequest, HttpResponse, HttpTransport } from "../transport/transport.ts";
 import { NetworkNotAuthorized, failedBeforeSubmission } from "../transport/transport.ts";
+import type { MaterialLimits, MaterialResolver, ResolvedMaterial } from "../material/material.ts";
+import { verifyResolvedMaterial } from "../material/material.ts";
 
 /* ─────────────────────────────────────────────── what somebody else writes */
 
@@ -138,6 +140,11 @@ export type ProviderRequestPlan = {
   model: string;
   maximumOutputTokens: number;
   prompt: CompiledPrompt;
+  /* The bytes this assignment authorises, already resolved and already
+     checked: the hash recomputed, the locator the packet's own, nothing
+     extra and nothing missing. A protocol puts these on the wire in its own
+     multimodal shape; it does not decide what they are. */
+  material: ResolvedMaterial[];
   /* The role's own words for what it must return, carried through so the
      provider's instruction says the same thing the kernel will check. */
   expectedOutputContract: string;
@@ -155,9 +162,12 @@ export type ParsedAnswer = {
   text: string | null;
   requestId: string | null;
   modelReported: string | null;
-  /* Normalised to the four names the pricing table settles against, and only
-     for counts the provider actually supplied. */
-  usage: Record<string, unknown>;
+  /* THE PROVIDER'S OWN USAGE OBJECT, VERBATIM. Not normalised, not renamed,
+     not filled in: what arrives is what is written down, and what it means
+     is decided later, per provider, by budget/usage.ts. A runtime that
+     normalised here would have thrown away the only record of what was
+     actually said. Empty when the provider reported nothing. */
+  rawUsage: Record<string, unknown>;
   stopReason: string | null;
   /* The provider's own words when it declined. Null when it did not. */
   refusal: string | null;
@@ -169,6 +179,12 @@ export interface ProviderProtocol {
   readonly providerId: string;
   buildRequest(plan: ProviderRequestPlan): HttpRequest;
   parse(response: HttpResponse): ParsedAnswer;
+  /* What this provider cannot be asked for in this configuration — a model
+     that cannot combine the output mode, the tool choice and the thinking
+     mode the request would use, a media type it will not take. Returned as
+     sentences, refused before submission. Silence means nothing is wrong,
+     never that nothing was checked. */
+  configurationProblems?(configuration: ProviderConfiguration, model: string, material: ResolvedMaterial[]): string[];
 }
 
 /* ───────────────────────────────────────────────────────── retrying */
@@ -194,6 +210,7 @@ export const BOUNDED_RETRY: RetryPolicy = { maximumAttempts: 2, backoffMs: 0 };
    that reading a code back is exact rather than a guess about prose. */
 export const FAILURE_CODES = new Set<string>([
   "provider_misconfigured", "paid_call_not_authorized", "provider_key_absent", "cancelled_before_submission",
+  "material_not_resolved", "material_refused",
   "prompt_not_compiled", "request_not_built", "network_not_authorized", "provider_unauthorized",
   "provider_rate_limited", "provider_rejected_request", "response_not_understood", "provider_refused",
   "output_ceiling_reached", "empty_answer", "answer_not_json", "answer_not_an_envelope", "answer_without_outcome",
@@ -245,6 +262,10 @@ export type ProviderExecutorOptions = {
   transport: HttpTransport;
   protocol: ProviderProtocol;
   compilePrompt: PromptCompiler;
+  /* Where the bytes come from. Required: an executor that cannot resolve
+     material cannot show a model anything, and one that quietly sent
+     identities instead would look like it was working. */
+  materialResolver: MaterialResolver;
   /* The families this one instance serves. One instance is one independence
      domain, so every family listed here is the same opinion — which is the
      point, and why the registry builds exactly one instance per provider. */
@@ -269,6 +290,7 @@ export class ProviderExecutor implements AgentExecutor {
   private transport: HttpTransport;
   private protocol: ProviderProtocol;
   private compilePrompt: PromptCompiler;
+  private materialResolver: MaterialResolver;
   private clock: Clock;
   private retry: RetryPolicy;
   private environment: Record<string, string | undefined>;
@@ -279,6 +301,7 @@ export class ProviderExecutor implements AgentExecutor {
     this.transport = options.transport;
     this.protocol = options.protocol;
     this.compilePrompt = options.compilePrompt;
+    this.materialResolver = options.materialResolver;
     this.clock = options.clock ?? systemClock;
     this.retry = options.retry ?? BOUNDED_RETRY;
     this.environment = options.environment ?? process.env;
@@ -310,21 +333,39 @@ export class ProviderExecutor implements AgentExecutor {
     const refusals = paidCallRefusals(this.runtime, this.providerId, this.model);
     if (refusals.length) return refuse("paid_call_not_authorized", refusals);
 
-    /* 3. Only now is the key looked up, and only to put it in one header. It
-          is not stored on this object, not measured, not checked against
-          anything, and not written anywhere but the request. */
-    const apiKey = this.environment[this.configuration.apiKeyEnvironmentVariable];
-    if (typeof apiKey !== "string" || apiKey.length === 0) {
-      return refuse("provider_key_absent", [`the environment variable configuration names for ${this.providerId} holds nothing`]);
-    }
-
-    /* 4. A deadline that passed before anything was sent is a known failure,
+    /* 3. A deadline that passed before anything was sent is a known failure,
           not an unknown one: nothing left this process. */
     if (context.signal.aborted) {
       return refuse("cancelled_before_submission", ["the deadline for this attempt passed before anything was sent"]);
     }
 
-    /* 5. The words, from somebody else's compiler. */
+    /* 4. The bytes. The packet says what may be read; the resolver turns
+          that into material; and what comes back is checked against what was
+          asked for before anything else happens. A resolver that adds a
+          source, returns the wrong one, hands back something that does not
+          hash to what the assignment names, or is silent about a segment the
+          assignment requires, stops the attempt here. */
+    let material: ResolvedMaterial[] = [];
+    if (packet.sources.length > 0) {
+      let resolved: ResolvedMaterial[];
+      try {
+        resolved = await this.materialResolver.resolve(packet.sources);
+      } catch (error) {
+        return refuse("material_not_resolved", [`the material this assignment authorises could not be fetched: ${messageOf(error)}`]);
+      }
+      const verdict = verifyResolvedMaterial(packet.sources, resolved, this.materialLimits(packet.limits.maximumSources));
+      if (!verdict.ok) return refuse("material_refused", verdict.problems);
+      material = verdict.material;
+    }
+
+    /* 5. What this provider cannot be asked for in this configuration. Asked
+          after the material exists, because some of it is about the material. */
+    if (this.protocol.configurationProblems) {
+      const cannot = this.protocol.configurationProblems(this.configuration, this.model, material);
+      if (cannot.length) return refuse("provider_misconfigured", cannot);
+    }
+
+    /* 6. The words, from somebody else's compiler. */
     let prompt: CompiledPrompt;
     try {
       prompt = this.compilePrompt(packet);
@@ -335,7 +376,20 @@ export class ProviderExecutor implements AgentExecutor {
       return refuse("prompt_not_compiled", ["the compiler returned no question to ask"]);
     }
 
-    /* 6. The one provider-specific thing that happens before the wire. */
+    /* 7. THE LAST THING BEFORE THE REQUEST IS BUILT is the key. Every check
+          that can be made without a secret has been made by now — the
+          configuration, the four gates, the deadline, the material, the
+          provider's own capabilities, the words. A run that is going to
+          refuse has already refused, and a key is read only for a request
+          that is otherwise ready to send. It is not stored on this object,
+          not measured, not checked against anything, and not written
+          anywhere but the one header. */
+    const apiKey = this.environment[this.configuration.apiKeyEnvironmentVariable];
+    if (typeof apiKey !== "string" || apiKey.length === 0) {
+      return refuse("provider_key_absent", [`the environment variable configuration names for ${this.providerId} holds nothing`]);
+    }
+
+    /* 8. The one provider-specific thing that happens before the wire. */
     let request: HttpRequest;
     try {
       request = this.protocol.buildRequest({
@@ -343,6 +397,7 @@ export class ProviderExecutor implements AgentExecutor {
         model: this.model,
         maximumOutputTokens: this.configuration.maximumOutputTokens,
         prompt,
+        material,
         expectedOutputContract: packet.expectedOutputContract,
         apiKey,
         timeoutMs: this.configuration.requestTimeoutMs,
@@ -352,7 +407,7 @@ export class ProviderExecutor implements AgentExecutor {
       return refuse("request_not_built", [`the request could not be built: ${messageOf(error)}`]);
     }
 
-    /* 7. The wire. Every send is the same request: nothing accumulates
+    /* 9. The wire. Every send is the same request: nothing accumulates
           between one send and the next, and nothing accumulates between one
           attempt and the next, because this object keeps nothing. */
     let response: HttpResponse | null = null;
@@ -397,7 +452,7 @@ export class ProviderExecutor implements AgentExecutor {
       context.report({ requestId, durationMs, stopReason, response: raw });
     };
 
-    /* 8. What the status alone already settles. */
+    /* 10. What the status alone already settles. */
     if (response.status === 401 || response.status === 403) {
       reportHttp(`http_${response.status}`);
       return answerless(packet, "failed_known", "provider_unauthorized", [
@@ -428,7 +483,7 @@ export class ProviderExecutor implements AgentExecutor {
       ], requestId);
     }
 
-    /* 9. The provider-specific reading of a good status. */
+    /* 11. The provider-specific reading of a good status. */
     let parsed: ParsedAnswer;
     try {
       parsed = this.protocol.parse(response);
@@ -444,7 +499,7 @@ export class ProviderExecutor implements AgentExecutor {
     const facts: ProviderFacts = {
       requestId: parsed.requestId ?? requestId,
       modelReported: parsed.modelReported,
-      usage: parsed.usage,
+      usage: parsed.rawUsage,
       durationMs,
       stopReason: parsed.stopReason,
       response: raw,
@@ -452,7 +507,7 @@ export class ProviderExecutor implements AgentExecutor {
     context.report(facts);
     const reference = parsed.requestId ?? requestId;
 
-    /* 10. A refusal is preserved and invents nothing. */
+    /* 12. A refusal is preserved and invents nothing. */
     if (parsed.refusal !== null) {
       return answerless(packet, "failed_known", "provider_refused", [
         "the provider declined to answer, and what it declined with is kept as it said it",
@@ -460,7 +515,7 @@ export class ProviderExecutor implements AgentExecutor {
       ], reference);
     }
 
-    /* 11. A ceiling keeps the part that was written and the counts it cost. */
+    /* 13. A ceiling keeps the part that was written and the counts it cost. */
     if (parsed.incomplete) {
       const partial = typeof parsed.text === "string" ? parsed.text : "";
       return answerless(packet, "failed_known", "output_ceiling_reached", [
@@ -477,7 +532,7 @@ export class ProviderExecutor implements AgentExecutor {
       ], reference);
     }
 
-    /* 12. The strict shape that was asked for, read back. */
+    /* 14. The strict shape that was asked for, read back. */
     let body: unknown;
     try {
       body = JSON.parse(parsed.text);
@@ -524,6 +579,18 @@ export class ProviderExecutor implements AgentExecutor {
     };
   }
 
+  /* What this provider and this assignment will carry between them. The
+     packet's own ceiling on how many pieces of material there may be, and the
+     configuration's ceilings on size and type. */
+  private materialLimits(maximumSources: number): MaterialLimits {
+    return {
+      maximumItems: maximumSources,
+      maximumBytesPerItem: this.configuration.maximumMaterialBytesPerItem,
+      maximumBytesTotal: this.configuration.maximumMaterialBytes,
+      allowedMimeTypes: this.configuration.supportedMediaTypes,
+    };
+  }
+
   /* An adapter cannot say what became of a request it never saw the end of.
      Saying "unknown" is the honest answer and the only one it has; the
      kernel keeps such an attempt unknown rather than repeating it. */
@@ -565,16 +632,40 @@ export function headerRequestId(response: HttpResponse): string | null {
 /* Counts, under the four names the pricing table settles against, and only
    the ones that were actually supplied. A count nobody reported is absent,
    never zero: zero is a measurement. */
-export function countedUsage(counts: { input?: unknown; output?: unknown; cached?: unknown; reasoning?: unknown }): Record<string, unknown> {
-  const usage: Record<string, unknown> = {};
-  const put = (key: string, value: unknown) => {
-    if (typeof value === "number" && Number.isFinite(value)) usage[key] = value;
+/* The provider's usage object, kept exactly as it arrived. Not renamed, not
+   summed, not filled in: an object that is not an object is an empty one,
+   and that is the only judgement made here. What the numbers MEAN is a
+   provider-specific question, and it is answered in budget/usage.ts, where
+   it can be argued with. */
+export function rawUsageOf(value: unknown): Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value) ? { ...(value as Record<string, unknown>) } : {};
+}
+
+/* The line that goes before a piece of material in a request: what it is,
+   where it came from, and the hash of it. Identities only — the address it
+   was stored under is not in the ResolvedMaterial at all, so it cannot be
+   here either. The reader needs this to anchor a claim to a segment id, and
+   the segment id is exactly what it is allowed to know. */
+export function materialHeading(item: ResolvedMaterial): string {
+  const where = item.segmentId ? `segmentId ${item.segmentId} of sourceId ${item.sourceId}` : `sourceId ${item.sourceId}`;
+  const range = item.timeRange ? `, seconds ${item.timeRange.startSeconds}\u2013${item.timeRange.endSeconds}` : "";
+  return `--- material for ${where} (${item.mediaKind}, ${item.mimeType}, ${item.byteLength} bytes, sha-256 ${item.contentHash}${range}) ---`;
+}
+
+/* The same line, read back. Whatever is downstream of a request — a test, a
+   stand-in — pairs a heading with the thing that follows it, and does so
+   from the one place the format is written down. */
+export function parseMaterialHeading(text: string): { sourceId: string; segmentId: string | null; mediaKind: string; mimeType: string; byteLength: number; contentHash: string } | null {
+  const m = text.match(/^--- material for (?:segmentId (\S+) of sourceId (\S+)|sourceId (\S+)) \(([a-z_]+), ([^,]+), (\d+) bytes, sha-256 ([0-9a-f]{64})(?:, seconds [^)]*)?\) ---$/);
+  if (!m) return null;
+  return {
+    segmentId: m[1] ?? null,
+    sourceId: m[2] ?? m[3],
+    mediaKind: m[4],
+    mimeType: m[5],
+    byteLength: Number(m[6]),
+    contentHash: m[7],
   };
-  put("input_tokens", counts.input);
-  put("output_tokens", counts.output);
-  put("cached_input_tokens", counts.cached);
-  put("reasoning_tokens", counts.reasoning);
-  return usage;
 }
 
 export function jsonBody(value: unknown): string {

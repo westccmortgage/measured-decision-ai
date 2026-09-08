@@ -19,6 +19,7 @@
  */
 import type { AgentExecutor } from "../../core-v2/kernel/executors.ts";
 import { ExecutorRegistry } from "../../core-v2/kernel/executors.ts";
+import type { MaterialResolver } from "../material/material.ts";
 import type { ProviderConfiguration, RuntimeConfig } from "../runtime-config.ts";
 import type { HttpTransport } from "../transport/transport.ts";
 import { AnthropicProtocol, ANTHROPIC_PROVIDER_ID } from "./anthropic.ts";
@@ -82,6 +83,10 @@ export type ProviderRegistryOptions = {
   config: RuntimeConfig;
   transport: HttpTransport;
   compilePrompt: PromptCompiler;
+  /* Where the bytes an assignment authorises come from. One resolver serves
+     every adapter: what may be read is the packet's decision, not the
+     provider's, so there is nothing per-provider about it. */
+  materialResolver: MaterialResolver;
   /* Defaults to one family per configured provider, in configuration order. */
   routing?: Record<string, string>;
   /* Which model to ask each provider for, when not its configured default. */
@@ -108,7 +113,7 @@ export type ProviderRegistry = {
 };
 
 export function buildProviderRegistry(options: ProviderRegistryOptions): ProviderRegistry {
-  const { config, transport, compilePrompt } = options;
+  const { config, transport, compilePrompt, materialResolver } = options;
   const routing = options.routing ?? routeFamiliesToProviders(config, READER_FAMILIES.slice(0, config.providers.length));
   const byFamily = familiesByProvider(routing);
   const registry = options.registry ?? new ExecutorRegistry();
@@ -142,6 +147,7 @@ export function buildProviderRegistry(options: ProviderRegistryOptions): Provide
       transport,
       protocol,
       compilePrompt,
+      materialResolver,
       families,
       model: options.models?.[configuration.providerId],
       clock: options.clock,

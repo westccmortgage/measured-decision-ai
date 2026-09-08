@@ -17,6 +17,13 @@ export function sha256(text: string): string {
   return createHash("sha256").update(text, "utf8").digest("hex");
 }
 
+/* The same hash over exact bytes. What a piece of material is identified by:
+   a reader that is handed bytes can recompute this and say whether it was
+   given the thing the assignment named. */
+export function sha256Bytes(bytes: Uint8Array): string {
+  return createHash("sha256").update(bytes).digest("hex");
+}
+
 /* One written form for one meaning: keys sorted, nested. Arrays keep their
    order — for a fingerprint, order is part of the identity of a list. */
 export function canonical(value: unknown): string {

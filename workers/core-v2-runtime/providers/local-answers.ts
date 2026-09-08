@@ -15,9 +15,11 @@
  * it does — building the request, reading the answer, reporting the facts,
  * classifying a failure — is the real thing. Only the wire is local.
  *
- * The one thing it knows about the words is that the prompt compiler writes
- * `taskId: <id>` on a line of its own. That is the seam that lets a caller
- * answer the question actually asked rather than a fixed string.
+ * It knows nothing about the words. It unpacks each provider's request into
+ * the parts that were actually sent — the text, and the material with its
+ * media type and its bytes — and hands those to whoever is answering. There
+ * is no task id in what it passes on, and no way to look an answer up: an
+ * answer has to be made out of the request or not at all.
  *
  * Nothing here is a provider's real behaviour, and nothing here is evidence
  * about one. It answers what the caller says to answer.
@@ -39,14 +41,20 @@ export type LocalUsage = {
 
 export const LOCAL_USAGE: LocalUsage = { inputTokens: 1000, outputTokens: 200, cachedInputTokens: 0, reasoningTokens: 0 };
 
-/* The question, as it went out. `taskId` is null when the words carry none,
-   which is itself something a caller may want to refuse. */
+/* One part of a request, as it was actually sent. */
+export type LocalPart =
+  | { kind: "text"; text: string }
+  | { kind: "image"; mimeType: string; bytes: Uint8Array };
+
+/* The question, as it went out: the standing rules, and the parts of the
+   turn in the order the adapter put them there. No identifier of the
+   assignment is passed separately — whatever is in the parts is all there
+   is, which is the same position a provider is in. */
 export type LocalQuestion = {
   providerId: string;
-  taskId: string | null;
   model: string;
   system: string;
-  user: string;
+  parts: LocalPart[];
 };
 
 /* What a stand-in gives back: the object to answer with, or an Error to
@@ -63,7 +71,9 @@ type Shape = {
      operator's; paths are the provider's. */
   path: string;
   systemOf(body: Body): string;
-  userOf(body: Body): string;
+  /* Every part of the turn, unpacked from this provider's own multimodal
+     shape into one vocabulary. */
+  partsOf(body: Body): LocalPart[];
   modelOf(body: Body, url: string): string;
   answer(envelope: unknown, mark: string, model: string, usage: LocalUsage): HttpResponse;
 };
@@ -80,7 +90,13 @@ const SHAPES: Shape[] = [
     providerId: ANTHROPIC_PROVIDER_ID,
     path: "/v1/messages",
     systemOf: (body) => text(body.system),
-    userOf: (body) => text((list(list(body.messages)[0]?.content)[0] ?? {}).text),
+    partsOf: (body) => list(list(body.messages)[0]?.content).map((block) => {
+      if (block.type === "image") {
+        const source = (block.source ?? {}) as Record<string, unknown>;
+        return { kind: "image" as const, mimeType: text(source.media_type), bytes: new Uint8Array(Buffer.from(text(source.data), "base64")) };
+      }
+      return { kind: "text" as const, text: text(block.text) };
+    }),
     modelOf: (body) => text(body.model),
     answer: (envelope, mark, model, usage) => json({
       id: `msg_${mark}`, type: "message", role: "assistant", model, stop_reason: "tool_use", stop_sequence: null,
@@ -95,7 +111,14 @@ const SHAPES: Shape[] = [
     providerId: OPENAI_PROVIDER_ID,
     path: "/v1/responses",
     systemOf: (body) => text(body.instructions),
-    userOf: (body) => text((list(list(body.input)[0]?.content)[0] ?? {}).text),
+    partsOf: (body) => list(list(body.input)[0]?.content).map((part) => {
+      if (part.type === "input_image") {
+        const url = text(part.image_url);
+        const m = url.match(/^data:([^;]+);base64,(.*)$/);
+        return { kind: "image" as const, mimeType: m ? m[1] : "", bytes: new Uint8Array(Buffer.from(m ? m[2] : "", "base64")) };
+      }
+      return { kind: "text" as const, text: text(part.text) };
+    }),
     modelOf: (body) => text(body.model),
     answer: (envelope, mark, model, usage) => json({
       id: `resp_${mark}`, object: "response", model, status: "completed", incomplete_details: null,
@@ -115,7 +138,13 @@ const SHAPES: Shape[] = [
     providerId: GOOGLE_PROVIDER_ID,
     path: ":generateContent",
     systemOf: (body) => text(list((body.systemInstruction as Body | undefined)?.parts)[0]?.text),
-    userOf: (body) => text(list(list(body.contents)[0]?.parts)[0]?.text),
+    partsOf: (body) => list(list(body.contents)[0]?.parts).map((part) => {
+      if (part.inlineData) {
+        const inline = part.inlineData as Record<string, unknown>;
+        return { kind: "image" as const, mimeType: text(inline.mimeType), bytes: new Uint8Array(Buffer.from(text(inline.data), "base64")) };
+      }
+      return { kind: "text" as const, text: text(part.text) };
+    }),
     /* This one puts the model in the address rather than the body. */
     modelOf: (_body, url) => decodeURIComponent(url.split("/models/")[1]?.split(":")[0] ?? ""),
     answer: (envelope, mark, model, usage) => json({
@@ -174,13 +203,11 @@ export class LocalProviderTransport implements HttpTransport {
     } catch (error) {
       throw new Error(`core-v2-runtime: a request that is not JSON reached the local stand-in: ${(error as Error).message}`);
     }
-    const user = shape.userOf(body);
     const question: LocalQuestion = {
       providerId: shape.providerId,
-      taskId: (user.match(/^taskId: (\S+)$/m) ?? [])[1] ?? null,
       model: shape.modelOf(body, request.url),
       system: shape.systemOf(body),
-      user,
+      parts: shape.partsOf(body),
     };
     this.questions.push(question);
     if (this.options.onRequest) this.options.onRequest(question);

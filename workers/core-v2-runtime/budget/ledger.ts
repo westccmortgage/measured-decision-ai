@@ -28,7 +28,10 @@
  */
 import { isPostgresError } from "../../core-v2/postgres/wire.ts";
 import type { Queryable, Row } from "../../core-v2/postgres/wire.ts";
-import { costCeiling, priceFor, settledCost } from "../runtime-config.ts";
+import { costCeiling } from "../runtime-config.ts";
+import type { BillableUsage, BillingRates } from "./usage.ts";
+import { billableRecord, priceUsage } from "./usage.ts";
+import { normalizeUsage } from "../providers/usage-dialects.ts";
 import type { CostCeiling, ModelPrice, RuntimeConfig } from "../runtime-config.ts";
 
 /* ────────────────────────────────────────────────── what a caller gets back */
@@ -98,7 +101,15 @@ export type Reservation = {
   reservedOutputTokens: number;
   /* What it did cost, priced from what the answering system reported. */
   settledCost: number | null;
+  /* The provider's own usage object, exactly as it arrived. */
   usage: Record<string, unknown> | null;
+  /* The same usage in billable components, and the version of the rules that
+     produced them. Both are kept: one is evidence, the other is arithmetic. */
+  normalizedUsage: Record<string, unknown> | null;
+  normalizationVersion: string | null;
+  /* Set when a settlement could not be worked out and the hold therefore
+     stands. A person, or a later reconciliation, resolves it. */
+  attentionReason: string | null;
   /* The operator's price at the moment the hold was taken, kept so that a
      price changed mid-run cannot change what an attempt cost. */
   priceBasis: PriceBasis | null;
@@ -118,6 +129,7 @@ export type PriceBasis = {
   input_per_million_tokens: number;
   output_per_million_tokens: number;
   cached_input_per_million_tokens: number | null;
+  cache_write_per_million_tokens: number | null;
   reasoning_per_million_tokens: number | null;
   maximum_input_tokens: number;
   maximum_output_tokens: number;
@@ -195,6 +207,9 @@ function toReservation(row: Row): Reservation {
     reservedInputTokens: num(row.reserved_input_tokens),
     reservedOutputTokens: num(row.reserved_output_tokens),
     settledCost: maybeNum(row.settled_cost),
+    normalizedUsage: row.normalized_usage ? JSON.parse(row.normalized_usage) as Record<string, unknown> : null,
+    normalizationVersion: row.normalization_version,
+    attentionReason: row.attention_reason,
     usage: parseJson(row.usage),
     priceBasis: parseJson(row.price_basis) as PriceBasis | null,
     releaseReason: row.release_reason,
@@ -274,6 +289,7 @@ function basisOf(ceiling: CostCeiling): PriceBasis {
     input_per_million_tokens: price.inputPerMillionTokens,
     output_per_million_tokens: price.outputPerMillionTokens,
     cached_input_per_million_tokens: price.cachedInputPerMillionTokens ?? null,
+    cache_write_per_million_tokens: price.cacheWritePerMillionTokens ?? null,
     reasoning_per_million_tokens: price.reasoningPerMillionTokens ?? null,
     maximum_input_tokens: ceiling.maximumInputTokens,
     maximum_output_tokens: ceiling.maximumOutputTokens,
@@ -371,23 +387,65 @@ export class BudgetLedger {
   async settle(attemptId: string, usage: Record<string, unknown>): Promise<Reservation> {
     const held = await this.reservationOf(attemptId);
     if (!held) throw new BudgetRefused("settlement", attemptId, `attempt ${attemptId} reserved nothing`);
+    /* Already settled is already settled. What it cost was worked out once,
+       from what arrived then; asking again with different numbers does not
+       re-price it and does not charge a second time. */
+    if (held.state === "settled") return held;
     const basis = held.priceBasis;
     if (!basis || !basis.provider_id || !basis.model) {
       throw new BudgetRefused("settlement", attemptId,
         `the reservation for attempt ${attemptId} records no price it was taken under, so what it cost cannot be worked out`);
     }
-    const at = new Date(basis.effective_from);
-    const priced = Number.isNaN(at.getTime()) ? null : priceFor(this.config, basis.provider_id, basis.model, at);
-    const cost = priced ? settledCost(this.config, basis.provider_id, basis.model, usage, at) : null;
-    if (cost === null) {
+
+    /* THE PRICE COMES FROM THE RESERVATION, NOT FROM THE CONFIGURATION.
+       The rates were copied onto the row when the hold was taken, and they
+       are what this attempt is settled at — whatever the operator has
+       changed, added or removed since, and even if the model has been
+       deleted from the configuration entirely. A price that changed after a
+       hold was taken does not change what that attempt cost. */
+    const rates: BillingRates = {
+      currency: basis.currency,
+      inputPerMillionTokens: basis.input_per_million_tokens,
+      outputPerMillionTokens: basis.output_per_million_tokens,
+      cachedInputPerMillionTokens: basis.cached_input_per_million_tokens,
+      cacheWritePerMillionTokens: basis.cache_write_per_million_tokens,
+      reasoningPerMillionTokens: basis.reasoning_per_million_tokens,
+    };
+    const billable: BillableUsage = normalizeUsage(basis.provider_id, usage);
+    const priced = priceUsage(rates, billable);
+    if (!priced.ok) {
+      /* An unknown is not a zero. The hold stands and the attempt is marked
+         for somebody to resolve; settling at nothing here would be the
+         engine quietly deciding that a call it cannot account for was free. */
       throw new BudgetRefused("settlement", attemptId,
-        `the operator's configuration no longer prices what attempt ${attemptId} was reserved under, so what it cost cannot be worked out`);
+        `what attempt ${attemptId} cost cannot be worked out: ${priced.problems.join("; ")}`);
     }
+
     try {
       const result = await this.db.query(
-        `select * from public.core_v2_settle_attempt_cost($1, $2::numeric, $3::jsonb)`,
-        [attemptId, money(cost, "an actual cost"), JSON.stringify(usage ?? {})],
+        `select * from public.core_v2_settle_attempt_cost($1, $2::numeric, $3::jsonb, $4::jsonb, $5::text)`,
+        [
+          attemptId,
+          money(priced.cost, "an actual cost"),
+          JSON.stringify(usage ?? {}),
+          JSON.stringify({ ...billableRecord(billable), notes: priced.notes }),
+          billable.version,
+        ],
       );
+      return toReservation(result.rows[0]);
+    } catch (error) {
+      return asRefusal("settlement", attemptId, error);
+    }
+  }
+
+  /* THE HOLD STANDS, AND THE RECORD SAYS WHY. For an attempt whose cost
+     cannot be worked out — no usage reported, a dialect nobody has written,
+     a component the operator did not price. Not a settlement, because the
+     number is not known; not a release, because the money may be gone. */
+  async flagForAttention(attemptId: string, reason: string): Promise<Reservation> {
+    try {
+      const result = await this.db.query(
+        `select * from public.core_v2_attempt_cost_needs_attention($1, $2)`, [attemptId, reason]);
       return toReservation(result.rows[0]);
     } catch (error) {
       return asRefusal("settlement", attemptId, error);

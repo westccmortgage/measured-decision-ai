@@ -40,7 +40,7 @@ import { ceilingFor, isBudgetRefused } from "./ledger.ts";
 
 export type MeterEvent = {
   event: "budget.reserved" | "budget.settled" | "budget.released" | "budget.refused"
-  | "budget.settlement_refused" | "budget.release_refused" | "budget.holds";
+  | "budget.settlement_refused" | "budget.release_refused" | "budget.holds" | "budget.needs_attention";
   attempt?: string;
   workflow?: string;
   provider?: string;
@@ -126,10 +126,19 @@ export function meteredRepository(inner: OrchestrationRepository, options: Meter
       const settled = await ledger.settle(attemptId, usage);
       emit({ event: "budget.settled", attempt: attemptId, workflow: held.workflowId, amount: settled.settledCost ?? 0 });
     } catch (error) {
-      /* The hold stands. That is the conservative direction — an unsettled
-         reservation holds money a run cannot spend twice — and it is
-         findable: openReservations() is the operator's list of them. */
-      emit({ event: "budget.settlement_refused", attempt: attemptId, workflow: held.workflowId, reason: messageOf(error) });
+      /* The hold stands, and the row says why. That is the conservative
+         direction — an unsettled reservation holds money a run cannot spend
+         twice — and it is findable: openReservations() and the attention
+         reason are the operator's list of them. Settling at zero here would
+         be the engine deciding that a call it cannot account for was free. */
+      const reason = messageOf(error);
+      emit({ event: "budget.settlement_refused", attempt: attemptId, workflow: held.workflowId, reason });
+      try {
+        await ledger.flagForAttention(attemptId, reason);
+        emit({ event: "budget.needs_attention", attempt: attemptId, workflow: held.workflowId, reason });
+      } catch (second) {
+        emit({ event: "budget.settlement_refused", attempt: attemptId, workflow: held.workflowId, reason: messageOf(second) });
+      }
     }
   };
 

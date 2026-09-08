@@ -27,35 +27,46 @@ import { withThrowawayDatabase, ensureCluster, HARNESS_LOCATION } from "../../co
 import { WireClient } from "../../core-v2/postgres/wire.ts";
 import { entityId, sha256 } from "../../core-v2/kernel/ids.ts";
 import { BudgetLedger, BudgetRefused, ceilingFor, isBudgetRefused } from "../budget/ledger.ts";
-import { NO_PAID_CALLS, costCeiling, priceFor, settledCost } from "../runtime-config.ts";
+import { NO_PAID_CALLS, costCeiling, priceFor } from "../runtime-config.ts";
+import { priceUsage } from "../budget/usage.ts";
+import { normalizeUsage } from "../providers/usage-dialects.ts";
 
 const t = harness("the durable budget ledger");
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
 /* ────────────────────────────────────── the operator's configuration */
 
-/* Two answering systems that do not exist, priced by an operator who does.
-   The ids are opaque: nothing in this file or in the ledger knows what one
-   of them would be. */
+/* An answering system whose models do not exist, priced by an operator who
+   does. The provider id is one of the three this runtime has billing rules
+   for — a settlement has to know how that provider counts what it charges
+   for, and a provider nobody has written rules for cannot be settled at all,
+   which is checked in tests/billing.mjs. The MODELS are invented. */
 const READER_IN = 200_000;   /* the input ceiling every request will carry */
 const READER_OUT = 8_000;    /* the output ceiling every request will carry */
 
 const CONFIG = {
   providers: [
     {
-      providerId: "synthetic-one",
+      providerId: "anthropic",
       baseUrl: "fixture://nothing/answers",
-      apiKeyEnvironmentVariable: "CORE_V2_SYNTHETIC_ONE_KEY",
+      apiKeyEnvironmentVariable: "CORE_V2_BUDGET_TESTS_KEY",
       models: ["reader-major", "reader-minor"],
       defaultModel: "reader-major",
       maximumInputTokens: READER_IN,
       maximumOutputTokens: READER_OUT,
       requestTimeoutMs: 30_000,
+      maximumMaterialBytes: 65_536,
+      maximumMaterialBytesPerItem: 65_536,
+      supportedMediaTypes: ["text/plain; charset=utf-8"],
+      capabilities: {
+        "reader-major": { forcedToolChoice: true, strictSchema: true, images: false, thinking: "optional" },
+        "reader-minor": { forcedToolChoice: true, strictSchema: true, images: false, thinking: "optional" },
+      },
     },
   ],
   pricing: [
-    { providerId: "synthetic-one", model: "reader-major", effectiveFrom: "2026-01-01", currency: "USD", inputPerMillionTokens: 3, outputPerMillionTokens: 15 },
-    { providerId: "synthetic-one", model: "reader-minor", effectiveFrom: "2026-01-01", currency: "USD", inputPerMillionTokens: 5, outputPerMillionTokens: 25 },
+    { providerId: "anthropic", model: "reader-major", effectiveFrom: "2026-01-01", currency: "USD", inputPerMillionTokens: 3, outputPerMillionTokens: 15 },
+    { providerId: "anthropic", model: "reader-minor", effectiveFrom: "2026-01-01", currency: "USD", inputPerMillionTokens: 5, outputPerMillionTokens: 25 },
   ],
   authorization: NO_PAID_CALLS,
   dispatcherName: "budget-ledger-contract",
@@ -150,22 +161,22 @@ await withThrowawayDatabase(async ({ client, organizationId, databaseName }) => 
   const generous = (workflowId, over = {}) => led.authorizeWorkflow({
     workflowId, organizationId, currency: "USD", authorizedMaximum: 5, maximumPerAttempt: 5, ...over,
   });
-  const fullCeiling = ceilingFor(CONFIG, "synthetic-one", "reader-major");
+  const fullCeiling = ceilingFor(CONFIG, "anthropic", "reader-major");
 
   /* ─────────────────────────────────────────────────────────────────── */
   t.section("a price is the operator's, and without one there is no ceiling");
 
   {
-    const unpriced = priceFor(CONFIG, "synthetic-one", "reader-unlisted");
+    const unpriced = priceFor(CONFIG, "anthropic", "reader-unlisted");
     t.check("a model the operator never priced has no price at all", unpriced === null);
     t.check("a model with no price has no ceiling, so there is no number to reserve",
-      ceilingFor(CONFIG, "synthetic-one", "reader-unlisted") === null);
+      ceilingFor(CONFIG, "anthropic", "reader-unlisted") === null);
 
     const wf = await build.workflow("unpriced");
     await generous(wf);
     const a = await build.attempt(wf, "unpriced-1");
     await refusedBecause("an attempt whose model the operator never priced cannot be reserved for, and therefore cannot be sent",
-      () => led.reserve(a.attemptId, ceilingFor(CONFIG, "synthetic-one", "reader-unlisted")), "no ceiling");
+      () => led.reserve(a.attemptId, ceilingFor(CONFIG, "anthropic", "reader-unlisted")), "no ceiling");
     t.check("the refusal left no hold behind: an unpriced attempt reserved nothing",
       (await led.reservationOf(a.attemptId)) === null);
     t.check("and the workflow is holding nothing", (await led.held(wf)) === 0);
@@ -189,7 +200,10 @@ await withThrowawayDatabase(async ({ client, organizationId, databaseName }) => 
       held.reservedInputTokens === READER_IN && held.reservedOutputTokens === READER_OUT);
 
     /* What this attempt would in fact use, if it behaved like the others. */
-    const expectation = settledCost(CONFIG, "synthetic-one", "reader-major", { input_tokens: 1200, output_tokens: 300 });
+    const expectation = priceUsage(
+      { currency: "USD", inputPerMillionTokens: 3, outputPerMillionTokens: 15, cachedInputPerMillionTokens: null, cacheWritePerMillionTokens: null, reasoningPerMillionTokens: null },
+      normalizeUsage("anthropic", { input_tokens: 1200, output_tokens: 300 }),
+    ).cost;
     t.check("what the attempt is expected to cost is a small fraction of what is held — an expectation is not a reservation",
       held.reservedCost > expectation * 50, `held ${held.reservedCost}, expected ${expectation}`);
 
@@ -391,11 +405,31 @@ await withThrowawayDatabase(async ({ client, organizationId, databaseName }) => 
     await refusedBecause("a settled attempt is not released afterwards: its money is gone, not held",
       () => led.release(a.attemptId, "changed my mind"), "was settled");
 
+    t.check("the components it was priced from are kept beside the raw counts, under the version of the rules that produced them",
+      settledRow.normalizedUsage?.uncached_input_tokens === 1200
+      && settledRow.normalizedUsage?.visible_output_tokens === 300
+      && typeof settledRow.normalizationVersion === "string" && settledRow.normalizationVersion.length > 0,
+      JSON.stringify(settledRow.normalizedUsage));
+
+    /* THE CASE THAT USED TO SETTLE AT ZERO. A provider that reports no counts
+       has not told anybody that the call was free; it has told nobody
+       anything. */
     const quiet = await build.attempt(wf, "settle-2");
     await led.reserve(quiet.attemptId, fullCeiling);
-    const nothing = await led.settle(quiet.attemptId, {});
-    t.check("a provider that reported no counts settles at zero rather than at a guess",
-      nothing.settledCost === 0 && nothing.state === "settled");
+    await build.submit(quiet);
+    await refusedBecause("a provider that reported no counts is NOT settled at zero — what it cost is not known",
+      () => led.settle(quiet.attemptId, {}), "cannot be worked out");
+    t.check("its hold stands rather than coming off on a guess",
+      (await led.reservationOf(quiet.attemptId)).state === "reserved" && (await led.held(wf)) === CEILING_COST,
+      `held ${await led.held(wf)}`);
+    const flagged = await led.flagForAttention(quiet.attemptId, "the provider reported no usage at all");
+    t.check("and it can be marked for somebody, still holding, with the reason on the row",
+      flagged.state === "reserved" && flagged.attentionReason === "the provider reported no usage at all"
+      && (await led.held(wf)) === CEILING_COST, JSON.stringify({ state: flagged.state, reason: flagged.attentionReason }));
+    t.check("a genuine zero — a provider that says it used nothing — does settle, and settles at nothing",
+      (await led.settle(quiet.attemptId, { input_tokens: 0, output_tokens: 0 })).settledCost === 0);
+    t.check("and settling clears what it was waiting for",
+      (await led.reservationOf(quiet.attemptId)).attentionReason === null);
 
     await refusedBecause("an attempt that reserved nothing cannot be settled",
       () => led.settle(entityId("attempt", "budget", "never-reserved"), { input_tokens: 1 }), "reserved nothing");
@@ -409,11 +443,11 @@ await withThrowawayDatabase(async ({ client, organizationId, databaseName }) => 
     await led.authorizeWorkflow({ workflowId: wf, organizationId, authorizedMaximum: 1, maximumPerAttempt: 1 });
     const a = await build.attempt(wf, "overrun-1");
     /* A deliberately small hold: 2000 in and 400 out at the minor rates. */
-    const small = costCeiling(CONFIG, "synthetic-one", "reader-minor", 2000, 400);
+    const small = costCeiling(CONFIG, "anthropic", "reader-minor", 2000, 400);
     const heldRow = await led.reserve(a.attemptId, small);
     t.check("the small hold is what its own ceilings cost", heldRow.reservedCost === PER_MILLION(2000, 5) + PER_MILLION(400, 25));
 
-    const real = await led.settle(a.attemptId, { input_tokens: 200_000 });
+    const real = await led.settle(a.attemptId, { input_tokens: 200_000, output_tokens: 0 });
     t.check("an answer that cost more than was held is recorded at what it cost, not at what was permitted",
       real.settledCost === PER_MILLION(200_000, 5) && real.settledCost > heldRow.reservedCost,
       `held ${heldRow.reservedCost}, spent ${real.settledCost}`);
@@ -435,14 +469,14 @@ await withThrowawayDatabase(async ({ client, organizationId, databaseName }) => 
     const wf = await build.workflow("beyond");
     await led.authorizeWorkflow({ workflowId: wf, organizationId, authorizedMaximum: 1, maximumPerAttempt: 1 });
     const a = await build.attempt(wf, "beyond-1");
-    const small = costCeiling(CONFIG, "synthetic-one", "reader-minor", 2000, 400);
+    const small = costCeiling(CONFIG, "anthropic", "reader-minor", 2000, 400);
     await led.reserve(a.attemptId, small);
     /* 400,000 input tokens at 5 per million is 2.00, against an authorisation
        of 1.00. A provider can bill more than it was asked to, and the record
        has to be able to say so: the ceiling is a gate on what goes out, not a
        claim about what came back. A settlement that could not be recorded
        would leave no trace of the money at all. */
-    await led.settle(a.attemptId, { input_tokens: 400_000 });
+    await led.settle(a.attemptId, { input_tokens: 400_000, output_tokens: 0 });
     const after = await led.standing(wf);
     t.check("a bill larger than the whole authorisation is recorded at what it cost, not refused into silence",
       after.spent === PER_MILLION(400_000, 5) && after.spent > after.authorized,
@@ -453,7 +487,59 @@ await withThrowawayDatabase(async ({ client, organizationId, databaseName }) => 
       after.stoppedReason !== null && after.stoppedAt !== null, after.stoppedReason ?? "not stopped");
     const b = await build.attempt(wf, "beyond-2");
     await refusedBecause("and the next reservation is refused for that reason",
-      () => led.reserve(b.attemptId, costCeiling(CONFIG, "synthetic-one", "reader-minor", 10, 10)), "stopped");
+      () => led.reserve(b.attemptId, costCeiling(CONFIG, "anthropic", "reader-minor", 10, 10)), "stopped");
+  }
+
+  /* ─────────────────────────────────────────────────────────────────── */
+  t.section("a settlement is priced from the reservation, not from the configuration as it stands now");
+
+  {
+    const wf = await build.workflow("frozen-price");
+    await generous(wf);
+    const a = await build.attempt(wf, "frozen-1");
+    const held = await led.reserve(a.attemptId, fullCeiling);
+    await build.submit(a);
+    t.check("the rates were copied onto the reservation when the hold was taken",
+      held.priceBasis.input_per_million_tokens === 3 && held.priceBasis.output_per_million_tokens === 15
+      && held.priceBasis.currency === "USD", JSON.stringify(held.priceBasis));
+
+    /* The operator changes everything: a hundred times the price, and then
+       the model removed from the configuration altogether. */
+    const dearer = {
+      ...CONFIG,
+      pricing: [{ providerId: "anthropic", model: "reader-major", effectiveFrom: "2026-01-01", currency: "USD", inputPerMillionTokens: 300, outputPerMillionTokens: 1500 }],
+    };
+    const settledDearer = await new BudgetLedger(client, dearer).settle(a.attemptId, { input_tokens: 1200, output_tokens: 300 });
+    t.check("a price that changed after the hold was taken does not change what that attempt cost",
+      settledDearer.settledCost === round6(PER_MILLION(1200, 3) + PER_MILLION(300, 15)), `${settledDearer.settledCost}`);
+
+    const gone = await build.attempt(wf, "frozen-2");
+    await led.reserve(gone.attemptId, fullCeiling);
+    await build.submit(gone);
+    const emptied = { ...CONFIG, providers: [], pricing: [] };
+    const settledAnyway = await new BudgetLedger(client, emptied).settle(gone.attemptId, { input_tokens: 1200, output_tokens: 300 });
+    t.check("and a model REMOVED from the configuration entirely can still be settled — the price it was reserved under is on the row",
+      settledAnyway.settledCost === round6(PER_MILLION(1200, 3) + PER_MILLION(300, 15)), `${settledAnyway.settledCost}`);
+    t.check("which means an attempt cannot be left unsettleable by an edit somebody made afterwards",
+      settledAnyway.state === "settled" && settledAnyway.normalizedUsage !== null);
+  }
+
+  /* ─────────────────────────────────────────────────────────────────── */
+  t.section("a price in one currency and a budget in another is not a comparison");
+
+  {
+    const wf = await build.workflow("currency");
+    await led.authorizeWorkflow({ workflowId: wf, organizationId, currency: "USD", authorizedMaximum: 5, maximumPerAttempt: 5 });
+    const a = await build.attempt(wf, "currency-1");
+    const elsewhere = {
+      ...CONFIG,
+      pricing: [{ providerId: "anthropic", model: "reader-major", effectiveFrom: "2026-01-01", currency: "EUR", inputPerMillionTokens: 3, outputPerMillionTokens: 15 }],
+    };
+    const ceiling = ceilingFor(elsewhere, "anthropic", "reader-major");
+    t.check("the ceiling carries the currency the operator priced it in", ceiling.currency === "EUR");
+    await refusedBecause("an attempt priced in one currency cannot be reserved against a budget authorised in another",
+      () => new BudgetLedger(client, elsewhere).reserve(a.attemptId, ceiling), "authorised in");
+    t.check("and nothing was held for it", (await led.reservationOf(a.attemptId)) === null && (await led.held(wf)) === 0);
   }
 
   /* ─────────────────────────────────────────────────────────────────── */

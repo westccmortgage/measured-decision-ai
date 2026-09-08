@@ -21,6 +21,9 @@
  */
 import { readFileSync } from "node:fs";
 import { harness, closeNetwork } from "../../core-v2/tests/harness.mjs";
+import { sha256Bytes } from "../../core-v2/kernel/ids.ts";
+import { InMemoryMaterialResolver } from "../material/memory-resolver.ts";
+import { normalizeUsage } from "../providers/usage-dialects.ts";
 import { FixtureTransport, jsonResponse } from "../transport/fixture.ts";
 import { SealedTransport } from "../transport/transport.ts";
 import { failureCode, ProviderExecutor } from "../providers/provider.ts";
@@ -50,6 +53,15 @@ const PROVIDERS = [
     urlContains: "/v1/messages",
     keyHeader: "x-api-key",
     keyValue: (headers) => headers["x-api-key"],
+    /* Every part of the one turn, in this provider's own shape. */
+    partsOf: (body) => body.messages[0].content.map((block) => (block.type === "image"
+      ? { kind: "image", mimeType: block.source.media_type, base64: block.source.data }
+      : { kind: "text", text: block.text })),
+    strictDeclared: (body) => body.tools?.[0]?.strict === true,
+    /* input_tokens excludes both cache figures here, so the three add. */
+    inputTotalOf: (u) => u.input_tokens + (u.cache_read_input_tokens ?? 0) + (u.cache_creation_input_tokens ?? 0),
+    /* thinking is billed inside output_tokens, so there is nothing to add. */
+    outputTotalOf: (u) => u.output_tokens,
     protocol: () => new AnthropicProtocol(),
     turns: (body) => body.messages,
     systemText: (body) => body.system,
@@ -71,6 +83,15 @@ const PROVIDERS = [
     urlContains: "/v1/responses",
     keyHeader: "authorization",
     keyValue: (headers) => headers.authorization,
+    partsOf: (body) => body.input[0].content.map((part) => {
+      if (part.type !== "input_image") return { kind: "text", text: part.text };
+      const [, mimeType, base64] = part.image_url.match(/^data:([^;]+);base64,(.*)$/);
+      return { kind: "image", mimeType, base64 };
+    }),
+    strictDeclared: (body) => body.text?.format?.strict === true,
+    /* cached is inside input_tokens and reasoning is inside output_tokens. */
+    inputTotalOf: (u) => u.input_tokens,
+    outputTotalOf: (u) => u.output_tokens,
     protocol: () => new OpenAiProtocol(),
     turns: (body) => body.input,
     systemText: (body) => body.instructions,
@@ -89,8 +110,20 @@ const PROVIDERS = [
     environmentVariable: "CORE_V2_TEST_KEY_GAMMA",
     baseUrl: "https://gamma.provider.invalid",
     urlContains: ":generateContent",
-    keyHeader: "authorization",
-    keyValue: (headers) => headers.authorization,
+    /* This provider's OWN documented header for an API key. Not an
+       Authorization bearer: an API key is not an OAuth token. */
+    keyHeader: "x-goog-api-key",
+    keyValue: (headers) => headers["x-goog-api-key"],
+    partsOf: (body) => body.contents[0].parts.map((part) => (part.inlineData
+      ? { kind: "image", mimeType: part.inlineData.mimeType, base64: part.inlineData.data }
+      : { kind: "text", text: part.text })),
+    strictDeclared: (body) => Array.isArray(body.generationConfig?.responseSchema?.required)
+      && body.generationConfig.responseSchema.required.includes("outcome")
+      && body.generationConfig.responseMimeType === "application/json",
+    /* cached content is inside promptTokenCount; thoughts sit beside the
+       candidates rather than inside them. */
+    inputTotalOf: (u) => u.promptTokenCount,
+    outputTotalOf: (u) => u.candidatesTokenCount + (u.thoughtsTokenCount ?? 0),
     protocol: () => new GoogleProtocol(),
     turns: (body) => body.contents,
     systemText: (body) => body.systemInstruction?.parts?.[0]?.text,
@@ -108,7 +141,10 @@ const OUTPUT_CEILING = 4096;
 
 const environment = Object.fromEntries(PROVIDERS.map((p) => [p.environmentVariable, KEY]));
 
-const configurationOf = (p) => ({
+const MATERIAL_CEILING = 64 * 1024;
+const CAN_DO_EVERYTHING = { forcedToolChoice: true, strictSchema: true, images: true, thinking: "optional" };
+
+const configurationOf = (p, over = {}) => ({
   providerId: p.providerId,
   baseUrl: p.baseUrl,
   apiKeyEnvironmentVariable: p.environmentVariable,
@@ -117,6 +153,11 @@ const configurationOf = (p) => ({
   maximumOutputTokens: OUTPUT_CEILING,
   maximumInputTokens: 60000,
   requestTimeoutMs: 30000,
+  maximumMaterialBytes: MATERIAL_CEILING,
+  maximumMaterialBytesPerItem: MATERIAL_CEILING,
+  supportedMediaTypes: ["text/plain; charset=utf-8", "image/png"],
+  capabilities: { [p.fixtures.askedModel]: { ...CAN_DO_EVERYTHING } },
+  ...over,
 });
 
 const pricingOf = (p) => ({
@@ -146,6 +187,27 @@ const runtimeConfig = () => ({
 const tickingClock = () => ({ t: 0, now() { const v = this.t; this.t += 7; return v; }, async sleep() {} });
 const STEP = 7;
 
+/* The material these packets authorise: one piece of text and one image,
+   each filed under the hash of its own bytes, which is what a resolver's
+   answer is checked against. */
+const TABLE_TEXT = "entry     category   quantity  unit\nE-001     alpha      12        units\n";
+const TABLE_BYTES = new Uint8Array(Buffer.from(TABLE_TEXT, "utf8"));
+const TABLE_HASH = sha256Bytes(TABLE_BYTES);
+/* Eight bytes that are not text and never will be: a PNG signature. */
+const IMAGE_BYTES = new Uint8Array([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0x00, 0x11]);
+const IMAGE_HASH = sha256Bytes(IMAGE_BYTES);
+
+const store = new Map([
+  [TABLE_HASH, { mediaKind: "text", mimeType: "text/plain; charset=utf-8", bytes: TABLE_BYTES }],
+  [IMAGE_HASH, { mediaKind: "image", mimeType: "image/png", bytes: IMAGE_BYTES }],
+]);
+const resolverFor = () => new InMemoryMaterialResolver(store);
+
+const sourceRef = (segmentId, contentHash, over = {}) => ({
+  sourceId: "src-1", segmentId, kind: "segment", sourceKind: "record_set", segmentKind: "table",
+  parentSegmentId: null, label: null, ordinal: 0, locator: { bbox: [0, 0, 1, 1] }, contentHash, ...over,
+});
+
 let packetCount = 0;
 const packetFor = (marker) => {
   packetCount++;
@@ -160,12 +222,12 @@ const packetFor = (marker) => {
     taskType: "synthetic:read_table",
     subjectKey: `subject/${marker}`,
     objective: `read ${marker}`,
-    sources: [{ sourceId: "src-1", segmentId: "seg-1", kind: "segment", sourceKind: "record_set", segmentKind: "table", parentSegmentId: null, label: null, ordinal: 0, locator: { bbox: [0, 0, 1, 1] }, contentHash: "h1" }],
+    sources: [sourceRef("seg-1", TABLE_HASH), sourceRef("seg-2", IMAGE_HASH, { segmentKind: "note" })],
     dependencies: [],
     independenceGroup: "reader-a",
     blindContext: true,
     allowedActions: [],
-    limits: { maximumSources: 1, maximumClaims: 8, maximumFollowUps: 0, maximumDepth: 0, maximumOutputBytes: 40000 },
+    limits: { maximumSources: 2, maximumClaims: 8, maximumFollowUps: 0, maximumDepth: 0, maximumOutputBytes: 40000 },
     expectedOutputContract: "claims with anchors, one per reading",
     inputFingerprint: `fp-${marker}`,
     context: { claims: [], assessments: [], disagreements: [], depth: 0, validation: [] },
@@ -194,11 +256,12 @@ const executorFor = (p, response, options = {}) => {
     { urlContains: p.urlContains, responses: [jsonResponse(response.status, response.body, response.headers)] },
   ]);
   const executor = new ProviderExecutor({
-    configuration: configurationOf(p),
+    configuration: options.configuration ?? configurationOf(p),
     runtime: runtimeConfig(),
     transport,
     protocol: p.protocol(),
     compilePrompt: options.compilePrompt ?? compiler,
+    materialResolver: options.materialResolver ?? resolverFor(),
     families: ["reader-family-one"],
     clock: tickingClock(),
     environment,
@@ -245,6 +308,29 @@ for (const p of PROVIDERS) {
   t.check("a strict structured envelope is the only shape the answer may take", p.strictShape(body) === true);
   t.check("the answer is not streamed — an answer read while it is written cannot be kept verbatim", p.notStreamed(body) === true);
 
+  t.section(`${p.providerId}: the material is in the request, not a description of it`);
+  {
+    const parts = p.partsOf(body);
+    const texts = parts.filter((x) => x.kind === "text").map((x) => x.text);
+    const images = parts.filter((x) => x.kind === "image");
+    t.check("the assignment is there, and so is every piece of material it authorises",
+      parts.length === 5 && texts[0] === compiler(packet).user, `${parts.length} parts, first ${JSON.stringify(texts[0]?.slice(0, 30))}`);
+    t.check("the text the resolver returned is in the request byte for byte — not summarised, not described",
+      texts.includes(TABLE_TEXT), texts.map((x) => x.slice(0, 24)).join(" | "));
+    t.check("the image is in the request as bytes in this provider's own multimodal shape",
+      images.length === 1 && images[0].mimeType === "image/png", JSON.stringify(images.map((x) => x.mimeType)));
+    t.check("and those bytes are exactly the bytes the resolver returned, hash for hash",
+      images.length === 1 && sha256Bytes(new Uint8Array(Buffer.from(images[0].base64, "base64"))) === IMAGE_HASH);
+    t.check("each piece is announced by what it is: its source, its segment, its type, its size and its hash",
+      texts.filter((x) => x.startsWith("--- material for ")).length === 2
+      && texts.some((x) => x.includes(TABLE_HASH)) && texts.some((x) => x.includes(IMAGE_HASH)),
+      texts.filter((x) => x.startsWith("--- material for ")).length + " headings");
+    const raw = JSON.stringify(body);
+    t.check("and nothing in the request is an address: no bucket, no signed url, no path, no expiry",
+      !/https?:\/\/(?!alpha|beta|gamma)|X-Amz-|signature=|expires=|\/storage\/|s3:\/\/|gs:\/\//i.test(raw));
+    t.check("the strict shape is declared to the provider, not merely asked for in prose", p.strictDeclared(body) === true);
+  }
+
   t.section(`${p.providerId}: the request is fresh and stateless`);
   t.check("there is exactly one turn in the request", Array.isArray(p.turns(body)) && p.turns(body).length === 1, `${p.turns(body)?.length} turns`);
   t.check("and it is the question, not a continuation of anything", p.turns(body)[0].role === "user", p.turns(body)[0].role);
@@ -275,6 +361,10 @@ for (const p of PROVIDERS) {
   {
     const header = p.keyValue(request.headers);
     t.check("the key configuration named is in the request the adapter built", typeof header === "string" && header.includes(KEY));
+    t.check("it travels in this provider's OWN header, by name",
+      Object.keys(request.headers).includes(p.keyHeader), Object.keys(request.headers).join(", "));
+    t.check("and never in the address — a key in a url is a key in every log that writes a url",
+      !request.url.includes(KEY) && !request.url.includes("key=") && !request.url.includes("token="), request.url);
     const seen = JSON.stringify(transport.seen);
     t.check("the redacted view of that request does not reveal it", !seen.includes(KEY));
     t.check("and says a credential was there rather than pretending none was", seen.includes("redacted"));
@@ -307,12 +397,34 @@ for (const p of PROVIDERS) {
       facts.requestId === p.fixtures.requestId, `${facts.requestId}`);
     t.check("the model REPORTED is what answered, not what was asked for",
       facts.modelReported === reported && reported !== asked, `reported ${facts.modelReported}, asked ${asked}`);
-    t.check("the input count is reported under the name the pricing table settles against", facts.usage.input_tokens === 1200);
-    t.check("the output count too", facts.usage.output_tokens === 340);
-    t.check("the cached input count too — a cheaper token is still a counted token", facts.usage.cached_input_tokens === 800);
-    t.check("the reasoning count too", facts.usage.reasoning_tokens === 96);
-    t.check("a count nobody reported is absent rather than zero — zero is a measurement",
-      !("total_tokens" in facts.usage) && Object.keys(facts.usage).length === 4, Object.keys(facts.usage).join(","));
+    const reportedUsage = p.fixtures.good.body.usage ?? p.fixtures.good.body.usageMetadata;
+    t.check("the counts are kept EXACTLY as the provider reported them — not renamed, not summed, not filled in",
+      JSON.stringify(facts.usage) === JSON.stringify(reportedUsage), JSON.stringify(facts.usage));
+    t.check("which means the record holds this provider's own field names, whatever they are",
+      Object.keys(facts.usage).every((key) => key in reportedUsage) && Object.keys(facts.usage).length === Object.keys(reportedUsage).length,
+      Object.keys(facts.usage).join(","));
+    {
+      /* And what those names MEAN is decided per provider, once, where it
+         can be argued with — never by adding up whatever numbers arrived. */
+      const billable = normalizeUsage(p.providerId, facts.usage);
+      const expected = p.fixtures.expectedNormalized;
+      t.check("the billable components are what this provider's own semantics make of those counts",
+        billable.complete
+        && billable.uncachedInputTokens === expected.uncached_input_tokens
+        && billable.cachedInputReadTokens === expected.cached_input_read_tokens
+        && billable.cachedInputWriteTokens === expected.cached_input_write_tokens
+        && billable.visibleOutputTokens === expected.visible_output_tokens
+        && billable.reasoningOutputTokens === expected.reasoning_output_tokens,
+        `${billable.uncachedInputTokens}/${billable.cachedInputReadTokens}/${billable.cachedInputWriteTokens}/${billable.visibleOutputTokens}/${billable.reasoningOutputTokens}`);
+      /* No token counted twice, and none dropped: the components add back up
+         to exactly what this provider said, by this provider's own rules
+         about which of its numbers contain which. */
+      const inputTotal = billable.uncachedInputTokens + billable.cachedInputReadTokens + billable.cachedInputWriteTokens;
+      const outputTotal = billable.visibleOutputTokens + billable.reasoningOutputTokens;
+      t.check("and the components add back up to exactly what this provider reported — nothing counted twice, nothing dropped",
+        inputTotal === p.inputTotalOf(reportedUsage) && outputTotal === p.outputTotalOf(reportedUsage),
+        `${inputTotal} input against ${p.inputTotalOf(reportedUsage)}, ${outputTotal} output against ${p.outputTotalOf(reportedUsage)}`);
+    }
     t.check("how long it took is reported", facts.durationMs === STEP, `${facts.durationMs}ms`);
     t.check("why it stopped is reported in the provider's own word", typeof facts.stopReason === "string" && facts.stopReason.length > 0, facts.stopReason);
     t.check("the answer is preserved with the status it came with", facts.response.status === 200);
@@ -334,7 +446,7 @@ t.section("one adapter per provider, and that is what makes three readers three 
   const transport = new FixtureTransport(PROVIDERS.map((p) => ({
     urlContains: p.urlContains, responses: [jsonResponse(p.fixtures.good.status, p.fixtures.good.body, p.fixtures.good.headers)],
   })));
-  const built = buildProviderRegistry({ config, transport, compilePrompt: compiler, clock: tickingClock(), environment });
+  const built = buildProviderRegistry({ config, transport, compilePrompt: compiler, materialResolver: resolverFor(), clock: tickingClock(), environment });
 
   t.check("three configured providers become three adapters, no more", built.byProvider.size === 3, `${built.byProvider.size}`);
   t.check("family one, two and three are wired to three different providers",
@@ -349,7 +461,7 @@ t.section("one adapter per provider, and that is what makes three readers three 
      one opinion, and the kernel says so by giving them one domain. */
   const oneProvider = { ...config, providers: [config.providers[0]] };
   const doubled = buildProviderRegistry({
-    config: oneProvider, transport, compilePrompt: compiler, clock: tickingClock(), environment,
+    config: oneProvider, transport, compilePrompt: compiler, materialResolver: resolverFor(), clock: tickingClock(), environment,
     routing: { "reader-family-one": PROVIDERS[0].providerId, "reader-family-two": PROVIDERS[0].providerId },
   });
   t.check("two families routed to one provider are served by ONE adapter", doubled.byProvider.size === 1);

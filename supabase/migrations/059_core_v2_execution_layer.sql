@@ -140,16 +140,37 @@ create table if not exists public.attempt_cost_reservations (
   reserved_output_tokens bigint not null default 0 check (reserved_output_tokens >= 0),
   -- What it actually cost, priced from what the answering system reported.
   settled_cost numeric(14,6) check (settled_cost is null or settled_cost >= 0),
+  -- The provider's own usage object, exactly as it arrived: evidence.
   usage jsonb,
+  -- The same usage in billable components — uncached input, cache read,
+  -- cache write, visible output, reasoning — under the version of the rules
+  -- that produced them. Two providers of the three count cached tokens
+  -- inside their input and reasoning inside their output, so the components
+  -- are what may be priced and the raw object is what may be argued with.
+  normalized_usage jsonb,
+  normalization_version text,
   price_basis jsonb not null default '{}'::jsonb,
   release_reason text,
+  -- Set when a settlement could not be worked out: no usage reported, a
+  -- dialect nobody has written down, a component the operator never priced.
+  -- The hold stands while this is set. It is not a settlement of zero,
+  -- because "free" and "unknown" are different facts.
+  attention_reason text,
+  attention_at timestamptz,
   reserved_at timestamptz not null default now(),
   settled_at timestamptz,
   released_at timestamptz,
   constraint attempt_cost_reservations_settled_has_cost
     check (state <> 'settled' or settled_cost is not null),
   constraint attempt_cost_reservations_released_says_why
-    check (state <> 'released' or release_reason is not null)
+    check (state <> 'released' or release_reason is not null),
+  -- A settled row carries the components it was priced from and the version
+  -- of the rules that produced them, so a number can always be re-derived.
+  constraint attempt_cost_reservations_settled_shows_its_working
+    check (state <> 'settled' or (normalized_usage is not null and normalization_version is not null)),
+  -- Only a reservation that is still held can be waiting for somebody.
+  constraint attempt_cost_reservations_attention_is_open
+    check (attention_reason is null or state = 'reserved')
 );
 
 comment on table public.attempt_cost_reservations is
@@ -157,6 +178,10 @@ comment on table public.attempt_cost_reservations is
 
 create index if not exists attempt_cost_reservations_open
   on public.attempt_cost_reservations(workflow_id) where state = 'reserved';
+
+-- The operator's list of money held for work nobody can account for.
+create index if not exists attempt_cost_reservations_attention
+  on public.attempt_cost_reservations(workflow_id) where attention_reason is not null;
 
 -- ───────────────────────────────────────────────────────── 4 · the doors
 --
@@ -213,6 +238,11 @@ begin
   if budget.wall_clock_deadline is not null and now() > budget.wall_clock_deadline then
     raise exception 'core_v2: reservation refused: the authorised time for workflow % ran out', attempt.workflow_id;
   end if;
+  -- A price in one currency and a budget in another is not a comparison.
+  if coalesce(p_price_basis->>'currency', budget.currency) <> budget.currency then
+    raise exception 'core_v2: reservation refused: this attempt is priced in % and workflow % is authorised in %',
+      p_price_basis->>'currency', attempt.workflow_id, budget.currency;
+  end if;
   if p_maximum_cost > budget.maximum_per_attempt then
     raise exception 'core_v2: reservation refused: % is more than the % this workflow allows one attempt', p_maximum_cost, budget.maximum_per_attempt;
   end if;
@@ -265,7 +295,8 @@ comment on function public.core_v2_reserve_attempt_cost(uuid, numeric, bigint, b
 -- What it really cost, once the answering system has said. The hold comes off
 -- and the spend goes on, in one move.
 create or replace function public.core_v2_settle_attempt_cost(
-  p_attempt_id uuid, p_actual_cost numeric, p_usage jsonb default '{}'::jsonb
+  p_attempt_id uuid, p_actual_cost numeric, p_usage jsonb default '{}'::jsonb,
+  p_normalized_usage jsonb default null, p_normalization_version text default null
 ) returns public.attempt_cost_reservations
 language plpgsql security definer set search_path = public as $$
 declare
@@ -275,6 +306,12 @@ declare
 begin
   if p_actual_cost is null or p_actual_cost < 0 then
     raise exception 'core_v2: settlement refused: an actual cost is a number that is not negative';
+  end if;
+  -- A settlement shows its working. Without the components it was priced
+  -- from and the version of the rules that produced them, the number cannot
+  -- be re-derived later and cannot be argued with.
+  if p_normalized_usage is null or p_normalization_version is null or btrim(p_normalization_version) = '' then
+    raise exception 'core_v2: settlement refused: a settlement records the billable components it was priced from and the version of the rules that produced them';
   end if;
   select * into reservation from public.attempt_cost_reservations where attempt_id = p_attempt_id for update;
   if not found then
@@ -303,14 +340,54 @@ begin
    where workflow_id = reservation.workflow_id;
 
   update public.attempt_cost_reservations
-     set state = 'settled', settled_cost = p_actual_cost, usage = coalesce(p_usage, '{}'::jsonb), settled_at = now()
+     set state = 'settled', settled_cost = p_actual_cost,
+         usage = coalesce(p_usage, '{}'::jsonb),
+         normalized_usage = p_normalized_usage,
+         normalization_version = p_normalization_version,
+         -- Whatever it was waiting for, it is settled now.
+         attention_reason = null, attention_at = null,
+         settled_at = now()
    where attempt_id = p_attempt_id
   returning * into row;
   return row;
 end $$;
 
-comment on function public.core_v2_settle_attempt_cost(uuid, numeric, jsonb) is
-  'What the attempt actually cost, from what the answering system reported. Recorded even when it exceeds what was held: the record is what was spent.';
+comment on function public.core_v2_settle_attempt_cost(uuid, numeric, jsonb, jsonb, text) is
+  'What the attempt actually cost, from what the answering system reported: the raw usage as evidence, the billable components as arithmetic, and the version of the rules that turned one into the other. Recorded even when it exceeds what was held: the record is what was spent.';
+
+-- THE HOLD STANDS AND THE ROW SAYS WHY. For an attempt whose cost cannot be
+-- worked out: no usage reported, a provider nobody has written billing rules
+-- for, a component the operator never priced. Not a settlement, because the
+-- number is not known; not a release, because the money may already be gone.
+create or replace function public.core_v2_attempt_cost_needs_attention(
+  p_attempt_id uuid, p_reason text
+) returns public.attempt_cost_reservations
+language plpgsql security definer set search_path = public as $$
+declare
+  reservation public.attempt_cost_reservations;
+  row public.attempt_cost_reservations;
+begin
+  if p_reason is null or btrim(p_reason) = '' then
+    raise exception 'core_v2: attention refused: an unresolved reservation says what is unresolved about it';
+  end if;
+  select * into reservation from public.attempt_cost_reservations where attempt_id = p_attempt_id for update;
+  if not found then
+    raise exception 'core_v2: attention refused: attempt % reserved nothing', p_attempt_id;
+  end if;
+  if reservation.state <> 'reserved' then
+    raise exception 'core_v2: attention refused: attempt % was already %', p_attempt_id, reservation.state;
+  end if;
+  update public.attempt_cost_reservations
+     set attention_reason = p_reason, attention_at = coalesce(attention_at, now())
+   where attempt_id = p_attempt_id
+  returning * into row;
+  perform public.core_v2_audit(reservation.organization_id, 'core_v2.attempt.cost_unresolved', 'agent_attempt',
+    p_attempt_id::text, jsonb_build_object('reason', p_reason, 'held', reservation.reserved_cost));
+  return row;
+end $$;
+
+comment on function public.core_v2_attempt_cost_needs_attention(uuid, text) is
+  'Money held for work nobody can account for. The reservation stays open and says why; an unknown cost is never settled at zero.';
 
 -- Give the hold back — only when it is known that nothing is still running.
 -- An attempt that reached a provider, or whose outcome nobody knows, keeps
@@ -542,7 +619,8 @@ revoke all on function public.core_v2_authorize_workflow_spending(uuid, numeric,
 revoke all on function public.core_v2_cancelling_workflows(integer) from public, anon, authenticated;
 revoke all on function public.core_v2_unreconciled_workflows(integer) from public, anon, authenticated;
 revoke all on function public.core_v2_reserve_attempt_cost(uuid, numeric, bigint, bigint, jsonb) from public, anon, authenticated;
-revoke all on function public.core_v2_settle_attempt_cost(uuid, numeric, jsonb) from public, anon, authenticated;
+revoke all on function public.core_v2_settle_attempt_cost(uuid, numeric, jsonb, jsonb, text) from public, anon, authenticated;
+revoke all on function public.core_v2_attempt_cost_needs_attention(uuid, text) from public, anon, authenticated;
 revoke all on function public.core_v2_release_attempt_cost(uuid, text) from public, anon, authenticated;
 revoke all on function public.core_v2_stop_workflow_spending(uuid, text) from public, anon, authenticated;
 revoke all on function public.core_v2_claim_next_workflow(text) from public, anon, authenticated;
@@ -552,7 +630,8 @@ grant execute on function public.core_v2_authorize_workflow_spending(uuid, numer
 grant execute on function public.core_v2_cancelling_workflows(integer) to service_role;
 grant execute on function public.core_v2_unreconciled_workflows(integer) to service_role;
 grant execute on function public.core_v2_reserve_attempt_cost(uuid, numeric, bigint, bigint, jsonb) to service_role;
-grant execute on function public.core_v2_settle_attempt_cost(uuid, numeric, jsonb) to service_role;
+grant execute on function public.core_v2_settle_attempt_cost(uuid, numeric, jsonb, jsonb, text) to service_role;
+grant execute on function public.core_v2_attempt_cost_needs_attention(uuid, text) to service_role;
 grant execute on function public.core_v2_release_attempt_cost(uuid, text) to service_role;
 grant execute on function public.core_v2_stop_workflow_spending(uuid, text) to service_role;
 grant execute on function public.core_v2_claim_next_workflow(text) to service_role;

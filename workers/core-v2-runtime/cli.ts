@@ -34,7 +34,7 @@
 import { realpathSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 
-import type { AgentResultEnvelope, SourceManifest, WorkPacket } from "../core-v2/kernel/contracts.ts";
+import type { SourceManifest, WorkPacket } from "../core-v2/kernel/contracts.ts";
 import { InMemoryOrchestrationRepository } from "../core-v2/kernel/memory-repository.ts";
 import { lookupOf, planDiscovery, specsToTasks, describeTasks } from "../core-v2/kernel/planning.ts";
 import { DEFAULT_POLICY, budgetOf } from "../core-v2/kernel/policy.ts";
@@ -44,15 +44,18 @@ import { AgentRouter } from "../core-v2/kernel/router.ts";
 import { INDEPENDENCE_GROUPS } from "../core-v2/kernel/domain.ts";
 import { syntheticRecordSet } from "../core-v2/domains/synthetic-records/fixture.ts";
 import { SyntheticRecordsPack } from "../core-v2/domains/synthetic-records/pack.ts";
-import { packResponders } from "../core-v2/domains/synthetic-records/mocks.ts";
 import { PostgresOrchestrationRepository } from "../core-v2/postgres/repository.ts";
 import { WireClient } from "../core-v2/postgres/wire.ts";
 
+import { answerFromRequest } from "./local-agent/reading-agent.ts";
+import { InMemoryMaterialResolver } from "./material/memory-resolver.ts";
+import type { StoredMaterial } from "./material/memory-resolver.ts";
 import { BudgetLedger, ceilingFor } from "./budget/ledger.ts";
 import { meteredRepository } from "./budget/metered.ts";
 import { Dispatcher, enqueueWorkflow } from "./dispatcher.ts";
 import { compilePrompt } from "./prompt-compiler.ts";
 import { DEMONSTRATION_CONFIG, DEMONSTRATION_ENVIRONMENT, DEMONSTRATION_ROUTING, NOT_A_CREDENTIAL } from "./providers/demonstration.ts";
+import type { LocalQuestion } from "./providers/local-answers.ts";
 import { LocalProviderTransport } from "./providers/local-answers.ts";
 import { buildProviderRegistry } from "./providers/registry.ts";
 import { NO_PAID_CALLS, paidCallRefusals } from "./runtime-config.ts";
@@ -92,16 +95,27 @@ export function parseArgs(argv: string[]): Arguments {
 const [, READER_B] = INDEPENDENCE_GROUPS;
 const FALSE_QUANTITY = 999;
 
-/* How the invented readers are told to be wrong. "differ" is the ordinary
-   case a comparison finds by itself; "agree" is the case this engine exists
-   for, where both readings say the same wrong thing. */
-function troubleWith(trouble: Trouble) {
-  return (packet: WorkPacket, base: AgentResultEnvelope): AgentResultEnvelope => {
-    if (trouble === "none" || packet.roleKey !== "table_reader") return base;
-    for (const claim of base.claims) {
-      if (claim.subjectKey !== "entry/E-001") continue;
-      if (trouble === "agree") claim.value = { ...claim.value, quantity: FALSE_QUANTITY, text: `${FALSE_QUANTITY} ${claim.unit ?? ""}`.trim() };
-      else if (packet.independenceGroup === READER_B) claim.value = { ...claim.value, quantity: (claim.value.quantity ?? 0) + 5, text: `${(claim.value.quantity ?? 0) + 5} ${claim.unit ?? ""}`.trim() };
+/* How an invented reader is told to MISREAD. The material it was handed is
+   correct and verified; what is scripted is the mistake, which is what a
+   model that gets it wrong actually does. "differ" is the ordinary case a
+   comparison finds by itself; "agree" is the case this engine exists for,
+   where both readings say the same wrong thing.
+
+   The second lane is told apart by the model that is answering, because that
+   is all a stand-in can see: two lanes are two providers, by construction. */
+function troubleWith(trouble: Trouble, secondLaneModel: string) {
+  return (question: LocalQuestion, base: Record<string, unknown>): Record<string, unknown> => {
+    if (trouble === "none") return base;
+    const claims = Array.isArray(base.claims) ? (base.claims as Record<string, unknown>[]) : [];
+    for (const claim of claims) {
+      if (claim.subjectKey !== "entry/E-001" || claim.predicate !== "quantity") continue;
+      const value = claim.value as { quantity: number | null; text: string | null; known: boolean; attributes?: unknown };
+      if (trouble === "agree") {
+        claim.value = { ...value, quantity: FALSE_QUANTITY, text: `${FALSE_QUANTITY} ${claim.unit ?? ""}`.trim() };
+      } else if (question.model === secondLaneModel) {
+        const wrong = (value.quantity ?? 0) + 5;
+        claim.value = { ...value, quantity: wrong, text: `${wrong} ${claim.unit ?? ""}`.trim() };
+      }
     }
     return base;
   };
@@ -110,31 +124,35 @@ function troubleWith(trouble: Trouble) {
 type World = {
   manifest: SourceManifest;
   pack: SyntheticRecordsPack;
-  /* Every packet the compiler was asked to turn into words, by task: the
-     local stand-in answers the question that was actually asked. */
-  packets: Map<string, WorkPacket>;
   compile: (packet: WorkPacket) => { system: string; user: string };
-  answerFor: (taskId: string | null) => unknown;
+  /* Where the bytes come from: the invented material, filed under the hash
+     of itself. */
+  resolver: InMemoryMaterialResolver;
+  /* What answers. It is handed the request that was actually built and
+     nothing else — no packet, no task id, no truth. */
+  answer: (question: LocalQuestion) => unknown;
 };
 
 function inventAWorld(seed: string, trouble: Trouble): World {
   const truth = syntheticRecordSet({ seed, sources: 1, sheetsPerSource: 1, entriesPerTable: 3 });
   const pack = new SyntheticRecordsPack();
   const roles = new RoleRegistry(pack);
-  const responders = packResponders(truth);
-  const script = troubleWith(trouble);
-  const packets = new Map<string, WorkPacket>();
+  const stored = new Map<string, StoredMaterial>();
+  for (const [hash, item] of truth.material) stored.set(hash, { mediaKind: item.mediaKind, mimeType: item.mimeType, bytes: item.bytes });
+  /* The second blind lane is the second configured provider. */
+  const secondLane = DEMONSTRATION_CONFIG.providers[1];
+  const misread = troubleWith(trouble, secondLane.defaultModel);
   return {
     manifest: truth.manifest,
     pack,
-    packets,
-    compile: (packet: WorkPacket) => { packets.set(packet.taskId, packet); return compilePrompt(packet, roles.role(packet.roleKey)); },
-    answerFor: (taskId: string | null) => {
-      const packet = taskId ? packets.get(taskId) : null;
-      if (!packet) return new Error("core-v2-runtime: a question arrived that names no assignment this run made");
-      const responder = responders[packet.roleKey];
-      if (!responder) return new Error(`core-v2-runtime: nothing invented answers ${packet.roleKey}`);
-      return script(packet, responder(packet));
+    compile: (packet: WorkPacket) => compilePrompt(packet, roles.role(packet.roleKey)),
+    resolver: new InMemoryMaterialResolver(stored),
+    answer: (question: LocalQuestion) => {
+      try {
+        return misread(question, answerFromRequest(question));
+      } catch (error) {
+        return new Error(`core-v2-runtime: the stand-in could not answer: ${(error as Error).message}`);
+      }
     },
   };
 }
@@ -212,9 +230,10 @@ export async function main(argv: string[]): Promise<number> {
 
   /* The stand-in that answers, and the adapters over it. One adapter per
      provider, which is what makes each provider one independence domain. */
-  const transport = new LocalProviderTransport({ answer: (question) => world.answerFor(question.taskId) });
+  const transport = new LocalProviderTransport({ answer: world.answer });
   const registry = buildProviderRegistry({
-    config: DEMONSTRATION_CONFIG, transport, compilePrompt: world.compile, routing: DEMONSTRATION_ROUTING, environment: DEMONSTRATION_ENVIRONMENT,
+    config: DEMONSTRATION_CONFIG, transport, compilePrompt: world.compile, materialResolver: world.resolver,
+    routing: DEMONSTRATION_ROUTING, environment: DEMONSTRATION_ENVIRONMENT,
   });
 
   const roles = new RoleRegistry(world.pack);

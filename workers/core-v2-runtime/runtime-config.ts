@@ -33,6 +33,35 @@ export type ProviderConfiguration = {
      before a request exists. */
   maximumInputTokens: number;
   requestTimeoutMs: number;
+  /* What may be attached to one request, and what one piece of it may weigh.
+     A ceiling that is reached refuses before submission: a request that is
+     too big is not made smaller by sending it and finding out. */
+  maximumMaterialBytes: number;
+  maximumMaterialBytesPerItem: number;
+  /* The media types this provider will be sent. Empty is not "anything";
+     empty is "text only", and even that has to be listed. */
+  supportedMediaTypes: string[];
+  /* What each model can actually be asked to do, per model, from the
+     operator. Nothing in this package infers a capability from a model's
+     name: a request that would combine things a model cannot combine is
+     refused before submission, with the combination named. */
+  capabilities: Record<string, ModelCapabilities>;
+};
+
+/* Deliberately about the request, not about the provider: every one of these
+   is something an adapter would otherwise put in a request and find out
+   about from a 400. */
+export type ModelCapabilities = {
+  /* May the request insist on one specific tool or function being called? */
+  forcedToolChoice: boolean;
+  /* May a tool schema or an output schema be declared strict — the provider
+     validating the answer against it rather than being asked nicely? */
+  strictSchema: boolean;
+  /* May images be attached at all? */
+  images: boolean;
+  /* What this model does about its own reasoning. "always_on" cannot be
+     turned off and may not be combinable with everything else. */
+  thinking: "none" | "optional" | "always_on";
 };
 
 /* Operator-supplied, with a date, because prices change and a run priced last
@@ -48,7 +77,16 @@ export type ModelPrice = {
   currency: string;
   inputPerMillionTokens: number;
   outputPerMillionTokens: number;
+  /* What a token served from a cache costs. Optional: without one, a cache
+     read is priced at the full input rate, which is an upper bound. */
   cachedInputPerMillionTokens?: number;
+  /* What WRITING a token into a cache costs. Optional, and its absence is
+     not an upper bound — a cache write can cost more than ordinary input —
+     so an attempt that wrote to a cache under a price that does not name
+     this rate cannot be settled at all. */
+  cacheWritePerMillionTokens?: number;
+  /* What a reasoning token costs when a provider reports it separately from
+     its visible output. Without one, reasoning is priced as output. */
   reasoningPerMillionTokens?: number;
 };
 
@@ -151,24 +189,15 @@ export function costCeiling(config: RuntimeConfig, providerId: string, model: st
   return { providerId, model, currency: price.currency, maximumInputTokens: inputTokens, maximumOutputTokens: outputTokens, maximumCost, basis: price };
 }
 
-/* What it really cost, from what the answering system reported. Counts it
-   cannot supply are counted at zero rather than guessed; a run whose provider
-   reports nothing settles at zero and says so in its usage. */
-export function settledCost(config: RuntimeConfig, providerId: string, model: string, usage: Record<string, unknown>, at?: Date): number | null {
-  const price = priceFor(config, providerId, model, at);
-  if (!price) return null;
-  const n = (key: string): number => {
-    const value = usage[key];
-    return typeof value === "number" && Number.isFinite(value) && value > 0 ? value : 0;
-  };
-  const perMillion = (tokens: number, rate: number) => (tokens / 1_000_000) * rate;
-  return round6(
-    perMillion(n("input_tokens"), price.inputPerMillionTokens)
-    + perMillion(n("output_tokens"), price.outputPerMillionTokens)
-    + perMillion(n("cached_input_tokens"), price.cachedInputPerMillionTokens ?? price.inputPerMillionTokens)
-    + perMillion(n("reasoning_tokens"), price.reasoningPerMillionTokens ?? price.outputPerMillionTokens),
-  );
-}
+/* WHAT AN ATTEMPT REALLY COST IS NOT COMPUTED HERE ANY MORE.
+   It used to be, by adding input, cached input, output and reasoning
+   together — which double-counts every provider whose cached tokens are
+   already inside its input count and whose reasoning tokens are already
+   inside its output count, which is two of the three this package speaks to.
+   What replaced it is budget/usage.ts, which normalises per provider first
+   and prices the components afterwards, and budget/ledger.ts, which prices
+   from the rates stored on the reservation rather than from this
+   configuration as it stands now. */
 
 function round6(n: number): number {
   return Math.round(n * 1e6) / 1e6;
@@ -192,6 +221,13 @@ export function configurationProblems(config: RuntimeConfig): string[] {
     if (!(p.maximumOutputTokens > 0)) problems.push(`${p.providerId} has no output ceiling`);
     if (!(p.maximumInputTokens > 0)) problems.push(`${p.providerId} has no input ceiling`);
     if (!(p.requestTimeoutMs > 0)) problems.push(`${p.providerId} has no request timeout`);
+    if (!(p.maximumMaterialBytes > 0)) problems.push(`${p.providerId} has no ceiling on how much material one request may carry`);
+    if (!(p.maximumMaterialBytesPerItem > 0)) problems.push(`${p.providerId} has no ceiling on how much one piece of material may weigh`);
+    if (p.maximumMaterialBytesPerItem > p.maximumMaterialBytes) problems.push(`${p.providerId} allows one piece of material to be larger than a whole request`);
+    if (p.supportedMediaTypes.length === 0) problems.push(`${p.providerId} is configured to be sent no kind of material at all`);
+    for (const model of p.models) {
+      if (!p.capabilities[model]) problems.push(`${p.providerId} does not say what ${model} can be asked to do`);
+    }
     for (const model of p.models) {
       if (!priceFor(config, p.providerId, model)) problems.push(`${p.providerId}/${model} has no price, so nothing can be reserved for it`);
     }

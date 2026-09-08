@@ -10,8 +10,9 @@
  * does with that.
  */
 import type { SegmentDescriptor, SourceDescriptor, SourceManifest } from "../../kernel/contracts.ts";
-import { canonical, entityId, sha256 } from "../../kernel/ids.ts";
+import { entityId, sha256, sha256Bytes } from "../../kernel/ids.ts";
 import type { Bbox } from "../../kernel/locators.ts";
+import { IMAGE_MIME, TEXT_MIME, renderNoteText, renderSheet, renderSource, renderTable, renderTextAsImage } from "./material.ts";
 
 export type Entry = { id: string; category: string; quantity: number; unit: string };
 export type Note = { entryId: string; status: string };
@@ -45,8 +46,19 @@ export type RecordSetOptions = {
   categories?: string[];
 };
 
+/* The bytes a reader is actually handed, filed under the hash of those
+   bytes — which is exactly how content-addressed storage works, and why the
+   hash a packet carries can be checked against what came back. */
+export type FixtureMaterial = {
+  mediaKind: "text" | "image";
+  mimeType: string;
+  bytes: Uint8Array;
+};
+
 export type RecordSet = {
   manifest: SourceManifest;
+  /* By content hash. Nothing in here is anybody's document. */
+  material: Map<string, FixtureMaterial>;
   sheets: Sheet[];
   bySheetHash: Map<string, Sheet>;
   byRegionHash: Map<string, Region>;
@@ -78,6 +90,7 @@ export function syntheticRecordSet(options: RecordSetOptions = {}): RecordSet {
   const workflowId = options.workflowId ?? entityId("fixture-workflow", seed);
 
   const sheets: Sheet[] = [];
+  const material = new Map<string, FixtureMaterial>();
   const entries: Entry[] = [];
   const descriptors: SourceDescriptor[] = [];
   let entryNo = 0;
@@ -97,20 +110,36 @@ export function syntheticRecordSet(options: RecordSetOptions = {}): RecordSet {
       }
       const noted = tableEntries[Math.floor(next() * tableEntries.length)];
       const note: Note = { entryId: noted.id, status: next() < 0.7 ? "current" : "superseded" };
+      /* Material first, then the hash of it: a segment is named by what it
+         holds, so a reader handed the bytes can prove it was handed the
+         right ones. The table is text; the note is an image whose pixels
+         carry its characters. */
       const table: Region = { kind: "table", label: `table ${p + 1}`, ordinal: 0, bbox: [0.05, 0.1, 0.95, 0.6], contentHash: "", entries: tableEntries, note: null };
-      table.contentHash = `fx-${sha256(canonical({ seed, s, p, table: tableEntries })).slice(0, 24)}`;
+      const tableBytes = new Uint8Array(Buffer.from(renderTable(table), "utf8"));
+      table.contentHash = sha256Bytes(tableBytes);
+      material.set(table.contentHash, { mediaKind: "text", mimeType: TEXT_MIME, bytes: tableBytes });
+
       const noteRegion: Region = { kind: "note", label: `note ${p + 1}`, ordinal: 1, bbox: [0.05, 0.65, 0.95, 0.9], contentHash: "", entries: [], note };
-      noteRegion.contentHash = `fx-${sha256(canonical({ seed, s, p, note })).slice(0, 24)}`;
+      const noteBytes = renderTextAsImage(renderNoteText(note, table.contentHash));
+      noteRegion.contentHash = sha256Bytes(noteBytes);
+      material.set(noteRegion.contentHash, { mediaKind: "image", mimeType: IMAGE_MIME, bytes: noteBytes });
+
       const sheet: Sheet = { sourceId, sourceOrdinal: s, label: `sheet ${p + 1}`, ordinal: p, contentHash: "", regions: [table, noteRegion] };
-      sheet.contentHash = `fx-${sha256(canonical({ seed, s, p, regions: [table.contentHash, noteRegion.contentHash] })).slice(0, 24)}`;
+      const sheetBytes = new Uint8Array(Buffer.from(renderSheet(sheet), "utf8"));
+      sheet.contentHash = sha256Bytes(sheetBytes);
+      material.set(sheet.contentHash, { mediaKind: "text", mimeType: TEXT_MIME, bytes: sheetBytes });
       sourceSheets.push(sheet);
       declared.push({ sourceId, parentSegmentId: null, segmentKind: "sheet", label: sheet.label, ordinal: p, locator: { bbox: [0, 0, 1, 1] }, contentHash: sheet.contentHash });
     }
     sheets.push(...sourceSheets);
+    const label = `record set ${String.fromCharCode(65 + s)}`;
+    const sourceBytes = new Uint8Array(Buffer.from(renderSource(label, sourceSheets), "utf8"));
+    const sourceHash = sha256Bytes(sourceBytes);
+    material.set(sourceHash, { mediaKind: "text", mimeType: TEXT_MIME, bytes: sourceBytes });
     descriptors.push({
-      sourceId, ordinal: s, sourceKind: "record_set", label: `record set ${String.fromCharCode(65 + s)}`,
+      sourceId, ordinal: s, sourceKind: "record_set", label,
       uri: `fixture://synthetic-records/${sha256(seed).slice(0, 8)}/${s}`,
-      contentHash: `fx-${sha256(canonical({ seed, s, sheets: sourceSheets.map((x) => x.contentHash) })).slice(0, 24)}`, hashAlgorithm: "sha-256",
+      contentHash: sourceHash, hashAlgorithm: "sha-256",
       objectVersionId: null, byteSize: 4096 * sheetsPerSource, media: { fixture: true, sheet_count: sheetsPerSource }, declaredSegments: declared,
     });
   }
@@ -126,7 +155,7 @@ export function syntheticRecordSet(options: RecordSetOptions = {}): RecordSet {
     requestedScope: { fixture: seed, categories }, sources: descriptors,
   };
   return {
-    manifest, sheets, entries, totals, categories,
+    manifest, sheets, entries, totals, categories, material,
     bySheetHash: new Map(sheets.map((s) => [s.contentHash, s])),
     byRegionHash: new Map(sheets.flatMap((s) => s.regions.map((r) => [r.contentHash, r] as const))),
   };

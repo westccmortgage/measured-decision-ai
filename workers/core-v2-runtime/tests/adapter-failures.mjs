@@ -22,6 +22,9 @@
 import { readFileSync } from "node:fs";
 import { harness, closeNetwork } from "../../core-v2/tests/harness.mjs";
 import { FixtureTransport, jsonResponse } from "../transport/fixture.ts";
+import { sha256Bytes } from "../../core-v2/kernel/ids.ts";
+import { InMemoryMaterialResolver } from "../material/memory-resolver.ts";
+import { normalizeUsage } from "../providers/usage-dialects.ts";
 import { NetworkNotAuthorized, SealedTransport } from "../transport/transport.ts";
 import { failureCode, ProviderExecutor } from "../providers/provider.ts";
 import { AnthropicProtocol } from "../providers/anthropic.ts";
@@ -55,6 +58,10 @@ const configurationOf = (p, overrides = {}) => ({
   maximumOutputTokens: OUTPUT_CEILING,
   maximumInputTokens: 60000,
   requestTimeoutMs: 30000,
+  maximumMaterialBytes: 64 * 1024,
+  maximumMaterialBytesPerItem: 64 * 1024,
+  supportedMediaTypes: ["text/plain; charset=utf-8", "image/png"],
+  capabilities: { [p.fixtures.askedModel]: { forcedToolChoice: true, strictSchema: true, images: true, thinking: "optional" } },
   ...overrides,
 });
 
@@ -81,7 +88,7 @@ const runtimeConfig = (overrides = {}) => ({
 const tickingClock = () => ({ t: 0, now() { const v = this.t; this.t += 7; return v; }, async sleep() {} });
 
 let packetCount = 0;
-const packet = () => {
+const packet = (sources) => {
   packetCount++;
   return {
     packetVersion: "core-v2.packet.2",
@@ -94,7 +101,7 @@ const packet = () => {
     taskType: "synthetic:read_table",
     subjectKey: "subject/one",
     objective: "read one table",
-    sources: [{ sourceId: "src-1", segmentId: "seg-1", kind: "segment", sourceKind: "record_set", segmentKind: "table", parentSegmentId: null, label: null, ordinal: 0, locator: { bbox: [0, 0, 1, 1] }, contentHash: "h1" }],
+    sources: sources ?? [{ sourceId: "src-1", segmentId: "seg-1", kind: "segment", sourceKind: "record_set", segmentKind: "table", parentSegmentId: null, label: null, ordinal: 0, locator: { bbox: [0, 0, 1, 1] }, contentHash: MATERIAL_HASH }],
     dependencies: [],
     independenceGroup: "reader-a",
     blindContext: true,
@@ -107,6 +114,35 @@ const packet = () => {
 };
 
 const compile = () => ({ system: "Answer only in the shape you were given.", user: "Read the table." });
+
+/* The one piece of material these packets authorise, filed under the hash of
+   its own bytes — and the resolvers that get it wrong in each of the ways a
+   resolver can. */
+const MATERIAL_TEXT = "entry     category   quantity  unit\nE-001     alpha      12        units\n";
+const MATERIAL_BYTES = new Uint8Array(Buffer.from(MATERIAL_TEXT, "utf8"));
+const MATERIAL_HASH = sha256Bytes(MATERIAL_BYTES);
+const materialStore = () => new Map([[MATERIAL_HASH, { mediaKind: "text", mimeType: "text/plain; charset=utf-8", bytes: MATERIAL_BYTES }]]);
+const resolver = () => new InMemoryMaterialResolver(materialStore());
+
+/* A resolver that answers however a test tells it to. */
+const wayward = (answer) => ({ resolve: async (sources) => answer(sources) });
+
+/* What a correct resolver would return for one reference. */
+const material = (reference) => ({
+  sourceId: reference.sourceId, segmentId: reference.segmentId, mediaKind: "text",
+  mimeType: "text/plain; charset=utf-8", contentHash: reference.contentHash,
+  byteLength: MATERIAL_BYTES.length, locator: reference.locator, content: { text: MATERIAL_TEXT },
+});
+
+/* A reference to one segment, naming whatever hash a case needs. */
+const referenceTo = (contentHash) => [{
+  sourceId: "src-1", segmentId: "seg-1", kind: "segment", sourceKind: "record_set", segmentKind: "table",
+  parentSegmentId: null, label: null, ordinal: 0, locator: { bbox: [0, 0, 1, 1] }, contentHash,
+}];
+
+/* Eight bytes that are not text: a PNG signature and a little more. */
+const PNG_BYTES = new Uint8Array([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0x00, 0x11]);
+const PNG_HASH = sha256Bytes(PNG_BYTES);
 
 const held = (signal) => {
   const facts = [];
@@ -126,6 +162,7 @@ async function run(p, options = {}) {
     transport,
     protocol: p.protocol(),
     compilePrompt: options.compilePrompt ?? compile,
+    materialResolver: options.materialResolver ?? resolver(),
     families: ["reader-family-one"],
     model: options.model,
     clock: tickingClock(),
@@ -133,7 +170,7 @@ async function run(p, options = {}) {
     environment: options.environment ?? environment,
   });
   const record = held(options.signal);
-  const envelope = await executor.execute(packet(), record.context);
+  const envelope = await executor.execute(packet(options.sources), record.context);
   return { envelope, transport, facts: record.facts, merged: record.merged(), code: failureCode(envelope) };
 }
 
@@ -316,8 +353,16 @@ for (const p of PROVIDERS) {
     t.check("and it says so in one word", result.code === "output_ceiling_reached", result.code);
     t.check("the part that was written is preserved rather than thrown away",
       result.envelope.limitations.some((l) => l.includes("\"claimKey\":\"c1\"")), result.envelope.limitations[2]);
-    t.check("the usage is preserved — a truncated answer still cost what it cost",
-      result.merged.usage.input_tokens === 1200 && result.merged.usage.output_tokens === OUTPUT_CEILING, JSON.stringify(result.merged.usage));
+    {
+      /* Preserved in the provider's own words, which are not the same words
+         from one provider to the next — and then read by the one place that
+         knows what each of them means. */
+      const billable = normalizeUsage(p.providerId, result.merged.usage);
+      t.check("the usage is preserved — a truncated answer still cost what it cost",
+        Object.keys(result.merged.usage).length > 0 && billable.complete
+        && billable.visibleOutputTokens + billable.reasoningOutputTokens === OUTPUT_CEILING,
+        JSON.stringify(result.merged.usage));
+    }
     t.check("the reason it stopped is the provider's own word", typeof result.merged.stopReason === "string" && result.merged.stopReason.length > 0, result.merged.stopReason);
     /* Two of these three fixtures write an identifier on a truncated answer
        and one does not. Neither case is allowed to be made up. */
@@ -399,6 +444,129 @@ t.section("a refusal at the door is not a provider's refusal");
   const result = await run(p, { transport: sealed });
   t.check("and the adapter reports it as its own kind of failure, not as the provider declining",
     result.code === "network_not_authorized" && result.code !== "provider_refused");
+}
+
+/* ══════════════════════ the material, and every way it can be wrong ══════ */
+
+t.section("nothing is sent unless the material is exactly what the assignment names");
+for (const p of PROVIDERS) {
+  const cases = [
+    ["nothing came back for a segment the assignment requires",
+      wayward(async () => []), /no material came back/],
+    ["the resolver returned something the assignment does not authorise",
+      wayward(async (sources) => [
+        material(sources[0]),
+        { ...material(sources[0]), segmentId: "seg-somebody-else", sourceId: "src-2" },
+      ]), /does not authorise/],
+    ["the bytes are not the bytes the hash beside them names",
+      wayward(async (sources) => [{ ...material(sources[0]), content: { text: "entry     category   quantity  unit\nE-001     alpha      13        units\n" } }]),
+      /does not hash to what the resolver says/],
+    ["the resolver's own hash does not match its own bytes",
+      wayward(async (sources) => [{ ...material(sources[0]), contentHash: sha256Bytes(new Uint8Array([1, 2, 3])) }]),
+      /does not hash to what the resolver says/],
+    ["the material is self-consistent but is not what the assignment names",
+      wayward(async (sources) => {
+        const other = new Uint8Array(Buffer.from("entry     category   quantity  unit\nE-001     alpha      13        units\n", "utf8"));
+        return [{ ...material(sources[0]), contentHash: sha256Bytes(other), byteLength: other.length, content: { bytes: other } }];
+      }), /is not what this assignment names/],
+    ["the material covers a wider place than the assignment authorises",
+      wayward(async (sources) => [{ ...material(sources[0]), locator: { bbox: [0, 0, 2, 2] } }]), /covers a different place/],
+    ["the material is of a type this provider is not configured to be sent",
+      wayward(async (sources) => [{ ...material(sources[0]), mediaKind: "image", mimeType: "image/tiff", content: { bytes: MATERIAL_BYTES } }]),
+      /is not a|not configured to be sent/],
+    ["the material says one size and is another",
+      wayward(async (sources) => [{ ...material(sources[0]), byteLength: 3 }]), /says it is 3 bytes/],
+    ["the resolver could not fetch anything at all",
+      { resolve: async () => { throw new Error("the store is unreachable"); } }, /could not be fetched/],
+  ];
+  /* Material that is exactly what the assignment names, and still too big
+     to send. Its reference carries its own hash, so the only thing wrong
+     with it is its size. */
+  const big = new Uint8Array(Buffer.alloc(70 * 1024, 0x61));
+  cases.push(["the material is larger than one request may carry",
+    wayward(async (sources) => [{
+      sourceId: sources[0].sourceId, segmentId: sources[0].segmentId, mediaKind: "text",
+      mimeType: "text/plain; charset=utf-8", contentHash: sha256Bytes(big), byteLength: big.length,
+      locator: sources[0].locator, content: { bytes: big },
+    }]), /at most \d+ may be sent/, referenceTo(sha256Bytes(big))]);
+
+  for (const [what, resolverForCase, reason, sources] of cases) {
+    const result = await run(p, { materialResolver: resolverForCase, sources });
+    const expected = /could not be fetched/.test(String(reason)) ? "material_not_resolved" : "material_refused";
+    t.check(`${p.providerId}: ${what} — nothing is sent`,
+      result.transport.sent.length === 0 && result.code === expected,
+      `${result.transport.sent.length} requests, code ${result.code}`);
+    t.check(`${p.providerId}: ${what} — and it says which, in a sentence`,
+      result.envelope.limitations.some((line) => reason.test(line)),
+      result.envelope.limitations.join(" | ").slice(0, 160));
+    neverASuccess(`${p.providerId}: ${what}`, result);
+  }
+}
+
+t.section("a model that cannot be asked what this adapter asks is refused before submission");
+for (const p of PROVIDERS) {
+  const model = p.fixtures.askedModel;
+  const cannot = (over) => configurationOf(p, { capabilities: { [model]: { forcedToolChoice: true, strictSchema: true, images: true, thinking: "optional", ...over } } });
+
+  const noStrict = await run(p, { configuration: cannot({ strictSchema: false }) });
+  t.check(`${p.providerId}: a model that cannot take a strict schema is refused rather than quietly asked without one`,
+    noStrict.transport.sent.length === 0 && noStrict.code === "provider_misconfigured"
+    && noStrict.envelope.limitations.some((l) => /strict/i.test(l)),
+    `${noStrict.code}: ${noStrict.envelope.limitations[0]}`);
+
+  const noImages = await run(p, {
+    configuration: cannot({ images: false }),
+    sources: referenceTo(PNG_HASH),
+    materialResolver: wayward(async (sources) => [{
+      sourceId: sources[0].sourceId, segmentId: sources[0].segmentId, mediaKind: "image", mimeType: "image/png",
+      contentHash: PNG_HASH, byteLength: PNG_BYTES.length, locator: sources[0].locator, content: { bytes: PNG_BYTES },
+    }]),
+  });
+  t.check(`${p.providerId}: a model that cannot be sent images is not sent one`,
+    noImages.transport.sent.length === 0 && noImages.code === "provider_misconfigured"
+    && noImages.envelope.limitations.some((l) => /image/i.test(l)),
+    `${noImages.code}: ${noImages.envelope.limitations[0]}`);
+
+  const unknown = await run(p, { configuration: configurationOf(p, { capabilities: {} }) });
+  t.check(`${p.providerId}: a model the operator has not described is not guessed at`,
+    unknown.transport.sent.length === 0 && unknown.code === "provider_misconfigured",
+    `${unknown.code}`);
+}
+{
+  const anthropic = PROVIDERS[0];
+  const model = anthropic.fixtures.askedModel;
+  const forced = await run(anthropic, {
+    configuration: configurationOf(anthropic, { capabilities: { [model]: { forcedToolChoice: false, strictSchema: true, images: true, thinking: "always_on" } } }),
+  });
+  t.check("a model that thinks on every request and refuses a forced tool choice is refused, with the combination named",
+    forced.transport.sent.length === 0 && forced.code === "provider_misconfigured"
+    && forced.envelope.limitations.some((l) => /forced tool choice/i.test(l))
+    && forced.envelope.limitations.some((l) => /cannot be combined|thinks on every request/i.test(l)),
+    forced.envelope.limitations.join(" | ").slice(0, 200));
+}
+
+t.section("the key is read last, and only for a request that is otherwise ready to send");
+for (const p of PROVIDERS) {
+  /* An environment that records every lookup, so "was the key read" is a
+     question about what happened rather than about what was intended. */
+  const looked = [];
+  const watched = new Proxy({ ...environment }, {
+    get: (target, name) => { if (typeof name === "string") looked.push(name); return target[name]; },
+    has: (target, name) => name in target,
+  });
+  const refusedEarly = await run(p, { environment: watched, materialResolver: wayward(async () => []) });
+  t.check(`${p.providerId}: a run that refuses over its material never reads the key at all`,
+    refusedEarly.code === "material_refused" && !looked.includes(p.environmentVariable), looked.join(","));
+
+  const looked2 = [];
+  const watched2 = new Proxy({ ...environment }, {
+    get: (target, name) => { if (typeof name === "string") looked2.push(name); return target[name]; },
+    has: (target, name) => name in target,
+  });
+  const sent = await run(p, { environment: watched2 });
+  t.check(`${p.providerId}: and a run that is ready to send reads it exactly once`,
+    sent.code === null && looked2.filter((name) => name === p.environmentVariable).length === 1,
+    `${looked2.filter((name) => name === p.environmentVariable).length} lookups`);
 }
 
 t.section("every door stayed closed");

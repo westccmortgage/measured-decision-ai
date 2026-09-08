@@ -19,6 +19,9 @@ run() {
 }
 
 run "the wall between the kernel and the things that cost money"        boundary.mjs
+run "what an agent is given to read, and what is checked first"         material.mjs
+run "the one door that can be opened, and every lock on it"             https-transport.mjs
+run "what the counts mean, and why adding them up is wrong"             billing.mjs
 run "one prompt compiler, and what it may never say"                    prompt-compiler.mjs
 run "three adapters, one contract"                                      adapters.mjs
 run "every way an answer can go wrong"                                  adapter-failures.mjs
@@ -26,6 +29,9 @@ run "the durable budget: reserved before, settled after, never twice"   budget.m
 run "the durable dispatcher, against a real database"                   dispatcher.mjs
 run "one whole workflow, offline, through three adapters and a record"  e2e.mjs
 run "the operator's commands, run as programs"                          cli.mjs
+
+printf "\n\033[1m%s\033[0m\n" "── the kernel and the runtime, type-checked together"
+if bash ./typecheck.sh; then :; else fail=1; fi
 
 echo
 echo "────────────────────────────────────────────"

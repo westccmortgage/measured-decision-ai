@@ -5082,6 +5082,76 @@ select pg_temp.check('a decided decision counts its supporting claims under a lo
 select pg_temp.check('and a superseded claim looks at the decisions on it under one',
   pg_get_functiondef('public.core_v2_check_superseded_claim_decisions'::regproc) ~* 'for share of d');
 
+-- ────────────────────── the execution layer's own doors (migration 059)
+--
+-- The money tables are reachable only through their doors, and only by the
+-- service role. What the doors DO is proved against a real cluster in
+-- workers/core-v2-runtime/tests/budget.mjs; what is proved here is the part
+-- a test cannot: who may touch them at all, and the rules the schema itself
+-- refuses to let a caller break.
+-- This file grants every table to `authenticated` on purpose (see the top),
+-- so what keeps a person out of the money tables is row-level security, and
+-- that is what is checked: a member of the organisation may read what it
+-- spent and may write nothing at all. Every write goes through a door.
+reset role;
+set local role authenticated;
+set local test.uid = '11111111-1111-1111-1111-111111111111';
+select pg_temp.refused_because('nobody who logs in may write a budget — every write goes through a door',
+  $$insert into public.workflow_cost_budgets(workflow_id, organization_id, currency, authorized_maximum, maximum_per_attempt)
+    values ('0c0e0000-0000-0000-0000-000000000001', 'aaaaaaaa-0000-0000-0000-000000000001', 'USD', 1, 1)$$,
+  'row-level security');
+select pg_temp.refused_because('nor a reservation against an attempt that really exists',
+  $$insert into public.attempt_cost_reservations(attempt_id, organization_id, workflow_id, reserved_cost)
+    values ('0d0e0000-0000-0000-0000-000000000001', 'aaaaaaaa-0000-0000-0000-000000000001',
+            '0c0e0000-0000-0000-0000-000000000001', 1)$$,
+  'row-level security');
+select pg_temp.check('and neither table may be emptied by anyone who logs in',
+  (select count(*) from public.workflow_cost_budgets) = 0);
+reset role;
+
+select pg_temp.check('row-level security is on for both money tables, which is what decides who may read them',
+  (select count(*) from pg_class
+    where relname in ('workflow_cost_budgets', 'attempt_cost_reservations')
+      and relnamespace = 'public'::regnamespace and relrowsecurity) = 2);
+select pg_temp.check('every door of the execution layer is granted to the service role and to nobody else',
+  (select count(distinct p.proname) from pg_proc p, aclexplode(p.proacl) a
+    where p.pronamespace = 'public'::regnamespace
+      and p.proname in ('core_v2_reserve_attempt_cost', 'core_v2_settle_attempt_cost',
+                        'core_v2_release_attempt_cost', 'core_v2_attempt_cost_needs_attention',
+                        'core_v2_stop_workflow_spending', 'core_v2_authorize_workflow_spending',
+                        'core_v2_claim_next_workflow', 'core_v2_resumable_workflows')
+      and pg_get_userbyid(a.grantee) = 'service_role') = 8
+  and not exists (
+    select 1 from pg_proc p, aclexplode(p.proacl) a
+     where p.pronamespace = 'public'::regnamespace
+       and p.proname in ('core_v2_reserve_attempt_cost', 'core_v2_settle_attempt_cost',
+                         'core_v2_release_attempt_cost', 'core_v2_attempt_cost_needs_attention',
+                         'core_v2_stop_workflow_spending', 'core_v2_authorize_workflow_spending',
+                         'core_v2_claim_next_workflow', 'core_v2_resumable_workflows')
+       and (a.grantee = 0 or pg_get_userbyid(a.grantee) in ('anon', 'authenticated'))));
+select pg_temp.check('a settlement must show its working: the components it was priced from and the version of the rules',
+  pg_get_functiondef('public.core_v2_settle_attempt_cost'::regproc)
+    ~* 'p_normalized_usage is null or p_normalization_version is null');
+select pg_temp.check('and the schema refuses a settled row that does not carry them',
+  exists (select 1 from pg_constraint
+           where conname = 'attempt_cost_reservations_settled_shows_its_working'
+             and conrelid = 'public.attempt_cost_reservations'::regclass));
+select pg_temp.check('a reservation priced in one currency cannot be taken against a budget authorised in another',
+  pg_get_functiondef('public.core_v2_reserve_attempt_cost'::regproc)
+    ~* 'reservation refused: this attempt is priced in');
+select pg_temp.check('a hold is given back only for an attempt that was never sent, or one reconciled as never started',
+  pg_get_functiondef('public.core_v2_release_attempt_cost'::regproc)
+    ~* 'core_v2_attempt_submitted\(attempt\.state\)');
+select pg_temp.check('and an attempt nobody knows the outcome of keeps holding its money',
+  pg_get_functiondef('public.core_v2_release_attempt_cost'::regproc)
+    ~* 'nobody knows what became of attempt');
+select pg_temp.check('money waiting for somebody is money still held — the two cannot disagree',
+  exists (select 1 from pg_constraint
+           where conname = 'attempt_cost_reservations_attention_is_open'
+             and conrelid = 'public.attempt_cost_reservations'::regclass));
+select pg_temp.check('the provider facts on an attempt are written once and never rewritten',
+  pg_get_functiondef('public.core_v2_guard_attempt_provider_facts'::regproc) ~* 'is distinct from');
+
 -- ──────────────────────────────────────────────────────── V1 is where it was
 select pg_temp.check('V1 keeps every row it had — Core V2 stands beside it, not on it',
   pg_temp.v1_fingerprint() = (select fingerprint from core_v2_before));
