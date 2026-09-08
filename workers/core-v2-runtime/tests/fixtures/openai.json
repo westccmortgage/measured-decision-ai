@@ -1,0 +1,132 @@
+{
+  "_": "INVENTED. Nothing here was copied from a provider: it is what this provider's answers are shaped like, written by hand, with synthetic ids, synthetic model names and synthetic counts, so that a test can hold an adapter to the shape without ever asking anyone anything.",
+  "askedModel": "beta-reader-1",
+  "reportedModel": "beta-reader-1-2026-05-12",
+  "requestId": "resp_beta_5c2a80",
+  "good": {
+    "status": 200,
+    "headers": { "content-type": "application/json" },
+    "body": {
+      "id": "resp_beta_5c2a80",
+      "object": "response",
+      "model": "beta-reader-1-2026-05-12",
+      "status": "completed",
+      "incomplete_details": null,
+      "output": [
+        {
+          "id": "msg_beta_1",
+          "type": "message",
+          "role": "assistant",
+          "status": "completed",
+          "content": [
+            {
+              "type": "output_text",
+              "text": "{\"outcome\":\"completed\",\"claims\":[{\"claimKey\":\"c1\",\"subjectType\":\"entry\",\"subjectKey\":\"entry/E-001\",\"predicate\":\"recorded_amount\",\"value\":{\"known\":true,\"quantity\":12,\"text\":\"12 units\"},\"unit\":\"units\",\"observationBasis\":\"observed\",\"scope\":{\"table\":\"t1\"},\"anchorKeys\":[\"a1\"]}],\"anchors\":[{\"anchorKey\":\"a1\",\"sourceKind\":\"segment_locator\",\"sourceId\":\"src-1\",\"segmentId\":\"seg-1\",\"locator\":{\"bbox\":[0.1,0.2,0.3,0.4]},\"quotedText\":\"12 units\"}],\"assessments\":[],\"limitations\":[]}"
+            }
+          ]
+        }
+      ],
+      "usage": {
+        "input_tokens": 1200,
+        "input_tokens_details": { "cached_tokens": 800 },
+        "output_tokens": 340,
+        "output_tokens_details": { "reasoning_tokens": 96 },
+        "total_tokens": 1540
+      }
+    }
+  },
+  "refusal": {
+    "status": 200,
+    "headers": { "content-type": "application/json" },
+    "body": {
+      "id": "resp_beta_refuse",
+      "object": "response",
+      "model": "beta-reader-1-2026-05-12",
+      "status": "completed",
+      "incomplete_details": null,
+      "output": [
+        {
+          "id": "msg_beta_refuse",
+          "type": "message",
+          "role": "assistant",
+          "status": "completed",
+          "content": [
+            { "type": "refusal", "refusal": "I will not answer this request." }
+          ]
+        }
+      ],
+      "usage": { "input_tokens": 1200, "output_tokens": 9 }
+    }
+  },
+  "outputCeiling": {
+    "status": 200,
+    "headers": { "content-type": "application/json" },
+    "body": {
+      "id": "resp_beta_ceiling",
+      "object": "response",
+      "model": "beta-reader-1-2026-05-12",
+      "status": "incomplete",
+      "incomplete_details": { "reason": "max_output_tokens" },
+      "output": [
+        {
+          "id": "msg_beta_ceiling",
+          "type": "message",
+          "role": "assistant",
+          "status": "incomplete",
+          "content": [
+            { "type": "output_text", "text": "{\"outcome\":\"completed\",\"claims\":[{\"claimKey\":\"c1\",\"subjectKey\":\"entry/E-001\",\"value\":{\"known\":true,\"quantity\":1" }
+          ]
+        }
+      ],
+      "usage": {
+        "input_tokens": 1200,
+        "input_tokens_details": { "cached_tokens": 800 },
+        "output_tokens": 4096,
+        "output_tokens_details": { "reasoning_tokens": 512 }
+      }
+    }
+  },
+  "malformedAnswer": {
+    "status": 200,
+    "headers": { "content-type": "application/json" },
+    "body": {
+      "id": "resp_beta_malformed",
+      "object": "response",
+      "model": "beta-reader-1-2026-05-12",
+      "status": "completed",
+      "incomplete_details": null,
+      "output": [
+        {
+          "id": "msg_beta_malformed",
+          "type": "message",
+          "role": "assistant",
+          "status": "completed",
+          "content": [
+            { "type": "output_text", "text": "Here is what I read: entry E-001 shows 12 units." }
+          ]
+        }
+      ],
+      "usage": { "input_tokens": 1200, "output_tokens": 14 }
+    }
+  },
+  "malformedBody": {
+    "status": 200,
+    "headers": { "content-type": "text/plain" },
+    "body": "not an answer, and not JSON either"
+  },
+  "unauthorized": {
+    "status": 401,
+    "headers": { "content-type": "application/json", "x-request-id": "resp_beta_401" },
+    "body": { "error": { "message": "the credential presented was not accepted", "type": "invalid_request_error", "code": "invalid_credential" } }
+  },
+  "rateLimited": {
+    "status": 429,
+    "headers": { "content-type": "application/json", "x-request-id": "resp_beta_429", "retry-after": "1" },
+    "body": { "error": { "message": "too many requests were made; this one was not taken", "type": "rate_limit_error", "code": "rate_limit_exceeded" } }
+  },
+  "serverError": {
+    "status": 503,
+    "headers": { "content-type": "application/json", "x-request-id": "resp_beta_503" },
+    "body": { "error": { "message": "the service is temporarily unable to answer", "type": "server_error", "code": null } }
+  }
+}

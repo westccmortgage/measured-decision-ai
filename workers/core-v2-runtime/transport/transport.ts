@@ -45,11 +45,33 @@ export class NetworkNotAuthorized extends Error {
   }
 }
 
+/* A transport that failed, saying the one thing only it can know: whether any
+   of the request left this machine. Everything downstream turns on it — a
+   fault before submission is a known failure and costs nothing, and a fault
+   after it is an outcome nobody knows and may already have been paid for. A
+   transport that cannot tell says nothing, and the caller must assume the
+   expensive answer. */
+export class TransportFault extends Error {
+  readonly beforeSubmission: boolean;
+  readonly cause?: unknown;
+  constructor(message: string, beforeSubmission: boolean, cause?: unknown) {
+    super(message);
+    this.beforeSubmission = beforeSubmission;
+    this.cause = cause;
+  }
+}
+
+/* True only when the transport said so. Silence means "unknown", which the
+   caller must treat as "it may have arrived". */
+export function failedBeforeSubmission(error: unknown): boolean {
+  return error instanceof TransportFault && error.beforeSubmission === true;
+}
+
 /* Anything that looks like a credential, and the names of the headers that
    normally carry one. Matched on the header name, so a provider that invents
    a new one still has to be added here deliberately. */
 const CREDENTIAL_HEADERS = new Set([
-  "authorization", "x-api-key", "api-key", "proxy-authorization", "cookie", "set-cookie",
+  "authorization", "x-api-key", "api-key", "x-goog-api-key", "proxy-authorization", "cookie", "set-cookie",
 ]);
 
 /* What the event stream may see of a request. The value of a credential is

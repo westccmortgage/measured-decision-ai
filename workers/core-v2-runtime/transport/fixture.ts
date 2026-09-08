@@ -8,7 +8,7 @@
  * stubbed something and did not should fail loudly.
  */
 import type { HttpMethod, HttpRequest, HttpResponse, HttpTransport } from "./transport.ts";
-import { redacted } from "./transport.ts";
+import { TransportFault, redacted } from "./transport.ts";
 
 export type FixtureRoute = {
   /* A substring of the url. Adapters build their own urls, so this is what
@@ -45,7 +45,7 @@ export class FixtureTransport implements HttpTransport {
 
   async send(request: HttpRequest): Promise<HttpResponse> {
     this.sent.push(request);
-    if (request.signal?.aborted) throw new Error("core-v2-runtime: the request was aborted before it was sent");
+    if (request.signal?.aborted) throw new TransportFault("core-v2-runtime: the request was aborted before it was sent", true);
     const route = this.routes.find((r) => request.url.includes(r.urlContains) && (!r.method || r.method === request.method));
     if (!route) {
       throw new Error(`core-v2-runtime: no fixture answers ${request.method} ${request.url} — a test that stubs nothing must say so`);

@@ -106,11 +106,17 @@ create table if not exists public.workflow_cost_budgets (
   stopped_at timestamptz,
   created_at timestamptz not null default now(),
   updated_at timestamptz not null default now(),
-  -- What is held plus what is spent never exceeds what was authorised. This
-  -- is the invariant the reservation door exists to keep, stated on the row
-  -- so that no path around the door can break it either.
-  constraint workflow_cost_budgets_within_authorization
-    check (reserved + settled <= authorized_maximum)
+  -- What is HELD never exceeds what was authorised: nothing may be sent that
+  -- the authorisation does not cover, and the reservation door proves the
+  -- stronger thing — held plus spent plus the new hold stays inside it.
+  --
+  -- What is SPENT is deliberately not constrained. A provider can bill more
+  -- than it was asked to, and a record that cannot state an overspend that
+  -- actually happened is worse than useless: it would refuse the settlement
+  -- and leave no trace of the money at all. The ceiling is a gate on what
+  -- goes out, not a claim about what came back.
+  constraint workflow_cost_budgets_holds_within_authorization
+    check (reserved <= authorized_maximum)
 );
 
 comment on table public.workflow_cost_budgets is
@@ -200,10 +206,11 @@ begin
   if budget.stopped_at is not null then
     raise exception 'core_v2: reservation refused: spending on workflow % stopped — %', attempt.workflow_id, coalesce(budget.stopped_reason, 'no reason recorded');
   end if;
+  -- The deadline is the durable fact; a refusal recorded here would be rolled
+  -- back by the very raise that follows it, which is a record that lies. The
+  -- caller that sees this refusal calls core_v2_stop_workflow_spending, whose
+  -- write survives because nothing aborts it.
   if budget.wall_clock_deadline is not null and now() > budget.wall_clock_deadline then
-    update public.workflow_cost_budgets
-       set stopped_reason = 'the authorised time for this workflow ran out', stopped_at = now(), updated_at = now()
-     where workflow_id = budget.workflow_id;
     raise exception 'core_v2: reservation refused: the authorised time for workflow % ran out', attempt.workflow_id;
   end if;
   if p_maximum_cost > budget.maximum_per_attempt then
@@ -354,6 +361,84 @@ end $$;
 comment on function public.core_v2_release_attempt_cost(uuid, text) is
   'The hold comes off only when nothing can still be running: an attempt that was never sent, or one a person or an executor has reconciled as never started.';
 
+-- Authorise a workflow to spend, before anything is dispatched for it. Every
+-- write to these tables goes through a door, including the first one: the
+-- table is revoked from everybody, so without this a deployed service role
+-- could read a budget and never create one.
+create or replace function public.core_v2_authorize_workflow_spending(
+  p_workflow_id uuid,
+  p_authorized_maximum numeric,
+  p_maximum_per_attempt numeric,
+  p_currency text default 'USD',
+  p_maximum_input_tokens bigint default null,
+  p_maximum_output_tokens bigint default null,
+  p_maximum_attempts integer default null,
+  p_maximum_concurrent_attempts integer default null,
+  p_wall_clock_deadline timestamptz default null
+) returns public.workflow_cost_budgets
+language plpgsql security definer set search_path = public as $$
+declare
+  wf public.intelligence_workflows;
+  row public.workflow_cost_budgets;
+begin
+  select * into wf from public.intelligence_workflows where id = p_workflow_id;
+  if not found then
+    raise exception 'core_v2: no workflow % to authorise', p_workflow_id;
+  end if;
+  if p_authorized_maximum is null or p_authorized_maximum < 0
+     or p_maximum_per_attempt is null or p_maximum_per_attempt < 0 then
+    raise exception 'core_v2: an authorisation is an amount that is not negative';
+  end if;
+  -- Authorising twice is the same authorisation. Raising a ceiling is a
+  -- person's decision made again, not a retry, so it is not done here.
+  select * into row from public.workflow_cost_budgets where workflow_id = p_workflow_id;
+  if found then
+    if row.authorized_maximum <> p_authorized_maximum or row.maximum_per_attempt <> p_maximum_per_attempt then
+      raise exception 'core_v2: workflow % is already authorised for % — a different amount is a new authorisation by a person', p_workflow_id, row.authorized_maximum;
+    end if;
+    return row;
+  end if;
+  insert into public.workflow_cost_budgets(
+    workflow_id, organization_id, currency, authorized_maximum, maximum_per_attempt,
+    maximum_input_tokens, maximum_output_tokens, maximum_attempts, maximum_concurrent_attempts, wall_clock_deadline)
+  values (p_workflow_id, wf.organization_id, upper(coalesce(p_currency, 'USD')), p_authorized_maximum, p_maximum_per_attempt,
+          p_maximum_input_tokens, p_maximum_output_tokens, p_maximum_attempts, p_maximum_concurrent_attempts, p_wall_clock_deadline)
+  returning * into row;
+  perform public.core_v2_audit(wf.organization_id, 'core_v2.workflow.spending_authorized', 'intelligence_workflow',
+    p_workflow_id::text, jsonb_build_object('authorized_maximum', p_authorized_maximum, 'currency', row.currency,
+      'maximum_per_attempt', p_maximum_per_attempt));
+  return row;
+end $$;
+
+comment on function public.core_v2_authorize_workflow_spending(uuid, numeric, numeric, text, bigint, bigint, integer, integer, timestamptz) is
+  'The only way a workflow comes to have a budget at all. A workflow with no row here may send nothing that costs anything.';
+
+-- The workflows a restarted dispatcher must look at even though the ordinary
+-- resumable list passes over them: one whose cancellation was asked for while
+-- nobody held it, and one that finished holding an attempt whose outcome
+-- nobody ever established. Both need a dispatcher to come back to them.
+create or replace function public.core_v2_cancelling_workflows(p_limit integer default 20)
+returns setof uuid language sql stable security definer set search_path = public as $$
+  select w.id
+    from public.intelligence_workflows w
+   where w.cancel_requested_at is not null
+     and w.state in ('created','queued','planning','running','needs_attention','ready_for_decision','deciding')
+   order by w.cancel_requested_at
+   limit greatest(1, coalesce(p_limit, 20));
+$$;
+
+create or replace function public.core_v2_unreconciled_workflows(p_limit integer default 20)
+returns setof uuid language sql stable security definer set search_path = public as $$
+  select distinct a.workflow_id
+    from public.agent_attempts a
+   where a.state = 'outcome_unknown'
+     and a.reconciliation_outcome is null
+   limit greatest(1, coalesce(p_limit, 20));
+$$;
+
+comment on function public.core_v2_unreconciled_workflows(integer) is
+  'Workflows holding an attempt whose outcome nobody established. Their money is still held, so a dispatcher comes back to them however finished they look.';
+
 -- Stop spending on a workflow, and say why. Idempotent: the first reason stands.
 create or replace function public.core_v2_stop_workflow_spending(
   p_workflow_id uuid, p_reason text
@@ -386,6 +471,7 @@ create or replace function public.core_v2_claim_next_workflow(p_dispatcher text)
 returns uuid language plpgsql security definer set search_path = public as $$
 declare
   candidate uuid;
+  claimed public.workflow_outbox;
 begin
   if p_dispatcher is null or btrim(p_dispatcher) = '' then
     raise exception 'core_v2: a dispatcher claims work under its own name';
@@ -404,10 +490,13 @@ begin
   end if;
   -- The claim itself is 058's, unchanged: it moves the command to dispatching
   -- and the workflow from created to queued, under the workflow's own lock.
-  if public.core_v2_claim_outbox(candidate, p_dispatcher) then
-    return candidate;
+  -- It answers with the command row it claimed, or nothing at all when
+  -- somebody else got there first — a row, never a yes or a no.
+  claimed := public.core_v2_claim_outbox(candidate, p_dispatcher);
+  if claimed.workflow_id is null then
+    return null;
   end if;
-  return null;
+  return candidate;
 end $$;
 
 comment on function public.core_v2_claim_next_workflow(text) is
@@ -449,6 +538,9 @@ revoke all on table public.attempt_cost_reservations from public, anon, authenti
 grant select on table public.workflow_cost_budgets to authenticated, service_role;
 grant select on table public.attempt_cost_reservations to authenticated, service_role;
 
+revoke all on function public.core_v2_authorize_workflow_spending(uuid, numeric, numeric, text, bigint, bigint, integer, integer, timestamptz) from public, anon, authenticated;
+revoke all on function public.core_v2_cancelling_workflows(integer) from public, anon, authenticated;
+revoke all on function public.core_v2_unreconciled_workflows(integer) from public, anon, authenticated;
 revoke all on function public.core_v2_reserve_attempt_cost(uuid, numeric, bigint, bigint, jsonb) from public, anon, authenticated;
 revoke all on function public.core_v2_settle_attempt_cost(uuid, numeric, jsonb) from public, anon, authenticated;
 revoke all on function public.core_v2_release_attempt_cost(uuid, text) from public, anon, authenticated;
@@ -456,6 +548,9 @@ revoke all on function public.core_v2_stop_workflow_spending(uuid, text) from pu
 revoke all on function public.core_v2_claim_next_workflow(text) from public, anon, authenticated;
 revoke all on function public.core_v2_resumable_workflows(integer) from public, anon, authenticated;
 
+grant execute on function public.core_v2_authorize_workflow_spending(uuid, numeric, numeric, text, bigint, bigint, integer, integer, timestamptz) to service_role;
+grant execute on function public.core_v2_cancelling_workflows(integer) to service_role;
+grant execute on function public.core_v2_unreconciled_workflows(integer) to service_role;
 grant execute on function public.core_v2_reserve_attempt_cost(uuid, numeric, bigint, bigint, jsonb) to service_role;
 grant execute on function public.core_v2_settle_attempt_cost(uuid, numeric, jsonb) to service_role;
 grant execute on function public.core_v2_release_attempt_cost(uuid, text) to service_role;

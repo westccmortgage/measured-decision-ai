@@ -1,0 +1,103 @@
+{
+  "_": "INVENTED. Nothing here was copied from a provider: it is what this provider's answers are shaped like, written by hand, with synthetic ids, synthetic model names and synthetic counts, so that a test can hold an adapter to the shape without ever asking anyone anything.",
+  "askedModel": "gamma-reader-1",
+  "reportedModel": "gamma-reader-1-002",
+  "requestId": "rsp_gamma_77b3e1",
+  "good": {
+    "status": 200,
+    "headers": { "content-type": "application/json" },
+    "body": {
+      "responseId": "rsp_gamma_77b3e1",
+      "modelVersion": "gamma-reader-1-002",
+      "candidates": [
+        {
+          "index": 0,
+          "finishReason": "STOP",
+          "content": {
+            "role": "model",
+            "parts": [
+              {
+                "text": "{\"outcome\":\"completed\",\"claims\":[{\"claimKey\":\"c1\",\"subjectType\":\"entry\",\"subjectKey\":\"entry/E-001\",\"predicate\":\"recorded_amount\",\"value\":{\"known\":true,\"quantity\":12,\"text\":\"12 units\"},\"unit\":\"units\",\"observationBasis\":\"observed\",\"scope\":{\"table\":\"t1\"},\"anchorKeys\":[\"a1\"]}],\"anchors\":[{\"anchorKey\":\"a1\",\"sourceKind\":\"segment_locator\",\"sourceId\":\"src-1\",\"segmentId\":\"seg-1\",\"locator\":{\"bbox\":[0.1,0.2,0.3,0.4]},\"quotedText\":\"12 units\"}],\"assessments\":[],\"limitations\":[]}"
+              }
+            ]
+          }
+        }
+      ],
+      "usageMetadata": {
+        "promptTokenCount": 1200,
+        "candidatesTokenCount": 340,
+        "cachedContentTokenCount": 800,
+        "thoughtsTokenCount": 96,
+        "totalTokenCount": 1540
+      }
+    }
+  },
+  "refusal": {
+    "status": 200,
+    "headers": { "content-type": "application/json" },
+    "body": {
+      "responseId": "rsp_gamma_refuse",
+      "modelVersion": "gamma-reader-1-002",
+      "candidates": [
+        { "index": 0, "finishReason": "SAFETY", "content": { "role": "model", "parts": [] } }
+      ],
+      "usageMetadata": { "promptTokenCount": 1200, "candidatesTokenCount": 0 }
+    }
+  },
+  "outputCeiling": {
+    "status": 200,
+    "headers": { "content-type": "application/json" },
+    "body": {
+      "modelVersion": "gamma-reader-1-002",
+      "candidates": [
+        {
+          "index": 0,
+          "finishReason": "MAX_TOKENS",
+          "content": {
+            "role": "model",
+            "parts": [
+              { "text": "{\"outcome\":\"completed\",\"claims\":[{\"claimKey\":\"c1\",\"subjectKey\":\"entry/E-001\",\"value\":{\"known\":true,\"quantity\":1" }
+            ]
+          }
+        }
+      ],
+      "usageMetadata": { "promptTokenCount": 1200, "candidatesTokenCount": 4096, "cachedContentTokenCount": 800 }
+    }
+  },
+  "malformedAnswer": {
+    "status": 200,
+    "headers": { "content-type": "application/json" },
+    "body": {
+      "responseId": "rsp_gamma_malformed",
+      "modelVersion": "gamma-reader-1-002",
+      "candidates": [
+        {
+          "index": 0,
+          "finishReason": "STOP",
+          "content": { "role": "model", "parts": [ { "text": "Here is what I read: entry E-001 shows 12 units." } ] }
+        }
+      ],
+      "usageMetadata": { "promptTokenCount": 1200, "candidatesTokenCount": 14 }
+    }
+  },
+  "malformedBody": {
+    "status": 200,
+    "headers": { "content-type": "text/plain" },
+    "body": "not an answer, and not JSON either"
+  },
+  "unauthorized": {
+    "status": 401,
+    "headers": { "content-type": "application/json" },
+    "body": { "error": { "code": 401, "message": "the credential presented was not accepted", "status": "UNAUTHENTICATED" } }
+  },
+  "rateLimited": {
+    "status": 429,
+    "headers": { "content-type": "application/json", "retry-after": "1" },
+    "body": { "error": { "code": 429, "message": "too many requests were made; this one was not taken", "status": "RESOURCE_EXHAUSTED" } }
+  },
+  "serverError": {
+    "status": 500,
+    "headers": { "content-type": "application/json" },
+    "body": { "error": { "code": 500, "message": "something went wrong on our side", "status": "INTERNAL" } }
+  }
+}
