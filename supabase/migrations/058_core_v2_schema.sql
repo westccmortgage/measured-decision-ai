@@ -73,6 +73,10 @@ create or replace function public.core_v2_transition_allowed(
       ('task','blocked','queued'),
       ('task','blocked','cancelled'),
       ('task','blocked','superseded'),
+      -- A task already offered to workers can gain a prerequisite it did not
+      -- have when it was planned — a follow-up it must now wait for. It goes
+      -- back to waiting; it does not run with a dependency unmet.
+      ('task','queued','blocked'),
       ('task','queued','leased'),
       ('task','queued','cancelled'),
       ('task','queued','superseded'),
@@ -448,7 +452,9 @@ create table if not exists public.workflow_tasks (
   lease_owner text,
   lease_token uuid,
   lease_expires_at timestamptz,
-  max_claims integer not null default 200 check (max_claims > 0),
+  -- Zero is a real limit: a critic, an arbiter, a comparator and a composer
+  -- assert nothing, and their assignments say so.
+  max_claims integer not null default 200 check (max_claims >= 0),
   terminal_reason text,
   -- Who authorised running this work again after it ended without a known
   -- outcome. A machine can never fill these in.
@@ -694,8 +700,17 @@ create table if not exists public.claim_assessments (
     'supports','contradicts','insufficient','wrong_scope','wrong_unit','duplicate','unreadable')),
   reason_code text not null,
   explanation text,
+  -- What this reviewer read off the source instead, when it read otherwise.
+  -- An arbiter may correct a disputed claim only to a value that stands here:
+  -- without these columns a correction would be the arbiter's own invention.
+  proposed_value jsonb,
+  proposed_unit text,
   created_at timestamptz not null default now(),
-  unique (attempt_id, claim_id)
+  unique (attempt_id, claim_id),
+  -- A verdict that the source agrees proposes nothing; there is nothing to
+  -- correct to.
+  constraint claim_assessments_proposal_disagrees
+    check (proposed_value is null or assessment <> 'supports')
 );
 
 comment on table public.claim_assessments is
@@ -1894,6 +1909,29 @@ begin
     raise exception 'core_v2: submission refused: attempt % is %, not prepared', attempt.id, attempt.state;
   end if;
 
+  -- Independence is decided here, not only by whoever routed the work. Two
+  -- blind readings of one subject must run in two executor domains, and a
+  -- router that has forgotten what already read this subject must not be able
+  -- to buy the same domain twice. The advisory lock serialises the blind
+  -- submissions of one subject so two of them cannot both pass this check.
+  if task.independence_group is not null then
+    perform pg_advisory_xact_lock(hashtextextended(task.workflow_id::text || '/' || task.subject_key, 0));
+    if exists (
+      select 1
+        from public.agent_attempts a
+        join public.workflow_tasks t on t.id = a.task_id
+       where t.workflow_id = task.workflow_id
+         and t.subject_key = task.subject_key
+         and t.independence_group is not null
+         and t.independence_group <> task.independence_group
+         and a.independence_domain = attempt.independence_domain
+         and public.core_v2_attempt_submitted(a.state)
+    ) then
+      raise exception 'core_v2: submission refused: independence: domain % already read % under another group',
+        attempt.independence_domain, task.subject_key;
+    end if;
+  end if;
+
   update public.agent_attempts
      set state = 'submitted',
          submitted_at = now(),
@@ -1904,7 +1942,7 @@ begin
 end $$;
 
 comment on function public.core_v2_submit_attempt(uuid, uuid) is
-  'The only move from prepared to submitted. Under the task''s row lock it proves the workflow is active and not being cancelled, the task is running under the caller''s unexpired lease, and the attempt is still prepared.';
+  'The only move from prepared to submitted. Under the task''s row lock it proves the workflow is active and not being cancelled, the task is running under the caller''s unexpired lease, and the attempt is still prepared — and, for a blind reading, that no other group has already read this subject in the same executor domain.';
 
 -- The dispatcher's two moves. Claiming a command is what takes the workflow
 -- from created to queued; a dispatcher that dies between the two leaves a

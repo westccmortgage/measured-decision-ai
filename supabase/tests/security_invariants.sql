@@ -3794,11 +3794,18 @@ select pg_temp.refused('a phase is one of the kernel''s eight',
       subject_key, input_fingerprint, contract_version)
     values ('aaaaaaaa-0000-0000-0000-000000000001', '0c0e0000-0000-0000-0000-000000000001', 'guess',
             'find_segments', 'discoverer', '1', 'x', 'fp', 'v1')$$);
-select pg_temp.refused('and a task reads at least one claim''s worth',
+-- Zero claims is a real assignment: a critic, an arbiter, a comparator and a
+-- composer assert nothing. A negative allowance is not.
+select pg_temp.allowed('a task may be allowed no claims at all — a reviewer asserts nothing',
+  $$insert into public.workflow_tasks(organization_id, workflow_id, phase, task_type, role_key, role_version,
+      subject_key, input_fingerprint, contract_version, max_claims)
+    values ('aaaaaaaa-0000-0000-0000-000000000001', '0c0e0000-0000-0000-0000-000000000001', 'verify',
+            'verify_claim', 'evidence_critic', '1', 'zero-claims', 'fp-zero', 'v1', 0)$$);
+select pg_temp.refused('but never fewer than none',
   $$insert into public.workflow_tasks(organization_id, workflow_id, phase, task_type, role_key, role_version,
       subject_key, input_fingerprint, contract_version, max_claims)
     values ('aaaaaaaa-0000-0000-0000-000000000001', '0c0e0000-0000-0000-0000-000000000001', 'analyze',
-            'read_register', 'reader', '1', 'x', 'fp', 'v1', 0)$$);
+            'read_register', 'reader', '1', 'x', 'fp', 'v1', -1)$$);
 select pg_temp.allowed('a task is handed a whole source or one segment of it',
   $$insert into public.task_sources(organization_id, task_id, ordinal, source_id)
     values ('aaaaaaaa-0000-0000-0000-000000000001', '0c0e0001-0000-0000-0000-000000000001', 0,
@@ -3921,6 +3928,41 @@ select pg_temp.refused_because('and it does not go out twice',
   'not prepared');
 select pg_temp.check('the attempt records the token it was sent under',
   (select lease_token from public.agent_attempts where id = '0d0e0000-0000-0000-0000-000000000011') = pg_temp.id('lease2'));
+
+-- Independence is not the router's private business. A second blind reading of
+-- one subject is refused at this door when it would run in an executor domain
+-- that already read that subject under another group — whatever the caller
+-- believed when it chose. Two family names on one executor are one domain, so
+-- this is the check that makes aliases useless as a way to fake independence.
+insert into public.workflow_tasks(id, organization_id, workflow_id, phase, task_type, role_key, role_version,
+  subject_key, input_fingerprint, contract_version, independence_group, state, lease_token, lease_expires_at)
+values ('0c0e0001-0000-0000-0000-0000000009a1', 'aaaaaaaa-0000-0000-0000-000000000001', pg_temp.id('w1'),
+  'analyze', 'read_register', 'reader', '1', 'blind/subject-1', 'fp-blind-a', 'read_register@1', 'reader-a',
+  'running', '0d0e0000-0000-0000-0000-0000000009c1', now() + interval '5 minutes'),
+  ('0c0e0001-0000-0000-0000-0000000009a2', 'aaaaaaaa-0000-0000-0000-000000000001', pg_temp.id('w1'),
+  'analyze', 'read_register', 'reader', '1', 'blind/subject-1', 'fp-blind-b', 'read_register@1', 'reader-b',
+  'running', '0d0e0000-0000-0000-0000-0000000009c2', now() + interval '5 minutes');
+insert into public.agent_attempts(id, organization_id, workflow_id, task_id, attempt_no, role_key, role_version,
+  executor_kind, executor_family, independence_domain, packet_fingerprint)
+values ('0d0e0000-0000-0000-0000-0000000009b1', 'aaaaaaaa-0000-0000-0000-000000000001', pg_temp.id('w1'),
+  '0c0e0001-0000-0000-0000-0000000009a1', 1, 'reader', '1', 'model', 'family-one', 'domain:one', 'packet-blind-a'),
+  ('0d0e0000-0000-0000-0000-0000000009b2', 'aaaaaaaa-0000-0000-0000-000000000001', pg_temp.id('w1'),
+  '0c0e0001-0000-0000-0000-0000000009a2', 1, 'reader', '1', 'model', 'family-two', 'domain:one', 'packet-blind-b'),
+  ('0d0e0000-0000-0000-0000-0000000009b3', 'aaaaaaaa-0000-0000-0000-000000000001', pg_temp.id('w1'),
+  '0c0e0001-0000-0000-0000-0000000009a2', 2, 'reader', '1', 'model', 'family-three', 'domain:two', 'packet-blind-b2');
+select pg_temp.check('the first blind reading of a subject goes out',
+  (select state from public.core_v2_submit_attempt('0d0e0000-0000-0000-0000-0000000009b1',
+     '0d0e0000-0000-0000-0000-0000000009c1')) = 'submitted');
+select pg_temp.refused_because('the second is refused when its domain is the one that already read this subject — two family names, one executor, one domain',
+  $$select public.core_v2_submit_attempt('0d0e0000-0000-0000-0000-0000000009b2', '0d0e0000-0000-0000-0000-0000000009c2')$$,
+  'independence');
+select pg_temp.check('and the refused reading was never sent',
+  (select state from public.agent_attempts where id = '0d0e0000-0000-0000-0000-0000000009b2') = 'prepared');
+select pg_temp.check('a second reading in a domain that has not read this subject goes out',
+  (select state from public.core_v2_submit_attempt('0d0e0000-0000-0000-0000-0000000009b3',
+     '0d0e0000-0000-0000-0000-0000000009c2')) = 'submitted');
+
+
 select pg_temp.check('the heartbeat keeps working while the request is out',
   public.core_v2_heartbeat_lease('0c0e0001-0000-0000-0000-000000000011', pg_temp.id('lease2'), 120000) = true);
 update public.workflow_tasks set lease_expires_at = now() - interval '1 second'
@@ -4406,6 +4448,12 @@ values ('1d0e0000-0000-0000-0000-000000000001', 'aaaaaaaa-0000-0000-0000-0000000
   '0c0e0000-0000-0000-0000-000000000001', '0e0e0000-0000-0000-0000-000000000005',
   '0d0e0000-0000-0000-0000-000000000051', '0c0e0001-0000-0000-0000-000000000031', 'supports',
   'value_matches_source', 'Row 5 of the register prints 1.');
+-- What a reviewer read instead is kept beside its verdict, because an arbiter
+-- may correct a disputed claim only to a value that stands here. A verdict
+-- that the source agrees proposes nothing to correct to.
+select pg_temp.refused('a verdict that the source agrees proposes no other value',
+  $$update public.claim_assessments set proposed_value = '{"known": true, "quantity": 9}'::jsonb
+     where id = '1d0e0000-0000-0000-0000-000000000001'$$);
 select pg_temp.refused('one reviewer does not get to say two things about one claim',
   $$insert into public.claim_assessments(organization_id, workflow_id, claim_id, attempt_id, assessment, reason_code)
     values ('aaaaaaaa-0000-0000-0000-000000000001', '0c0e0000-0000-0000-0000-000000000001',
@@ -4415,6 +4463,10 @@ select pg_temp.allowed('while a second reviewer may say its own',
     values ('1d0e0000-0000-0000-0000-000000000002', 'aaaaaaaa-0000-0000-0000-000000000001',
             '0c0e0000-0000-0000-0000-000000000001', '0e0e0000-0000-0000-0000-000000000005',
             '0d0e0000-0000-0000-0000-000000000052', 'insufficient', 'crop_unreadable')$$);
+select pg_temp.allowed('a verdict that did not agree may say what the source shows instead, so an arbiter has something to correct to',
+  $$update public.claim_assessments
+       set proposed_value = '{"known": true, "quantity": 3, "text": "3 each"}'::jsonb, proposed_unit = 'each'
+     where id = '1d0e0000-0000-0000-0000-000000000002'$$);
 select pg_temp.refused('a verdict is one of seven words',
   $$insert into public.claim_assessments(organization_id, workflow_id, claim_id, attempt_id, assessment, reason_code)
     values ('aaaaaaaa-0000-0000-0000-000000000001', '0c0e0000-0000-0000-0000-000000000001',

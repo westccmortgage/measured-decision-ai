@@ -188,7 +188,7 @@ export class InMemoryOrchestrationRepository implements OrchestrationRepository 
             if (edges >= limits.maximumEdges) { refused.push({ task: t, reason: `the workflow is at its ceiling of ${limits.maximumEdges} dependency edges` }); break; }
             this.dependencies.push({ taskId: existing.taskId, dependsOnTaskId: d.taskId, kind: d.kind });
             edges++;
-            if (existing.state === "queued") this.tasks.set(existing.taskId, { ...existing, state: "blocked" });
+            if (this.tasks.get(existing.taskId)!.state === "queued") await this.transitionTask(existing.taskId, "queued", "blocked");
           }
         }
         reused.push(this.tasks.get(existing.taskId)!); admittedIds.add(existing.taskId); continue;
@@ -234,7 +234,7 @@ export class InMemoryOrchestrationRepository implements OrchestrationRepository 
     const edges = this.dependencies.filter((d) => this.tasks.get(d.taskId)?.workflowId === task.workflowId).length;
     if (edges >= limits.maximumEdges) throw new Error(`core-v2: the workflow is at its ceiling of ${limits.maximumEdges} dependency edges`);
     this.dependencies.push({ taskId, dependsOnTaskId, kind });
-    if (task.state === "queued") this.tasks.set(taskId, { ...task, state: "blocked" });
+    if (task.state === "queued") await this.transitionTask(taskId, "queued", "blocked");
   }
   private hasSubmittedAttempt(taskId: string) {
     return [...this.attempts.values()].some((a) => a.taskId === taskId && SUBMITTED_ATTEMPT_STATES.includes(a.state));
@@ -620,6 +620,17 @@ export class InMemoryOrchestrationRepository implements OrchestrationRepository 
   /* ──────────────────────────────────────────────────────────── decisions */
 
   async applyDecision(application: DecisionApplication) {
+    /* Written and decided together or not at all: a refused decision leaves
+       no proposed row behind, which is what the database's transaction does. */
+    const snapshot = this.snapshot();
+    try {
+      return await this.applyDecisionIn(application);
+    } catch (error) {
+      this.restore(snapshot);
+      throw error;
+    }
+  }
+  private async applyDecisionIn(application: DecisionApplication) {
     const { decision, decideTo } = application;
     if (this.decisions.has(decision.decisionId)) {
       const existing = this.decisions.get(decision.decisionId)!;

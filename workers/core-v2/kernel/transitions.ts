@@ -27,7 +27,9 @@ const WORKFLOW: Record<WorkflowState, WorkflowState[]> = {
 const TASK: Record<TaskState, TaskState[]> = {
   created: ["blocked", "queued", "cancelled"],
   blocked: ["queued", "cancelled", "superseded"],
-  queued: ["leased", "cancelled", "superseded"],
+  /* A queued task that gains a prerequisite waits again; it does not run
+     with a dependency unmet. */
+  queued: ["blocked", "leased", "cancelled", "superseded"],
   leased: ["running", "queued", "cancelled"],
   running: ["completed", "failed_known", "outcome_unknown", "cancelled"],
   completed: [],
