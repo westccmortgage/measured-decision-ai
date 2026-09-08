@@ -21,6 +21,10 @@ run "the registry, and what it refuses to be"                          registry.
 run "two phases: what the source declares, what the pack expands"      expansion.mjs
 run "a blind reader is blind"                                          blindness.mjs
 run "independence fails closed"                                        independence.mjs
+run "agreement is not proof"                                           acceptance.mjs
+run "evidence points at one place"                                     evidence-scope.mjs
+run "the states the engine walks, and the ones the database allows"    workflow-states.mjs
+run "restart, cancel, timeout, and the unknown outcome"                recovery.mjs
 run "the repository contract, in memory and in Postgres"               repository-contract.mjs
 run "the whole chain against migration 058, with a restart"            postgres-e2e.mjs
 
@@ -28,7 +32,6 @@ echo
 echo "────────────────────────────────────────────"
 if [ "$fail" = "1" ]; then echo "SOMETHING FAILED — see above"; exit 1; fi
 echo "ALL CHECKS PASS"
-# Suites still being written, each named in README.md: acceptance,
-# evidence-scope, follow-up, workflow-states, recovery, budgets, transcripts,
-# nothing-real, network-guard, cli-entry.
+# Suites still being written, each named in README.md: follow-up, budgets,
+# transcripts, nothing-real, network-guard, cli-entry.
 # A suite is listed above only once it exists and passes.
