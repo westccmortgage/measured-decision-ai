@@ -332,7 +332,7 @@ t.section("(f) the router selects the registry's domain; instances, not names, m
   const third = router.select({ roleKey: "table_reader", requiresVisualInput: true, independenceGroup: READER_B, usedDomains: [d1, d2] }, roles, registry);
   t.check("with both domains used, a blind selection is refused rather than reusing a domain under a new name", !third.ok && /independence/.test(third.reason), third.ok ? "routed" : third.reason);
   await t.refused("the registry refuses to run a selection whose domain label does not match the family's real domain", async () => {
-    await registry.run({ executorFamily: "reader-family-one", independenceDomain: d2, modelConfiguration: "x", reason: "a lying label", cacheReuseAllowed: false }, { taskId: "t", roleKey: "table_reader", workflowId: "w" }, { attemptId: "a", taskId: "t", signal: new AbortController().signal });
+    await registry.run({ executorFamily: "reader-family-one", independenceDomain: d2, modelConfiguration: "x", reason: "a lying label", cacheReuseAllowed: false }, { taskId: "t", roleKey: "table_reader", workflowId: "w" }, { attemptId: "a", taskId: "t", signal: new AbortController().signal, report: () => {} });
   });
   t.check("a lying selection never reached the executor", one.received.length === 0);
 }

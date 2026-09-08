@@ -25,7 +25,7 @@
  */
 import type {
   AgentResultEnvelope, AssessmentRecord, AttemptRecord, AttemptState, AuditRecord, ClaimRecord, DecisionRecord, DisagreementRecord,
-  ProposedAdjudication, SegmentRecord, SourceManifest, TaskRecord, TaskState, WorkPacket, WorkflowRecord, WorkflowState,
+  ProposedAdjudication, ProviderFacts, SegmentRecord, SourceManifest, TaskRecord, TaskState, WorkPacket, WorkflowRecord, WorkflowState,
 } from "./contracts.ts";
 import { ENGINE_VERSION, KERNEL_TASK_TYPES } from "./contracts.ts";
 import { KernelDeterministicExecutor } from "./deterministic.ts";
@@ -488,12 +488,20 @@ export class Scheduler {
        nothing retries it — not after an exception, not after a timeout, not
        after a restart. */
     const controller = new AbortController();
+    /* What the executor says it saw. It reports while it works, so a timed-out
+       or thrown execution still leaves behind whatever was learned before it
+       went wrong — a request id and a token count are exactly what a cost
+       dispute needs, and they are lost if only a clean finish records them. */
+    let facts: ProviderFacts = {};
+    const report = (more: ProviderFacts) => {
+      facts = { ...facts, ...more, usage: { ...(facts.usage ?? {}), ...(more.usage ?? {}) } };
+    };
     const heartbeat = this.startHeartbeat(task.taskId, leaseToken);
     let envelope: AgentResultEnvelope;
     /* What came back, before the kernel gave it a shape. The record keeps
        this; the engine works from the normalised copy. */
     let raw: unknown = null;
-    const execution = this.executors.run(selection, packet, { attemptId: attempt.attemptId, taskId: task.taskId, signal: controller.signal });
+    const execution = this.executors.run(selection, packet, { attemptId: attempt.attemptId, taskId: task.taskId, signal: controller.signal, report });
     const flight = { taskId: task.taskId, roleKey: task.roleKey, family: selection.executorFamily, timedOut: false, promise: execution.then(() => undefined, () => undefined), controller };
     this.inFlight.set(attempt.attemptId, flight);
     flight.promise.then(() => { if (this.inFlight.get(attempt.attemptId) === flight && flight.timedOut) this.inFlight.delete(attempt.attemptId); });
@@ -505,8 +513,19 @@ export class Scheduler {
       if (timedOut) { flight.timedOut = true; controller.abort(); } else this.inFlight.delete(attempt.attemptId);
       heartbeat.stop();
       const code = timedOut ? "attempt_timeout" : "executor_threw";
-      await this.repo.transitionAttempt(attempt.attemptId, "submitted", "outcome_unknown", { errorCode: code, errorMessage: String((error as Error).message) });
-      await this.repo.transitionTask(task.taskId, "running", "outcome_unknown", code);
+      /* One write, so whatever the executor managed to report about the thing
+         that answered it — a request id, a token count — is on the attempt
+         even though the outcome never came back. Those are exactly the facts
+         a cost dispute needs, and an engine that records them only on a clean
+         finish loses them precisely when they matter. If the commit itself
+         cannot land, the attempt and its task are still moved by hand. */
+      try {
+        await this.repo.commitValidatedResult(this.emptyCommit(task, attempt.attemptId, null, "outcome_unknown", "outcome_unknown", `${code}: ${(error as Error).message}`, [String((error as Error).message)], facts, code));
+      } catch {
+        try { await this.repo.transitionAttempt(attempt.attemptId, "submitted", "outcome_unknown", { errorCode: code, errorMessage: String((error as Error).message) }); } catch { /* already moved */ }
+        const now = await this.repo.getTask(task.taskId);
+        if (now && now.state === "running") await this.repo.transitionTask(task.taskId, "running", "outcome_unknown", code);
+      }
       await this.repo.audit({ action: "core_v2.attempt.outcome_unknown", entityType: "agent_attempt", entityId: attempt.attemptId, detail: { task: task.taskId, code } });
       return done("outcome_unknown");
     }
@@ -514,7 +533,7 @@ export class Scheduler {
     heartbeat.stop();
 
     try {
-      return await this.settle(task, attempt, packet, refToClaimId, envelope, raw, lookup, done);
+      return await this.settle(task, attempt, packet, refToClaimId, envelope, raw, facts, lookup, done);
     } catch (error) {
       /* A fault in this engine after the answer came back. The answer is kept
          on the attempt if the commit landed; if not, the task fails known and
@@ -524,7 +543,7 @@ export class Scheduler {
         const a = await this.repo.getAttempt(attempt.attemptId);
         if (a && !["succeeded", "failed_known", "outcome_unknown", "output_limited"].includes(a.state)) {
           try {
-            await this.repo.commitValidatedResult(this.emptyCommit(task, attempt.attemptId, raw, "failed_known", "failed_known", `engine_error: ${(error as Error).message}`, [`engine: ${(error as Error).message}`]));
+            await this.repo.commitValidatedResult(this.emptyCommit(task, attempt.attemptId, raw, "failed_known", "failed_known", `engine_error: ${(error as Error).message}`, [`engine: ${(error as Error).message}`], facts));
           } catch { try { await this.repo.transitionTask(task.taskId, "running", "failed_known", `engine_error: ${(error as Error).message}`); } catch { /* already terminal */ } }
         } else {
           try { await this.repo.transitionTask(task.taskId, "running", "failed_known", `engine_error: ${(error as Error).message}`); } catch { /* already terminal */ }
@@ -535,11 +554,14 @@ export class Scheduler {
     }
   }
 
-  private emptyCommit(task: TaskRecord, attemptId: string, raw: unknown, attemptTo: ResultCommit["attempt"]["to"], taskTo: ResultCommit["task"]["to"], reason: string | null, problems: string[]): ResultCommit {
+  /* `reason` is what the attempt says happened, in a sentence. `taskReason`
+     is what the task is filed under, which is the short code a person scans a
+     queue by; when they are the same thing the sentence serves for both. */
+  private emptyCommit(task: TaskRecord, attemptId: string, raw: unknown, attemptTo: ResultCommit["attempt"]["to"], taskTo: ResultCommit["task"]["to"], reason: string | null, problems: string[], providerFacts: ProviderFacts = {}, taskReason: string | null = reason): ResultCommit {
     return {
       workflowId: task.workflowId, taskId: task.taskId, attemptId,
-      attempt: { to: attemptTo, validationState: problems.length ? "invalid" : "not_applicable", validationProblems: problems, rawResult: raw, rawResultHash: sha256(canonical(raw)), errorCode: attemptTo === "succeeded" ? null : reason?.split(":")[0] ?? null, errorMessage: reason },
-      task: { to: taskTo, reason }, segments: [], claims: [], assessments: [], disagreements: [], claimTransitions: [], disagreementRounds: [],
+      attempt: { to: attemptTo, validationState: problems.length ? "invalid" : "not_applicable", validationProblems: problems, rawResult: raw, rawResultHash: sha256(canonical(raw)), errorCode: attemptTo === "succeeded" ? null : reason?.split(":")[0] ?? null, errorMessage: reason, providerFacts },
+      task: { to: taskTo, reason: taskReason }, segments: [], claims: [], assessments: [], disagreements: [], claimTransitions: [], disagreementRounds: [],
       disagreementTransitions: [], decisions: [], children: [], dependencies: [], followUps: [], taskTransitions: [], audits: [], limits: this.limits,
     };
   }
@@ -620,7 +642,8 @@ export class Scheduler {
     return {
       attemptId, workflowId: task.workflowId, taskId: task.taskId, attemptNo, roleKey: task.roleKey, roleVersion: task.roleVersion,
       executorKind: kind, executorFamily: family, independenceDomain: domain, modelConfiguration: configuration, state: "prepared",
-      leaseToken, packetFingerprint, packetBytes, providerRequestId: null, modelReported: null, usage: {}, rawResult: null, rawResultHash: null,
+      leaseToken, packetFingerprint, packetBytes, providerRequestId: null, modelReported: null, usage: {},
+      providerStopReason: null, providerDurationMs: null, providerResponse: null, rawResult: null, rawResultHash: null,
       validationState: "pending", validationProblems: [], errorCode: null, errorMessage: null, reconciliationOutcome: null,
     };
   }
@@ -628,17 +651,17 @@ export class Scheduler {
   /* ─────────────────────────────────────────────── settling an answer */
 
   private async settle(
-    task: TaskRecord, attempt: AttemptRecord, packet: WorkPacket, refToClaimId: Record<string, string>, envelope: AgentResultEnvelope, raw: unknown, lookup: Lookup,
+    task: TaskRecord, attempt: AttemptRecord, packet: WorkPacket, refToClaimId: Record<string, string>, envelope: AgentResultEnvelope, raw: unknown, facts: ProviderFacts, lookup: Lookup,
     done: (state: string, extra?: Partial<{ childrenCreated: number; childrenReused: number; escalations: string[]; discovered: boolean }>) => { taskId: string; state: string; childrenCreated: number; childrenReused: number; escalations: string[]; discovered: boolean },
   ) {
     const role = this.registry.role(task.roleKey);
     if (envelope.outcome === "outcome_unknown") {
-      await this.repo.commitValidatedResult(this.emptyCommit(task, attempt.attemptId, raw, "outcome_unknown", "outcome_unknown", "provider_outcome_unknown", []));
+      await this.repo.commitValidatedResult(this.emptyCommit(task, attempt.attemptId, raw, "outcome_unknown", "outcome_unknown", "provider_outcome_unknown", [], facts));
       await this.repo.audit({ action: "core_v2.attempt.outcome_unknown", entityType: "agent_attempt", entityId: attempt.attemptId, detail: { task: task.taskId } });
       return done("outcome_unknown");
     }
     if (envelope.outcome === "failed_known") {
-      await this.repo.commitValidatedResult(this.emptyCommit(task, attempt.attemptId, raw, "failed_known", "failed_known", envelope.limitations[0] ?? "failed_known", []));
+      await this.repo.commitValidatedResult(this.emptyCommit(task, attempt.attemptId, raw, "failed_known", "failed_known", envelope.limitations[0] ?? "failed_known", [], facts));
       return done("failed_known");
     }
 
@@ -646,7 +669,7 @@ export class Scheduler {
     try { validation = validateEnvelope(packet, envelope, { role, pack: this.pack, lookup, policy: this.policy }); }
     catch (error) { validation = { ok: false, problems: [`the envelope could not be validated: ${(error as Error).message}`] }; }
     if (!validation.ok) {
-      await this.repo.commitValidatedResult(this.emptyCommit(task, attempt.attemptId, raw, "failed_known", "failed_known", `invalid_envelope: ${validation.problems[0]}`, validation.problems));
+      await this.repo.commitValidatedResult(this.emptyCommit(task, attempt.attemptId, raw, "failed_known", "failed_known", `invalid_envelope: ${validation.problems[0]}`, validation.problems, facts));
       await this.repo.audit({ action: "core_v2.attempt.invalid_envelope", entityType: "agent_attempt", entityId: attempt.attemptId, detail: { task: task.taskId, problems: validation.problems } });
       return done("failed_known");
     }
@@ -656,7 +679,7 @@ export class Scheduler {
     const s = await this.settlementOf(task, attempt, packet, refToClaimId, envelope, lookup);
     const commit: ResultCommit = {
       workflowId: task.workflowId, taskId: task.taskId, attemptId: attempt.attemptId,
-      attempt: { to: "succeeded", validationState: "valid", validationProblems: [], rawResult: raw, rawResultHash: sha256(canonical(raw)), errorCode: null, errorMessage: null },
+      attempt: { to: "succeeded", validationState: "valid", validationProblems: [], rawResult: raw, rawResultHash: sha256(canonical(raw)), errorCode: null, errorMessage: null, providerFacts: facts },
       task: { to: "completed", reason: envelope.outcome === "insufficient_evidence" ? "insufficient_evidence" : null },
       segments: s.segments, claims: s.claims, assessments: s.assessments, disagreements: s.disagreements,
       claimTransitions: s.claimTransitions, disagreementRounds: s.disagreementRounds, disagreementTransitions: s.disagreementTransitions,

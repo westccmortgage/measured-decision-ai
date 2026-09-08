@@ -134,7 +134,7 @@ const TASK_COLUMNS = `t.id, t.workflow_id, t.parent_task_id, t.created_by_task_i
 const ATTEMPT_COLUMNS = `a.id, a.workflow_id, a.task_id, a.attempt_no, a.role_key, a.role_version, a.executor_kind, a.executor_family,
   a.independence_domain, a.model_configuration, a.state, a.lease_token, a.packet_fingerprint, a.packet_bytes, a.provider_request_id,
   a.model_reported, a.usage, a.raw_result, a.raw_result_hash, a.validation_state, a.validation_problems, a.error_code, a.error_message,
-  a.reconciliation_outcome`;
+  a.reconciliation_outcome, a.provider_stop_reason, a.provider_duration_ms, a.provider_response`;
 
 const CLAIM_COLUMNS = `c.id, c.workflow_id, c.task_id, c.attempt_id, c.independence_group, c.independence_domain, c.subject_type, c.subject_key,
   c.predicate, c.value, c.unit, c.observation_basis, c.scope, c.status, c.machine_confidence, c.supersedes_claim_id, c.incomplete_source_attempt`;
@@ -202,6 +202,8 @@ function toAttempt(r: Row): AttemptRecord {
     packetBytes: int(r.packet_bytes), providerRequestId: r.provider_request_id, modelReported: r.model_reported,
     usage: json<Record<string, unknown>>(r.usage, {}), rawResult: json<unknown>(r.raw_result, null), rawResultHash: r.raw_result_hash,
     validationState: r.validation_state as AttemptRecord["validationState"], validationProblems: json<string[]>(r.validation_problems, []),
+    providerStopReason: r.provider_stop_reason, providerDurationMs: num(r.provider_duration_ms),
+    providerResponse: json<unknown>(r.provider_response, null),
     errorCode: r.error_code, errorMessage: r.error_message,
     reconciliationOutcome: (r.reconciliation_outcome ?? null) as AttemptRecord["reconciliationOutcome"],
   };
@@ -1032,9 +1034,23 @@ export class PostgresOrchestrationRepository implements OrchestrationRepository 
     if (!SUBMITTED_ATTEMPT_STATES.includes(attempt.state)) throw new Error(`core-v2: attempt ${attempt.attemptId} is ${attempt.state} — only a submitted attempt has a result`);
     if (attempt.rawResult !== null && attempt.rawResult !== undefined && attempt.rawResultHash !== commit.attempt.rawResultHash) throw new Error("core-v2: a stored result is not replaced");
 
-    /* The attempt: raw result once, then its states in order. */
-    await q.query(`update public.agent_attempts set raw_result = $2::jsonb, raw_result_hash = $3, validation_state = $4, validation_problems = $5::jsonb where id = $1`,
-      [attempt.attemptId, jsonParam(commit.attempt.rawResult), commit.attempt.rawResultHash, commit.attempt.validationState, JSON.stringify(commit.attempt.validationProblems ?? [])]);
+    /* The attempt: raw result and what the executor saw of the thing that
+       answered it, written once, then its states in order. coalesce keeps the
+       write-once rule the schema also keeps: a fact already on the row stands,
+       and a fact the executor could not give leaves the row as it was. */
+    const facts = commit.attempt.providerFacts ?? {};
+    await q.query(`update public.agent_attempts set raw_result = $2::jsonb, raw_result_hash = $3, validation_state = $4, validation_problems = $5::jsonb,
+        provider_request_id = coalesce(provider_request_id, $6), model_reported = coalesce(model_reported, $7),
+        usage = case when usage = '{}'::jsonb then $8::jsonb else usage end,
+        provider_stop_reason = coalesce(provider_stop_reason, $9),
+        provider_duration_ms = coalesce(provider_duration_ms, $10),
+        provider_response = coalesce(provider_response, $11::jsonb)
+      where id = $1`,
+      [attempt.attemptId, jsonParam(commit.attempt.rawResult), commit.attempt.rawResultHash, commit.attempt.validationState,
+       JSON.stringify(commit.attempt.validationProblems ?? []),
+       facts.requestId ?? null, facts.modelReported ?? null, JSON.stringify(facts.usage ?? {}),
+       facts.stopReason ?? null, facts.durationMs ?? null,
+       facts.response === undefined ? null : jsonParam(facts.response)]);
     let current = (await this.attemptIn(q, attempt.attemptId))!;
     const path: AttemptState[] = commit.attempt.to === "succeeded" ? ["response_received", "parsed", "succeeded"]
       : commit.attempt.to === "failed_known" ? (current.state === "submitted" ? ["response_received", "failed_known"] : ["failed_known"])

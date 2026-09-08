@@ -495,6 +495,11 @@ export type AttemptRecord = {
   providerRequestId: string | null;
   modelReported: string | null;
   usage: Record<string, unknown>;
+  /* Why the answering system stopped, how long it took, and what it sent
+     before anything read it. Reported by the executor, written once. */
+  providerStopReason: string | null;
+  providerDurationMs: number | null;
+  providerResponse: unknown;
   /* The envelope as returned, valid or not. Written once, never deleted. */
   rawResult: unknown;
   rawResultHash: string | null;
@@ -509,6 +514,32 @@ export type AttemptRecord = {
 };
 
 export type ReconciliationOutcome = "unknown" | "never_started" | "completed" | "failed";
+
+/* WHAT AN EXECUTOR SAW OF THE THING THAT ANSWERED IT.
+ *
+ * The kernel does not know what a provider is, and nothing here names one:
+ * these are the facts any executor outside this directory can report about
+ * one execution, so a cost dispute, a parsing bug or a truncated answer can
+ * be settled from the record rather than from memory. The response is kept
+ * as it arrived, beside the envelope the executor made of it — the two are
+ * different things, and a run that disagrees with its own parse needs both.
+ *
+ * Every field is optional because an executor that cannot say must say
+ * nothing rather than guess. Written once, with the attempt's result. */
+export type ProviderFacts = {
+  requestId?: string | null;
+  /* What answered, as the thing that answered reported itself — not what was
+     asked for. The two differing is a fact worth keeping. */
+  modelReported?: string | null;
+  /* Counts as reported: input, output, cached, reasoning, whatever else came.
+     Numbers only; no prose, no identifiers, no content. */
+  usage?: Record<string, unknown>;
+  durationMs?: number | null;
+  /* Why it stopped, in the answering system's own word. */
+  stopReason?: string | null;
+  /* The answer exactly as it arrived, before anything read it. */
+  response?: unknown;
+};
 
 export type ClaimRecord = {
   claimId: string;

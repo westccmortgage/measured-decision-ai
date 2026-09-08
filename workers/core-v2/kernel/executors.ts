@@ -12,16 +12,22 @@
  * settles the kernel keeps counting it against concurrency.
  */
 import { randomBytes } from "node:crypto";
-import type { AgentResultEnvelope, ReconciliationOutcome, WorkPacket } from "./contracts.ts";
+import type { AgentResultEnvelope, ProviderFacts, ReconciliationOutcome, WorkPacket } from "./contracts.ts";
 import { sha256 } from "./ids.ts";
 
 export type ExecutionContext = {
   attemptId: string;
   taskId: string;
   signal: AbortSignal;
+  /* Where an executor puts what it saw of the thing that answered it. The
+     kernel writes whatever arrives here onto the attempt in the same commit
+     as the result, so the record holds the answer and the facts about it
+     together. An executor that reports nothing leaves the attempt as it was;
+     reporting twice merges, and a fact already reported is not rewritten. */
+  report(facts: ProviderFacts): void;
 };
 
-export type { ReconciliationOutcome };
+export type { ProviderFacts, ReconciliationOutcome };
 
 export interface AgentExecutor {
   readonly family: string;

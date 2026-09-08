@@ -19,7 +19,7 @@
  */
 import type {
   AnchorRecord, AssessmentRecord, AttemptRecord, AttemptState, AuditRecord, ClaimRecord, ClaimStatus,
-  DecisionRecord, DecisionStatus, DependencyKind, DependencyRecord, DisagreementRecord, DisagreementState, ReconciliationOutcome,
+  DecisionRecord, DecisionStatus, DependencyKind, DependencyRecord, DisagreementRecord, DisagreementState, ProviderFacts, ReconciliationOutcome,
   SegmentRecord, SegmentStatus, SourceDescriptor, TaskRecord, TaskState, ValidationState, WorkflowRecord, WorkflowState,
 } from "./contracts.ts";
 
@@ -107,6 +107,9 @@ export type ResultCommit = {
     rawResultHash: string;
     errorCode: string | null;
     errorMessage: string | null;
+    /* What the executor saw of the thing that answered it, if it could say.
+       Written with the result, in the same commit, never afterwards. */
+    providerFacts?: ProviderFacts;
   };
   task: { to: Extract<TaskState, "completed" | "failed_known" | "outcome_unknown">; reason: string | null };
   segments: NewSegment[];

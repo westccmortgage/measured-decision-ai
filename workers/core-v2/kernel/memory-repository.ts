@@ -427,8 +427,19 @@ export class InMemoryOrchestrationRepository implements OrchestrationRepository 
     if (attempt.rawResult !== null && attempt.rawResult !== undefined && attempt.rawResultHash !== commit.attempt.rawResultHash) throw new Error("core-v2: a stored result is not replaced");
 
     /* The attempt: raw result once, then its states in order. */
+    /* The facts the executor reported are written with the result and never
+       afterwards: a fact already on the row stands, and a fact the executor
+       could not give leaves the row as it was. */
+    const facts = commit.attempt.providerFacts ?? {};
+    const kept = <T,>(existing: T, arriving: T | null | undefined): T => (existing !== null && existing !== undefined ? existing : (arriving ?? existing));
     let current: AttemptRecord = { ...attempt, rawResult: commit.attempt.rawResult, rawResultHash: commit.attempt.rawResultHash,
-      validationState: commit.attempt.validationState, validationProblems: commit.attempt.validationProblems };
+      validationState: commit.attempt.validationState, validationProblems: commit.attempt.validationProblems,
+      providerRequestId: kept(attempt.providerRequestId, facts.requestId),
+      modelReported: kept(attempt.modelReported, facts.modelReported),
+      usage: Object.keys(attempt.usage).length ? attempt.usage : (facts.usage ?? {}),
+      providerStopReason: kept(attempt.providerStopReason, facts.stopReason),
+      providerDurationMs: kept(attempt.providerDurationMs, facts.durationMs),
+      providerResponse: kept(attempt.providerResponse, facts.response) };
     this.attempts.set(current.attemptId, current);
     const path: AttemptState[] = commit.attempt.to === "succeeded" ? ["response_received", "parsed", "succeeded"]
       : commit.attempt.to === "failed_known" ? (current.state === "submitted" ? ["response_received", "failed_known"] : ["failed_known"])

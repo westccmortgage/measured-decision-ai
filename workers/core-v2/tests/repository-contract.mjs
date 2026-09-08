@@ -54,7 +54,8 @@ function fixtures(organizationId) {
   const attempt = (t, no, over = {}) => ({
     attemptId: entityId("attempt", t.taskId, no), workflowId: t.workflowId, taskId: t.taskId, attemptNo: no, roleKey: "reader", roleVersion: "1",
     executorKind: "model", executorFamily: "family-a", independenceDomain: "domain-a", modelConfiguration: "", state: "prepared", leaseToken: null,
-    packetFingerprint: sha256(`packet:${t.taskId}:${no}`), packetBytes: 100, providerRequestId: null, modelReported: null, usage: {}, rawResult: null,
+    packetFingerprint: sha256(`packet:${t.taskId}:${no}`), packetBytes: 100, providerRequestId: null, modelReported: null, usage: {},
+    providerStopReason: null, providerDurationMs: null, providerResponse: null, rawResult: null,
     rawResultHash: null, validationState: "pending", validationProblems: [], errorCode: null, errorMessage: null, reconciliationOutcome: null, ...over,
   });
   const segment = (n, key, over = {}) => {
@@ -409,6 +410,12 @@ async function suite(h, repo, organizationId) {
     check("claims come back with their anchors", out.claims.every((c) => c.anchorIds.length === 1) && out.assessments[0].anchorIds.length === 1);
     const done = await repo.getAttempt(a.attemptId);
     check("the attempt holds its result and its terminal state", done.state === "succeeded" && done.rawResultHash === body([]).attempt.rawResultHash && done.validationState === "valid" && same(done.rawResult, body([]).attempt.rawResult));
+    /* What the executor saw of the thing that answered it travels with the
+       result and is written once. An executor that cannot say a thing leaves
+       the row as it was rather than blanking it. */
+    check("the attempt holds nothing about a provider when the executor reported nothing",
+      done.providerRequestId === null && done.modelReported === null && same(done.usage, {})
+      && done.providerStopReason === null && done.providerDurationMs === null && done.providerResponse === null);
     check("the task is completed and its lease is gone", (await repo.getTask(t.taskId)).state === "completed" && (await repo.getTask(t.taskId)).leaseToken === null);
     const readC1 = await repo.getClaim(c1.claimId);
     check("a disputed claim reads back whole, disputed", same(readC1, { ...out.claims[0], status: "disputed" }));
@@ -443,6 +450,29 @@ async function suite(h, repo, organizationId) {
     const failed = await repo.commitValidatedResult(f.commit(t3, a3, { attempt: { to: "failed_known", validationState: "invalid", validationProblems: ["no claims"], rawResult: { outcome: "failed_known" }, rawResultHash: sha256("failed"), errorCode: "invalid_envelope", errorMessage: "no claims" }, task: { to: "failed_known", reason: "invalid_envelope" } }));
     const a3done = await repo.getAttempt(a3.attemptId);
     check("a failed commit ends the attempt failed_known with its error and the task with its reason", failed.alreadyCommitted === false && a3done.state === "failed_known" && a3done.errorCode === "invalid_envelope" && (await repo.getTask(t3.taskId)).terminalReason === "invalid_envelope");
+  }
+
+  section("provider facts: written with the result, written once");
+  {
+    const t = await admitted(9, "facts");
+    const { attempt: a } = await submitted(repo, f, t);
+    const facts = { requestId: "req-1", modelReported: "reported-model-1", usage: { input_tokens: 11, output_tokens: 7 },
+      durationMs: 1234, stopReason: "end_turn", response: { body: "as it arrived", nested: { kept: true } } };
+    await repo.commitValidatedResult(f.commit(t, a, { attempt: { ...f.commit(t, a).attempt, providerFacts: facts } }));
+    const written = await repo.getAttempt(a.attemptId);
+    check("the request id, the model it said it was, the tokens, the reason it stopped and how long it took are all on the attempt",
+      written.providerRequestId === "req-1" && written.modelReported === "reported-model-1"
+      && same(written.usage, { input_tokens: 11, output_tokens: 7 })
+      && written.providerStopReason === "end_turn" && written.providerDurationMs === 1234,
+      `${written.providerRequestId}/${written.modelReported}/${written.providerStopReason}/${written.providerDurationMs}`);
+    check("the answer is kept exactly as it arrived, beside what the executor made of it",
+      same(written.providerResponse, facts.response) && written.rawResult !== null && !same(written.providerResponse, written.rawResult));
+    const again = await repo.commitValidatedResult(f.commit(t, a, { attempt: { ...f.commit(t, a).attempt, providerFacts: { requestId: "req-2", modelReported: "another", usage: { input_tokens: 99 }, stopReason: "other", durationMs: 2, response: { body: "different" } } } }));
+    const after = await repo.getAttempt(a.attemptId);
+    check("a second commit does not rewrite one of them — an executor fact is written once",
+      again.alreadyCommitted === true && after.providerRequestId === "req-1" && after.modelReported === "reported-model-1"
+      && after.providerStopReason === "end_turn" && after.providerDurationMs === 1234
+      && same(after.usage, { input_tokens: 11, output_tokens: 7 }) && same(after.providerResponse, facts.response));
   }
 
   section("transitionClaim: anchors, cut-short attempts, standing decisions");
