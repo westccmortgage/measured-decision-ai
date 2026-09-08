@@ -1,306 +1,361 @@
-# Measured Decision Core V2 — implemented schema (PR 1)
+# Measured Decision Core V2 — the universal decision kernel
 
-Governing specification: **Core V2 v1.2, 2026-09-07**, including the architecture
-rulings in §2.1 from the review of this pull request.
+Status: **implemented in `workers/core-v2/` and migration `058_core_v2_schema.sql`;
+tested on synthetic sources only; not deployed; not integrated with any existing
+project.** Every claim this document makes about behaviour points at a test that
+proves it. Where a property is not yet proved, the document says so.
 
-This document records what migration `058_core_v2_schema.sql` actually built, how
-it maps onto the specification, and the two places where the implementation had
-to choose something the specification leaves open. The three deviations the first
-draft raised are gone: §2.1 answered all three, and the answers are implemented.
+Core V2 is a multi-agent decision engine:
 
-Nothing in PR 1 runs. There is no worker, no orchestrator, no provider call, no
-Studio screen and no production migration. What exists is the record those things
-will later have to write into, and the rules that stop them writing something the
-product could not defend.
+    bounded work distribution → independent analysis → evidence
+      → disagreement detection → targeted verification → adjudication
+      → traceable decision
 
-## The one sentence everything here serves
+It is not bound to construction drawings, to any client, to any property, or to
+any table an existing project wrote. Sources are anything that can be identified
+by content hash or immutable version, segmented, analysed by independent agents,
+and cited by anchor: a document, a recording, a dataset, a register of records.
+What a segment is, which analysts read it, what subjects and predicates they
+report, and how a derived quantity is computed are the business of a **domain
+pack**. The kernel neither knows nor enumerates them.
 
-    decision -> accepted claim(s) -> source anchor(s) -> immutable source revision
+## 1. Kernel and domain pack
 
-Every constraint, trigger and function below exists to make a break in that chain
-impossible in the database rather than merely unusual in the code — and to keep
-it unbroken *afterwards*, which is the part the first draft missed. It is not
-enough to check the chain when a claim is accepted; the evidence underneath it
-must be unable to move, be repointed, or disappear while the decision stands.
+    workers/core-v2/
+      kernel/        the universal engine — nothing in here names a domain
+      domains/       domain packs — each versioned, each optional, each replaceable
+      postgres/      the database adapter for migration 058
+      cli.ts         dry-run and simulation over the synthetic packs
+      tests/
 
-## Tables, and where they come from
+**The kernel owns:** the workflow, task and attempt lifecycles; bounded DAG
+scheduling with two-phase expansion; leases with fencing tokens, heartbeats and
+recovery; work packets and result envelopes; routing and independence
+enforcement; the evidence model (claims, anchors, assessments, disagreements,
+decisions); budgets; cancellation; audit; the comparator; the critic, verifier,
+arbiter and composer roles; and the acceptance rules.
 
-Specification §5.1 – §5.17, in the order the specification names them.
+**A domain pack owns:** its concrete analyst, discoverer and deriver roles; its
+task types; how discovered segments expand into bounded assignments (phase B);
+its claim-level validation rules; its normalisation of units and keys; its
+derivation rules; its executors for deterministic derivation. It receives
+persisted segments and returns task specifications. It cannot reach the
+repository, the scheduler or another pack.
 
-| Specification | Table | Notes |
-|---|---|---|
-| 5.1 `intelligence_workflows` | `public.intelligence_workflows` | Row id is the durable workflow id; carries both fingerprints. |
-| 5.2 `workflow_outbox` | `public.workflow_outbox` | One start command per workflow, `workflow_id` unique. |
-| 5.3 `source_pages` | `public.source_pages` | Unique `(document_id, page_index)`; append-only. |
-| 5.4 `page_regions` | `public.page_regions` | Self-referencing `parent_region_id`; normalised bbox; frozen once accepted. |
-| 5.5 `extraction_tasks` | `public.extraction_tasks` | Unique identity over type, subject, fingerprint, contract, independence group. |
-| 5.6 `task_dependencies` | `public.task_dependencies` | Primary key on both task ids. |
-| 5.7 `agent_attempts` | `public.agent_attempts` | Unique `(task_id, attempt_no)`; one-to-one `ai_run_id`. |
-| 5.8 `evidence_claims` | `public.evidence_claims` | |
-| 5.9 `evidence_anchors` | `public.evidence_anchors` | Each `source_kind` must carry the reference it needs. |
-| 5.10 `project_entities` | `public.project_entities` | Partial unique index on active identities. |
-| 5.11 `entity_aliases` | `public.entity_aliases` | |
-| 5.12 `entity_relations` | `public.entity_relations` | |
-| 5.13 `claim_assessments` | `public.claim_assessments` | + `public.claim_assessment_anchors`, PK `(assessment_id, anchor_id)`. |
-| 5.14 `disagreements` | `public.disagreements` | + `public.disagreement_claims`, PK `(disagreement_id, claim_id)`, with `position` and `role`. |
-| 5.15 `decisions` | `public.decisions` | Includes `reject_all`; decided requires exactly one decider. |
-| 5.16 `decision_evidence` | `public.decision_evidence` | `supports` / `contradicts` / `context`; closed once decided. |
-| 5.17 `decision_actions` | `public.decision_actions` | |
+The kernel is tested with two synthetic packs (`domains/synthetic-records`,
+`domains/synthetic-transcripts`) whose sources, segments, subjects and predicates
+are invented and generic. Nothing under `workers/core-v2/` names a client, a
+property, a drawing, or a legacy fixture; `tests/nothing-real.mjs` proves it.
 
-Deferred to the PR that first needs them, per §21: §5.18 `agent_capability_scores`
-(PR 4 / §18) and §5.19 – §5.22, the spatial frames, registrations, anchors and
-tracks (PR 9).
+Universal roles the kernel ships (a pack may add roles, never remove these):
 
-## §2.1.1 — Tenant identity is a pair, not two labels
+| Role | Phase | Executor | Produces |
+|---|---|---|---|
+| `source_ingestor` | ingest | deterministic | identity claims about each source (hash, kind, size) and the top-level segments the source declares |
+| `claim_comparator` | compare | deterministic | agreement groups and disagreements between independent readings |
+| `evidence_critic` | verify | model | assessments of one or more claims against their own anchors |
+| `disagreement_verifier` | verify | model | assessments of anonymised competing claims against the reopened source |
+| `evidence_arbiter` | adjudicate | model | one proposed adjudication |
+| `decision_composer` | compose | model | decisions from accepted evidence only |
 
-`core_v2_guard_tenancy` runs before insert and update on all nineteen tenant
-tables, for every writer including the service role, and enforces three things:
+Kernel task types: `ingest_source`, `discover_segments`, `compare_claims`,
+`verify_claim`, `verify_disagreement`, `adjudicate`, `compose_decision`. A domain
+pack's own task types are namespaced `<pack>:<name>` and belong to the `analyze`,
+`discover` or `derive` phase.
 
-1. the property named on the row really belongs to the organisation named on it —
-   `properties.organization_id = NEW.organization_id`;
-2. neither `organization_id` nor `property_id` ever changes afterwards;
-3. every foreign key the row carries resolves to that same property.
+## 2. Two-phase graph expansion
 
-Its two lookups (`core_v2_property_of`, `core_v2_organization_of_property`) are
-`security definer`, so the guard answers "another project" rather than "no such
-project" regardless of what the caller can see.
+**Phase A — ingestion and source-level discovery.** From the workflow's
+sources the kernel plans one `ingest_source` task per source and, where the
+pack names a discoverer for a source that declares nothing about itself
+(`pack.discovererFor(source)`), one discovery task per source under that
+role's own namespaced task type. When an ingest task commits, the segments the
+source **declares** about itself (the sheets of a register, the tracks of a
+recording) are persisted from the manifest by the kernel, accepted by rule,
+`discovered_by = deterministic`. When a discovery task commits, the segments
+the discoverer **found** are persisted under its attempt, accepted when they
+lie inside the parent the packet handed over, deduplicated by
+`(source, parent, kind, content hash)`.
 
-The tests attack all three with `reset role` — the service role, which bypasses
-row-level security entirely. An authenticated insert failing for want of a write
-policy proves nothing about a worker, so it is not used as proof anywhere.
+**Phase B — expansion.** After every ingest and every discovery commit, the
+kernel hands the pack all persisted, accepted segments and every task the
+workflow already holds, and the pack returns bounded assignments: further
+discovery beneath declared segments, analysis tasks (blind pairs where the
+pack says so), comparisons per blind subject, and derivations. The pack is
+told nothing about executors, claims or the repository. Expansion is
+**idempotent**: task ids are UUIDs derived from the work's identity, and
+admission reuses a task whose identity already exists — running expansion
+twice creates nothing the second time; a reused task that has not started
+gains any prerequisite the new expansion names (`tests/expansion.mjs`). The
+kernel closes the graph itself: one `compose_decision` task per subject the
+pack names from the accepted claims, once everything else is terminal.
 
-`core_v2_source_set_fingerprint` now requires `is_org_member` on the property's
-organisation, so it cannot be used as an existence oracle for another project's
-documents. Anonymous execution is revoked.
+A manifest with sources but no pre-existing segments therefore does not stop
+after discovery; the discoverer's output creates the downstream graph.
 
-## §2.1.2 — Indirect evidence links are normalized
+## 3. Independence, fail closed
 
-`claim_assessments.anchor_ids` and `disagreements.claim_ids` are gone. In their
-place:
+Every attempt records an **independence domain**: the identity of the executor
+that will actually run it, assigned by the executor registry at registration
+time from the executor instance, never from a label an envelope or a routing
+table could spoof. Two families registered against one executor instance share
+one domain. Two blind readers of one subject must run in two domains.
 
-- `claim_assessment_anchors(organization_id, property_id, assessment_id, anchor_id)`
-- `disagreement_claims(organization_id, property_id, disagreement_id, claim_id, position, role)`
+If, at dispatch, no executor domain distinct from every domain that already
+read the subject is available, the blind assignment is **not executed**: its
+attempt is `rejected_before_submission` with reason `independence_unavailable`,
+the task fails known, it is never counted as an independent reading, and the
+subject is placed in `needs_attention` through a `coverage` disagreement that
+goes straight to a person (`holdSubject`, one write). The same check is made
+again, atomically, at submission: `submitAttempt` refuses a blind attempt
+whose domain already submitted a reading of the subject under another group,
+whatever the router believed when it chose. Within one tick the blind readings
+of one subject are dispatched one after another, in the declared order of
+their groups, so the second is routed knowing the first's domain and a
+shortage of domains always refuses the later group rather than whichever task
+id happened to sort first. A blind reading that ends `failed_known` or
+`outcome_unknown` holds its subject the same way: a subject read once is not
+called read. Critics, verifiers and arbiters are never routed to a domain
+that authored what they judge — nor to a domain that authored any blind
+reading which agreed with it, because a critic handed one of two agreeing
+readings is judging both. The packet still shows only the one claim, so no
+count of who agreed reaches the judge. Tests: one family available; two aliases on
+one executor; simultaneous blind dispatch; exhausted visual families
+(`tests/independence.mjs`).
 
-Both have real foreign keys (`on delete restrict` into evidence), RLS, the tenancy
-guard, and indexes on the reverse direction. `disagreement_claims` additionally
-proves that every claim belongs to the disagreement's **workflow**, not only its
-property: a disagreement compares claims of one reading. `role` distinguishes
-`candidate`, `missing_counterpart` and `context`, so an absent counterpart is a
-row that says so rather than a borrowed or invented UUID. No array survives as a
-second source of truth.
+## 4. Agreement is not proof
 
-## §2.1.3 and §8.6.1 — The evidence chain is immutable after authority attaches
+Two matching blind readings become **corroborated** — and nothing more. A
+claim becomes **accepted** only through one of:
 
-| Rule | How |
+1. an independent source-verification result — a `supports` assessment by a
+   critic or verifier whose independence domain differs from the claim's, on an
+   anchor at the place the claim points; or
+2. a deterministic rule that directly validates the source — the ingestor's
+   identity claims are checked by code against the source's own recorded hash;
+   a derived claim is accepted when every input it names is accepted; or
+3. human approval, through `core_v2_resolve_disagreement`.
+
+After every comparison the kernel creates one `verify_claim` task for the
+corroborated readings of the subject: an evidence critic, in a domain that
+authored none of them, reopens the source at the claims' own anchors. A
+`supports` assessment accepts the claim by rule
+(`independent_verification_supports_anchor`). A negative assessment on a
+corroborated reading opens a disagreement between the readings and the
+source (`found_by: verification`), verified once more and adjudicated like
+any other; `insufficient` or `unreadable` holds the subject for a person.
+Nothing is left corroborated in silence.
+
+An arbiter cannot machine-accept a claim that has no supporting assessment, or
+one assessed `wrong_scope`, `wrong_unit`, `duplicate`, `insufficient` or
+`unreadable`; cannot accept a reading an assessment contradicts; cannot correct
+to a value no assessment proposed (assessments carry the value the assessor
+read instead, and the arbiter's packet shows it); and cannot reject everything
+without an assessment contradicting every candidate. Two identical false
+readings with valid-looking anchors are never accepted: the critic contradicts
+them, the dispute is verified and adjudicated, and the correction rests on the
+assessments' anchors while both false readings end rejected
+(`tests/acceptance.mjs`).
+
+## 5. Evidence scope
+
+An anchor is one consistent tuple: source → segment → locator. The segment must
+belong to the source, the source to the workflow, and the locator to the
+segment's own locator space (a box inside the segment's box; a time range
+inside the segment's range). A segment of one source cannot be combined with
+another source's id. The kernel validates every anchor against the persisted
+segments, not against the envelope's own say-so.
+
+Decision composers receive only the accepted claims of their own subject (and
+the claims those claims name as inputs). A decision for subject A cannot cite
+evidence about subject B: the validator refuses it.
+
+Every material attribute of a claim value is compared. Two readings that agree
+on quantity and disagree on an attribute disagree.
+
+## 6. Repository contract
+
+Both repositories — the in-memory double and the Postgres adapter — implement
+`kernel/repository.ts` and pass the same contract tests
+(`tests/repository-contract.mjs`, run twice). The contract is built from atomic
+operations:
+
+- `leaseTask` grants a lease with a fresh fencing token; a live lease is never
+  granted again, to anyone; `heartbeatLease` extends it under its token;
+- `transitionTask` and every other transition are compare-and-set on the
+  expected current state;
+- `submitAttempt` checks, atomically, that the workflow is active and not
+  cancelled, that the task is running under the caller's lease token, and that
+  the lease has not expired — or refuses;
+- `admitTasks` (planned work and children alike) inserts-or-reuses by identity
+  with canonical payload comparison, adds missing prerequisites to a reused
+  task that has not started, and enforces the workflow, parent, depth and
+  edge budgets inside one operation, returning refusals rather than throwing;
+- `commitValidatedResult` writes the attempt's raw result (write-once), its
+  validation state, the claims, anchors, assessments and disagreements, and the
+  task's terminal state in one transaction, and is idempotent: a second commit
+  of the same attempt returns what the first wrote;
+- `applyDecision` writes the decision, its evidence, and the claim and
+  disagreement transitions it entails in one transaction; `holdSubject`
+  writes a coverage disagreement, its hold decision, the `needs_human`
+  transition and the audit together, idempotently by disagreement key;
+- `recordReconciliation` writes what an executor later said became of an
+  attempt whose outcome this engine never saw. Only an `outcome_unknown`
+  attempt takes one, it is written once, and it is never a reason for the
+  machine to run the work again: `core_v2_authorize_task_retry` is a person's
+  door and the only way back to the queue.
+
+What an attempt stores as its result is what the executor returned, verbatim —
+a string, a null, a malformed object, whatever came back — with its digest
+over that same value. The kernel works from a normalised copy it does not
+persist, so the record shows what was said and not what the engine made of it.
+
+Cancellation reconciles already-submitted attempts before anything else; the
+cancelled-workflow early return in `tick` comes after reconciliation. The lease
+duration must exceed the attempt timeout plus a settlement allowance, and the
+scheduler heartbeats the lease while an attempt runs.
+
+## 7. Workflow state machine
+
+The engine uses exactly the database's machine and nothing else:
+
+    created → queued → planning → running → ready_for_decision → deciding → completed | partial
+                       running ↔ needs_attention
+                       any active state → cancelled | failed
+
+- `created`: `core_v2_start_workflow` wrote the row and its outbox command;
+- `queued`: a dispatcher claimed the outbox command;
+- `planning`: phase A tasks are being admitted;
+- `running`: tasks execute; phase B expansion happens here;
+- `needs_attention`: nothing more runs by machine on at least one subject and
+  a person's decision is required; work on other subjects continues;
+- `ready_for_decision`: every task that is not a composition is terminal;
+- `deciding`: compositions run;
+- `completed` / `partial`: all compositions terminal; `partial` when any subject
+  is held for a person or any task ended `failed_known` / `outcome_unknown`.
+
+`tests/workflow-states.mjs` walks every transition the engine takes and refuses
+every one the table forbids.
+
+## 8. Identifiers
+
+Every persisted entity has an RFC 4122 version-5 UUID derived from its identity
+(`kernel/ids.ts`): the same manifest plans the same task ids, the same attempt
+number makes the same attempt id, the same claim key under the same attempt
+makes the same claim id. Deterministic ids are what make re-planning, restart
+and idempotent admission cheap.
+
+## 9. The database (migration 058)
+
+Tenancy is the organisation. No Core V2 row references a property, a project
+document or any other table an existing project owns. Every table carries
+`organization_id`; every reference a row carries must resolve to the same
+organisation and, where the referenced row has one, the same workflow
+(`core_v2_guard_tenancy`).
+
+| Table | What it holds |
 |---|---|
-| Source pages are append-only | `core_v2_guard_source_page` refuses every update and every delete. A corrected render is a new page. |
-| Accepted regions are frozen | `core_v2_guard_region` — a proposed region may still be refined; once accepted, rejected or superseded, every field is frozen and only the status may move along the `region` machine. |
-| Anchors under authoritative claims are frozen | `core_v2_guard_anchor` refuses update and delete when the claim is `verified`, `accepted`, `rejected` or `superseded`. An anchor is never repointed at another claim, region or page. |
-| Anchors cited by decided decisions are frozen | the same guard, via `decision_evidence` → `decisions`. |
-| Evidence of a decided decision is closed | `core_v2_guard_decision_evidence` refuses insert, update, reassignment and delete once the decision is `machine_decided` or `human_decided`. More evidence produces a superseding decision. |
-| A link naming both claim and anchor is honest | the anchor must be one of that claim's own anchors. |
-| Superseding a supporting claim supersedes its decision | `core_v2_check_superseded_claim_decisions`, deferred: both move in one transaction, or neither does. |
-| The source under an anchor cannot be deleted | anchor and page foreign keys are `on delete restrict`, so deleting a `project_document` that Core V2 anchored to is refused. |
+| `intelligence_workflows` | one requested analysis: domain pack and version, workflow type, engine version, state, both fingerprints, scope, budget, counters |
+| `workflow_outbox` | one start command per workflow, claimed and acknowledged by a dispatcher |
+| `workflow_sources` | the immutable sources a workflow reads: kind, opaque uri, content identity (hash or version), size, media metadata |
+| `source_segments` | bounded parts of a source, discovered in phase A: kind, ordinal, locator, content hash, status, who discovered them |
+| `workflow_tasks` | bounded assignments: phase, task type, role and version, subject, fingerprint, independence group, depth, rounds, lease owner/token/expiry |
+| `task_sources` | what a task reads (a source or a segment), ordered |
+| `task_dependencies` | what a task waits for |
+| `task_target_claims` | the claims a verification task is about |
+| `agent_attempts` | one execution: executor kind, family, independence domain, model configuration, packet fingerprint, raw result (write-once), validation state, reconciliation outcome |
+| `evidence_claims` | atomic assertions with independence group and domain |
+| `claim_inputs` | the claims a derived claim was computed from |
+| `evidence_anchors` | where a claim or an assessment points: source, segment, locator, quoted text |
+| `claim_assessments` | what a critic or verifier found about one claim |
+| `disagreements`, `disagreement_claims`, `disagreement_follow_ups` | conflicts, their candidates, and the one follow-up admitted per round |
+| `decisions`, `decision_evidence`, `decision_actions` | traceable decisions, what they rest on, what they require |
 
-The deferred checks fire from **both** sides. `core_v2_anchor_removal_check` runs
-on anchor insert, update and delete; `core_v2_decision_evidence_link_check` runs
-on evidence insert, update and delete. Validating only when the claim or decision
-row changes would let the evidence be pulled out afterwards.
+Universal vocabularies held by the database:
 
-## §2.1.4 — Accepted claims and decided decisions are wholly immutable
+- task `phase`: `ingest`, `discover`, `analyze`, `compare`, `verify`, `adjudicate`, `derive`, `compose`
+- attempt `executor_kind`: `deterministic`, `model`, `human`
+- claim `observation_basis`: `observed`, `derived`, `inferred`, `reported`
+- anchor `source_kind`: `segment_locator`, `segment`, `source`, `human_record`
+- assessment: `supports`, `contradicts`, `insufficient`, `wrong_scope`, `wrong_unit`, `duplicate`, `unreadable`
+- disagreement `kind`: `missing`, `value`, `unit`, `scope`, `basis`, `identity`, `duplicate`, `coverage`
+- decision `decision_type`: `accept_claim`, `reject_claim`, `reject_all`, `hold`, `proceed`, `request_information`, `supersede`
+- decision `authority`: `deterministic_rule`, `adjudicator`, `human`
 
-`core_v2_frozen_except(old, new, allowed[])` diffs the two versions of a row as
-JSON and returns the first business field that moved. Guards compare **every**
-column rather than a list somebody remembered to write, so a column added in a
-later migration is protected the day it exists.
+Domain vocabularies — task types, role keys, subject types, predicates, segment
+kinds, units — are text and are validated by the pack in the engine, never
+enumerated by the schema.
 
-| Record | May change | Everything else |
-|---|---|---|
-| Accepted or rejected claim | `status` (only to `superseded`), `updated_at` | frozen |
-| Machine- or human-decided decision | `status` (only to `superseded`), `superseded_at`, `updated_at` | frozen |
-| Terminal attempt | `updated_at` | frozen |
-| Workflow | state, `temporal_run_id`, `cancel_requested_at`, the three unit counts, error code/message, `started_at`, `finished_at`, `updated_at` | intent frozen: organisation, property, type, engine version, requester, scope, both fingerprints, duplicate authorisation |
-| Outbox row | `state`, `attempt_count`, `available_at`, `last_error`, `updated_at` | `workflow_id`, `command`, `payload` frozen |
+A terminal attempt does not move at all, with one exception: an attempt that
+ended `outcome_unknown` may still receive its `reconciliation_outcome`, once,
+because the answer to "what became of this?" can only arrive afterwards.
 
-## §2.1.5 and §2.1.6 — Provider facts are write-once, on one ledger key
+What the database refuses, for every writer including the service role: an
+illegal state move on any of the seven machines; a change to a workflow's
+intent; a change to an accepted segment, an anchor under an authoritative claim,
+an accepted or rejected claim, a decided decision, a terminal attempt, or a
+provider fact once written; a raw result replaced; a task or an edge past the
+workflow's budget; a second follow-up in one disagreement round; a claim
+accepted with no anchor or from a cut-short attempt; a decision decided with no
+accepted supporting claim, or a machine decision with no deciding attempt; a
+`reject_all` naming fewer than every candidate or pointing at nothing; a
+superseded claim under a standing decision; a row whose references cross
+organisations or workflows.
 
-`ai_runs_process_key_check` gains exactly one value: `core-v2`. Not one key per
-task type — the task type stays on `extraction_tasks`, contract version and input
-fingerprint distinguish the work, and `job_table`/`job_id` name the attempt. No V1
-row is read, written or reinterpreted by that change.
+Human doors: `core_v2_cancel_workflow` (owner, admin),
+`core_v2_authorize_task_retry` (owner, admin), `core_v2_resolve_disagreement`
+(owner, admin, reviewer). `core_v2_start_workflow` is callable by the service
+role only until a dispatcher exists — an authenticated caller must not be able
+to leave a permanent unconsumed outbox row. The engine's own moves are
+`security definer` functions granted to the service role alone.
 
-Then, on `agent_attempts`:
+Provider cost is recorded on the attempt (`provider_request_id`,
+`model_reported`, `usage`). The kernel does not reference any ledger table an
+existing project owns; a ledger integration is an adapter concern.
 
-- `ai_run_id` is unique where non-null — one attempt, one ledger row;
-- a provider attempt (`openai`, `anthropic`, `google`) at `submitted` or later
-  **requires** an `ai_run_id`;
-- the ledger row must belong to the same organisation and property;
-- `output_limited` requires a stored `raw_response_path` and both `received_at`
-  and `finished_at` — an attempt that ran out of output with nothing kept cannot
-  exist;
-- `provider_request_id`, `ai_run_id`, model, `model_reported`, `output_limit`,
-  raw-response path and hash, `duration_ms`, error code/message and all four
-  timestamps are write-once from the moment each is recorded; `usage` and
-  `reasoning_configuration` likewise once non-empty;
-- a terminal attempt rejects changes to every business field.
+## 10. What is proved, and what is not
 
-## §2.1.7 and §2.1.8 — Two fingerprints, over identity that means something
+Proved by tests in this repository, on synthetic sources, against the in-memory
+repository and against migration 058 on a local PostgreSQL:
 
-`source_set_fingerprint` is SHA-256 over, per document in id order: the immutable
-content identity, the storage provider, bucket and path, the byte size, the
-revision label and the issue date.
+- bounded distribution, blind packets, two-phase expansion, idempotent
+  admission;
+- fail-closed independence in the four named scenarios;
+- corroboration without acceptance; acceptance only by independent
+  verification, deterministic source validation, or a person;
+- the arbiter's refusals;
+- anchor tuple consistency and subject-scoped composition;
+- lease fencing, compare-and-set transitions, atomic submission, atomic
+  admission, idempotent commit, transactional decisions;
+- reconciliation before the cancelled early return; heartbeat and timeout
+  accounting;
+- the exact workflow machine, deterministic UUIDs, canonical storage of every
+  restart-critical field;
+- a database-backed run: start → claim outbox → discover → expand → execute
+  mocks → persist → resolve or hold → restart → finish with no duplicate
+  execution.
 
-The content identity (`core_v2_source_identity`) is either a whole-file digest —
-`sha256` with `content_hash_algorithm` and `content_hash_scope = 'whole-file'` —
-or the storage system's `object_version_id`. Path and byte size alone are not
-accepted: re-uploading a different drawing to the same key at the same size would
-leave both unchanged. A document with neither is **refused** as a Core V2 source,
-naming the file.
+Not proved, and therefore not claimed: behaviour against a real provider,
+against a real dispatcher, under real concurrency across processes, or on any
+source that is not synthetic. The kernel is not called universal, crash-safe,
+integrated or deployable anywhere in this repository beyond what the tests
+above show.
 
-`request_fingerprint` is SHA-256 over workflow type, the source-set fingerprint,
-the canonical requested scope and the engine version. `core_v2_canonical_json`
-sorts object keys and array members, so the same question written in another
-order is the same question. **Duplicate-active protection uses the request
-fingerprint**, so reading three sheets and reading the whole set are two requests
-over the same documents and neither blocks the other.
+## 11. Deviations from the v1.2 specification, recorded
 
-Both columns already existed on `project_documents` (migrations 006 and 018), so
-no V1 table was altered to make this work.
-
-## §2.1.9, §2.1.10, §2.1.11 — The disagreement rulings
-
-`core_v2_resolve_disagreement` takes four outcomes:
-
-| Outcome | What happens |
-|---|---|
-| `accept_claim` | The named claim is accepted; every other competing claim is rejected and linked as `contradicts`; a human decision names all of them. |
-| `correct` | None was right and a person read the source: a new human claim with a `human_record` anchor is accepted and supports the decision; the readings it replaces are rejected and kept. |
-| `reject_all` | A real adjudication with a real burden. Every competing claim is rejected, kept and linked as `contradicts`; at least one source anchor must be supplied saying what the drawing does show; the decision type is `reject_all`; the disagreement resolves through it. |
-| `needs_more_evidence` | **Not a resolution.** The disagreement moves to `needs_human`, no decision is created, and the audit event is `core_v2.disagreement.more_evidence_requested`. It never writes `core_v2.disagreement.resolved`. |
-
-The deferred `core_v2_check_decision_evidence` enforces the `reject_all` burden
-directly: contradiction links to every `candidate` claim of the disagreement it
-settles, plus at least one anchor-bearing `context`/`supports` link.
-
-**Roles.** Owner, admin and reviewer settle evidence disagreements. Contributors
-cannot. Starting, cancelling, authorising a retry and stopping work remain owner
-and admin. The narrower reading in the first draft is withdrawn.
-
-Because a decided decision's evidence set is closed, the resolution writes the
-decision as `proposed`, attaches its evidence, then moves it
-`proposed -> needs_human -> human_decided` — the path §8.6 gives a decision a
-person makes.
-
-## §2.1 and §22 — Counted marks
-
-An accepted `counted_marks` quantity must be a non-negative **integer**, and must
-have, per unit counted:
-
-- an anchor of kind `page_bbox` with a page and a normalised box;
-- a non-empty `locator ->> 'mark'`;
-- distinct marks **and** distinct boxes — a list of invented names hung on one
-  general region is one piece of evidence wearing several labels, and is refused.
-
-The rule is re-checked when an anchor is removed, so the marks cannot be taken
-away after acceptance. Spatial alternatives can be added when the spatial schema
-lands in PR 9.
-
-## Row-level security
-
-Nineteen tables, nineteen `select` policies for `is_org_member(organization_id)`,
-and **no insert, update or delete policy anywhere** — not for members, not for
-owners, not in their own project. The worker writes as the service role. People
-act through four functions that check the asker:
-
-| Function | Who | What it does |
-|---|---|---|
-| `core_v2_start_workflow` | owner, admin | Validates membership and role, that every named document belongs to that property and carries content identity, computes both fingerprints server-side, refuses a duplicate live request unless authorised, writes workflow **and** outbox row in one transaction. |
-| `core_v2_cancel_workflow` | owner, admin | Stops unsent work, leaves sent work to reconcile, returns the three counts, audits. |
-| `core_v2_authorize_task_retry` | owner, admin | The only path out of `outcome_unknown` / `failed_known`. |
-| `core_v2_resolve_disagreement` | owner, admin, reviewer | The four outcomes above. |
-
-Anonymous execution is revoked on all of them, and on the fingerprint helpers.
-
-## State machines
-
-`core_v2_transition_allowed(machine, from, to)` holds every legal move for the
-seven machines — workflow, task, attempt, claim, region, disagreement, decision.
-Guards refuse anything else. The tests attempt all 398 ordered state pairs and
-compare each with the table.
-
-That test proves the state machines and nothing more. The cross-table invariants
-above are proved by their own tests; the size of the matrix is not evidence about
-them.
-
-Two moves the table permits are still refused, because the machine alone cannot
-see why: `leased -> queued` and `* -> cancelled` when any attempt for that task
-has reached `submitted` or beyond. Two more are refused unless a person authorised
-them in this session: `outcome_unknown -> queued` and `failed_known -> queued`.
-
-## Audit
-
-`core_v2.workflow.started`, `core_v2.workflow.cancelled`,
-`core_v2.task.retry_authorized`, `core_v2.disagreement.resolved`,
-`core_v2.disagreement.more_evidence_requested`, `core_v2.decision.superseded` and
-`core_v2.claim.superseded` are written into the existing `public.audit_events`.
-The last two are triggers, so a supersession cannot happen without one.
-
-## V1 is untouched
-
-This migration contains no `alter` and no `update` against any V1 table except one
-addition to `ai_runs_process_key_check`, which admits the value `core-v2` and
-changes no row and no reader. The invariant suite fingerprints
-`project_documents`, `document_baselines`, `plan_spaces`, `project_requirements`,
-`material_takeoffs`, `plan_analysis_jobs`, `plan_analysis_chunks`,
-`evidence_items`, `capture_tasks` and every non-Core-V2 row of `ai_runs` before
-the Core V2 section, and compares the fingerprint afterwards. The §3.3 read-only
-projections belong to PR 8.
-
-## Choices the specification leaves to the implementation
-
-These are implementation-level and change no product invariant. They are recorded
-so the next reader knows they were choices.
-
-- **`text` + `check` rather than Postgres enums.** Migrations 048–057 use this
-  idiom; adding a value is one line and takes no exclusive lock, and
-  `pg_get_constraintdef` makes the vocabulary directly testable.
-- **`sha256()`, built in, rather than pgcrypto `digest()`.** No extension and no
-  `search_path` question inside a `security definer` function.
-- **Closed vocabularies where §5 ends a list with "etc."** — `subject_type`,
-  `entity_type`, `region_kind`, `task_type`. A closed list is what makes "a
-  component type is not an instance" testable. Widening one is a one-line
-  migration.
-- **A `region` state machine.** §5.4 names the four statuses and §8.6.1 says what
-  an accepted region may no longer do; the transitions between them were not
-  written down, so they are stated here and tested like the others.
-- **Region and anchor boxes are normalised 0..1**, enforced by
-  `core_v2_is_normalised_bbox`, so a box found at one rendering resolution means
-  the same thing at another.
-- **`supersede` is the administrative decision type** exempt from the accepted-
-  evidence rule of §5.16; `reject_all` is exempt from *that* rule and subject to
-  its own, stricter one.
-
-Columns beyond the §5 tables, each because a rule in the specification had
-nowhere else to live: `request_fingerprint` (§2.1.7 — also named in §5.1 of
-v1.2), `duplicate_authorized_by` (§5.1 "unless explicitly forced"),
-`retry_authorized_by` / `retry_authorized_at` (§8.2, §9.3),
-`incomplete_source_attempt` (§8.3), `supersedes_decision_id` (§8.6), and
-`organization_id` / `property_id` on the join tables (§5 preamble and §2.1.1).
-
-## The Noble fixture
-
-`supabase/fixtures/core_v2_noble.sql` builds S-2, S-3 and S-4 as V2 holds them:
-three page identities and eight regions — schedules, plan views, a legend, general
-notes, a title block — from invented geometry and invented hashes. It contains no
-client drawing, no rendered page, no photograph and no provider response, and it
-defines its function in `pg_temp` so it cannot be mistaken for data later.
-
-    \ir supabase/fixtures/core_v2_noble.sql
-    select pg_temp.core_v2_noble_fixture('<organisation>', '<property>', '<document>');
-
-## Running the tests
-
-    bash supabase/tests/run.sh
-    bash studio/tests/run.sh
-
-The Core V2 section is at the end of `supabase/tests/security_invariants.sql`.
+The v1.2 specification described Core V2 in construction-drawing terms — pages,
+regions, schedules, symbol families, counted marks, releases for pricing. Per
+the architecture owner's ruling that no existing project may define the kernel,
+those terms are not in the kernel or the schema. `source_pages` and
+`page_regions` became `workflow_sources` and `source_segments`;
+`extraction_tasks` became `workflow_tasks` with a universal `phase`; the
+drawing task types became domain task types; `counted_marks` became a domain
+rule on `derived` claims; `release_for_pricing` and `release_for_ordering`
+became `proceed` with a domain-supplied subtype in the decision summary;
+`property_id` and `project_documents` are gone; the ledger link is gone;
+`project_entities`, `entity_aliases` and `entity_relations` are deferred to the
+pack that first needs them. The rulings of §2.1 that are independent of the
+domain — tenancy proved on every row, no UUID arrays in evidence relationships,
+the immutable chain, whole-row immutability, write-once provider facts, two
+fingerprints, the disagreement outcomes, reviewers settling disputes — are all
+kept.

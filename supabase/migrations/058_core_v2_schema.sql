@@ -1,31 +1,36 @@
 -- 058 · Core V2: the record a decision can be traced through.
 --
--- Today a plan reading produces one large answer and the project believes it.
--- Core V2 replaces that with a chain nobody can shortcut:
+-- Core V2 is a universal decision kernel. A workflow reads a set of immutable
+-- sources, hands bounded pieces of them to independent analysts, keeps every
+-- assertion they make as a claim anchored to the place it was read, notices
+-- where readings disagree, verifies and adjudicates, and ends in a decision
+-- that can be followed back down:
 --
 --     decision -> accepted claim(s) -> source anchor(s) -> immutable source
 --
 -- Everything below exists to make that chain a property of the database rather
 -- than a habit of the code that writes to it. A claim cannot be accepted with
 -- nothing to point at. A decision cannot be decided with nothing accepted
--- behind it. A count read off marks cannot be accepted unless the marks were
--- individually anchored. A request whose outcome nobody knows is never retried
--- by a machine. An accepted record is never edited — it is superseded, and both
+-- behind it. A request whose outcome nobody knows is never retried by a
+-- machine. An accepted record is never edited — it is superseded, and both
 -- versions stay.
+--
+-- What the kernel does not know: what a source is, what a segment of one is,
+-- which roles read it, what subjects and predicates they report, what a unit
+-- means. Those belong to a domain pack and reach this schema as text. The
+-- vocabularies enumerated here are the kernel's own: phases, executor kinds,
+-- observation bases, anchor kinds, assessments, disagreement kinds and
+-- decision types.
 --
 -- What this migration deliberately is NOT:
 --   · it starts nothing. No worker, no provider call, no queue runs from here.
---   · it changes no V1 table. `document_baselines`, `plan_spaces`,
---     `project_requirements` and `material_takeoffs` keep every row and every
---     policy they have. V2 lives beside V1, not on top of it.
+--   · it references no table an existing project owns. Tenancy is the
+--     organisation and only the organisation; every reference a row carries
+--     stays inside one organisation and one workflow.
 --   · it gives the browser no way to write machine state. There is not one
 --     insert, update or delete policy on any table in this file. Machine rows
---     are written by the service role; people act through the four named
---     functions at the end, each of which checks who is asking.
---
--- Scope: sections 5.1–5.17 of the Core V2 specification. The provider
--- capability scores (5.18) and the spatial frames, registrations, anchors and
--- tracks (5.19–5.22) belong to the PRs that first use them; see docs/core-v2.md.
+--     are written by the service role; people act through the named doors at
+--     the end, each of which checks who is asking.
 
 -- ═══════════════════════════════════════════════════════ 1 · the state machines
 --
@@ -134,12 +139,12 @@ create or replace function public.core_v2_transition_allowed(
       ('disagreement','needs_human','resolved'),
       ('disagreement','needs_human','superseded'),
       ('disagreement','resolved','superseded'),
-      -- page region
-      ('region','proposed','accepted'),
-      ('region','proposed','rejected'),
-      ('region','proposed','superseded'),
-      ('region','accepted','superseded'),
-      ('region','rejected','superseded'),
+      -- segment
+      ('segment','proposed','accepted'),
+      ('segment','proposed','rejected'),
+      ('segment','proposed','superseded'),
+      ('segment','accepted','superseded'),
+      ('segment','rejected','superseded'),
       -- decision
       ('decision','proposed','machine_decided'),
       ('decision','proposed','needs_human'),
@@ -156,13 +161,26 @@ $$;
 comment on function public.core_v2_transition_allowed(text, text, text) is
   'Every legal state move in Core V2. A move absent from this list cannot be made by anyone, including the service role.';
 
+-- The states in which a workflow may still do work, and the attempt states
+-- after which a request may have reached an executor. Both lists are consulted
+-- from several guards and doors; one spelling keeps them from drifting apart.
+create or replace function public.core_v2_workflow_active(p_state text)
+returns boolean language sql immutable as $$
+  select p_state in ('created','queued','planning','running','needs_attention','ready_for_decision','deciding');
+$$;
+
+create or replace function public.core_v2_attempt_submitted(p_state text)
+returns boolean language sql immutable as $$
+  select p_state in ('submitted','response_received','parsed','succeeded','output_limited','outcome_unknown');
+$$;
+
 create or replace function public.core_v2_touch() returns trigger
 language plpgsql as $$
 begin new.updated_at := now(); return new; end $$;
 
--- A box on a page, expressed the way every reader must express it: four
--- numbers between 0 and 1, in order. A pixel box from one rendering cannot be
--- compared with a pixel box from another; this one can.
+-- A box, expressed the way every reader must express it: four numbers between
+-- 0 and 1, in order. A pixel box from one rendering cannot be compared with a
+-- pixel box from another; this one can.
 create or replace function public.core_v2_is_normalised_bbox(p_bbox jsonb)
 returns boolean language sql immutable as $$
   select p_bbox is null or (
@@ -178,17 +196,49 @@ returns boolean language sql immutable as $$
   );
 $$;
 
--- The quantity a claim carries, if it carries one. A written zero is a
--- measured value and comes back as 0; an absent or explicitly null quantity
--- comes back as null and stays unknown. Nothing here turns one into the other.
-create or replace function public.core_v2_claim_quantity(p_value jsonb)
-returns numeric language sql immutable as $$
-  select case when jsonb_typeof(p_value -> 'quantity') = 'number'
-              then (p_value ->> 'quantity')::numeric end;
+-- A time range, when a locator carries one: both ends present, both numbers,
+-- start no later than end. A locator with one end and not the other is not a
+-- range at all.
+create or replace function public.core_v2_is_time_range(p_locator jsonb)
+returns boolean language sql immutable as $$
+  select case
+    when p_locator is null then true
+    when not (p_locator ? 'start_ms' or p_locator ? 'end_ms') then true
+    when jsonb_typeof(p_locator -> 'start_ms') is distinct from 'number'
+      or jsonb_typeof(p_locator -> 'end_ms') is distinct from 'number' then false
+    else (p_locator ->> 'start_ms')::numeric <= (p_locator ->> 'end_ms')::numeric
+  end;
 $$;
 
-comment on function public.core_v2_claim_quantity(jsonb) is
-  'The numeric quantity of a claim, or null when it has none. Zero is a measurement; null is an absence. They never collapse into each other.';
+-- The kernel does not know what a locator means. It does know the two shapes
+-- that must compare across readings, and refuses either when malformed.
+create or replace function public.core_v2_locator_well_formed(p_locator jsonb)
+returns boolean language sql immutable as $$
+  select public.core_v2_is_normalised_bbox(p_locator -> 'bbox')
+     and public.core_v2_is_time_range(p_locator);
+$$;
+
+create or replace function public.core_v2_bbox_within(p_inner jsonb, p_outer jsonb)
+returns boolean language sql immutable as $$
+  select (p_inner ->> 0)::numeric >= (p_outer ->> 0)::numeric
+     and (p_inner ->> 1)::numeric >= (p_outer ->> 1)::numeric
+     and (p_inner ->> 2)::numeric <= (p_outer ->> 2)::numeric
+     and (p_inner ->> 3)::numeric <= (p_outer ->> 3)::numeric;
+$$;
+
+-- A budget is read by triggers as integers. A budget that cannot be read that
+-- way is refused when written, not discovered when the first task arrives.
+create or replace function public.core_v2_budget_well_formed(p_budget jsonb)
+returns boolean language sql immutable as $$
+  select jsonb_typeof(p_budget) = 'object'
+     and not exists (
+       select 1 from jsonb_each(p_budget) as b(key, value)
+        where b.key in ('maximum_tasks','maximum_dependency_edges','maximum_child_tasks_per_parent',
+                        'maximum_follow_up_depth','maximum_critic_rounds','maximum_arbiter_rounds')
+          and (jsonb_typeof(b.value) <> 'number'
+               or (b.value)::numeric < 0
+               or (b.value)::numeric <> trunc((b.value)::numeric)));
+$$;
 
 -- ═══════════════════════════════════════════════════════════ 2 · the workflow
 --
@@ -197,30 +247,36 @@ comment on function public.core_v2_claim_quantity(jsonb) is
 create table if not exists public.intelligence_workflows (
   id uuid primary key default gen_random_uuid(),
   organization_id uuid not null references public.organizations(id) on delete cascade,
-  property_id uuid not null references public.properties(id) on delete cascade,
-  workflow_type text not null check (workflow_type in (
-    'plan_compile', 'revision_compile', 'photo_assimilation', 'benchmark', 'rebuild_projection')),
+  -- Which domain pack interprets the sources, at which version. The kernel
+  -- records the pair and never looks inside it.
+  domain_pack text not null,
+  domain_pack_version text not null,
+  workflow_type text not null,
   engine_version text not null check (engine_version like 'core-v2%'),
   state text not null default 'created' check (state in (
     'created', 'queued', 'planning', 'running', 'needs_attention',
     'ready_for_decision', 'deciding', 'completed', 'partial', 'failed', 'cancelled')),
 
   -- Two hashes, because they answer two different questions. The source-set
-  -- fingerprint says WHICH immutable documents were read: content digest or
-  -- object version, storage location, size and revision. The request
-  -- fingerprint says WHAT WAS ASKED of them: the type of work, that source set,
-  -- the canonical scope, and the engine version. Reading S-2 alone and reading
-  -- the whole set share a source fingerprint and are not the same request.
+  -- fingerprint says WHICH immutable sources were read: content identity,
+  -- locator, size. The request fingerprint says WHAT WAS ASKED of them: the
+  -- pack, the type of work, that source set, the canonical scope and the
+  -- engine version. Two scopes over one source set are two requests.
   --
-  -- Both are computed on the server. A client may state what it believes and be
+  -- Both are computed on the server. A caller may state what it believes and be
   -- told it is stale; it never supplies the value.
   source_set_fingerprint text not null,
   request_fingerprint text not null,
   requested_by uuid references auth.users(id),
   requested_scope jsonb not null default '{}'::jsonb,
 
+  -- The policy the planner ran under, snapshotted here so that the limits a
+  -- workflow was admitted with are the limits it is held to, whatever the
+  -- policy says later. Enforced by the task and edge triggers below.
+  budget jsonb not null default '{}'::jsonb,
+
   -- Set by the dispatcher after the orchestrator acknowledges the start.
-  temporal_run_id text,
+  orchestrator_run_id text,
   cancel_requested_at timestamptz,
 
   -- Counted, never estimated. Elapsed time is not progress.
@@ -231,51 +287,52 @@ create table if not exists public.intelligence_workflows (
   error_code text,
   error_message text,
 
-  -- A second workflow over the same sources exists only because a person said
+  -- A second workflow over the same request exists only because a person said
   -- so. This column is who said it; without it the refusal below has no
-  -- exception and the specification's "unless explicitly authorized" could not
-  -- be expressed.
+  -- exception.
   duplicate_authorized_by uuid references auth.users(id),
 
   started_at timestamptz,
   finished_at timestamptz,
   created_at timestamptz not null default now(),
-  updated_at timestamptz not null default now()
+  updated_at timestamptz not null default now(),
+  constraint intelligence_workflows_budget_readable check (public.core_v2_budget_well_formed(budget))
 );
 
 comment on table public.intelligence_workflows is
-  'One requested analysis, comparison, revision update or photo assimilation. The row id is the durable workflow id, so a duplicate start is harmless.';
+  'One requested analysis under one domain pack. The row id is the durable workflow id, so a duplicate start is harmless.';
+comment on column public.intelligence_workflows.budget is
+  'The planning limits this workflow was admitted under: maximum_tasks, maximum_dependency_edges, maximum_child_tasks_per_parent, maximum_follow_up_depth, maximum_critic_rounds, maximum_arbiter_rounds. Absent keys mean no limit.';
 comment on column public.intelligence_workflows.completed_units is
   'Terminal required tasks. Counted from persisted tasks — never derived from elapsed time.';
 comment on column public.intelligence_workflows.duplicate_authorized_by is
-  'The person who authorised a second live workflow over the same sources. Null for ordinary starts, which are refused as duplicates.';
+  'The person who authorised a second live workflow over the same request. Null for ordinary starts, which are refused as duplicates.';
 
-create index if not exists intelligence_workflows_by_property
-  on public.intelligence_workflows(property_id, created_at desc);
+create index if not exists intelligence_workflows_by_organization
+  on public.intelligence_workflows(organization_id, created_at desc);
 create index if not exists intelligence_workflows_by_state
   on public.intelligence_workflows(state, updated_at desc);
 
 -- One live answer to one question. The request fingerprint, not the source
--- fingerprint: two different scopes over the same drawings are two requests and
--- neither blocks the other. A benchmark may deliberately repeat a request, and
--- so may a start a person explicitly authorised; nothing else may.
+-- fingerprint: two different scopes over the same sources are two requests and
+-- neither blocks the other. A start a person explicitly authorised may repeat
+-- a request; nothing else may.
 create unique index if not exists intelligence_workflows_one_live_request
-  on public.intelligence_workflows(property_id, request_fingerprint)
+  on public.intelligence_workflows(organization_id, request_fingerprint)
   where state in ('created','queued','planning','running','needs_attention','ready_for_decision','deciding')
-    and workflow_type <> 'benchmark'
     and duplicate_authorized_by is null;
 create index if not exists intelligence_workflows_by_source_set
-  on public.intelligence_workflows(property_id, source_set_fingerprint);
+  on public.intelligence_workflows(organization_id, source_set_fingerprint);
 
--- Durable command handoff. IDs only: no secrets, no document bytes.
+-- Durable command handoff. IDs only: no secrets, no source bytes.
 create table if not exists public.workflow_outbox (
   id bigint generated always as identity primary key,
   organization_id uuid not null references public.organizations(id) on delete cascade,
-  property_id uuid not null references public.properties(id) on delete cascade,
   workflow_id uuid not null unique references public.intelligence_workflows(id) on delete cascade,
   command text not null default 'start' check (command in ('start')),
   payload jsonb not null default '{}'::jsonb,
   state text not null default 'pending' check (state in ('pending','dispatching','acknowledged','failed')),
+  dispatcher text,
   attempt_count integer not null default 0 check (attempt_count >= 0),
   available_at timestamptz not null default now(),
   last_error text,
@@ -284,104 +341,115 @@ create table if not exists public.workflow_outbox (
 );
 
 comment on table public.workflow_outbox is
-  'One start command per workflow, committed in the same transaction as the workflow. The dispatcher acknowledges it; nothing here holds secrets or document bytes.';
+  'One start command per workflow, committed in the same transaction as the workflow. A dispatcher claims it and acknowledges it; nothing here holds secrets or source bytes.';
 
 create index if not exists workflow_outbox_ready
   on public.workflow_outbox(state, available_at) where state in ('pending','dispatching');
 
 -- ═════════════════════════════════════════════════════════════ 3 · the sources
 --
--- A page identity belongs to one revision of one document and never moves. A
--- changed drawing makes new pages; it does not quietly redefine what an
--- accepted decision was anchored to.
-create table if not exists public.source_pages (
+-- What a workflow read, identified by content rather than by name. A locator
+-- and a size say where a thing is kept and how big it was, not which bytes it
+-- holds; so a source carries a content digest or the storage system's own
+-- immutable version id, and anchors under accepted decisions point here.
+create table if not exists public.workflow_sources (
   id uuid primary key default gen_random_uuid(),
   organization_id uuid not null references public.organizations(id) on delete cascade,
-  property_id uuid not null references public.properties(id) on delete cascade,
-  document_id uuid not null references public.project_documents(id) on delete restrict,
-  page_index integer not null check (page_index >= 0),
-  printed_sheet_number text,
-  printed_sheet_title text,
-  discipline text,
-  revision_label text,
-  issued_at date,
-  page_width numeric,
-  page_height numeric,
-  text_content_path text,
-  render_path text,
-  content_hash text not null,
-  metadata jsonb not null default '{}'::jsonb,
+  workflow_id uuid not null references public.intelligence_workflows(id) on delete cascade,
+  ordinal integer not null check (ordinal >= 0),
+  source_kind text not null,
+  label text,
+  -- An opaque locator. A signed url expires and carries a credential; neither
+  -- belongs in a permanent record.
+  uri text not null check (uri !~* 'x-amz-signature|signature=|token='),
+  content_hash text,
+  hash_algorithm text,
+  object_version_id text,
+  byte_size bigint check (byte_size >= 0),
+  media jsonb not null default '{}'::jsonb,
   created_at timestamptz not null default now(),
-  unique (document_id, page_index)
+  unique (workflow_id, ordinal),
+  constraint workflow_sources_identified check (content_hash is not null or object_version_id is not null)
 );
 
-comment on table public.source_pages is
-  'Immutable page identity for one revision of one document. Anchors point here, so a new revision creates new pages rather than changing these.';
+comment on table public.workflow_sources is
+  'The immutable sources a workflow read: kind, opaque locator, content identity, size and domain metadata. Append-only; a changed source is a new workflow.';
+comment on column public.workflow_sources.media is
+  'Domain metadata about the source — how many parts it has, how long it runs, how large it is. The kernel stores it and does not read it.';
 
-create index if not exists source_pages_by_property on public.source_pages(property_id, document_id, page_index);
+create unique index if not exists workflow_sources_identity
+  on public.workflow_sources(workflow_id, uri, coalesce(content_hash, ''), coalesce(object_version_id, ''));
 
-create table if not exists public.page_regions (
+-- A bounded part of a source, found in discovery and kept so that every later
+-- reader is handed the same piece. Segments may nest and may be refined; an
+-- anchor pointing at an accepted one keeps its meaning.
+create table if not exists public.source_segments (
   id uuid primary key default gen_random_uuid(),
   organization_id uuid not null references public.organizations(id) on delete cascade,
-  property_id uuid not null references public.properties(id) on delete cascade,
-  page_id uuid not null references public.source_pages(id) on delete restrict,
-  parent_region_id uuid references public.page_regions(id) on delete restrict,
-  region_kind text not null check (region_kind in (
-    'title_block','sheet_index','plan_view','schedule','legend','general_notes','keynotes',
-    'detail','section','elevation','diagram','spec_text','photo','other')),
+  workflow_id uuid not null references public.intelligence_workflows(id) on delete cascade,
+  source_id uuid not null references public.workflow_sources(id) on delete restrict,
+  parent_segment_id uuid references public.source_segments(id) on delete restrict,
+  segment_kind text not null,
   label text,
-  -- Normalised [x0,y0,x1,y1], every value between 0 and 1, so a region means
-  -- the same thing whatever resolution it was found at.
-  bbox jsonb not null,
-  rotation integer not null default 0 check (rotation in (0,90,180,270)),
-  crop_path text,
-  text_content_path text,
-  region_hash text not null,
-  identified_by text not null,
+  ordinal integer not null default 0 check (ordinal >= 0),
+  -- Domain geometry: a normalised box, a time range, a row range. The kernel
+  -- checks the two shapes it compares and stores the rest untouched.
+  locator jsonb not null default '{}'::jsonb,
+  content_hash text not null,
   status text not null default 'proposed' check (status in ('proposed','accepted','rejected','superseded')),
+  discovered_by text not null check (discovered_by in ('deterministic','model','human')),
+  discovered_by_attempt_id uuid,
   created_at timestamptz not null default now(),
   updated_at timestamptz not null default now(),
-  constraint page_regions_bbox_normalised check (public.core_v2_is_normalised_bbox(bbox))
+  constraint source_segments_locator_shape check (public.core_v2_locator_well_formed(locator))
 );
 
-comment on table public.page_regions is
-  'A semantic area of a page — a schedule, a legend, a plan view. Regions may overlap and may be refined into children; an anchor pointing at one keeps its meaning.';
+comment on table public.source_segments is
+  'A bounded part of one source, discovered once and handed to every reader alike. What a segment is belongs to the domain pack; that it stays put belongs here.';
 
-create index if not exists page_regions_by_page on public.page_regions(page_id, region_kind);
-create index if not exists page_regions_by_property on public.page_regions(property_id, created_at desc);
+create unique index if not exists source_segments_identity
+  on public.source_segments(workflow_id, source_id,
+    coalesce(parent_segment_id, '00000000-0000-0000-0000-000000000000'::uuid), segment_kind, content_hash);
+create index if not exists source_segments_by_source on public.source_segments(source_id, segment_kind, ordinal);
+create index if not exists source_segments_by_workflow on public.source_segments(workflow_id, status);
 
 -- ══════════════════════════════════════════════════════ 4 · the bounded work
 --
--- One task reads one schedule, one legend, one symbol family, one packet. No
--- row here may ask a provider for a whole project baseline; that is the shape
--- of request Core V2 exists to replace.
-create table if not exists public.extraction_tasks (
+-- One task reads one bounded thing under one role. No row here may ask an
+-- executor for everything at once; that is the shape of request Core V2 exists
+-- to replace.
+create table if not exists public.workflow_tasks (
   id uuid primary key default gen_random_uuid(),
   organization_id uuid not null references public.organizations(id) on delete cascade,
-  property_id uuid not null references public.properties(id) on delete cascade,
   workflow_id uuid not null references public.intelligence_workflows(id) on delete cascade,
-  parent_task_id uuid references public.extraction_tasks(id) on delete set null,
-  task_type text not null check (task_type in (
-    'ingest_page','map_page_regions','read_sheet_register','extract_schedule','extract_notes',
-    'extract_legend','locate_symbol_family','extract_dimensions','resolve_relationships',
-    'count_instances','derive_materials','detect_disagreements','verify_disagreement',
-    'adjudicate','cluster_photo_scenes','locate_photo_scene','classify_work_stage','compare_revisions')),
+  parent_task_id uuid references public.workflow_tasks(id) on delete set null,
+  created_by_task_id uuid references public.workflow_tasks(id) on delete set null,
+  phase text not null check (phase in (
+    'ingest','discover','analyze','compare','verify','adjudicate','derive','compose')),
+  task_type text not null,
+  role_key text not null,
+  role_version text not null,
   subject_key text not null,
+  priority integer not null default 100,
+  input_fingerprint text not null,
+  contract_version text not null,
+  -- Two readers reading the same thing blind belong to different groups, so
+  -- their tasks are two rows rather than one reused result.
+  independence_group text,
+  depth integer not null default 0 check (depth >= 0),
+  critic_round integer not null default 0 check (critic_round >= 0),
+  arbiter_round integer not null default 0 check (arbiter_round >= 0),
+  disagreement_id uuid,
   state text not null default 'created' check (state in (
     'created','blocked','queued','leased','running','completed','failed_known',
     'outcome_unknown','cancelled','superseded')),
-  priority integer not null default 100,
-  input_manifest jsonb not null default '{}'::jsonb,
-  input_fingerprint text not null,
-  contract_version text not null,
-  -- Two extractors reading the same sources blind belong to different groups,
-  -- so their tasks are two rows rather than one reused result.
-  required_independence_group text,
-  max_claims integer not null default 200 check (max_claims > 0),
+  -- A lease is a fencing token, not a name. A worker that lost its lease still
+  -- knows its owner string; it no longer knows the token that replaced it.
   lease_owner text,
+  lease_token uuid,
   lease_expires_at timestamptz,
+  max_claims integer not null default 200 check (max_claims > 0),
   terminal_reason text,
-  created_by_task_id uuid references public.extraction_tasks(id) on delete set null,
   -- Who authorised running this work again after it ended without a known
   -- outcome. A machine can never fill these in.
   retry_authorized_by uuid references auth.users(id),
@@ -390,26 +458,41 @@ create table if not exists public.extraction_tasks (
   updated_at timestamptz not null default now()
 );
 
-comment on table public.extraction_tasks is
-  'One bounded unit of work with a reproducible input fingerprint. No task asks for a complete project baseline.';
-comment on column public.extraction_tasks.retry_authorized_by is
-  'The person who authorised re-running a task whose provider outcome was unknown. Never set by a worker.';
+comment on table public.workflow_tasks is
+  'One bounded unit of work with a reproducible input fingerprint. Its phase is the kernel''s; its task type and role are the domain pack''s.';
+comment on column public.workflow_tasks.retry_authorized_by is
+  'The person who authorised re-running a task whose outcome was unknown or a known failure. Never set by a worker.';
 
-create unique index if not exists extraction_tasks_identity
-  on public.extraction_tasks(workflow_id, task_type, subject_key, input_fingerprint,
-                             contract_version, coalesce(required_independence_group, ''));
-create index if not exists extraction_tasks_runnable
-  on public.extraction_tasks(state, priority, created_at);
-create index if not exists extraction_tasks_by_workflow
-  on public.extraction_tasks(workflow_id, state);
-create index if not exists extraction_tasks_leases
-  on public.extraction_tasks(lease_expires_at) where state = 'leased';
+create unique index if not exists workflow_tasks_identity
+  on public.workflow_tasks(workflow_id, phase, task_type, subject_key, input_fingerprint,
+                           contract_version, coalesce(independence_group, ''));
+create index if not exists workflow_tasks_runnable
+  on public.workflow_tasks(workflow_id, state, priority, created_at);
+create index if not exists workflow_tasks_leases
+  on public.workflow_tasks(lease_expires_at) where state in ('leased','running');
+create index if not exists workflow_tasks_by_parent
+  on public.workflow_tasks(parent_task_id) where parent_task_id is not null;
+
+-- What a task reads, in order: a whole source or one segment of it, never
+-- both in one row.
+create table if not exists public.task_sources (
+  organization_id uuid not null references public.organizations(id) on delete cascade,
+  task_id uuid not null references public.workflow_tasks(id) on delete cascade,
+  ordinal integer not null check (ordinal >= 0),
+  source_id uuid references public.workflow_sources(id) on delete restrict,
+  segment_id uuid references public.source_segments(id) on delete restrict,
+  created_at timestamptz not null default now(),
+  primary key (task_id, ordinal),
+  constraint task_sources_exactly_one check ((source_id is not null) <> (segment_id is not null))
+);
+
+comment on table public.task_sources is
+  'The sources and segments one task was handed, in order. Real foreign keys, so a task cannot be handed a piece of another workflow.';
 
 create table if not exists public.task_dependencies (
   organization_id uuid not null references public.organizations(id) on delete cascade,
-  property_id uuid not null references public.properties(id) on delete cascade,
-  task_id uuid not null references public.extraction_tasks(id) on delete cascade,
-  depends_on_task_id uuid not null references public.extraction_tasks(id) on delete cascade,
+  task_id uuid not null references public.workflow_tasks(id) on delete cascade,
+  depends_on_task_id uuid not null references public.workflow_tasks(id) on delete cascade,
   dependency_kind text not null check (dependency_kind in (
     'requires_completion','requires_claims','requires_resolution')),
   created_at timestamptz not null default now(),
@@ -420,31 +503,57 @@ create table if not exists public.task_dependencies (
 comment on table public.task_dependencies is
   'What a task waits for. Cycles are rejected by planner validation before anything is queued.';
 
--- One actual attempt by one executor — deterministic code, a provider, or a
+create index if not exists task_dependencies_reverse on public.task_dependencies(depends_on_task_id);
+
+-- The claims a verification task is about. A packet built from this table
+-- cannot quietly widen to claims nobody asked it to verify.
+create table if not exists public.task_target_claims (
+  organization_id uuid not null references public.organizations(id) on delete cascade,
+  task_id uuid not null references public.workflow_tasks(id) on delete cascade,
+  claim_id uuid not null,
+  created_at timestamptz not null default now(),
+  primary key (task_id, claim_id)
+);
+
+-- One actual attempt by one executor — deterministic code, a model, or a
 -- person. Whatever it returned is kept, including a partial answer that cost
--- money and a response that failed to parse.
+-- money and a response that failed to validate.
 create table if not exists public.agent_attempts (
   id uuid primary key default gen_random_uuid(),
   organization_id uuid not null references public.organizations(id) on delete cascade,
-  property_id uuid not null references public.properties(id) on delete cascade,
-  task_id uuid not null references public.extraction_tasks(id) on delete cascade,
+  workflow_id uuid not null references public.intelligence_workflows(id) on delete cascade,
+  task_id uuid not null references public.workflow_tasks(id) on delete cascade,
   attempt_no integer not null check (attempt_no >= 1),
-  executor_type text not null check (executor_type in ('deterministic','openai','anthropic','google','human')),
-  agent_role text not null,
-  model text,
-  model_reported text,
-  reasoning_configuration jsonb not null default '{}'::jsonb,
-  output_limit integer,
+  role_key text not null,
+  role_version text not null,
+  executor_kind text not null check (executor_kind in ('deterministic','model','human')),
+  -- The family is what the executor calls itself. The independence domain is
+  -- what the registry knows it to be — assigned from the executor instance,
+  -- never from a label an envelope could carry. Two readings are independent
+  -- when their domains differ, and only then.
+  executor_family text not null check (executor_family <> ''),
+  independence_domain text not null check (independence_domain <> ''),
+  model_configuration text not null default '',
   state text not null default 'prepared' check (state in (
     'prepared','submitted','response_received','parsed','succeeded',
     'rejected_before_submission','failed_known','output_limited',
     'cancelled_before_submission','outcome_unknown')),
+  lease_token uuid,
+  packet_fingerprint text not null,
+  packet_bytes integer check (packet_bytes >= 0),
   provider_request_id text,
-  ai_run_id uuid references public.ai_runs(id) on delete set null,
-  raw_response_path text,
-  response_hash text,
+  model_reported text,
   usage jsonb not null default '{}'::jsonb,
-  duration_ms bigint,
+  raw_result jsonb,
+  raw_result_hash text,
+  validation_state text not null default 'pending' check (validation_state in (
+    'pending','valid','invalid','not_applicable')),
+  validation_problems jsonb not null default '[]'::jsonb,
+  -- What the executor later said became of an attempt whose outcome this
+  -- engine never saw. It is the only fact that may join a terminal attempt,
+  -- it may join only an unknown one, and it never becomes a retry: a person
+  -- authorises that.
+  reconciliation_outcome text check (reconciliation_outcome in ('never_started','completed','failed')),
   error_code text,
   error_message text,
   started_at timestamptz,
@@ -453,15 +562,26 @@ create table if not exists public.agent_attempts (
   finished_at timestamptz,
   created_at timestamptz not null default now(),
   updated_at timestamptz not null default now(),
-  unique (task_id, attempt_no)
+  unique (task_id, attempt_no),
+  -- A stored result without its digest could be replaced with nobody the
+  -- wiser; the digest is what makes write-once checkable from outside.
+  constraint agent_attempts_result_hashed check (raw_result is null or raw_result_hash is not null),
+  -- Only an unknown outcome is reconciled; a succeeded attempt has its answer.
+  constraint agent_attempts_reconciled_when_unknown
+    check (reconciliation_outcome is null or state = 'outcome_unknown')
 );
 
 comment on table public.agent_attempts is
-  'One executor attempt. A raw or partial response is never deleted because parsing failed, and an attempt that may have been billed keeps its usage.';
+  'One executor attempt. A raw or partial result is never deleted because validation failed, and an attempt that may have been billed keeps its usage.';
 comment on column public.agent_attempts.state is
-  'output_limited is a known outcome that keeps its partial response and usage; outcome_unknown means the provider may have run and is never retried automatically.';
+  'output_limited is a known outcome that keeps its partial result and usage; outcome_unknown means the executor may have run and is never retried automatically.';
+comment on column public.agent_attempts.independence_domain is
+  'The executor identity the registry assigned at registration. Two blind readings of one subject must carry two different values here.';
+comment on column public.agent_attempts.reconciliation_outcome is
+  'What the executor answered when asked what became of an unknown outcome. Recorded once, never a reason for the engine to retry.';
 
 create index if not exists agent_attempts_by_task on public.agent_attempts(task_id, attempt_no);
+create index if not exists agent_attempts_by_workflow on public.agent_attempts(workflow_id, state);
 create index if not exists agent_attempts_open
   on public.agent_attempts(state, submitted_at) where state in ('submitted','response_received','outcome_unknown');
 
@@ -472,27 +592,25 @@ create index if not exists agent_attempts_open
 create table if not exists public.evidence_claims (
   id uuid primary key default gen_random_uuid(),
   organization_id uuid not null references public.organizations(id) on delete cascade,
-  property_id uuid not null references public.properties(id) on delete cascade,
   workflow_id uuid not null references public.intelligence_workflows(id) on delete cascade,
+  task_id uuid references public.workflow_tasks(id) on delete set null,
   attempt_id uuid references public.agent_attempts(id) on delete set null,
-  subject_type text not null check (subject_type in (
-    'building','level','space','component_type','component_instance','assembly','material',
-    'requirement','system','photo_scene','work_state','document_identity')),
+  independence_group text,
+  independence_domain text,
+  subject_type text not null,
   subject_key text not null,
   predicate text not null,
   value jsonb not null default '{}'::jsonb,
   unit text,
-  -- What kind of observation this is. Printed in a schedule, counted from
-  -- individually marked instances, calculated by deterministic code, observed
-  -- in the field, or inferred. These are four different facts about the same
-  -- component and they are never merged without a decision.
-  observation_basis text not null check (observation_basis in (
-    'printed','counted_marks','calculated','field_observed','inferred')),
+  -- What kind of observation this is. Read directly off the source, computed
+  -- from other claims, inferred, or reported by a person. These are four
+  -- different facts about the same subject and are never merged without a
+  -- decision.
+  observation_basis text not null check (observation_basis in ('observed','derived','inferred','reported')),
   scope jsonb not null default '{}'::jsonb,
   status text not null default 'proposed' check (status in (
     'proposed','corroborated','disputed','verified','accepted','rejected','unresolved','superseded')),
   machine_confidence numeric check (machine_confidence is null or (machine_confidence >= 0 and machine_confidence <= 1)),
-  canonical_entity_id uuid,
   supersedes_claim_id uuid references public.evidence_claims(id) on delete set null,
   -- A claim parsed out of an attempt that ran out of output. It may be shown
   -- and it may be useful; it can never be accepted on its own.
@@ -503,209 +621,125 @@ create table if not exists public.evidence_claims (
 
 comment on table public.evidence_claims is
   'One atomic assertion: subject, predicate, value, unit, basis and scope. Explanatory prose may accompany a claim; it can never replace this structure.';
-comment on column public.evidence_claims.value is
-  'Typed value with its original text. A quantity of 0 is a measurement; an absent or null quantity is unknown. See core_v2_claim_quantity.';
+comment on column public.evidence_claims.status is
+  'corroborated means two independent readings agree, and nothing more. accepted is reached only through independent verification, a deterministic rule, or a person.';
 
 create index if not exists evidence_claims_by_workflow on public.evidence_claims(workflow_id, status);
 create index if not exists evidence_claims_by_subject
-  on public.evidence_claims(property_id, subject_type, subject_key, predicate);
-create index if not exists evidence_claims_by_entity on public.evidence_claims(canonical_entity_id)
-  where canonical_entity_id is not null;
+  on public.evidence_claims(workflow_id, subject_type, subject_key, predicate);
+create index if not exists evidence_claims_by_attempt on public.evidence_claims(attempt_id) where attempt_id is not null;
 
--- Where a claim comes from. One claim may have many anchors; one anchor may
--- support many claims. An anchor that points nowhere is not an anchor, which
--- is why the check below insists on the reference its own kind requires.
+-- The claims a derived claim was computed from, as real foreign keys. A
+-- derivation whose inputs cannot be found is arithmetic nobody can check.
+create table if not exists public.claim_inputs (
+  organization_id uuid not null references public.organizations(id) on delete cascade,
+  claim_id uuid not null references public.evidence_claims(id) on delete cascade,
+  input_claim_id uuid not null references public.evidence_claims(id) on delete restrict,
+  created_at timestamptz not null default now(),
+  primary key (claim_id, input_claim_id),
+  constraint claim_inputs_not_self check (claim_id <> input_claim_id)
+);
+
+create index if not exists claim_inputs_by_input on public.claim_inputs(input_claim_id);
+
+-- Where a claim, or an assessment of one, was read. One consistent tuple:
+-- source, segment, locator. An anchor that points nowhere is not an anchor,
+-- which is why the check below insists on the reference its own kind requires.
 create table if not exists public.evidence_anchors (
   id uuid primary key default gen_random_uuid(),
   organization_id uuid not null references public.organizations(id) on delete cascade,
-  property_id uuid not null references public.properties(id) on delete cascade,
-  claim_id uuid not null references public.evidence_claims(id) on delete restrict,
-  source_kind text not null check (source_kind in (
-    'page_region','page_bbox','document_text','photo','video_frame','human_record')),
+  workflow_id uuid not null references public.intelligence_workflows(id) on delete cascade,
+  claim_id uuid references public.evidence_claims(id) on delete restrict,
+  assessment_id uuid,
+  source_kind text not null check (source_kind in ('segment_locator','segment','source','human_record')),
   -- `restrict`, not `cascade`: the source under an accepted decision does not
-  -- quietly disappear because a row somewhere upstream was deleted. Removing a
-  -- document that Core V2 anchored to is refused, and that refusal is the
+  -- quietly disappear because a row upstream was deleted. That refusal is the
   -- point.
-  document_id uuid references public.project_documents(id) on delete restrict,
-  page_id uuid references public.source_pages(id) on delete restrict,
-  region_id uuid references public.page_regions(id) on delete restrict,
-  evidence_item_id uuid references public.evidence_items(id) on delete restrict,
-  bbox jsonb,
-  timecode_ms bigint,
+  source_id uuid references public.workflow_sources(id) on delete restrict,
+  segment_id uuid references public.source_segments(id) on delete restrict,
+  locator jsonb not null default '{}'::jsonb,
   quoted_text text,
   anchor_hash text not null,
-  -- Sheet number, tile, image id, capture direction — and, for a counted mark,
-  -- which mark this is. That last one is what makes a count checkable.
-  locator jsonb not null default '{}'::jsonb,
   created_at timestamptz not null default now(),
-  constraint evidence_anchors_bbox_normalised check (public.core_v2_is_normalised_bbox(bbox)),
+  constraint evidence_anchors_owned_by_one check ((claim_id is not null) <> (assessment_id is not null)),
+  constraint evidence_anchors_locator_shape check (public.core_v2_locator_well_formed(locator)),
   constraint evidence_anchors_points_somewhere check (
     case source_kind
-      when 'page_region'   then region_id is not null
-      when 'page_bbox'     then page_id is not null and bbox is not null
-      when 'document_text' then document_id is not null
-      when 'photo'         then evidence_item_id is not null
-      when 'video_frame'   then evidence_item_id is not null and timecode_ms is not null
-      when 'human_record'  then quoted_text is not null or locator <> '{}'::jsonb
+      when 'segment_locator' then segment_id is not null and locator <> '{}'::jsonb
+      when 'segment'         then segment_id is not null
+      when 'source'          then source_id is not null
+      when 'human_record'    then quoted_text is not null or locator <> '{}'::jsonb
       else false
     end)
 );
 
 comment on table public.evidence_anchors is
-  'The source an accepted claim can be opened at. A quantity counted from marks needs one anchor per mark, not one reference to the sheet.';
-comment on column public.evidence_anchors.locator is
-  'Sheet number, tile, image id, capture direction. For a counted quantity, locator->>''mark'' names the individual mark this anchor is.';
+  'The place an accepted claim can be opened at: a source, a segment of it, a locator inside that segment, or a person''s own record. Every anchor belongs to exactly one claim or one assessment.';
 
-create index if not exists evidence_anchors_by_claim on public.evidence_anchors(claim_id);
-create index if not exists evidence_anchors_by_region on public.evidence_anchors(region_id) where region_id is not null;
-create index if not exists evidence_anchors_by_page on public.evidence_anchors(page_id) where page_id is not null;
+create index if not exists evidence_anchors_by_claim on public.evidence_anchors(claim_id) where claim_id is not null;
+create index if not exists evidence_anchors_by_assessment on public.evidence_anchors(assessment_id) where assessment_id is not null;
+create index if not exists evidence_anchors_by_segment on public.evidence_anchors(segment_id) where segment_id is not null;
+create index if not exists evidence_anchors_by_source on public.evidence_anchors(source_id) where source_id is not null;
 
--- ══════════════════════════════════════════════════════ 6 · the project graph
---
--- A component type, a component instance, an assembly and a material are four
--- different things. A schedule row is a type. A symbol on a plan is an
--- instance. A material appears only from a deterministic rule or a printed
--- material quantity. Nothing here lets one become another by accident.
-create table if not exists public.project_entities (
-  id uuid primary key default gen_random_uuid(),
-  organization_id uuid not null references public.organizations(id) on delete cascade,
-  property_id uuid not null references public.properties(id) on delete cascade,
-  entity_type text not null check (entity_type in (
-    'building','level','space','component_type','component_instance','assembly',
-    'material','system','photo_scene')),
-  canonical_key text not null,
-  display_name text not null,
-  attributes jsonb not null default '{}'::jsonb,
-  lifecycle_state text not null default 'unresolved' check (lifecycle_state in (
-    'active','superseded','removed','unresolved')),
-  first_seen_workflow_id uuid references public.intelligence_workflows(id) on delete set null,
-  last_seen_workflow_id uuid references public.intelligence_workflows(id) on delete set null,
-  created_at timestamptz not null default now(),
-  updated_at timestamptz not null default now()
-);
-
-comment on table public.project_entities is
-  'The canonical project graph node. A component type, an instance, an assembly and a material are distinct entity types and share no identity.';
-
-create unique index if not exists project_entities_active_identity
-  on public.project_entities(property_id, entity_type, canonical_key)
-  where lifecycle_state = 'active';
-create index if not exists project_entities_by_property
-  on public.project_entities(property_id, entity_type, canonical_key);
-
--- `2ND FLOOR` and `Second Floor` are one entity and two names. Both names stay.
-create table if not exists public.entity_aliases (
-  id uuid primary key default gen_random_uuid(),
-  organization_id uuid not null references public.organizations(id) on delete cascade,
-  property_id uuid not null references public.properties(id) on delete cascade,
-  entity_id uuid not null references public.project_entities(id) on delete cascade,
-  original_text text not null,
-  normalized_text text not null,
-  source_scope jsonb not null default '{}'::jsonb,
-  resolution_method text not null check (resolution_method in (
-    'deterministic','machine_proposed','human_confirmed')),
-  attempt_id uuid references public.agent_attempts(id) on delete set null,
-  status text not null default 'proposed' check (status in ('proposed','accepted','rejected','superseded')),
-  created_at timestamptz not null default now(),
-  updated_at timestamptz not null default now()
-);
-
-comment on table public.entity_aliases is
-  'Original and normalised names for one entity, with how they were resolved. A human-confirmed alias outranks a machine-proposed one; a conflict becomes a disagreement rather than an overwrite.';
-
-create index if not exists entity_aliases_by_entity on public.entity_aliases(entity_id);
-create index if not exists entity_aliases_by_text on public.entity_aliases(property_id, normalized_text);
-
-create table if not exists public.entity_relations (
-  id uuid primary key default gen_random_uuid(),
-  organization_id uuid not null references public.organizations(id) on delete cascade,
-  property_id uuid not null references public.properties(id) on delete cascade,
-  from_entity_id uuid not null references public.project_entities(id) on delete cascade,
-  relation_type text not null check (relation_type in (
-    'instance_of','located_in','specified_by','shown_on','part_of','connects_to','replaces','observed_in')),
-  to_entity_id uuid not null references public.project_entities(id) on delete cascade,
-  decision_id uuid,
-  valid_from_workflow_id uuid references public.intelligence_workflows(id) on delete set null,
-  valid_to_workflow_id uuid references public.intelligence_workflows(id) on delete set null,
-  created_at timestamptz not null default now(),
-  constraint entity_relations_not_self check (from_entity_id <> to_entity_id)
-);
-
-create index if not exists entity_relations_from on public.entity_relations(from_entity_id, relation_type);
-create index if not exists entity_relations_to on public.entity_relations(to_entity_id, relation_type);
-
--- ═══════════════════════════════════════════════════ 7 · review and dispute
---
--- What a critic found, said about which claim, using which anchors. A review
--- that names no evidence is an opinion.
+-- What a critic or verifier found, about which claim, in which attempt. One
+-- verdict per claim per attempt: a reviewer does not get to say two things.
 create table if not exists public.claim_assessments (
   id uuid primary key default gen_random_uuid(),
   organization_id uuid not null references public.organizations(id) on delete cascade,
-  property_id uuid not null references public.properties(id) on delete cascade,
+  workflow_id uuid not null references public.intelligence_workflows(id) on delete cascade,
   claim_id uuid not null references public.evidence_claims(id) on delete cascade,
   attempt_id uuid not null references public.agent_attempts(id) on delete cascade,
+  task_id uuid references public.workflow_tasks(id) on delete set null,
   assessment text not null check (assessment in (
     'supports','contradicts','insufficient','wrong_scope','wrong_unit','duplicate','unreadable')),
   reason_code text not null,
   explanation text,
-  created_at timestamptz not null default now()
-);
-
-create index if not exists claim_assessments_by_claim on public.claim_assessments(claim_id);
-
--- The anchors a reviewer actually used. A uuid[] column could hold the id of an
--- anchor in another project, or of an anchor that no longer exists, and the
--- database would have no way to notice either.
-create table if not exists public.claim_assessment_anchors (
-  organization_id uuid not null references public.organizations(id) on delete cascade,
-  property_id uuid not null references public.properties(id) on delete cascade,
-  assessment_id uuid not null references public.claim_assessments(id) on delete cascade,
-  anchor_id uuid not null references public.evidence_anchors(id) on delete restrict,
   created_at timestamptz not null default now(),
-  primary key (assessment_id, anchor_id)
+  unique (attempt_id, claim_id)
 );
 
-comment on table public.claim_assessment_anchors is
-  'The evidence a reviewer used, as real foreign keys. Array-held ids cannot carry referential integrity or a tenant guard, so they are not used.';
+comment on table public.claim_assessments is
+  'One reviewer''s verdict on one claim. Its anchors live in evidence_anchors under assessment_id; a review that names no evidence is an opinion.';
 
-create index if not exists claim_assessment_anchors_by_anchor
-  on public.claim_assessment_anchors(anchor_id);
-create index if not exists claim_assessment_anchors_by_property
-  on public.claim_assessment_anchors(property_id, assessment_id);
+create index if not exists claim_assessments_by_claim on public.claim_assessments(claim_id, assessment);
 
+-- ═══════════════════════════════════════════════════ 6 · review and dispute
+--
 -- Two readers disagreed, or one reader disagreed with the source. Both claims
 -- are kept, and the losing one is kept too.
 create table if not exists public.disagreements (
   id uuid primary key default gen_random_uuid(),
   organization_id uuid not null references public.organizations(id) on delete cascade,
-  property_id uuid not null references public.properties(id) on delete cascade,
   workflow_id uuid not null references public.intelligence_workflows(id) on delete cascade,
   disagreement_key text not null,
   kind text not null check (kind in (
-    'missing','value','unit','scope','identity','count_basis','source','revision','geometry','duplicate')),
+    'missing','value','unit','scope','basis','identity','duplicate','coverage')),
   subject_signature jsonb not null default '{}'::jsonb,
   severity text not null default 'material' check (severity in ('critical','material','informational')),
   state text not null default 'open' check (state in ('open','verifying','resolved','needs_human','superseded')),
   resolution_decision_id uuid,
+  -- How many times a critic and an arbiter have been asked. Counted here so
+  -- the budget is checked against the record, not against a worker's memory.
+  critic_rounds integer not null default 0 check (critic_rounds >= 0),
+  arbiter_rounds integer not null default 0 check (arbiter_rounds >= 0),
+  needs_human_reason text,
   created_at timestamptz not null default now(),
-  updated_at timestamptz not null default now()
+  updated_at timestamptz not null default now(),
+  unique (workflow_id, disagreement_key)
 );
 
 comment on table public.disagreements is
   'A conflict between claims, kept as data. Resolution records which claim won and why; the claims that lost are never deleted.';
 
-create unique index if not exists disagreements_identity
-  on public.disagreements(workflow_id, disagreement_key);
 create index if not exists disagreements_open
-  on public.disagreements(property_id, state, severity) where state <> 'resolved';
+  on public.disagreements(workflow_id, state, severity) where state <> 'resolved';
 
--- The claims that disagree. Each one must belong to the same property AND the
--- same workflow as the disagreement, which a uuid[] column could never promise.
--- An absent counterpart — one reader saw a header the other did not — is a row
--- with role `missing_counterpart`, not a borrowed or invented id.
+-- The claims that disagree. Each one must belong to the same organisation AND
+-- the same workflow as the disagreement, which a uuid[] column could never
+-- promise. An absent counterpart — one reader saw something the other did not
+-- — is a row with role `missing_counterpart`, not a borrowed or invented id.
 create table if not exists public.disagreement_claims (
   organization_id uuid not null references public.organizations(id) on delete cascade,
-  property_id uuid not null references public.properties(id) on delete cascade,
   disagreement_id uuid not null references public.disagreements(id) on delete cascade,
   claim_id uuid not null references public.evidence_claims(id) on delete restrict,
   position integer not null default 0,
@@ -716,28 +750,43 @@ create table if not exists public.disagreement_claims (
 );
 
 comment on table public.disagreement_claims is
-  'The competing claims of one disagreement, as real foreign keys with a stable position. Every claim belongs to the disagreement''s property and workflow.';
+  'The competing claims of one disagreement, as real foreign keys with a stable position. Every claim belongs to the disagreement''s organisation and workflow.';
 
-create index if not exists disagreement_claims_by_claim
-  on public.disagreement_claims(claim_id);
-create index if not exists disagreement_claims_ordered
-  on public.disagreement_claims(disagreement_id, position);
+create index if not exists disagreement_claims_by_claim on public.disagreement_claims(claim_id);
+create index if not exists disagreement_claims_ordered on public.disagreement_claims(disagreement_id, position);
 
--- ═══════════════════════════════════════════════════════════ 8 · the decision
+-- The one follow-up admitted per round. A second verification of the same
+-- disagreement in the same round is the loop the round limit exists to stop,
+-- so the table refuses it rather than trusting a planner to remember.
+create table if not exists public.disagreement_follow_ups (
+  organization_id uuid not null references public.organizations(id) on delete cascade,
+  disagreement_id uuid not null references public.disagreements(id) on delete cascade,
+  round integer not null check (round >= 1),
+  fingerprint text not null,
+  task_id uuid references public.workflow_tasks(id) on delete set null,
+  created_at timestamptz not null default now(),
+  primary key (disagreement_id, fingerprint),
+  unique (disagreement_id, round)
+);
+
+comment on table public.disagreement_follow_ups is
+  'Exactly one follow-up task per disagreement per round. Append-only: a round that happened is not unhappened.';
+
+-- ═══════════════════════════════════════════════════════════ 7 · the decision
 --
--- The record an owner actually reads. Everything above exists so that this row
--- can be opened and traced back to a drawing.
+-- The record a person actually reads. Everything above exists so that this row
+-- can be opened and traced back to a source.
 create table if not exists public.decisions (
   id uuid primary key default gen_random_uuid(),
   organization_id uuid not null references public.organizations(id) on delete cascade,
-  property_id uuid not null references public.properties(id) on delete cascade,
   workflow_id uuid not null references public.intelligence_workflows(id) on delete cascade,
+  task_id uuid references public.workflow_tasks(id) on delete set null,
+  disagreement_id uuid references public.disagreements(id) on delete set null,
   decision_type text not null check (decision_type in (
-    'accept_claim','reject_claim','reject_all','hold','release_for_pricing','release_for_ordering',
-    'request_information','create_field_check','supersede')),
-  subject_entity_id uuid references public.project_entities(id) on delete set null,
+    'accept_claim','reject_claim','reject_all','hold','proceed','request_information','supersede')),
+  subject_key text not null default '',
   title text not null,
-  decision jsonb not null default '{}'::jsonb,
+  summary jsonb not null default '{}'::jsonb,
   status text not null default 'proposed' check (status in (
     'proposed','machine_decided','needs_human','human_decided','superseded')),
   authority text not null check (authority in ('deterministic_rule','adjudicator','human')),
@@ -751,19 +800,23 @@ create table if not exists public.decisions (
   created_at timestamptz not null default now(),
   updated_at timestamptz not null default now(),
   -- A decided record says who decided it, and exactly one of them: a machine
-  -- attempt or a person.
+  -- attempt or a person — and the word matches the who.
   constraint decisions_decided_by_exactly_one check (
     status not in ('machine_decided','human_decided')
     or ((decided_by_attempt_id is not null) <> (decided_by_user_id is not null))),
+  constraint decisions_machine_decided_by_attempt check (
+    status <> 'machine_decided' or decided_by_attempt_id is not null),
   constraint decisions_human_decided_by_person check (
     status <> 'human_decided' or decided_by_user_id is not null)
 );
 
 comment on table public.decisions is
   'The user-facing record. A decided decision cannot exist without accepted evidence behind it, and is never edited afterwards — only superseded.';
+comment on column public.decisions.summary is
+  'What was decided, in the domain pack''s own terms. proceed carries its subtype here; the kernel does not enumerate it.';
 
-create index if not exists decisions_by_property on public.decisions(property_id, status, created_at desc);
-create index if not exists decisions_by_workflow on public.decisions(workflow_id, status);
+create index if not exists decisions_by_workflow on public.decisions(workflow_id, status, created_at desc);
+create index if not exists decisions_by_subject on public.decisions(workflow_id, subject_key);
 
 -- Which claims and anchors a decision rests on, and how. `supports` is what
 -- the decision was made on; `contradicts` is what it was made against and is
@@ -771,15 +824,10 @@ create index if not exists decisions_by_workflow on public.decisions(workflow_id
 create table if not exists public.decision_evidence (
   id uuid primary key default gen_random_uuid(),
   organization_id uuid not null references public.organizations(id) on delete cascade,
-  property_id uuid not null references public.properties(id) on delete cascade,
   decision_id uuid not null references public.decisions(id) on delete cascade,
   claim_id uuid references public.evidence_claims(id) on delete restrict,
   anchor_id uuid references public.evidence_anchors(id) on delete restrict,
   link text not null check (link in ('supports','contradicts','context')),
-  -- When a link names both, the anchor must be one of that claim's own anchors.
-  -- A decision that cites claim A through claim B's source is not traceable.
-  --
-  weight numeric,
   rule text,
   created_at timestamptz not null default now(),
   constraint decision_evidence_points_somewhere check (claim_id is not null or anchor_id is not null)
@@ -787,29 +835,44 @@ create table if not exists public.decision_evidence (
 
 create index if not exists decision_evidence_by_decision on public.decision_evidence(decision_id, link);
 create index if not exists decision_evidence_by_claim on public.decision_evidence(claim_id) where claim_id is not null;
+create index if not exists decision_evidence_by_anchor on public.decision_evidence(anchor_id) where anchor_id is not null;
 
 create table if not exists public.decision_actions (
   id uuid primary key default gen_random_uuid(),
   organization_id uuid not null references public.organizations(id) on delete cascade,
-  property_id uuid not null references public.properties(id) on delete cascade,
   decision_id uuid not null references public.decisions(id) on delete cascade,
   action_type text not null check (action_type in (
-    'verify_plan','verify_field','request_document','request_rfi','price','order','hold','review')),
+    'review','verify_source','request_information','proceed','hold')),
   owner_role text not null,
   status text not null default 'open' check (status in ('open','assigned','completed','waived','superseded')),
   due_at timestamptz,
-  completion_evidence_id uuid references public.evidence_items(id) on delete set null,
   created_at timestamptz not null default now(),
-  updated_at timestamptz not null default now(),
-  -- An action completed by evidence names the evidence.
-  constraint decision_actions_completion_named check (
-    status <> 'completed' or completion_evidence_id is not null or action_type in ('price','order','review','hold'))
+  updated_at timestamptz not null default now()
 );
 
-create index if not exists decision_actions_open on public.decision_actions(property_id, status, due_at);
+create index if not exists decision_actions_open on public.decision_actions(decision_id, status, due_at);
 
--- The two forward references that could not be declared before their tables
--- existed.
+-- ═════════════════════════════════════ 8 · the references that point forward
+--
+-- Declared here because the table on the far end did not exist yet when the
+-- column was written. Each one is `restrict` or `set null` on purpose: nothing
+-- in the chain disappears because something later in it went.
+alter table public.source_segments drop constraint if exists source_segments_discovered_by_attempt_fk;
+alter table public.source_segments add constraint source_segments_discovered_by_attempt_fk
+  foreign key (discovered_by_attempt_id) references public.agent_attempts(id) on delete set null;
+
+alter table public.workflow_tasks drop constraint if exists workflow_tasks_disagreement_fk;
+alter table public.workflow_tasks add constraint workflow_tasks_disagreement_fk
+  foreign key (disagreement_id) references public.disagreements(id) on delete set null;
+
+alter table public.task_target_claims drop constraint if exists task_target_claims_claim_fk;
+alter table public.task_target_claims add constraint task_target_claims_claim_fk
+  foreign key (claim_id) references public.evidence_claims(id) on delete restrict;
+
+alter table public.evidence_anchors drop constraint if exists evidence_anchors_assessment_fk;
+alter table public.evidence_anchors add constraint evidence_anchors_assessment_fk
+  foreign key (assessment_id) references public.claim_assessments(id) on delete restrict;
+
 alter table public.disagreements drop constraint if exists disagreements_resolution_decision_fk;
 alter table public.disagreements add constraint disagreements_resolution_decision_fk
   foreign key (resolution_decision_id) references public.decisions(id) on delete set null;
@@ -817,13 +880,9 @@ alter table public.disagreements drop constraint if exists disagreements_resolve
 alter table public.disagreements add constraint disagreements_resolved_has_decision
   check (state <> 'resolved' or resolution_decision_id is not null);
 
-alter table public.entity_relations drop constraint if exists entity_relations_decision_fk;
-alter table public.entity_relations add constraint entity_relations_decision_fk
-  foreign key (decision_id) references public.decisions(id) on delete set null;
-
-alter table public.evidence_claims drop constraint if exists evidence_claims_entity_fk;
-alter table public.evidence_claims add constraint evidence_claims_entity_fk
-  foreign key (canonical_entity_id) references public.project_entities(id) on delete set null;
+create index if not exists task_target_claims_by_claim on public.task_target_claims(claim_id);
+create index if not exists source_segments_by_attempt
+  on public.source_segments(discovered_by_attempt_id) where discovered_by_attempt_id is not null;
 
 -- ═════════════════════════════════════════════ 9 · what cannot happen at all
 --
@@ -858,10 +917,11 @@ begin
       using errcode = 'check_violation';
   end if;
 
-  -- What was asked, of which sources, by whom, under which engine — write-once.
-  -- Progress, lifecycle timestamps and the dispatcher's handle may move.
+  -- What was asked, of which sources, by whom, under which pack and engine,
+  -- within which budget — write-once. Progress, lifecycle timestamps and the
+  -- orchestrator's handle may move.
   moved := public.core_v2_frozen_except(to_jsonb(old), to_jsonb(new), array[
-    'state','temporal_run_id','cancel_requested_at','completed_units','total_units',
+    'state','orchestrator_run_id','cancel_requested_at','completed_units','total_units',
     'attention_units','error_code','error_message','started_at','finished_at','updated_at']);
   if moved is not null then
     raise exception 'core_v2: workflow % cannot change % — its intent is fixed at creation', old.id, moved
@@ -876,7 +936,7 @@ language plpgsql as $$
 declare moved text;
 begin
   moved := public.core_v2_frozen_except(to_jsonb(old), to_jsonb(new), array[
-    'state','attempt_count','available_at','last_error','updated_at']);
+    'state','dispatcher','attempt_count','available_at','last_error','updated_at']);
   if moved is not null then
     raise exception 'core_v2: outbox row % cannot change % — a command is not rewritten in flight', old.id, moved
       using errcode = 'check_violation';
@@ -885,42 +945,58 @@ begin
   return new;
 end $$;
 
--- A page identity is append-only. A corrected render, a corrected hash, a
--- corrected title-block reading: each is a new page or a new source revision,
--- because anchors under accepted decisions point here.
-create or replace function public.core_v2_guard_source_page() returns trigger
+-- A source is append-only. A corrected hash, a corrected label, a re-upload:
+-- each is a new workflow over a new source set, because anchors under
+-- accepted decisions point here.
+create or replace function public.core_v2_guard_source() returns trigger
 language plpgsql as $$
 begin
   if TG_OP = 'DELETE' then
-    raise exception 'core_v2: source page % is part of the record — a revision creates new pages, it does not remove these', old.id
+    raise exception 'core_v2: source % is part of the record — a changed source set is a new workflow, not a removal', old.id
       using errcode = 'check_violation';
   end if;
-  raise exception 'core_v2: source page % is append-only — correct it with a new page or source revision', old.id
+  raise exception 'core_v2: source % is append-only — a different source is a different workflow', old.id
     using errcode = 'check_violation';
 end $$;
 
-create or replace function public.core_v2_guard_region() returns trigger
+-- A proposed segment may still be refined. An accepted one is what anchors
+-- point at, so refinement from here on is a child or a superseding segment.
+-- A child belongs to its parent's source: a segment of one source nested
+-- under a segment of another would let an anchor cross sources by inheritance.
+create or replace function public.core_v2_guard_segment() returns trigger
 language plpgsql as $$
-declare moved text;
+declare
+  moved text;
+  parent public.source_segments;
 begin
   if TG_OP = 'DELETE' then
     if old.status <> 'proposed' then
-      raise exception 'core_v2: region % is % — it stays in the record', old.id, old.status
+      raise exception 'core_v2: segment % is % — it stays in the record', old.id, old.status
         using errcode = 'check_violation';
     end if;
     return old;
   end if;
+  if new.parent_segment_id is not null then
+    select * into parent from public.source_segments where id = new.parent_segment_id;
+    if not found then
+      raise exception 'core_v2: segment % names a parent that does not exist', new.id
+        using errcode = 'check_violation';
+    end if;
+    if parent.source_id <> new.source_id or parent.workflow_id <> new.workflow_id then
+      raise exception 'core_v2: segment % is nested under a segment of another source', new.id
+        using errcode = 'check_violation';
+    end if;
+  end if;
+  if TG_OP = 'INSERT' then return new; end if;
   if new.status is distinct from old.status
-     and not public.core_v2_transition_allowed('region', old.status, new.status) then
-    raise exception 'core_v2: a page region cannot go from % to %', old.status, new.status
+     and not public.core_v2_transition_allowed('segment', old.status, new.status) then
+    raise exception 'core_v2: a segment cannot go from % to %', old.status, new.status
       using errcode = 'check_violation';
   end if;
-  -- A proposed region may still be refined. An accepted one is what anchors
-  -- point at, so refinement from here on is a child or a superseding region.
   if old.status <> 'proposed' then
     moved := public.core_v2_frozen_except(to_jsonb(old), to_jsonb(new), array['status','updated_at']);
     if moved is not null then
-      raise exception 'core_v2: region % is % — % cannot be rewritten under an anchor', old.id, old.status, moved
+      raise exception 'core_v2: segment % is % — % cannot be rewritten under an anchor', old.id, old.status, moved
         using errcode = 'check_violation';
     end if;
   end if;
@@ -928,14 +1004,48 @@ begin
   return new;
 end $$;
 
+-- The shape a lease must have, checked wherever a task row is written: a
+-- leased task carries a token and an expiry, and a task in any other state
+-- carries no lease at all. A stale token left on a completed task is a token
+-- somebody could still submit under.
+create or replace function public.core_v2_shape_task_lease(t inout public.workflow_tasks)
+returns public.workflow_tasks language plpgsql immutable as $$
+begin
+  if t.state not in ('leased','running') then
+    t.lease_owner := null;
+    t.lease_token := null;
+    t.lease_expires_at := null;
+  elsif t.state = 'leased' and (t.lease_token is null or t.lease_expires_at is null) then
+    raise exception 'core_v2: task % is leased without a token and an expiry', t.id
+      using errcode = 'check_violation';
+  end if;
+end $$;
+
+-- An attempt that is out with an executor, or that ended with the executor
+-- possibly having run, is a request that may still be billed. A person who
+-- authorises running the task again has reconciled every such attempt up to
+-- that moment; the attempts that still count are the ones submitted since.
+create or replace function public.core_v2_task_has_open_attempt(p_task public.workflow_tasks)
+returns boolean language sql stable as $$
+  select exists (
+    select 1 from public.agent_attempts a
+     where a.task_id = p_task.id
+       and public.core_v2_attempt_submitted(a.state)
+       and (p_task.retry_authorized_at is null
+            or a.submitted_at is null
+            or a.submitted_at > p_task.retry_authorized_at));
+$$;
+
+comment on function public.core_v2_task_has_open_attempt(public.workflow_tasks) is
+  'Whether any attempt of the task was submitted and not yet reconciled by a person authorising a retry. While true the task is neither leased, requeued nor cancelled.';
+
 create or replace function public.core_v2_guard_task() returns trigger
 language plpgsql as $$
-declare submitted_attempts integer;
 begin
   if new.state is distinct from old.state then
-    -- A task that ended without a known provider outcome, or with a known
-    -- failure, does not go back into the queue on its own. A person authorises
-    -- it, and core_v2_authorize_task_retry is the only thing that can say so.
+    -- A task that ended without a known outcome, or with a known failure, does
+    -- not go back into the queue on its own. A person authorises it, and
+    -- core_v2_authorize_task_retry is the only thing that can say so.
     if old.state in ('outcome_unknown','failed_known') and new.state = 'queued' then
       if coalesce(current_setting('core_v2.authorized_retry', true), '') <> old.id::text then
         raise exception 'core_v2: task % ended as % — a person must authorise running it again', old.id, old.state
@@ -948,27 +1058,80 @@ begin
 
     -- A lease that expires before anything was sent may return the task to the
     -- queue. A lease that expires after a request went out may not: the
-    -- provider may have run, and requeueing would buy it again. Cancelling is
+    -- executor may have run, and requeueing would buy it again. Cancelling is
     -- the same problem wearing a friendlier word — unsent work stops, sent work
     -- is reconciled.
     if (old.state = 'leased' and new.state = 'queued') or new.state = 'cancelled' then
-      select count(*) into submitted_attempts from public.agent_attempts a
-       where a.task_id = old.id
-         and a.state in ('submitted','response_received','parsed','succeeded','output_limited','outcome_unknown');
-      if submitted_attempts > 0 then
+      if public.core_v2_task_has_open_attempt(old) then
         raise exception 'core_v2: task % has an attempt that was already submitted — it is reconciled, not %',
           old.id, case when new.state = 'cancelled' then 'cancelled' else 'requeued' end
           using errcode = 'check_violation';
       end if;
     end if;
   end if;
+  new := public.core_v2_shape_task_lease(new);
   new.updated_at := now();
   return new;
 end $$;
 
--- What a provider was asked, what it answered, what it cost and when: each fact
--- is write-once from the moment it is recorded, and a terminal attempt does not
--- move at all. This is the row a cost dispute is settled from.
+-- The budget a workflow was admitted under, applied where a task is born.
+-- Counting persisted rows rather than a planner's own tally means a planner
+-- that restarts, or two planners at once, cannot exceed it between them.
+create or replace function public.core_v2_guard_task_insert() returns trigger
+language plpgsql as $$
+declare
+  budget jsonb;
+  existing integer;
+  siblings integer;
+begin
+  select w.budget into budget from public.intelligence_workflows w where w.id = new.workflow_id;
+  if budget is null then
+    raise exception 'core_v2: task % names a workflow that does not exist', new.id
+      using errcode = 'check_violation';
+  end if;
+
+  select count(*) into existing from public.workflow_tasks t where t.workflow_id = new.workflow_id;
+  if existing >= coalesce((budget ->> 'maximum_tasks')::int, 2147483647) then
+    raise exception 'core_v2: workflow % already holds % tasks — its budget allows no more',
+      new.workflow_id, existing using errcode = 'check_violation';
+  end if;
+  if new.depth > coalesce((budget ->> 'maximum_follow_up_depth')::int, 2147483647) then
+    raise exception 'core_v2: task % is % deep — the workflow allows follow-ups to depth %',
+      new.id, new.depth, budget ->> 'maximum_follow_up_depth' using errcode = 'check_violation';
+  end if;
+  if new.parent_task_id is not null then
+    select count(*) into siblings from public.workflow_tasks t where t.parent_task_id = new.parent_task_id;
+    if siblings >= coalesce((budget ->> 'maximum_child_tasks_per_parent')::int, 2147483647) then
+      raise exception 'core_v2: task % already has % children — the workflow allows no more',
+        new.parent_task_id, siblings using errcode = 'check_violation';
+    end if;
+  end if;
+  new := public.core_v2_shape_task_lease(new);
+  return new;
+end $$;
+
+create or replace function public.core_v2_guard_edge_insert() returns trigger
+language plpgsql as $$
+declare
+  workflow uuid;
+  budget jsonb;
+  existing integer;
+begin
+  select t.workflow_id into workflow from public.workflow_tasks t where t.id = new.task_id;
+  select w.budget into budget from public.intelligence_workflows w where w.id = workflow;
+  select count(*) into existing
+    from public.task_dependencies d join public.workflow_tasks t on t.id = d.task_id
+   where t.workflow_id = workflow;
+  if existing >= coalesce((budget ->> 'maximum_dependency_edges')::int, 2147483647) then
+    raise exception 'core_v2: workflow % already holds % dependency edges — its budget allows no more',
+      workflow, existing using errcode = 'check_violation';
+  end if;
+  return new;
+end $$;
+
+-- What an executor was asked, what it answered, what it cost and when: each
+-- fact is write-once from the moment it is recorded, and a terminal attempt
+-- does not move at all. This is the row a cost dispute is settled from.
 create or replace function public.core_v2_guard_attempt() returns trigger
 language plpgsql as $$
 declare
@@ -983,93 +1146,46 @@ begin
 
   if old.state in ('succeeded','failed_known','output_limited','outcome_unknown',
                    'rejected_before_submission','cancelled_before_submission') then
-    moved := public.core_v2_frozen_except(to_jsonb(old), to_jsonb(new), array['updated_at']);
+    -- A terminal attempt does not move. The single exception is the answer to
+    -- "what became of this?", which can only arrive after the attempt ended
+    -- and only for one that ended unknown; the write-once rule below then
+    -- keeps that answer from being rewritten.
+    moved := public.core_v2_frozen_except(to_jsonb(old), to_jsonb(new),
+      case when old.state = 'outcome_unknown'
+           then array['updated_at','reconciliation_outcome']
+           else array['updated_at'] end);
     if moved is not null then
       raise exception 'core_v2: attempt % ended as % — % is not rewritten afterwards', old.id, old.state, moved
         using errcode = 'check_violation';
     end if;
   end if;
 
-  -- Write-once, one field at a time: null (or an empty object) may become a
-  -- value; a value never becomes something else, and never becomes nothing.
+  -- Write-once, one field at a time: null may become a value; a value never
+  -- becomes something else, and never becomes nothing.
   select f into written from unnest(array[
-    'provider_request_id','ai_run_id','model','model_reported','output_limit',
-    'raw_response_path','response_hash','duration_ms','error_code','error_message',
-    'started_at','submitted_at','received_at','finished_at']) as t(f)
+    'provider_request_id','model_reported','raw_result','raw_result_hash','lease_token',
+    'reconciliation_outcome',
+    'error_code','error_message','started_at','submitted_at','received_at','finished_at']) as t(f)
    where (to_jsonb(old) -> t.f) is not null
      and (to_jsonb(old) -> t.f) <> 'null'::jsonb
      and (to_jsonb(new) -> t.f) is distinct from (to_jsonb(old) -> t.f)
    limit 1;
   if written is not null then
-    raise exception 'core_v2: attempt % already recorded % — a provider fact is written once', old.id, written
+    raise exception 'core_v2: attempt % already recorded % — an executor fact is written once', old.id, written
       using errcode = 'check_violation';
   end if;
   if old.usage <> '{}'::jsonb and new.usage is distinct from old.usage then
     raise exception 'core_v2: the recorded usage of attempt % cannot be replaced', old.id
       using errcode = 'check_violation';
   end if;
-  if old.reasoning_configuration <> '{}'::jsonb
-     and new.reasoning_configuration is distinct from old.reasoning_configuration then
-    raise exception 'core_v2: the recorded configuration of attempt % cannot be replaced', old.id
-      using errcode = 'check_violation';
-  end if;
-
-  perform public.core_v2_check_attempt_provenance(new);
   new.updated_at := now();
   return new;
-end $$;
-
-create or replace function public.core_v2_guard_attempt_insert() returns trigger
-language plpgsql as $$
-begin
-  perform public.core_v2_check_attempt_provenance(new);
-  return new;
-end $$;
-
--- A provider attempt that has been sent has a ledger row, that row belongs to
--- the same project, and an answer cut short at its ceiling has the answer.
-create or replace function public.core_v2_check_attempt_provenance(attempt public.agent_attempts)
-returns void language plpgsql stable as $$
-declare ledger public.ai_runs;
-begin
-  if attempt.executor_type in ('openai','anthropic','google')
-     and attempt.state in ('submitted','response_received','parsed','succeeded',
-                           'output_limited','outcome_unknown')
-     and attempt.ai_run_id is null then
-    raise exception 'core_v2: attempt % was sent to % with no ledger row — a call that may be billed is always claimed',
-      attempt.id, attempt.executor_type using errcode = 'check_violation';
-  end if;
-
-  if attempt.ai_run_id is not null then
-    select * into ledger from public.ai_runs where id = attempt.ai_run_id;
-    if not found then
-      raise exception 'core_v2: attempt % points at a ledger row that does not exist', attempt.id
-        using errcode = 'check_violation';
-    end if;
-    if ledger.organization_id <> attempt.organization_id
-       or ledger.property_id is distinct from attempt.property_id then
-      raise exception 'core_v2: attempt % is claimed against another project''s ledger row', attempt.id
-        using errcode = 'check_violation';
-    end if;
-  end if;
-
-  if attempt.state = 'output_limited' then
-    if attempt.raw_response_path is null then
-      raise exception 'core_v2: attempt % ran out of output with nothing stored — the partial answer was paid for', attempt.id
-        using errcode = 'check_violation';
-    end if;
-    if attempt.received_at is null or attempt.finished_at is null then
-      raise exception 'core_v2: attempt % ran out of output without saying when it came back and ended', attempt.id
-        using errcode = 'check_violation';
-    end if;
-  end if;
 end $$;
 
 create or replace function public.core_v2_guard_attempt_delete() returns trigger
 language plpgsql as $$
 begin
-  if old.raw_response_path is not null or old.ai_run_id is not null
-     or old.state in ('submitted','response_received','parsed','succeeded','output_limited','outcome_unknown') then
+  if old.raw_result is not null or public.core_v2_attempt_submitted(old.state) then
     raise exception 'core_v2: an attempt that may have been billed is not deleted'
       using errcode = 'check_violation';
   end if;
@@ -1109,11 +1225,51 @@ language plpgsql as $$
 begin
   if old.status in ('accepted','rejected','superseded')
      or exists (select 1 from public.disagreement_claims d where d.claim_id = old.id)
-     or exists (select 1 from public.decision_evidence e where e.claim_id = old.id) then
+     or exists (select 1 from public.decision_evidence e where e.claim_id = old.id)
+     or exists (select 1 from public.task_target_claims t where t.claim_id = old.id)
+     or exists (select 1 from public.claim_inputs i where i.input_claim_id = old.id) then
     raise exception 'core_v2: claim % is part of the record — a claim that lost is kept, not deleted', old.id
       using errcode = 'check_violation';
   end if;
   return old;
+end $$;
+
+-- An anchor is one consistent tuple. When it names a segment, its source is
+-- that segment's source, and a locator inside it lies inside the segment's own
+-- locator. The persisted segment is the authority, not the envelope that
+-- claimed to have read it.
+create or replace function public.core_v2_shape_anchor() returns trigger
+language plpgsql as $$
+declare seg public.source_segments;
+begin
+  if new.segment_id is null then return new; end if;
+  select * into seg from public.source_segments where id = new.segment_id;
+  if not found then
+    raise exception 'core_v2: anchor % names a segment that does not exist', new.id
+      using errcode = 'check_violation';
+  end if;
+  if seg.workflow_id <> new.workflow_id then
+    raise exception 'core_v2: anchor % points at a segment of another workflow', new.id
+      using errcode = 'check_violation';
+  end if;
+  if new.source_id is null then
+    new.source_id := seg.source_id;
+  elsif new.source_id <> seg.source_id then
+    raise exception 'core_v2: anchor % names segment % of one source and the id of another', new.id, seg.id
+      using errcode = 'check_violation';
+  end if;
+  if seg.locator ? 'bbox' and new.locator ? 'bbox'
+     and not public.core_v2_bbox_within(new.locator -> 'bbox', seg.locator -> 'bbox') then
+    raise exception 'core_v2: anchor % locates a box outside segment %', new.id, seg.id
+      using errcode = 'check_violation';
+  end if;
+  if seg.locator ? 'start_ms' and new.locator ? 'start_ms'
+     and ((new.locator ->> 'start_ms')::numeric < (seg.locator ->> 'start_ms')::numeric
+          or (new.locator ->> 'end_ms')::numeric > (seg.locator ->> 'end_ms')::numeric) then
+    raise exception 'core_v2: anchor % locates a time range outside segment %', new.id, seg.id
+      using errcode = 'check_violation';
+  end if;
+  return new;
 end $$;
 
 -- An anchor under an authoritative claim, or cited by a decided decision, is
@@ -1121,12 +1277,17 @@ end $$;
 create or replace function public.core_v2_guard_anchor() returns trigger
 language plpgsql as $$
 declare
+  owning_claim uuid;
   claim_status text;
   moved text;
 begin
-  select c.status into claim_status from public.evidence_claims c where c.id = old.claim_id;
+  owning_claim := coalesce(old.claim_id,
+    (select a.claim_id from public.claim_assessments a where a.id = old.assessment_id));
+  select c.status into claim_status from public.evidence_claims c where c.id = owning_claim;
   if claim_status in ('verified','accepted','rejected','superseded') then
-    raise exception 'core_v2: anchor % supports a % claim — it is not %', old.id, claim_status,
+    -- One wording for every status: "a accepted claim" is what comes of
+    -- inflecting a word the schema does not choose.
+    raise exception 'core_v2: anchor % supports a claim that is % — it is not %', old.id, claim_status,
       case when TG_OP = 'DELETE' then 'deleted' else 'edited' end
       using errcode = 'check_violation';
   end if;
@@ -1183,11 +1344,25 @@ end $$;
 
 create or replace function public.core_v2_guard_disagreement() returns trigger
 language plpgsql as $$
+declare moved text;
 begin
   if new.state is distinct from old.state
      and not public.core_v2_transition_allowed('disagreement', old.state, new.state) then
     raise exception 'core_v2: a disagreement cannot go from % to %', old.state, new.state
       using errcode = 'check_violation';
+  end if;
+  -- A round that was spent stays spent. Winding the counter back is how a
+  -- budget gets exceeded without anyone exceeding it.
+  if new.critic_rounds < old.critic_rounds or new.arbiter_rounds < old.arbiter_rounds then
+    raise exception 'core_v2: the rounds of disagreement % do not decrease', old.id
+      using errcode = 'check_violation';
+  end if;
+  if old.state in ('resolved','superseded') then
+    moved := public.core_v2_frozen_except(to_jsonb(old), to_jsonb(new), array['state','updated_at']);
+    if moved is not null then
+      raise exception 'core_v2: disagreement % is % — % is part of the record', old.id, old.state, moved
+        using errcode = 'check_violation';
+    end if;
   end if;
   new.updated_at := now();
   return new;
@@ -1219,6 +1394,13 @@ begin
   return new;
 end $$;
 
+create or replace function public.core_v2_guard_follow_up() returns trigger
+language plpgsql as $$
+begin
+  raise exception 'core_v2: a follow-up of disagreement % is append-only — a round that happened stays', old.disagreement_id
+    using errcode = 'check_violation';
+end $$;
+
 create or replace function public.core_v2_guard_decision() returns trigger
 language plpgsql as $$
 declare moved text;
@@ -1247,43 +1429,64 @@ begin
   return new;
 end $$;
 
+drop trigger if exists core_v2_workflow_guard on public.intelligence_workflows;
 create trigger core_v2_workflow_guard before update on public.intelligence_workflows
   for each row execute function public.core_v2_guard_workflow();
+drop trigger if exists core_v2_outbox_guard on public.workflow_outbox;
 create trigger core_v2_outbox_guard before update on public.workflow_outbox
   for each row execute function public.core_v2_guard_outbox();
-create trigger core_v2_source_page_guard before update or delete on public.source_pages
-  for each row execute function public.core_v2_guard_source_page();
-create trigger core_v2_region_guard before update or delete on public.page_regions
-  for each row execute function public.core_v2_guard_region();
-create trigger core_v2_task_guard before update on public.extraction_tasks
+drop trigger if exists core_v2_source_guard on public.workflow_sources;
+create trigger core_v2_source_guard before update or delete on public.workflow_sources
+  for each row execute function public.core_v2_guard_source();
+drop trigger if exists core_v2_segment_guard on public.source_segments;
+create trigger core_v2_segment_guard before insert or update or delete on public.source_segments
+  for each row execute function public.core_v2_guard_segment();
+drop trigger if exists core_v2_task_guard on public.workflow_tasks;
+create trigger core_v2_task_guard before update on public.workflow_tasks
   for each row execute function public.core_v2_guard_task();
-create trigger core_v2_attempt_insert_guard before insert on public.agent_attempts
-  for each row execute function public.core_v2_guard_attempt_insert();
+drop trigger if exists core_v2_task_insert_guard on public.workflow_tasks;
+create trigger core_v2_task_insert_guard before insert on public.workflow_tasks
+  for each row execute function public.core_v2_guard_task_insert();
+drop trigger if exists core_v2_edge_insert_guard on public.task_dependencies;
+create trigger core_v2_edge_insert_guard before insert on public.task_dependencies
+  for each row execute function public.core_v2_guard_edge_insert();
+drop trigger if exists core_v2_attempt_guard on public.agent_attempts;
 create trigger core_v2_attempt_guard before update on public.agent_attempts
   for each row execute function public.core_v2_guard_attempt();
+drop trigger if exists core_v2_attempt_delete_guard on public.agent_attempts;
 create trigger core_v2_attempt_delete_guard before delete on public.agent_attempts
   for each row execute function public.core_v2_guard_attempt_delete();
+drop trigger if exists core_v2_claim_guard on public.evidence_claims;
 create trigger core_v2_claim_guard before update on public.evidence_claims
   for each row execute function public.core_v2_guard_claim();
+drop trigger if exists core_v2_claim_delete_guard on public.evidence_claims;
 create trigger core_v2_claim_delete_guard before delete on public.evidence_claims
   for each row execute function public.core_v2_guard_claim_delete();
+drop trigger if exists core_v2_anchor_guard on public.evidence_anchors;
 create trigger core_v2_anchor_guard before update or delete on public.evidence_anchors
   for each row execute function public.core_v2_guard_anchor();
+drop trigger if exists core_v2_anchor_shape on public.evidence_anchors;
+create trigger core_v2_anchor_shape before insert or update on public.evidence_anchors
+  for each row execute function public.core_v2_shape_anchor();
+drop trigger if exists core_v2_decision_evidence_guard on public.decision_evidence;
 create trigger core_v2_decision_evidence_guard before insert or update or delete on public.decision_evidence
   for each row execute function public.core_v2_guard_decision_evidence();
+drop trigger if exists core_v2_disagreement_guard on public.disagreements;
 create trigger core_v2_disagreement_guard before update on public.disagreements
   for each row execute function public.core_v2_guard_disagreement();
+drop trigger if exists core_v2_disagreement_claims_guard on public.disagreement_claims;
 create trigger core_v2_disagreement_claims_guard before insert or update or delete on public.disagreement_claims
   for each row execute function public.core_v2_guard_disagreement_claims();
+drop trigger if exists core_v2_follow_up_guard on public.disagreement_follow_ups;
+create trigger core_v2_follow_up_guard before update or delete on public.disagreement_follow_ups
+  for each row execute function public.core_v2_guard_follow_up();
+drop trigger if exists core_v2_decision_guard on public.decisions;
 create trigger core_v2_decision_guard before update on public.decisions
   for each row execute function public.core_v2_guard_decision();
-
-create trigger core_v2_entity_touch before update on public.project_entities
-  for each row execute function public.core_v2_touch();
-create trigger core_v2_alias_touch before update on public.entity_aliases
-  for each row execute function public.core_v2_touch();
+drop trigger if exists core_v2_action_touch on public.decision_actions;
 create trigger core_v2_action_touch before update on public.decision_actions
   for each row execute function public.core_v2_touch();
+
 -- ═════════════════════════════════ 10 · the chain, checked at commit
 --
 -- These are deferred on purpose. A claim and its anchors, or a decision and its
@@ -1297,67 +1500,28 @@ create trigger core_v2_action_touch before update on public.decision_actions
 -- the claim or the decision changes: mutating, moving or removing the evidence
 -- underneath must be caught too.
 
-create or replace function public.core_v2_check_claim_evidence() returns trigger
-language plpgsql as $$
-declare
-  claim public.evidence_claims;
-  anchors integer;
-  marks integer;
-  distinct_marks integer;
-  distinct_boxes integer;
-  quantity numeric;
+create or replace function public.core_v2_assert_claim_anchored(claim public.evidence_claims)
+returns void language plpgsql stable as $$
 begin
-  select * into claim from public.evidence_claims where id = new.id;
-  if not found or claim.status not in ('verified','accepted') then
-    return null;
-  end if;
-
-  select count(*) into anchors from public.evidence_anchors a where a.claim_id = claim.id;
-  if anchors = 0 then
+  if claim.status not in ('verified','accepted') then return; end if;
+  if not exists (select 1 from public.evidence_anchors a where a.claim_id = claim.id) then
     raise exception 'core_v2: claim % is % with nothing to open — every accepted claim has a source anchor', claim.id, claim.status
       using errcode = 'check_violation';
   end if;
-
-  -- A count read off marks is only as good as the marks. Accepting "36" needs
-  -- 36 anchors, each pointing at its own box on a page and naming its own mark.
-  -- A list of invented names hung on one general region is exactly the thing
-  -- this refuses: the marks must be distinct AND separately located.
-  if claim.observation_basis = 'counted_marks' then
-    quantity := public.core_v2_claim_quantity(claim.value);
-    if quantity is not null then
-      if quantity < 0 or quantity <> trunc(quantity) then
-        raise exception 'core_v2: claim % counts % from marks — a count of marks is a whole number of them', claim.id, quantity
-          using errcode = 'check_violation';
-      end if;
-      select count(*), count(distinct a.locator ->> 'mark'), count(distinct a.bbox::text)
-        into marks, distinct_marks, distinct_boxes
-        from public.evidence_anchors a
-       where a.claim_id = claim.id
-         and a.source_kind = 'page_bbox'
-         and a.bbox is not null
-         and a.page_id is not null
-         and coalesce(a.locator ->> 'mark', '') <> '';
-      if distinct_marks < quantity then
-        raise exception 'core_v2: claim % counts % from marks but names only % of them individually',
-          claim.id, quantity, distinct_marks using errcode = 'check_violation';
-      end if;
-      if distinct_boxes < quantity then
-        raise exception 'core_v2: claim % counts % from marks but locates only % separate places on a page',
-          claim.id, quantity, distinct_boxes using errcode = 'check_violation';
-      end if;
-      if marks <> distinct_marks or marks <> distinct_boxes then
-        raise exception 'core_v2: claim % anchors the same mark or the same place twice — that is one instance, counted once', claim.id
-          using errcode = 'check_violation';
-      end if;
-    end if;
-  end if;
-
-  -- A claim parsed out of a response that ran out of room may be shown. It
+  -- A claim parsed out of a result that ran out of room may be shown. It
   -- cannot be accepted until something complete verifies it.
   if claim.status = 'accepted' and claim.incomplete_source_attempt then
     raise exception 'core_v2: claim % came from an attempt that was cut short — it needs a complete verification before acceptance', claim.id
       using errcode = 'check_violation';
   end if;
+end $$;
+
+create or replace function public.core_v2_check_claim_evidence() returns trigger
+language plpgsql as $$
+declare claim public.evidence_claims;
+begin
+  select * into claim from public.evidence_claims where id = new.id;
+  if found then perform public.core_v2_assert_claim_anchored(claim); end if;
   return null;
 end $$;
 
@@ -1367,35 +1531,8 @@ declare claim public.evidence_claims;
 begin
   select * into claim from public.evidence_claims
    where id = case when TG_OP = 'DELETE' then old.claim_id else new.claim_id end;
-  if not found or claim.status not in ('verified','accepted') then
-    return null;
-  end if;
-  if not exists (select 1 from public.evidence_anchors a where a.claim_id = claim.id) then
-    raise exception 'core_v2: that would leave % claim % with nothing to open', claim.status, claim.id
-      using errcode = 'check_violation';
-  end if;
-  -- The counted-mark rule is a property of the anchor set, so removing one
-  -- anchor has to be judged against the same rule that admitted them.
-  if claim.observation_basis = 'counted_marks' then
-    perform public.core_v2_assert_counted_marks(claim);
-  end if;
+  if found then perform public.core_v2_assert_claim_anchored(claim); end if;
   return null;
-end $$;
-
-create or replace function public.core_v2_assert_counted_marks(claim public.evidence_claims)
-returns void language plpgsql stable as $$
-declare quantity numeric; distinct_marks integer;
-begin
-  quantity := public.core_v2_claim_quantity(claim.value);
-  if quantity is null then return; end if;
-  select count(distinct a.locator ->> 'mark') into distinct_marks
-    from public.evidence_anchors a
-   where a.claim_id = claim.id and a.source_kind = 'page_bbox' and a.bbox is not null
-     and coalesce(a.locator ->> 'mark','') <> '';
-  if distinct_marks < quantity then
-    raise exception 'core_v2: claim % would count % from only % individually marked anchors',
-      claim.id, quantity, distinct_marks using errcode = 'check_violation';
-  end if;
 end $$;
 
 create or replace function public.core_v2_check_decision_evidence() returns trigger
@@ -1422,7 +1559,8 @@ begin
   -- competing claim linked as contradicted, and at least one anchor of its own
   -- saying what the source actually shows.
   if decided.decision_type = 'reject_all' then
-    select * into disagreement from public.disagreements where resolution_decision_id = decided.id;
+    select * into disagreement from public.disagreements
+     where resolution_decision_id = decided.id limit 1;
     if not found then
       raise exception 'core_v2: decision % rejects everything but settles no disagreement', decided.id
         using errcode = 'check_violation';
@@ -1458,18 +1596,6 @@ begin
   return null;
 end $$;
 
-create or replace function public.core_v2_recheck_decision_of_evidence() returns trigger
-language plpgsql as $$
-declare
-  target uuid := case when TG_OP = 'DELETE' then old.decision_id else new.decision_id end;
-  probe public.decisions;
-begin
-  select * into probe from public.decisions where id = target;
-  if not found then return null; end if;
-  perform public.core_v2_check_decision_evidence_for(probe);
-  return null;
-end $$;
-
 create or replace function public.core_v2_check_decision_evidence_for(decided public.decisions)
 returns void language plpgsql stable as $$
 declare supporting integer;
@@ -1488,8 +1614,19 @@ begin
   end if;
 end $$;
 
+create or replace function public.core_v2_recheck_decision_of_evidence() returns trigger
+language plpgsql as $$
+declare
+  target uuid := case when TG_OP = 'DELETE' then old.decision_id else new.decision_id end;
+  probe public.decisions;
+begin
+  select * into probe from public.decisions where id = target;
+  if found then perform public.core_v2_check_decision_evidence_for(probe); end if;
+  return null;
+end $$;
+
 -- Superseding the claim a decision rests on, and leaving the decision standing,
--- would leave an owner reading a release that its own evidence no longer
+-- would leave a reader holding a decision that its own evidence no longer
 -- supports. Both move, or neither does.
 create or replace function public.core_v2_check_superseded_claim_decisions() returns trigger
 language plpgsql as $$
@@ -1514,30 +1651,36 @@ begin
   return null;
 end $$;
 
+drop trigger if exists core_v2_claim_evidence_check on public.evidence_claims;
 create constraint trigger core_v2_claim_evidence_check
   after insert or update on public.evidence_claims
   deferrable initially deferred
   for each row execute function public.core_v2_check_claim_evidence();
 
+drop trigger if exists core_v2_claim_supersession_check on public.evidence_claims;
 create constraint trigger core_v2_claim_supersession_check
   after update on public.evidence_claims
   deferrable initially deferred
   for each row execute function public.core_v2_check_superseded_claim_decisions();
 
+drop trigger if exists core_v2_anchor_removal_check on public.evidence_anchors;
 create constraint trigger core_v2_anchor_removal_check
   after insert or update or delete on public.evidence_anchors
   deferrable initially deferred
   for each row execute function public.core_v2_recheck_claim_of_anchor();
 
+drop trigger if exists core_v2_decision_evidence_check on public.decisions;
 create constraint trigger core_v2_decision_evidence_check
   after insert or update on public.decisions
   deferrable initially deferred
   for each row execute function public.core_v2_check_decision_evidence();
 
+drop trigger if exists core_v2_decision_evidence_link_check on public.decision_evidence;
 create constraint trigger core_v2_decision_evidence_link_check
   after insert or update or delete on public.decision_evidence
   deferrable initially deferred
   for each row execute function public.core_v2_recheck_decision_of_evidence();
+
 -- ══════════════════════════════════════════════════════════════ 11 · the trail
 --
 -- Starting work, stopping it, authorising a repeat, settling a disagreement and
@@ -1571,8 +1714,10 @@ begin
   return null;
 end $$;
 
+drop trigger if exists core_v2_decision_supersession_audit on public.decisions;
 create trigger core_v2_decision_supersession_audit after update on public.decisions
   for each row execute function public.core_v2_audit_decision_superseded();
+drop trigger if exists core_v2_claim_supersession_audit on public.evidence_claims;
 create trigger core_v2_claim_supersession_audit after update on public.evidence_claims
   for each row execute function public.core_v2_audit_claim_superseded();
 
@@ -1581,7 +1726,9 @@ create trigger core_v2_claim_supersession_audit after update on public.evidence_
 -- The worker runs as the service role, which is not subject to row-level
 -- security — so these functions are not a permission boundary. They are the
 -- named moves, one per machine, so that a transition is written in exactly one
--- place and the guard above is never routed around.
+-- place and the guards above are never routed around. The lease, heartbeat and
+-- submission moves are each one statement, because two workers racing for one
+-- task must be settled by the row lock, not by whichever read its state first.
 create or replace function public.core_v2_workflow_transition(
   p_workflow_id uuid, p_to_state text, p_error_code text default null, p_error_message text default null
 ) returns public.intelligence_workflows language plpgsql security definer set search_path = public as $$
@@ -1601,14 +1748,12 @@ end $$;
 
 create or replace function public.core_v2_task_transition(
   p_task_id uuid, p_to_state text, p_terminal_reason text default null
-) returns public.extraction_tasks language plpgsql security definer set search_path = public as $$
-declare row public.extraction_tasks;
+) returns public.workflow_tasks language plpgsql security definer set search_path = public as $$
+declare row public.workflow_tasks;
 begin
-  update public.extraction_tasks
+  update public.workflow_tasks
      set state = p_to_state,
-         terminal_reason = coalesce(p_terminal_reason, terminal_reason),
-         lease_owner = case when p_to_state in ('leased','running') then lease_owner end,
-         lease_expires_at = case when p_to_state in ('leased','running') then lease_expires_at end
+         terminal_reason = coalesce(p_terminal_reason, terminal_reason)
    where id = p_task_id
   returning * into row;
   if not found then raise exception 'core_v2: no task %', p_task_id; end if;
@@ -1617,7 +1762,7 @@ end $$;
 
 create or replace function public.core_v2_attempt_transition(
   p_attempt_id uuid, p_to_state text, p_error_code text default null, p_error_message text default null,
-  p_usage jsonb default null, p_raw_response_path text default null
+  p_usage jsonb default null
 ) returns public.agent_attempts language plpgsql security definer set search_path = public as $$
 declare row public.agent_attempts;
 begin
@@ -1626,7 +1771,6 @@ begin
          error_code = coalesce(p_error_code, error_code),
          error_message = coalesce(p_error_message, error_message),
          usage = case when p_usage is null then usage else p_usage end,
-         raw_response_path = coalesce(p_raw_response_path, raw_response_path),
          submitted_at = case when p_to_state = 'submitted' and submitted_at is null then now() else submitted_at end,
          received_at = case when p_to_state in ('response_received','output_limited') and received_at is null then now() else received_at end,
          finished_at = case when p_to_state in ('succeeded','failed_known','output_limited','outcome_unknown',
@@ -1677,24 +1821,125 @@ begin
   return row;
 end $$;
 
--- A lease that ran out before anything was sent. The guard refuses the rest.
-create or replace function public.core_v2_reclaim_expired_lease(p_task_id uuid)
-returns boolean language plpgsql security definer set search_path = public as $$
-declare row public.extraction_tasks;
+-- A lease is granted to a queued task, or taken over from a lease that ran out
+-- before anything was sent. It is never granted while any attempt of the task
+-- is out with an executor: that request may have run, and a second lease would
+-- buy it again. The exception is the one a person made: an attempt reconciled
+-- by an authorised retry no longer stands in the way, or the retry could never
+-- run. Null, not an exception — losing a race is not an error.
+create or replace function public.core_v2_lease_task(p_task_id uuid, p_owner text, p_ttl_ms integer)
+returns public.workflow_tasks language plpgsql security definer set search_path = public as $$
+declare row public.workflow_tasks;
 begin
-  select * into row from public.extraction_tasks where id = p_task_id;
-  if not found then raise exception 'core_v2: no task %', p_task_id; end if;
-  if row.state <> 'leased' or row.lease_expires_at is null or row.lease_expires_at > now() then
-    return false;
-  end if;
-  update public.extraction_tasks
-     set state = 'queued', lease_owner = null, lease_expires_at = null
-   where id = p_task_id;
-  return true;
+  update public.workflow_tasks t
+     set state = 'leased',
+         lease_owner = p_owner,
+         lease_token = gen_random_uuid(),
+         lease_expires_at = now() + make_interval(secs => p_ttl_ms / 1000.0)
+   where t.id = p_task_id
+     and (t.state = 'queued' or (t.state = 'leased' and t.lease_expires_at < now()))
+     and not public.core_v2_task_has_open_attempt(t)
+  returning t.* into row;
+  return row;
 end $$;
 
-comment on function public.core_v2_reclaim_expired_lease(uuid) is
-  'Returns an expired lease to the queue. Refused by the task guard when any attempt for that task was already submitted — the provider may have run.';
+comment on function public.core_v2_lease_task(uuid, text, integer) is
+  'Leases a queued task, or one whose lease expired unsent, under a fresh fencing token. Returns null when the task is not available — including when an attempt of it was submitted and no person has since authorised a retry.';
+
+create or replace function public.core_v2_heartbeat_lease(p_task_id uuid, p_lease_token uuid, p_ttl_ms integer)
+returns boolean language plpgsql security definer set search_path = public as $$
+begin
+  update public.workflow_tasks
+     set lease_expires_at = now() + make_interval(secs => p_ttl_ms / 1000.0)
+   where id = p_task_id
+     and lease_token = p_lease_token
+     and state in ('leased','running');
+  return found;
+end $$;
+
+-- The one moment money may leave: an attempt goes from prepared to submitted.
+-- Everything that would make that submission a mistake is checked under the
+-- task's row lock, in this order, and the refusal names the reason.
+create or replace function public.core_v2_submit_attempt(p_attempt_id uuid, p_lease_token uuid)
+returns public.agent_attempts language plpgsql security definer set search_path = public as $$
+declare
+  attempt public.agent_attempts;
+  task public.workflow_tasks;
+  wf public.intelligence_workflows;
+  row public.agent_attempts;
+begin
+  select * into attempt from public.agent_attempts where id = p_attempt_id for update;
+  if not found then
+    raise exception 'core_v2: submission refused: no attempt %', p_attempt_id;
+  end if;
+  select * into task from public.workflow_tasks where id = attempt.task_id for update;
+  select * into wf from public.intelligence_workflows where id = attempt.workflow_id for share;
+
+  if not public.core_v2_workflow_active(wf.state) then
+    raise exception 'core_v2: submission refused: workflow % is %', wf.id, wf.state;
+  end if;
+  if wf.cancel_requested_at is not null then
+    raise exception 'core_v2: submission refused: cancellation of workflow % was requested', wf.id;
+  end if;
+  if task.state <> 'running' then
+    raise exception 'core_v2: submission refused: task % is %, not running', task.id, task.state;
+  end if;
+  if p_lease_token is null or task.lease_token is distinct from p_lease_token then
+    raise exception 'core_v2: submission refused: the lease token does not match task %', task.id;
+  end if;
+  if task.lease_expires_at is null or task.lease_expires_at <= now() then
+    raise exception 'core_v2: submission refused: the lease on task % has expired', task.id;
+  end if;
+  if attempt.state <> 'prepared' then
+    raise exception 'core_v2: submission refused: attempt % is %, not prepared', attempt.id, attempt.state;
+  end if;
+
+  update public.agent_attempts
+     set state = 'submitted',
+         submitted_at = now(),
+         lease_token = p_lease_token
+   where id = p_attempt_id
+  returning * into row;
+  return row;
+end $$;
+
+comment on function public.core_v2_submit_attempt(uuid, uuid) is
+  'The only move from prepared to submitted. Under the task''s row lock it proves the workflow is active and not being cancelled, the task is running under the caller''s unexpired lease, and the attempt is still prepared.';
+
+-- The dispatcher's two moves. Claiming a command is what takes the workflow
+-- from created to queued; a dispatcher that dies between the two leaves a
+-- dispatching row whose attempt count says so.
+create or replace function public.core_v2_claim_outbox(p_workflow_id uuid, p_dispatcher text)
+returns public.workflow_outbox language plpgsql security definer set search_path = public as $$
+declare row public.workflow_outbox;
+begin
+  update public.workflow_outbox
+     set state = 'dispatching',
+         dispatcher = p_dispatcher,
+         attempt_count = attempt_count + 1
+   where workflow_id = p_workflow_id and state = 'pending'
+  returning * into row;
+  if not found then return null; end if;
+  if exists (select 1 from public.intelligence_workflows w where w.id = p_workflow_id and w.state = 'created') then
+    perform public.core_v2_workflow_transition(p_workflow_id, 'queued');
+  end if;
+  return row;
+end $$;
+
+create or replace function public.core_v2_acknowledge_outbox(p_workflow_id uuid)
+returns public.workflow_outbox language plpgsql security definer set search_path = public as $$
+declare row public.workflow_outbox;
+begin
+  update public.workflow_outbox
+     set state = 'acknowledged'
+   where workflow_id = p_workflow_id and state = 'dispatching'
+  returning * into row;
+  if not found then return null; end if;
+  return row;
+end $$;
+
+comment on function public.core_v2_acknowledge_outbox(uuid) is
+  'Marks a dispatching command acknowledged. Returns null when the command is not dispatching, so a dispatcher can tell a late acknowledgement from a lost one.';
 
 -- ═══════════════════════════════════════════════ 13 · what a person may ask
 --
@@ -1723,167 +1968,182 @@ $$;
 comment on function public.core_v2_canonical_json(jsonb) is
   'One written form for one meaning: keys sorted, array members sorted. Two scopes that say the same thing hash the same.';
 
--- A document Core V2 may read from. Path and byte size say where a file is
--- kept and how big it was, not which bytes it holds — a re-upload to the same
--- key at the same size is a different drawing wearing the same label. So a V2
--- source must carry either a whole-file digest or the storage system's own
--- immutable version id.
-create or replace function public.core_v2_source_identity(document public.project_documents)
+-- A source Core V2 may read from. A locator and a byte size say where a thing
+-- is kept and how big it was, not which bytes it holds — a re-upload to the
+-- same key at the same size is a different source wearing the same label. So
+-- a source must carry a content digest with its algorithm, or the storage
+-- system's own immutable version id.
+create or replace function public.core_v2_source_identity(p_source jsonb)
 returns text language sql immutable as $$
   select case
-    when document.sha256 is not null
-     and document.content_hash_algorithm is not null
-     and document.content_hash_scope = 'whole-file'
-      then format('digest=%s:%s', document.content_hash_algorithm, document.sha256)
-    when document.object_version_id is not null
-      then format('version=%s', document.object_version_id)
+    when nullif(p_source ->> 'content_hash', '') is not null
+     and nullif(p_source ->> 'hash_algorithm', '') is not null
+      then format('digest=%s:%s', p_source ->> 'hash_algorithm', p_source ->> 'content_hash')
+    when nullif(p_source ->> 'object_version_id', '') is not null
+      then format('version=%s', p_source ->> 'object_version_id')
   end;
 $$;
 
-comment on function public.core_v2_source_identity(public.project_documents) is
-  'The immutable content identity of a document: a whole-file digest, or the storage version id. Null means the file has no trustworthy identity and Core V2 will not read it.';
+comment on function public.core_v2_source_identity(jsonb) is
+  'The immutable content identity of a source: a digest with its algorithm, or the storage version id. Null means the source has no trustworthy identity and Core V2 will not read it.';
 
--- The fingerprint of a set of sources, computed here so that no browser can
--- claim two different sets are the same one. Every document must belong to the
--- property being read; an id borrowed from another project stops the call.
-create or replace function public.core_v2_source_set_fingerprint(
-  p_property_id uuid, p_document_ids uuid[]
-) returns text language plpgsql stable security definer set search_path = public as $$
+-- The fingerprint of a set of sources, computed here so that no caller can
+-- claim two different sets are the same one. Position in the array is the
+-- source's ordinal; the same sources in another order are another set.
+create or replace function public.core_v2_source_set_fingerprint(p_sources jsonb)
+returns text language plpgsql immutable as $$
 declare
-  org uuid;
   parts text;
-  found_count integer;
   unidentified text;
 begin
-  if p_document_ids is null or array_length(p_document_ids, 1) is null then
+  if p_sources is null or jsonb_typeof(p_sources) <> 'array' or jsonb_array_length(p_sources) = 0 then
     raise exception 'core_v2: a workflow must name the sources it reads';
   end if;
-  -- Not an existence oracle. Somebody who is not in this organisation learns
-  -- nothing here about what it holds.
-  select p.organization_id into org from public.properties p where p.id = p_property_id;
-  if org is null or not public.is_org_member(org) then
-    raise exception 'core_v2: no such project';
-  end if;
-
   select string_agg(
-           format('%s|%s|%s|%s|%s|%s|%s|%s',
-                  d.id,
-                  public.core_v2_source_identity(d),
-                  coalesce(d.storage_provider, ''),
-                  coalesce(d.storage_bucket, ''),
-                  d.storage_path,
-                  coalesce(d.byte_size, 0),
-                  coalesce(d.revision_label, ''),
-                  coalesce(d.issued_at::text, '')),
-           E'\n' order by d.id),
-         count(*),
-         string_agg(d.original_filename, ', ' order by d.id)
-           filter (where public.core_v2_source_identity(d) is null)
-    into parts, found_count, unidentified
-    from public.project_documents d
-   where d.id = any(p_document_ids) and d.property_id = p_property_id;
-
-  if found_count is distinct from (select count(distinct u) from unnest(p_document_ids) as u) then
-    raise exception 'core_v2: a source named here does not belong to this project';
-  end if;
+           format('%s|%s|%s|%s|%s',
+                  s.ordinality - 1,
+                  coalesce(s.source ->> 'source_kind', ''),
+                  coalesce(s.source ->> 'uri', ''),
+                  public.core_v2_source_identity(s.source),
+                  coalesce(s.source ->> 'byte_size', '')),
+           E'\n' order by s.ordinality),
+         string_agg(coalesce(s.source ->> 'label', s.source ->> 'uri', s.ordinality::text), ', ' order by s.ordinality)
+           filter (where public.core_v2_source_identity(s.source) is null)
+    into parts, unidentified
+    from jsonb_array_elements(p_sources) with ordinality as s(source, ordinality);
   if unidentified is not null then
-    raise exception 'core_v2: % has no whole-file digest and no storage version — Core V2 does not read a file it cannot identify', unidentified;
+    raise exception 'core_v2: % has no content digest and no storage version — Core V2 does not read a source it cannot identify', unidentified;
   end if;
   return encode(sha256(convert_to(parts, 'UTF8')), 'hex');
 end $$;
 
-comment on function public.core_v2_source_set_fingerprint(uuid, uuid[]) is
-  'Server-side hash of the exact document revisions a workflow was asked to read: content identity, storage location, size and revision. Refuses a document from another project, and a document with no trustworthy content identity.';
+comment on function public.core_v2_source_set_fingerprint(jsonb) is
+  'Server-side hash of exactly which sources a workflow was asked to read: ordinal, kind, locator, content identity and size. Refuses an empty set and a source with no trustworthy identity.';
 
 create or replace function public.core_v2_request_fingerprint(
-  p_workflow_type text, p_source_set_fingerprint text, p_requested_scope jsonb, p_engine_version text
+  p_domain_pack text, p_domain_pack_version text, p_workflow_type text,
+  p_source_set_fingerprint text, p_requested_scope jsonb, p_engine_version text
 ) returns text language sql immutable as $$
   select encode(sha256(convert_to(
-    format('%s|%s|%s|%s', p_workflow_type, p_source_set_fingerprint,
+    format('%s|%s|%s|%s|%s|%s', p_domain_pack, p_domain_pack_version, p_workflow_type,
+           p_source_set_fingerprint,
            public.core_v2_canonical_json(coalesce(p_requested_scope, '{}'::jsonb))::text,
            p_engine_version), 'UTF8')), 'hex');
 $$;
 
-comment on function public.core_v2_request_fingerprint(text, text, jsonb, text) is
-  'What was asked, not only of which files: type, source set, canonical scope and engine version. Reading three sheets and reading the whole set are different requests over the same sources.';
+comment on function public.core_v2_request_fingerprint(text, text, text, text, jsonb, text) is
+  'What was asked, not only of which sources: pack and version, type, source set, canonical scope and engine version. Reading part of a set and reading the whole set are different requests over the same sources.';
 
--- Create a workflow and its start command in one transaction. Nothing runs from
--- here: the row and the outbox command are the whole effect, and a dispatcher
--- that never comes leaves a workflow saying `created`, which is the truth.
+-- Create a workflow, its sources and its start command in one transaction.
+-- Nothing runs from here: the rows and the outbox command are the whole
+-- effect, and a dispatcher that never comes leaves a workflow saying
+-- `created`, which is the truth.
 create or replace function public.core_v2_start_workflow(
-  p_property_id uuid,
+  p_organization_id uuid,
+  p_domain_pack text,
+  p_domain_pack_version text,
   p_workflow_type text,
-  p_source_document_ids uuid[],
+  p_sources jsonb,
   p_requested_scope jsonb default '{}'::jsonb,
-  p_engine_version text default 'core-v2.0',
+  p_engine_version text default 'core-v2.1',
+  p_budget jsonb default '{}'::jsonb,
   p_expected_fingerprint text default null,
   p_authorize_duplicate boolean default false
 ) returns public.intelligence_workflows language plpgsql security definer set search_path = public as $$
 declare
-  org uuid;
   fingerprint text;
   request text;
   live public.intelligence_workflows;
   duplicate boolean := false;
   row public.intelligence_workflows;
+  source jsonb;
+  position integer := 0;
 begin
-  select p.organization_id into org from public.properties p where p.id = p_property_id;
-  if org is null then raise exception 'core_v2: no such project'; end if;
-  if not public.has_org_role(org, array['owner','admin']::public.studio_role[]) then
-    raise exception 'core_v2: only an owner or an administrator starts an analysis';
+  if not exists (select 1 from public.organizations o where o.id = p_organization_id) then
+    raise exception 'core_v2: no such organisation';
+  end if;
+  if coalesce(p_domain_pack, '') = '' or coalesce(p_domain_pack_version, '') = ''
+     or coalesce(p_workflow_type, '') = '' then
+    raise exception 'core_v2: a workflow names its domain pack, the pack version and the kind of work';
   end if;
 
-  fingerprint := public.core_v2_source_set_fingerprint(p_property_id, p_source_document_ids);
+  fingerprint := public.core_v2_source_set_fingerprint(p_sources);
   if p_expected_fingerprint is not null and p_expected_fingerprint <> fingerprint then
     raise exception 'core_v2: the sources have changed since this was prepared — nothing was started';
   end if;
   request := public.core_v2_request_fingerprint(
-    p_workflow_type, fingerprint, p_requested_scope, p_engine_version);
+    p_domain_pack, p_domain_pack_version, p_workflow_type, fingerprint, p_requested_scope, p_engine_version);
 
   select * into live from public.intelligence_workflows w
-   where w.property_id = p_property_id
+   where w.organization_id = p_organization_id
      and w.request_fingerprint = request
-     and w.state in ('created','queued','planning','running','needs_attention','ready_for_decision','deciding')
+     and public.core_v2_workflow_active(w.state)
    limit 1;
   duplicate := found;
-  if duplicate and p_workflow_type <> 'benchmark' and not p_authorize_duplicate then
+  if duplicate and not p_authorize_duplicate then
     raise exception 'core_v2: this is already being read by workflow % — open it, or authorise a second reading', live.id;
+  end if;
+  -- The authorisation is a person's. A caller with no signed-in person cannot
+  -- leave a second live request that nobody answers for.
+  if duplicate and auth.uid() is null then
+    raise exception 'core_v2: a second live reading of the same request is authorised by a person, and nobody is signed in';
   end if;
 
   insert into public.intelligence_workflows(
-    organization_id, property_id, workflow_type, engine_version,
+    organization_id, domain_pack, domain_pack_version, workflow_type, engine_version,
     source_set_fingerprint, request_fingerprint,
-    requested_by, requested_scope,
+    requested_by, requested_scope, budget,
     duplicate_authorized_by)
-  values (org, p_property_id, p_workflow_type, p_engine_version,
+  values (p_organization_id, p_domain_pack, p_domain_pack_version, p_workflow_type, p_engine_version,
           fingerprint, request,
           auth.uid(), public.core_v2_canonical_json(coalesce(p_requested_scope, '{}'::jsonb)),
-          case when duplicate and p_authorize_duplicate then auth.uid() end)
+          public.core_v2_canonical_json(coalesce(p_budget, '{}'::jsonb)),
+          case when duplicate then auth.uid() end)
   returning * into row;
+
+  for source in select s.source from jsonb_array_elements(p_sources) with ordinality as s(source, ordinality)
+                 order by s.ordinality loop
+    insert into public.workflow_sources(
+      organization_id, workflow_id, ordinal, source_kind, label, uri,
+      content_hash, hash_algorithm, object_version_id, byte_size, media)
+    values (p_organization_id, row.id, position,
+            coalesce(source ->> 'source_kind', ''),
+            source ->> 'label',
+            coalesce(source ->> 'uri', ''),
+            nullif(source ->> 'content_hash', ''),
+            nullif(source ->> 'hash_algorithm', ''),
+            nullif(source ->> 'object_version_id', ''),
+            (source ->> 'byte_size')::bigint,
+            coalesce(source -> 'media', '{}'::jsonb));
+    position := position + 1;
+  end loop;
 
   -- Same transaction, always. A workflow without its start command would be a
   -- reading nobody ever runs; a command without its workflow would start work
   -- with nowhere to write it.
-  insert into public.workflow_outbox(organization_id, property_id, workflow_id, command, payload)
-  values (org, p_property_id, row.id, 'start',
+  insert into public.workflow_outbox(organization_id, workflow_id, command, payload)
+  values (p_organization_id, row.id, 'start',
           jsonb_build_object(
             'workflow_id', row.id,
-            'property_id', p_property_id,
+            'organization_id', p_organization_id,
+            'domain_pack', p_domain_pack,
+            'domain_pack_version', p_domain_pack_version,
             'workflow_type', p_workflow_type,
             'engine_version', p_engine_version,
-            'source_document_ids', to_jsonb(p_source_document_ids),
+            'source_count', position,
             'source_set_fingerprint', fingerprint,
             'request_fingerprint', request));
 
-  perform public.core_v2_audit(org, 'core_v2.workflow.started', 'intelligence_workflow', row.id::text,
-    jsonb_build_object('property_id', p_property_id, 'workflow_type', p_workflow_type,
+  perform public.core_v2_audit(p_organization_id, 'core_v2.workflow.started', 'intelligence_workflow', row.id::text,
+    jsonb_build_object('domain_pack', p_domain_pack, 'domain_pack_version', p_domain_pack_version,
+                       'workflow_type', p_workflow_type, 'source_count', position,
                        'source_set_fingerprint', fingerprint, 'request_fingerprint', request,
-                       'duplicate_authorized', coalesce(row.duplicate_authorized_by is not null, false)));
+                       'duplicate_authorized', row.duplicate_authorized_by is not null));
   return row;
 end $$;
 
-comment on function public.core_v2_start_workflow(uuid, text, uuid[], jsonb, text, text, boolean) is
-  'Creates a workflow and its one start command atomically. Calls no provider, spends nothing, and refuses a second live request over the same sources and scope unless a person authorises it.';
+comment on function public.core_v2_start_workflow(uuid, text, text, text, jsonb, jsonb, text, jsonb, text, boolean) is
+  'Creates a workflow, its sources and its one start command atomically. Calls no executor, spends nothing, and refuses a second live request over the same sources and scope unless a person authorises it. Service role only until a dispatcher exists: an authenticated caller must not be able to leave a permanent unconsumed outbox row.';
 
 -- Stop what has not been sent. What was sent is not un-sent: it is named and
 -- left to reconcile, because a request that may already have been billed cannot
@@ -1898,35 +2158,33 @@ declare
 begin
   select * into wf from public.intelligence_workflows where id = p_workflow_id;
   if not found then raise exception 'core_v2: no such workflow'; end if;
-  if not public.has_org_role(wf.organization_id, array['owner','admin']::public.studio_role[]) then
+  if auth.role() is distinct from 'service_role'
+     and not public.has_org_role(wf.organization_id, array['owner','admin']::public.studio_role[]) then
     raise exception 'core_v2: only an owner or an administrator stops an analysis';
   end if;
 
   update public.intelligence_workflows set cancel_requested_at = coalesce(cancel_requested_at, now())
    where id = p_workflow_id;
 
-  -- Only what has not left. A task whose request is already with a provider
+  -- Only what has not left. A task whose request is already with an executor
   -- keeps its state and is counted as outstanding below.
   with stopped as (
-    update public.extraction_tasks t
+    update public.workflow_tasks t
        set state = 'cancelled',
            terminal_reason = coalesce(p_reason, 'stopped_by_person')
      where t.workflow_id = p_workflow_id
        and t.state in ('created','blocked','queued','leased')
-       and not exists (select 1 from public.agent_attempts a
-                        where a.task_id = t.id
-                          and a.state in ('submitted','response_received','parsed','succeeded',
-                                          'output_limited','outcome_unknown'))
+       and not public.core_v2_task_has_open_attempt(t)
     returning 1)
   select count(*) into unsent from stopped;
 
-  select count(*) into submitted from public.extraction_tasks t
+  select count(*) into submitted from public.workflow_tasks t
    where t.workflow_id = p_workflow_id
      and exists (select 1 from public.agent_attempts a
                   where a.task_id = t.id
                     and a.state in ('submitted','response_received','outcome_unknown'));
 
-  select count(*) into preserved from public.extraction_tasks t
+  select count(*) into preserved from public.workflow_tasks t
    where t.workflow_id = p_workflow_id and t.state = 'completed';
 
   if wf.state in ('created','queued','planning','running','needs_attention') then
@@ -1941,15 +2199,15 @@ begin
     'submitted_unresolved', submitted, 'completed_preserved', preserved);
 end $$;
 
--- A task that ended without a known provider outcome is not re-run by anything
--- that is not a person. This is the only door, and it records who opened it.
+-- A task that ended without a known outcome is not re-run by anything that is
+-- not a person. This is the only door, and it records who opened it.
 create or replace function public.core_v2_authorize_task_retry(p_task_id uuid, p_note text default null)
-returns public.extraction_tasks language plpgsql security definer set search_path = public as $$
+returns public.workflow_tasks language plpgsql security definer set search_path = public as $$
 declare
-  task public.extraction_tasks;
-  row public.extraction_tasks;
+  task public.workflow_tasks;
+  row public.workflow_tasks;
 begin
-  select * into task from public.extraction_tasks where id = p_task_id;
+  select * into task from public.workflow_tasks where id = p_task_id;
   if not found then raise exception 'core_v2: no such task'; end if;
   if not public.has_org_role(task.organization_id, array['owner','admin']::public.studio_role[]) then
     raise exception 'core_v2: only an owner or an administrator authorises running a task again';
@@ -1959,17 +2217,15 @@ begin
   end if;
 
   perform set_config('core_v2.authorized_retry', p_task_id::text, true);
-  update public.extraction_tasks
+  update public.workflow_tasks
      set state = 'queued',
          retry_authorized_by = auth.uid(),
-         retry_authorized_at = now(),
-         lease_owner = null,
-         lease_expires_at = null
+         retry_authorized_at = now()
    where id = p_task_id
   returning * into row;
   perform set_config('core_v2.authorized_retry', '', true);
 
-  perform public.core_v2_audit(task.organization_id, 'core_v2.task.retry_authorized', 'extraction_task',
+  perform public.core_v2_audit(task.organization_id, 'core_v2.task.retry_authorized', 'workflow_task',
     p_task_id::text, jsonb_build_object('was', task.state, 'note', p_note,
       'workflow_id', task.workflow_id));
   return row;
@@ -1994,7 +2250,6 @@ create or replace function public.core_v2_resolve_disagreement(
   p_accepted_claim_id uuid default null,
   p_corrected_value jsonb default null,
   p_corrected_unit text default null,
-  p_corrected_basis text default null,
   p_corrected_source text default null,
   p_evidence_anchor_ids uuid[] default null
 ) returns public.decisions language plpgsql security definer set search_path = public as $$
@@ -2005,14 +2260,13 @@ declare
   decision public.decisions;
   loser uuid;
   anchor uuid;
-  anchor_property uuid;
+  anchor_workflow uuid;
   kept jsonb;
 begin
   select * into dis from public.disagreements where id = p_disagreement_id;
   if not found then raise exception 'core_v2: no such disagreement'; end if;
   -- Owner, administrator and reviewer settle evidence disagreements. Starting,
-  -- stopping, authorising a repeat and releasing for order stay with owner and
-  -- administrator.
+  -- stopping and authorising a repeat stay with owner and administrator.
   if not public.has_org_role(dis.organization_id,
         array['owner','admin','reviewer']::public.studio_role[]) then
     raise exception 'core_v2: only an owner, an administrator or a reviewer settles a disagreement';
@@ -2023,6 +2277,9 @@ begin
 
   select jsonb_agg(dc.claim_id order by dc.position, dc.claim_id) into kept
     from public.disagreement_claims dc where dc.disagreement_id = dis.id;
+  select c.* into template from public.disagreement_claims dc
+    join public.evidence_claims c on c.id = dc.claim_id
+   where dc.disagreement_id = dis.id order by dc.position, dc.claim_id limit 1;
 
   -- Asking for more evidence settles nothing, and says so. It moves the
   -- disagreement to where a person can see it and writes its own event; it never
@@ -2044,25 +2301,25 @@ begin
     winner := public.core_v2_claim_transition(p_accepted_claim_id, 'accepted');
   elsif p_outcome = 'correct' then
     -- None of the readings was right. The person supplies the corrected value
-    -- and what they read it off; that becomes a human claim with a human anchor,
-    -- and it supersedes nothing quietly — the readings it replaces are rejected
-    -- below and stay in the record.
+    -- and what they read it off; that becomes a reported claim with a human
+    -- anchor, and it supersedes nothing quietly — the readings it replaces are
+    -- rejected below and stay in the record.
     if p_corrected_value is null or p_corrected_source is null then
       raise exception 'core_v2: a correction needs both the corrected value and the source it was read from';
     end if;
-    select c.* into template from public.disagreement_claims dc
-      join public.evidence_claims c on c.id = dc.claim_id
-     where dc.disagreement_id = dis.id order by dc.position, dc.claim_id limit 1;
+    if template.id is null then
+      raise exception 'core_v2: disagreement % names no claim to correct', p_disagreement_id;
+    end if;
     insert into public.evidence_claims(
-      organization_id, property_id, workflow_id, subject_type, subject_key, predicate,
+      organization_id, workflow_id, subject_type, subject_key, predicate,
       value, unit, observation_basis, scope, status, supersedes_claim_id)
-    values (dis.organization_id, dis.property_id, dis.workflow_id, template.subject_type,
+    values (dis.organization_id, dis.workflow_id, template.subject_type,
             template.subject_key, template.predicate, p_corrected_value, p_corrected_unit,
-            coalesce(p_corrected_basis, 'printed'), template.scope, 'accepted', template.id)
+            'reported', template.scope, 'accepted', template.id)
     returning * into winner;
-    insert into public.evidence_anchors(organization_id, property_id, claim_id, source_kind,
+    insert into public.evidence_anchors(organization_id, workflow_id, claim_id, source_kind,
       quoted_text, anchor_hash, locator)
-    values (dis.organization_id, dis.property_id, winner.id, 'human_record', p_corrected_source,
+    values (dis.organization_id, dis.workflow_id, winner.id, 'human_record', p_corrected_source,
             encode(sha256(convert_to(winner.id::text || p_corrected_source, 'UTF8')), 'hex'),
             jsonb_build_object('recorded_by', auth.uid(), 'note', p_note));
   elsif p_outcome = 'reject_all' then
@@ -2070,17 +2327,17 @@ begin
     -- burden of proof, not a shrug: every competing claim is rejected and named,
     -- and the decision points at what the source does show.
     if p_evidence_anchor_ids is null or array_length(p_evidence_anchor_ids, 1) is null then
-      raise exception 'core_v2: rejecting every reading needs at least one source anchor saying what the drawing shows';
+      raise exception 'core_v2: rejecting every reading needs at least one source anchor saying what the source shows';
     end if;
   else
     raise exception 'core_v2: % is not an outcome this function knows', p_outcome;
   end if;
 
-  insert into public.decisions(organization_id, property_id, workflow_id, decision_type,
-    subject_entity_id, title, decision, status, authority, rationale, decided_by_user_id, effective_at)
-  values (dis.organization_id, dis.property_id, dis.workflow_id,
+  insert into public.decisions(organization_id, workflow_id, disagreement_id, decision_type,
+    subject_key, title, summary, status, authority, rationale, decided_by_user_id, effective_at)
+  values (dis.organization_id, dis.workflow_id, dis.id,
     case when p_outcome = 'reject_all' then 'reject_all' else 'accept_claim' end,
-    case when winner.id is not null then winner.canonical_entity_id end,
+    coalesce(winner.subject_key, template.subject_key, ''),
     case when p_outcome = 'reject_all'
          then format('No reading of %s is supported by the source', dis.disagreement_key)
          else format('%s %s', winner.subject_key, winner.predicate) end,
@@ -2093,8 +2350,8 @@ begin
   returning * into decision;
 
   if winner.id is not null then
-    insert into public.decision_evidence(organization_id, property_id, decision_id, claim_id, link, rule)
-    values (dis.organization_id, dis.property_id, decision.id, winner.id, 'supports', 'human_resolution');
+    insert into public.decision_evidence(organization_id, decision_id, claim_id, link, rule)
+    values (dis.organization_id, decision.id, winner.id, 'supports', 'human_resolution');
   end if;
 
   -- The claims that lost. Rejected, linked to the decision that rejected them,
@@ -2105,24 +2362,24 @@ begin
      order by dc.position, dc.claim_id
   loop
     perform public.core_v2_claim_transition(loser, 'rejected');
-    insert into public.decision_evidence(organization_id, property_id, decision_id, claim_id, link, rule)
-    values (dis.organization_id, dis.property_id, decision.id, loser, 'contradicts', 'human_resolution');
+    insert into public.decision_evidence(organization_id, decision_id, claim_id, link, rule)
+    values (dis.organization_id, decision.id, loser, 'contradicts', 'human_resolution');
   end loop;
 
   if p_outcome = 'reject_all' then
     foreach anchor in array p_evidence_anchor_ids loop
-      select a.property_id into anchor_property from public.evidence_anchors a where a.id = anchor;
-      if anchor_property is distinct from dis.property_id then
-        raise exception 'core_v2: that source anchor does not belong to this project';
+      select a.workflow_id into anchor_workflow from public.evidence_anchors a where a.id = anchor;
+      if anchor_workflow is distinct from dis.workflow_id then
+        raise exception 'core_v2: that source anchor does not belong to this workflow';
       end if;
-      insert into public.decision_evidence(organization_id, property_id, decision_id, anchor_id, link, rule)
-      values (dis.organization_id, dis.property_id, decision.id, anchor, 'context', 'human_resolution');
+      insert into public.decision_evidence(organization_id, decision_id, anchor_id, link, rule)
+      values (dis.organization_id, decision.id, anchor, 'context', 'human_resolution');
     end loop;
   end if;
 
-  -- proposed -> needs_human -> human_decided, the path section 8.6 gives a
-  -- decision a person makes. The evidence above was written while it was still
-  -- open; from here it is closed.
+  -- proposed -> needs_human -> human_decided, the path a decision a person
+  -- makes takes. The evidence above was written while it was still open; from
+  -- here it is closed.
   perform public.core_v2_decision_transition(decision.id, 'needs_human');
   decision := public.core_v2_decision_transition(decision.id, 'human_decided');
   perform public.core_v2_disagreement_transition(p_disagreement_id, 'resolved', decision.id);
@@ -2133,43 +2390,26 @@ begin
   return decision;
 end $$;
 
-comment on function public.core_v2_resolve_disagreement(uuid, text, text, uuid, jsonb, text, text, text, uuid[]) is
+comment on function public.core_v2_resolve_disagreement(uuid, text, text, uuid, jsonb, text, text, uuid[]) is
   'A person settles a conflict: accept one reading, record a sourced correction, reject them all with source evidence, or ask for more evidence — which settles nothing and says so. Every competing claim is kept either way.';
+
 -- ══════════════════════════════════════════════════════ 14 · who may see what
 --
--- Every table here is readable by the organisation whose project it belongs to,
--- and writable through a browser by nobody. There is deliberately not one
--- insert, update or delete policy in this file: the worker writes as the
--- service role, and a person acts through the four functions above.
-alter table public.intelligence_workflows enable row level security;
-alter table public.workflow_outbox enable row level security;
-alter table public.source_pages enable row level security;
-alter table public.page_regions enable row level security;
-alter table public.extraction_tasks enable row level security;
-alter table public.task_dependencies enable row level security;
-alter table public.agent_attempts enable row level security;
-alter table public.evidence_claims enable row level security;
-alter table public.evidence_anchors enable row level security;
-alter table public.project_entities enable row level security;
-alter table public.entity_aliases enable row level security;
-alter table public.entity_relations enable row level security;
-alter table public.claim_assessments enable row level security;
-alter table public.claim_assessment_anchors enable row level security;
-alter table public.disagreement_claims enable row level security;
-alter table public.disagreements enable row level security;
-alter table public.decisions enable row level security;
-alter table public.decision_evidence enable row level security;
-alter table public.decision_actions enable row level security;
-
+-- Every table here is readable by the organisation it belongs to, and writable
+-- through a browser by nobody. There is deliberately not one insert, update or
+-- delete policy in this file: the worker writes as the service role, and a
+-- person acts through the doors above.
 do $$
 declare t text;
 begin
   foreach t in array array[
-    'intelligence_workflows','workflow_outbox','source_pages','page_regions','extraction_tasks',
-    'task_dependencies','agent_attempts','evidence_claims','evidence_anchors','project_entities',
-    'entity_aliases','entity_relations','claim_assessments','claim_assessment_anchors',
-    'disagreements','disagreement_claims','decisions','decision_evidence','decision_actions']
+    'intelligence_workflows','workflow_outbox','workflow_sources','source_segments',
+    'workflow_tasks','task_sources','task_dependencies','task_target_claims','agent_attempts',
+    'evidence_claims','claim_inputs','evidence_anchors','claim_assessments',
+    'disagreements','disagreement_claims','disagreement_follow_ups',
+    'decisions','decision_evidence','decision_actions']
   loop
+    execute format('alter table public.%I enable row level security', t);
     execute format('drop policy if exists %I on public.%I', 'core_v2_' || t || '_read', t);
     execute format(
       'create policy %I on public.%I for select using (public.is_org_member(organization_id))',
@@ -2181,65 +2421,85 @@ end $$;
 -- path to any of them, and no path to starting work either.
 revoke all on function public.core_v2_workflow_transition(uuid, text, text, text) from public, anon, authenticated;
 revoke all on function public.core_v2_task_transition(uuid, text, text) from public, anon, authenticated;
-revoke all on function public.core_v2_attempt_transition(uuid, text, text, text, jsonb, text) from public, anon, authenticated;
+revoke all on function public.core_v2_attempt_transition(uuid, text, text, text, jsonb) from public, anon, authenticated;
 revoke all on function public.core_v2_claim_transition(uuid, text) from public, anon, authenticated;
 revoke all on function public.core_v2_disagreement_transition(uuid, text, uuid) from public, anon, authenticated;
 revoke all on function public.core_v2_decision_transition(uuid, text, uuid) from public, anon, authenticated;
-revoke all on function public.core_v2_reclaim_expired_lease(uuid) from public, anon, authenticated;
+revoke all on function public.core_v2_lease_task(uuid, text, integer) from public, anon, authenticated;
+revoke all on function public.core_v2_heartbeat_lease(uuid, uuid, integer) from public, anon, authenticated;
+revoke all on function public.core_v2_submit_attempt(uuid, uuid) from public, anon, authenticated;
+revoke all on function public.core_v2_claim_outbox(uuid, text) from public, anon, authenticated;
+revoke all on function public.core_v2_acknowledge_outbox(uuid) from public, anon, authenticated;
 revoke all on function public.core_v2_audit(uuid, text, text, text, jsonb) from public, anon, authenticated;
 grant execute on function public.core_v2_workflow_transition(uuid, text, text, text) to service_role;
 grant execute on function public.core_v2_task_transition(uuid, text, text) to service_role;
-grant execute on function public.core_v2_attempt_transition(uuid, text, text, text, jsonb, text) to service_role;
+grant execute on function public.core_v2_attempt_transition(uuid, text, text, text, jsonb) to service_role;
 grant execute on function public.core_v2_claim_transition(uuid, text) to service_role;
 grant execute on function public.core_v2_disagreement_transition(uuid, text, uuid) to service_role;
 grant execute on function public.core_v2_decision_transition(uuid, text, uuid) to service_role;
-grant execute on function public.core_v2_reclaim_expired_lease(uuid) to service_role;
+grant execute on function public.core_v2_lease_task(uuid, text, integer) to service_role;
+grant execute on function public.core_v2_heartbeat_lease(uuid, uuid, integer) to service_role;
+grant execute on function public.core_v2_submit_attempt(uuid, uuid) to service_role;
+grant execute on function public.core_v2_claim_outbox(uuid, text) to service_role;
+grant execute on function public.core_v2_acknowledge_outbox(uuid) to service_role;
 grant execute on function public.core_v2_audit(uuid, text, text, text, jsonb) to service_role;
 
-revoke all on function public.core_v2_start_workflow(uuid, text, uuid[], jsonb, text, text, boolean) from public, anon;
+-- Starting is the service role's until a dispatcher exists. An authenticated
+-- caller who could start would leave an outbox command nothing consumes.
+revoke all on function public.core_v2_start_workflow(uuid, text, text, text, jsonb, jsonb, text, jsonb, text, boolean) from public, anon, authenticated;
+grant execute on function public.core_v2_start_workflow(uuid, text, text, text, jsonb, jsonb, text, jsonb, text, boolean) to service_role;
+
 revoke all on function public.core_v2_cancel_workflow(uuid, text) from public, anon;
 revoke all on function public.core_v2_authorize_task_retry(uuid, text) from public, anon;
-revoke all on function public.core_v2_resolve_disagreement(uuid, text, text, uuid, jsonb, text, text, text, uuid[]) from public, anon;
-revoke all on function public.core_v2_source_set_fingerprint(uuid, uuid[]) from public, anon;
-grant execute on function public.core_v2_start_workflow(uuid, text, uuid[], jsonb, text, text, boolean) to authenticated, service_role;
+revoke all on function public.core_v2_resolve_disagreement(uuid, text, text, uuid, jsonb, text, text, uuid[]) from public, anon;
+revoke all on function public.core_v2_canonical_json(jsonb) from public, anon;
+revoke all on function public.core_v2_source_identity(jsonb) from public, anon;
+revoke all on function public.core_v2_source_set_fingerprint(jsonb) from public, anon;
+revoke all on function public.core_v2_request_fingerprint(text, text, text, text, jsonb, text) from public, anon;
 grant execute on function public.core_v2_cancel_workflow(uuid, text) to authenticated, service_role;
 grant execute on function public.core_v2_authorize_task_retry(uuid, text) to authenticated, service_role;
-grant execute on function public.core_v2_resolve_disagreement(uuid, text, text, uuid, jsonb, text, text, text, uuid[]) to authenticated, service_role;
-grant execute on function public.core_v2_source_set_fingerprint(uuid, uuid[]) to authenticated, service_role;
+grant execute on function public.core_v2_resolve_disagreement(uuid, text, text, uuid, jsonb, text, text, uuid[]) to authenticated, service_role;
+grant execute on function public.core_v2_canonical_json(jsonb) to authenticated, service_role;
+grant execute on function public.core_v2_source_identity(jsonb) to authenticated, service_role;
+grant execute on function public.core_v2_source_set_fingerprint(jsonb) to authenticated, service_role;
+grant execute on function public.core_v2_request_fingerprint(text, text, text, text, jsonb, text) to authenticated, service_role;
 
--- ═════════════════════════════════════ 15 · one project, all the way down
+-- ═════════════════════════ 15 · one organisation, one workflow, all the way down
 --
--- Section 16.8: source and evidence records cannot cross organisations through
--- ids, signed urls, search, comparison, or joins. The browser cannot write any
--- of these tables at all, so the risk is not a malicious form post — it is a
--- worker, a fixture or a future migration writing a row whose organisation and
--- property do not belong together, or joining a row of one project to a row of
--- another and producing a decision that opens somebody else's drawing.
+-- Source and evidence records cannot cross organisations through ids, search,
+-- comparison or joins. The browser cannot write any of these tables at all, so
+-- the risk is not a malicious form post — it is a worker, a fixture or a future
+-- migration writing a row whose references belong to somebody else, or joining
+-- a row of one workflow to a row of another and producing a decision that
+-- opens somebody else's source.
 --
--- Three things are checked on the way in, for every writer including the
+-- Two things are checked on the way in, for every writer including the
 -- service role:
 --
---   · the property named on the row really belongs to the organisation named
---     on it. They are one identity written twice, not two independent labels;
---   · neither of them ever changes afterwards. A row does not move house;
---   · every reference the row carries resolves to that same property.
--- Both lookups are `security definer` on purpose. A tenancy guard that could
--- only see what the caller can see would answer "no such project" instead of
--- "another project", and would be weaker for the reader who has least access.
-create or replace function public.core_v2_property_of(p_table text, p_id uuid)
-returns uuid language plpgsql stable security definer set search_path = public as $$
-declare found uuid;
+--   · every reference the row carries resolves to a row of the same
+--     organisation, and of the same workflow. A row that names no workflow
+--     of its own belongs to the workflow of the first reference it names;
+--   · neither the organisation nor the workflow ever changes afterwards. A row
+--     does not move house.
+--
+-- The lookup is `security definer` on purpose. A tenancy guard that could only
+-- see what the caller can see would answer "does not exist" instead of "another
+-- organisation", and would be weaker for the reader who has least access.
+create or replace function public.core_v2_tenant_of(
+  p_table text, p_id uuid, out organization_id uuid, out workflow_id uuid
+) returns record language plpgsql stable security definer set search_path = public as $$
+declare workflow_column text;
 begin
-  if p_id is null then return null; end if;
-  execute format('select property_id from public.%I where id = $1', p_table)
-    into found using p_id;
-  return found;
+  if p_id is null then return; end if;
+  workflow_column := case
+    when p_table = 'intelligence_workflows' then 'id'
+    when exists (select 1 from pg_attribute
+                  where attrelid = ('public.' || quote_ident(p_table))::regclass
+                    and attname = 'workflow_id' and not attisdropped) then 'workflow_id'
+    else 'null::uuid' end;
+  execute format('select organization_id, %s from public.%I where id = $1', workflow_column, p_table)
+    into organization_id, workflow_id using p_id;
 end $$;
-
-create or replace function public.core_v2_organization_of_property(p_property_id uuid)
-returns uuid language sql stable security definer set search_path = public as $$
-  select p.organization_id from public.properties p where p.id = p_property_id;
-$$;
 
 create or replace function public.core_v2_guard_tenancy() returns trigger
 language plpgsql as $$
@@ -2248,27 +2508,20 @@ declare
   column_name text;
   parent_table text;
   child uuid;
-  parent_property uuid;
-  owning_org uuid;
+  parent_organization uuid;
+  parent_workflow uuid;
   row_json jsonb := to_jsonb(new);
+  own_workflow uuid := nullif(row_json ->> 'workflow_id', '')::uuid;
+  named_by text := 'workflow_id';
 begin
-  -- The tenant root. An organisation and a property that do not belong together
-  -- are not a mislabelled row: they are a row that two different tenants could
-  -- each claim to own.
-  owning_org := public.core_v2_organization_of_property(new.property_id);
-  if owning_org is null then
-    raise exception 'core_v2: %.property_id names a project that does not exist', TG_TABLE_NAME
-      using errcode = 'check_violation';
-  end if;
-  if owning_org <> new.organization_id then
-    raise exception 'core_v2: % says organisation % but its project belongs to %',
-      TG_TABLE_NAME, new.organization_id, owning_org using errcode = 'check_violation';
-  end if;
-
   if TG_OP = 'UPDATE' then
-    if new.organization_id is distinct from old.organization_id
-       or new.property_id is distinct from old.property_id then
-      raise exception 'core_v2: a % row does not change project after it is written', TG_TABLE_NAME
+    if new.organization_id is distinct from old.organization_id then
+      raise exception 'core_v2: a % row does not change organisation after it is written', TG_TABLE_NAME
+        using errcode = 'check_violation';
+    end if;
+    if (row_json ? 'workflow_id')
+       and (row_json -> 'workflow_id') is distinct from (to_jsonb(old) -> 'workflow_id') then
+      raise exception 'core_v2: a % row does not change workflow after it is written', TG_TABLE_NAME
         using errcode = 'check_violation';
     end if;
   end if;
@@ -2278,13 +2531,25 @@ begin
     parent_table := TG_ARGV[i + 1];
     child := nullif(row_json ->> column_name, '')::uuid;
     if child is not null then
-      parent_property := public.core_v2_property_of(parent_table, child);
-      if parent_property is null then
-        raise exception 'core_v2: %.% points at a % that does not exist',
+      select * into parent_organization, parent_workflow
+        from public.core_v2_tenant_of(parent_table, child);
+      if parent_organization is null then
+        -- "a row of <table>", never "a <table>": the schema does not get to
+        -- decide whether a table's name takes a or an.
+        raise exception 'core_v2: %.% points at a row of % that does not exist',
           TG_TABLE_NAME, column_name, parent_table using errcode = 'check_violation';
-      elsif parent_property <> new.property_id then
-        raise exception 'core_v2: %.% points at a % in another project',
+      elsif parent_organization <> new.organization_id then
+        raise exception 'core_v2: %.% points at a row of % that belongs to another organisation',
           TG_TABLE_NAME, column_name, parent_table using errcode = 'check_violation';
+      end if;
+      if parent_workflow is not null then
+        if own_workflow is null then
+          own_workflow := parent_workflow;
+          named_by := column_name;
+        elsif parent_workflow <> own_workflow then
+          raise exception 'core_v2: %.% points at a row of % that belongs to another workflow than the one % names',
+            TG_TABLE_NAME, column_name, parent_table, named_by using errcode = 'check_violation';
+        end if;
       end if;
     end if;
     i := i + 2;
@@ -2293,84 +2558,79 @@ begin
 end $$;
 
 comment on function public.core_v2_guard_tenancy() is
-  'Proves that a Core V2 row''s property belongs to its organisation, that neither changes afterwards, and that every reference it carries resolves to the same property. Trigger arguments are pairs of column name and parent table.';
+  'Proves that every reference a Core V2 row carries resolves to the same organisation and the same workflow, and that neither changes afterwards. Trigger arguments are pairs of column name and parent table.';
+
+do $$
+declare t text;
+begin
+  foreach t in array array[
+    'intelligence_workflows','workflow_outbox','workflow_sources','source_segments',
+    'workflow_tasks','task_sources','task_dependencies','task_target_claims','agent_attempts',
+    'evidence_claims','claim_inputs','evidence_anchors','claim_assessments',
+    'disagreements','disagreement_claims','disagreement_follow_ups',
+    'decisions','decision_evidence','decision_actions']
+  loop
+    execute format('drop trigger if exists core_v2_tenancy on public.%I', t);
+  end loop;
+end $$;
 
 create trigger core_v2_tenancy before insert or update on public.intelligence_workflows
   for each row execute function public.core_v2_guard_tenancy();
 create trigger core_v2_tenancy before insert or update on public.workflow_outbox
   for each row execute function public.core_v2_guard_tenancy('workflow_id','intelligence_workflows');
-create trigger core_v2_tenancy before insert or update on public.source_pages
-  for each row execute function public.core_v2_guard_tenancy('document_id','project_documents');
-create trigger core_v2_tenancy before insert or update on public.page_regions
+create trigger core_v2_tenancy before insert or update on public.workflow_sources
+  for each row execute function public.core_v2_guard_tenancy('workflow_id','intelligence_workflows');
+create trigger core_v2_tenancy before insert or update on public.source_segments
   for each row execute function public.core_v2_guard_tenancy(
-    'page_id','source_pages','parent_region_id','page_regions');
-create trigger core_v2_tenancy before insert or update on public.extraction_tasks
+    'workflow_id','intelligence_workflows','source_id','workflow_sources',
+    'parent_segment_id','source_segments','discovered_by_attempt_id','agent_attempts');
+create trigger core_v2_tenancy before insert or update on public.workflow_tasks
   for each row execute function public.core_v2_guard_tenancy(
-    'workflow_id','intelligence_workflows','parent_task_id','extraction_tasks',
-    'created_by_task_id','extraction_tasks');
+    'workflow_id','intelligence_workflows','parent_task_id','workflow_tasks',
+    'created_by_task_id','workflow_tasks','disagreement_id','disagreements');
+create trigger core_v2_tenancy before insert or update on public.task_sources
+  for each row execute function public.core_v2_guard_tenancy(
+    'task_id','workflow_tasks','source_id','workflow_sources','segment_id','source_segments');
 create trigger core_v2_tenancy before insert or update on public.task_dependencies
   for each row execute function public.core_v2_guard_tenancy(
-    'task_id','extraction_tasks','depends_on_task_id','extraction_tasks');
+    'task_id','workflow_tasks','depends_on_task_id','workflow_tasks');
+create trigger core_v2_tenancy before insert or update on public.task_target_claims
+  for each row execute function public.core_v2_guard_tenancy(
+    'task_id','workflow_tasks','claim_id','evidence_claims');
 create trigger core_v2_tenancy before insert or update on public.agent_attempts
-  for each row execute function public.core_v2_guard_tenancy('task_id','extraction_tasks');
+  for each row execute function public.core_v2_guard_tenancy(
+    'workflow_id','intelligence_workflows','task_id','workflow_tasks');
 create trigger core_v2_tenancy before insert or update on public.evidence_claims
   for each row execute function public.core_v2_guard_tenancy(
-    'workflow_id','intelligence_workflows','attempt_id','agent_attempts',
-    'supersedes_claim_id','evidence_claims','canonical_entity_id','project_entities');
+    'workflow_id','intelligence_workflows','task_id','workflow_tasks',
+    'attempt_id','agent_attempts','supersedes_claim_id','evidence_claims');
+create trigger core_v2_tenancy before insert or update on public.claim_inputs
+  for each row execute function public.core_v2_guard_tenancy(
+    'claim_id','evidence_claims','input_claim_id','evidence_claims');
 create trigger core_v2_tenancy before insert or update on public.evidence_anchors
   for each row execute function public.core_v2_guard_tenancy(
-    'claim_id','evidence_claims','document_id','project_documents','page_id','source_pages',
-    'region_id','page_regions','evidence_item_id','evidence_items');
-create trigger core_v2_tenancy before insert or update on public.project_entities
-  for each row execute function public.core_v2_guard_tenancy(
-    'first_seen_workflow_id','intelligence_workflows','last_seen_workflow_id','intelligence_workflows');
-create trigger core_v2_tenancy before insert or update on public.entity_aliases
-  for each row execute function public.core_v2_guard_tenancy(
-    'entity_id','project_entities','attempt_id','agent_attempts');
-create trigger core_v2_tenancy before insert or update on public.entity_relations
-  for each row execute function public.core_v2_guard_tenancy(
-    'from_entity_id','project_entities','to_entity_id','project_entities','decision_id','decisions');
+    'workflow_id','intelligence_workflows','claim_id','evidence_claims',
+    'assessment_id','claim_assessments','source_id','workflow_sources','segment_id','source_segments');
 create trigger core_v2_tenancy before insert or update on public.claim_assessments
   for each row execute function public.core_v2_guard_tenancy(
-    'claim_id','evidence_claims','attempt_id','agent_attempts');
-create trigger core_v2_tenancy before insert or update on public.claim_assessment_anchors
-  for each row execute function public.core_v2_guard_tenancy(
-    'assessment_id','claim_assessments','anchor_id','evidence_anchors');
+    'workflow_id','intelligence_workflows','claim_id','evidence_claims',
+    'attempt_id','agent_attempts','task_id','workflow_tasks');
 create trigger core_v2_tenancy before insert or update on public.disagreements
   for each row execute function public.core_v2_guard_tenancy(
     'workflow_id','intelligence_workflows','resolution_decision_id','decisions');
 create trigger core_v2_tenancy before insert or update on public.disagreement_claims
   for each row execute function public.core_v2_guard_tenancy(
     'disagreement_id','disagreements','claim_id','evidence_claims');
+create trigger core_v2_tenancy before insert or update on public.disagreement_follow_ups
+  for each row execute function public.core_v2_guard_tenancy(
+    'disagreement_id','disagreements','task_id','workflow_tasks');
 create trigger core_v2_tenancy before insert or update on public.decisions
   for each row execute function public.core_v2_guard_tenancy(
-    'workflow_id','intelligence_workflows','subject_entity_id','project_entities',
-    'decided_by_attempt_id','agent_attempts','supersedes_decision_id','decisions');
+    'workflow_id','intelligence_workflows','task_id','workflow_tasks',
+    'disagreement_id','disagreements','decided_by_attempt_id','agent_attempts',
+    'supersedes_decision_id','decisions');
 create trigger core_v2_tenancy before insert or update on public.decision_evidence
   for each row execute function public.core_v2_guard_tenancy(
     'decision_id','decisions','claim_id','evidence_claims','anchor_id','evidence_anchors');
 create trigger core_v2_tenancy before insert or update on public.decision_actions
-  for each row execute function public.core_v2_guard_tenancy(
-    'decision_id','decisions','completion_evidence_id','evidence_items');
-
--- ═══════════════════════════════════════ 16 · the ledger can name Core V2
---
--- One process key for the whole engine, not one per task type: what the work
--- was is on the task, what it read is in the input fingerprint, and which
--- attempt bought it is `job_table`/`job_id`. A ledger whose vocabulary grows
--- with every new contract cannot be reconciled against an invoice.
---
--- This adds one value to an existing check. No V1 row is read, written or
--- reinterpreted by it.
-alter table public.ai_runs drop constraint if exists ai_runs_process_key_check;
-alter table public.ai_runs
-  add constraint ai_runs_process_key_check
-  check (process_key in (
-    'plan-analyze', 'spatial-analyze', 'document-classify',
-    'document-evidence', 'field-quality-check', 'project-search', 'compare-readings',
-    'core-v2'));
-
--- One attempt, one ledger row. Two attempts sharing a claim on the same call
--- would make the same money look like two purchases, or hide a second one.
-create unique index if not exists agent_attempts_one_ledger_row
-  on public.agent_attempts(ai_run_id) where ai_run_id is not null;
+  for each row execute function public.core_v2_guard_tenancy('decision_id','decisions');

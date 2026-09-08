@@ -1,4 +1,4 @@
-import { closeTheNetwork } from "../network-guard.ts";
+import { closeTheNetwork } from "../kernel/network-guard.ts";
 /* The few lines every engine test shares. Same voice as studio/tests: a
    labelled line per check, a count of failures, "ALL OK" or exit 1. */
 export function harness(title) {

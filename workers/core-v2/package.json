@@ -1,11 +1,12 @@
 {
-  "name": "@measured-decision/core-v2-orchestration",
-  "version": "0.1.0",
+  "name": "@measured-decision/core-v2",
+  "version": "0.2.0",
   "private": true,
-  "description": "Core V2 agent orchestration engine: bounded assignments, blind readers, comparison, criticism, arbitration. No provider is called from here.",
+  "description": "Core V2 universal decision kernel: bounded work distribution, independent analysis, evidence, disagreement detection, targeted verification, adjudication, traceable decision. No provider is called from here; the packs are synthetic.",
   "type": "module",
   "scripts": {
-    "core-v2:orchestrate": "node --experimental-strip-types --no-warnings cli.ts",
+    "core-v2:dry-run": "node --experimental-strip-types --no-warnings cli.ts --dry-run",
+    "core-v2:simulate": "node --experimental-strip-types --no-warnings cli.ts --simulate",
     "test": "bash tests/run.sh"
   },
   "dependencies": {}
