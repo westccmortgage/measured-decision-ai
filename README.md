@@ -21,14 +21,19 @@ and preserve a useful fallback when autoplay is unavailable.
 
 ## Film Center
 
-The compact Film Center restores four avatar-led films in one selectable player:
+The compact Film Center presents five films in one selectable player:
 
 1. The Measured Decision Vision
 2. Every Dollar Should Have an Evidence Path
 3. Every Property Should Have a Living Record
 4. From Documents to Spatial Intelligence
+5. The Spatial Time Machine (Pilot)
 
-Each film includes an optional English CC track that is off by default.
+The first four films include an optional English CC track that is off by default.
+The Pilot film includes embedded English captions.
+
+The homepage feature is **From Answer to Evidence**, with separate desktop and
+mobile encodes so the 1080p master does not slow down the first page.
 
 ## Method
 

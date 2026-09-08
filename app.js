@@ -175,7 +175,9 @@ if (filmPlayer && filmSource && filmCaption && filmChoices.length) {
         item.setAttribute("aria-pressed", String(active));
       });
       filmSource.src = choice.dataset.filmSrc;
-      filmCaption.src = choice.dataset.filmCaption;
+      const captionSource = choice.dataset.filmCaption;
+      if (captionSource) filmCaption.src = captionSource;
+      else filmCaption.removeAttribute("src");
       filmPlayer.poster = choice.dataset.filmPoster;
       category.textContent = choice.dataset.filmCategory;
       title.textContent = choice.dataset.filmTitle;
