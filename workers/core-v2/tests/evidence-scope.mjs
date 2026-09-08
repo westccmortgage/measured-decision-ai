@@ -477,16 +477,28 @@ t.check("nothing of the refused answer entered the record — no decision was wr
 t.check("the workflow ends partial: its evidence stands, its decisions do not",
   dReport.workflow.state === "partial", dReport.workflow.state);
 
-t.section("D. the same refusal when the claim is real and the composer's own dependencies name it");
+t.section("D. the same refusal when the claim is real and this record holds it");
 
-/* A claim of another category that this composer's dependency list does name,
-   and that the record really holds — so the refusal is about scope, not about
-   an id nobody has heard of. */
-const realForeign = new Map(composerPackets.map((p) => {
-  const foreign = foreignFor(p).find((c) => p.dependencies.some((d) => d.claimIds.includes(c.claimId)));
-  return [p.subjectKey, foreign ?? null];
-}));
-t.check("every composer's dependency list names at least one accepted claim of another category — a bare id, never its evidence",
+/* A dependency names only what the packet shows. A composer's dependency list
+   would otherwise enumerate every other subject's claims by id, which tells it
+   those subjects exist — the thing subject scope is for. */
+t.check("no composer's dependency list names a claim its packet does not present",
+  composerPackets.length > 0 && composerPackets.every((p) => {
+    const shown = new Set(p.context.claims.map((c) => c.ref));
+    return p.dependencies.every((d) => d.claimIds.every((id) => shown.has(id)));
+  }),
+  composerPackets.map((p) => `${p.subjectKey}:${p.dependencies.reduce((n, d) => n + d.claimIds.length, 0)} named`).join(", "));
+t.check("and in particular names no accepted claim of another subject",
+  composerPackets.every((p) => {
+    const named = new Set(p.dependencies.flatMap((d) => d.claimIds));
+    return foreignFor(p).every((c) => !named.has(c.claimId));
+  }));
+
+/* A real accepted claim of another subject, taken from the record rather than
+   from the packet — so the refusal below is about scope, not about an id
+   nobody has heard of. */
+const realForeign = new Map(composerPackets.map((p) => [p.subjectKey, foreignFor(p)[0] ?? null]));
+t.check("the record does hold an accepted claim of another subject for every composer, to reach for",
   composerPackets.length > 0 && composerPackets.every((p) => realForeign.get(p.subjectKey) !== null),
   [...realForeign].map(([k, v]) => `${k}→${v ? v.subjectKey : "none"}`).join(", "));
 
@@ -506,7 +518,7 @@ const rComposeAttempts = (await Promise.all(rComposeTasks.map((x) => R.repo.list
 
 t.check("the run names the same claims as the first, so the claim each composer cited is one this record holds",
   rComposeTasks.length === composeTasks.length
-  && (await Promise.all([...realForeign.values()].map((c) => R.repo.getClaim(c.claimId)))).every((c) => c && c.status === "accepted"),
+  && (await Promise.all([...realForeign.values()].filter(Boolean).map((c) => R.repo.getClaim(c.claimId)))).every((c) => c && c.status === "accepted"),
   `${rComposeTasks.length} compose task(s)`);
 
 t.check("a composer citing a real accepted claim of another subject is refused just the same, and every compose task ends failed_known",

@@ -153,6 +153,13 @@ export async function buildPacket(task: TaskRecord, ctx: PacketContext): Promise
     independenceGroup: task.independenceGroup,
   });
 
+  /* A dependency names only claims the packet actually presents. Naming an id
+     it does not show tells a role that a claim about something else exists,
+     which is exactly what subject scope is for — and a composer's dependency
+     list would otherwise enumerate every other subject's claims by id. */
+  const shown = new Set(claims.map((c) => refToClaimId[c.ref] ?? c.ref));
+  for (const d of dependencies) d.claimIds = d.claimIds.filter((id) => shown.has(id));
+
   const packet: WorkPacket = {
     packetVersion: PACKET_VERSION,
     workflowId: task.workflowId,

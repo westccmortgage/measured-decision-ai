@@ -25,13 +25,18 @@ run "agreement is not proof"                                           acceptanc
 run "evidence points at one place"                                     evidence-scope.mjs
 run "the states the engine walks, and the ones the database allows"    workflow-states.mjs
 run "restart, cancel, timeout, and the unknown outcome"                recovery.mjs
+run "an agent asks; the orchestrator decides"                          follow-up.mjs
+run "every limit is a place the run stops"                             budgets.mjs
+run "a second domain"                                                  transcripts.mjs
 run "the repository contract, in memory and in Postgres"               repository-contract.mjs
 run "the whole chain against migration 058, with a restart"            postgres-e2e.mjs
+run "nothing of a client, nothing of a provider, nothing of a project" nothing-real.mjs
+run "every door is closed"                                             network-guard.mjs
+run "the command line runs from wherever it is"                        cli-entry.mjs
 
 echo
 echo "────────────────────────────────────────────"
 if [ "$fail" = "1" ]; then echo "SOMETHING FAILED — see above"; exit 1; fi
 echo "ALL CHECKS PASS"
-# Suites still being written, each named in README.md: follow-up, budgets,
-# transcripts, nothing-real, network-guard, cli-entry.
-# A suite is listed above only once it exists and passes.
+# Every suite the README names is listed above. A suite is listed only
+# once it exists and passes.

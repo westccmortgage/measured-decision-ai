@@ -2,7 +2,7 @@
  *
  * No provider is called in this repository, and the policy is enforced
  * anyway: an engine that only learns restraint once money is attached learns
- * it on a customer's invoice. Every limit here is a place a run stops of its
+ * it at somebody's expense. Every limit here is a place a run stops of its
  * own accord, and what it does when it stops is written next to the number.
  * The subset the database enforces too is snapshotted onto the workflow as
  * its budget.

@@ -162,9 +162,9 @@ export type SourceDescriptor = {
   objectVersionId: string | null;
   byteSize: number | null;
   media: Record<string, unknown>;
-  /* Segments the source declares about itself at ingest time — the pages of
-     a document, the tracks of a recording. Discovered segments come later,
-     from a discoverer, under those. */
+  /* Segments the source declares about itself at ingest time, whatever its
+     own divisions are called. Discovered segments come later, from a
+     discoverer, under those. */
   declaredSegments: SegmentDescriptor[];
 };
 

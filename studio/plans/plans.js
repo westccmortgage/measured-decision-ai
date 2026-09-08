@@ -843,12 +843,16 @@ function render() {
   const workflowState = state.property?.workflow_state || "intake";
   elements.workflowBadge.textContent = label(workflowState);
   elements.workflowBadge.className = `state-pill ${workflowState}`;
-  $("#metric-documents").textContent = state.documents.length;
+  /* Nothing counted to zero before there is anything to count. The baseline
+     tile already read this way; the other three now match it, so a screen
+     with no plans on it says "waiting for plans" rather than measuring none. */
+  $("#metric-documents").textContent = state.documents.length || "—";
   $("#metric-documents-copy").textContent = state.documents.length ? "Current source register" : "Upload the issued set";
   $("#metric-baseline").textContent = state.baseline ? `v${state.baseline.version}` : "—";
   $("#metric-baseline-copy").textContent = state.baseline ? label(state.baseline.state) : "Not analyzed";
-  $("#metric-phases").textContent = state.phases.length;
-  $("#metric-tasks").textContent = state.tasks.length;
+  $("#metric-phases").textContent = state.phases.length || "—";
+  $("#metric-phases-copy").textContent = state.phases.length ? "Construction stages" : "Waiting for plans";
+  $("#metric-tasks").textContent = state.tasks.length || "—";
   const verified = state.tasks.filter((task) => task.status === "verified").length;
   $("#metric-tasks-copy").textContent = state.tasks.length ? `${verified} verified · ${state.tasks.length - verified} open` : "Waiting for plans";
   $("#upload-plans-label").hidden = !canUploadPlans();

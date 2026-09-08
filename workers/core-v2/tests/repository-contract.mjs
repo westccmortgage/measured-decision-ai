@@ -453,7 +453,25 @@ async function suite(h, repo, organizationId) {
     const bare = f.claim(t, a, "bare");
     const cut = f.claim(t, a, "cut", { incompleteSourceAttempt: true }); cut.anchors = [f.anchor(cut.claimId, "k1", seg.segmentId)];
     const sound = f.claim(t, a, "sound"); sound.anchors = [f.anchor(sound.claimId, "k1", seg.segmentId)];
-    await repo.commitValidatedResult(f.commit(t, a, { segments: [seg], claims: [bare, cut, sound] }));
+    /* Anchored, complete, and nobody has verified it. */
+    const lone = f.claim(t, a, "lone"); lone.anchors = [f.anchor(lone.claimId, "k1", seg.segmentId)];
+    await repo.commitValidatedResult(f.commit(t, a, { segments: [seg], claims: [bare, cut, sound, lone] }));
+    /* Agreement is not proof: a reading is accepted on a verdict from another
+       executor domain, a deterministic rule, or a person. The critic that
+       gives "sound" that verdict is written first, from a domain that is not
+       the reader's, so the acceptances below stand on something. */
+    const criticTask = await admitted(9, "claims-critic", { phase: "verify", taskType: "verify_claim", targetClaimIds: [sound.claimId] });
+    const { attempt: criticAttempt } = await submitted(repo, f, criticTask, 1, { independenceDomain: "domain:critic" });
+    await repo.commitValidatedResult(f.commit(criticTask, criticAttempt, { assessments: [{
+      assessmentId: entityId("assessment", criticAttempt.attemptId, sound.claimId), workflowId: f.wfId(9), claimId: sound.claimId,
+      attemptId: criticAttempt.attemptId, taskId: criticTask.taskId, assessment: "supports", reasonCode: "matches_source",
+      explanation: "the source shows this", proposedValue: null, proposedUnit: null, independenceDomain: criticAttempt.independenceDomain,
+      anchors: [f.anchor(entityId("assessment", criticAttempt.attemptId, sound.claimId), "k1", seg.segmentId)],
+    }] }));
+    await throws("a reading with no verdict behind it is not accepted — agreement is not proof",
+      () => repo.transitionClaim(lone.claimId, "proposed", "accepted"), (e) => /no independent verification/.test(e.message));
+    check("and the refused reading is still proposed — nothing of the move was kept",
+      (await repo.getClaim(lone.claimId)).status === "proposed");
     await throws("a claim with nothing to open is not accepted", () => repo.transitionClaim(bare.claimId, "proposed", "accepted"), (e) => /nothing to open/.test(e.message));
     await throws("a claim from a cut-short attempt is not accepted", () => repo.transitionClaim(cut.claimId, "proposed", "accepted"), (e) => /cut-short/.test(e.message));
     const verified = await repo.transitionClaim(cut.claimId, "proposed", "verified");
@@ -467,7 +485,7 @@ async function suite(h, repo, organizationId) {
     await repo.applyDecision({ decision: standing, decideTo: "machine_decided" });
     await throws("a claim under a standing decision is not superseded alone", () => repo.transitionClaim(sound.claimId, "accepted", "superseded"), (e) => /standing decision/.test(e.message));
     const filtered = await repo.listClaims({ workflowId: f.wfId(9), taskIds: [t.taskId] });
-    check("listClaims filters by workflow and task", filtered.length === 3);
+    check("listClaims filters by workflow and task", filtered.length === 4);
     check("listClaims filters by status, subject and prefix",
       (await repo.listClaims({ attemptIds: [a.attemptId], statuses: ["accepted"] })).length === 1
       && (await repo.listClaims({ workflowId: f.wfId(9), subjectKey: "subject:sound" })).length === 1
@@ -491,6 +509,15 @@ async function suite(h, repo, organizationId) {
     await throws("a decision settling a disagreement that does not exist is refused", () => repo.applyDecision({ decideTo: null, decision: f.decision(9, "unsettled", { disagreementId: entityId("disagreement", "nowhere") }) }), (e) => /does not exist/.test(e.message));
     await throws("a decision not written proposed is refused", () => repo.applyDecision({ decideTo: null, decision: f.decision(9, "eager", { status: "machine_decided" }) }), (e) => /written proposed/.test(e.message));
     await throws("a machine decision with no deciding attempt is refused", () => repo.applyDecision({ decideTo: "machine_decided", decision: f.decision(9, "nobody", { evidence: [{ claimId: one.claimId, anchorId: null, link: "supports", rule: "r" }] }) }), (e) => /by no attempt/.test(e.message));
+    /* Accepted on a verdict from another domain, as every machine reading is. */
+    const oneCritic = await admitted(9, "decide-critic", { phase: "verify", taskType: "verify_claim", targetClaimIds: [one.claimId] });
+    const { attempt: oneCriticAttempt } = await submitted(repo, f, oneCritic, 1, { independenceDomain: "domain:critic" });
+    await repo.commitValidatedResult(f.commit(oneCritic, oneCriticAttempt, { assessments: [{
+      assessmentId: entityId("assessment", oneCriticAttempt.attemptId, one.claimId), workflowId: f.wfId(9), claimId: one.claimId,
+      attemptId: oneCriticAttempt.attemptId, taskId: oneCritic.taskId, assessment: "supports", reasonCode: "matches_source",
+      explanation: "the source shows this", proposedValue: null, proposedUnit: null, independenceDomain: oneCriticAttempt.independenceDomain,
+      anchors: [f.anchor(entityId("assessment", oneCriticAttempt.attemptId, one.claimId), "k1", seg.segmentId)],
+    }] }));
     await repo.transitionClaim(one.claimId, "proposed", "accepted");
     const rested = f.decision(9, "rested", { taskId: t.taskId, decidedByAttemptId: a.attemptId, evidence: [
       { claimId: one.claimId, anchorId: null, link: "supports", rule: "r" }, { claimId: one.claimId, anchorId: one.anchors[0].anchorId, link: "context", rule: "r" },

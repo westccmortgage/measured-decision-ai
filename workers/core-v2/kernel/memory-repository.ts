@@ -442,7 +442,7 @@ export class InMemoryOrchestrationRepository implements OrchestrationRepository 
     const claims = this.writeClaims(commit.claims, commit.workflowId);
     const assessments = this.writeAssessments(commit.assessments, commit.workflowId);
     const disagreements = this.writeDisagreements(commit.disagreements, commit.workflowId);
-    for (const t of commit.claimTransitions) await this.transitionClaim(t.claimId, t.from, t.to);
+    for (const t of commit.claimTransitions) await this.moveClaim(t.claimId, t.from, t.to);
     for (const r of commit.disagreementRounds) {
       const d = this.disagreements.get(r.disagreementId);
       if (!d) throw new Error(`core-v2: no disagreement ${r.disagreementId}`);
@@ -468,6 +468,8 @@ export class InMemoryOrchestrationRepository implements OrchestrationRepository 
       this.disagreements.set(d.disagreementId, { ...d, followUps: [...d.followUps, { round: f.round, fingerprint: f.fingerprint, taskId: f.taskId }] });
     }
     for (const t of commit.taskTransitions) await this.transitionTask(t.taskId, t.from, t.to, t.reason);
+    /* Deferred to the end of the write, exactly as the database defers it. */
+    this.assertAcceptanceStands([...commit.claimTransitions.map((t) => t.claimId), ...claims.map((c) => c.claimId)]);
     await this.transitionTask(task.taskId, "running", commit.task.to, commit.task.reason);
     for (const a of commit.audits) this.auditTrail.push(a);
     return { alreadyCommitted: false, claims, assessments, disagreements, segments, children, decisions, followUpsRefused };
@@ -559,7 +561,19 @@ export class InMemoryOrchestrationRepository implements OrchestrationRepository 
       (!filter.subjectTypes || filter.subjectTypes.includes(c.subjectType)));
   }
   async getClaim(claimId: string) { return this.claims.get(claimId) ?? null; }
+  /* One transition on its own is the whole write, so the deferred check runs
+     at once. Inside a commit the same check waits for the end of it, because
+     a claim and the verdict that accepts it arrive together. */
   async transitionClaim(claimId: string, from: ClaimStatus, to: ClaimStatus) {
+    const before = this.claims.get(claimId);
+    const next = await this.moveClaim(claimId, from, to);
+    /* A refused move leaves nothing behind. The check reads the record as it
+       would stand, so the move is made first and taken back if it does not. */
+    try { this.assertAcceptanceStands([claimId]); }
+    catch (error) { if (before) this.claims.set(claimId, before); throw error; }
+    return next;
+  }
+  private async moveClaim(claimId: string, from: ClaimStatus, to: ClaimStatus) {
     const claim = this.claims.get(claimId);
     if (!claim) throw new Error(`core-v2: no claim ${claimId}`);
     if (claim.status !== from) throw new StaleState("claim", claimId, from, claim.status);
@@ -573,6 +587,37 @@ export class InMemoryOrchestrationRepository implements OrchestrationRepository 
     const next = { ...claim, status: to };
     this.claims.set(claimId, next);
     return next;
+  }
+
+  /* What must be true of an accepted claim once everything a write does has
+     been written — the database's deferred check, in the same words. A claim
+     and the verdict or the rule that accepts it arrive in one commit, so
+     asking while the commit is half applied would refuse a chain that holds. */
+  private assertAcceptanceStands(claimIds: string[]) {
+    for (const claimId of [...new Set(claimIds)]) {
+      const claim = this.claims.get(claimId);
+      if (!claim || claim.status !== "accepted") continue;
+      if (claim.attemptId && this.attempts.get(claim.attemptId)?.state === "output_limited") {
+        throw new Error(`core-v2: claim ${claimId} came from an attempt that was cut short — it needs a complete verification before acceptance`);
+      }
+      if (!claim.independenceDomain) continue;
+      const verified = [...this.assessments.values()].some((a) => a.claimId === claimId && a.assessment === "supports"
+        && this.attempts.get(a.attemptId)?.independenceDomain !== claim.independenceDomain);
+      const ruled = [...this.decisions.values()].some((d) => ["deterministic_rule", "human"].includes(d.authority)
+        && d.evidence.some((e) => e.link === "supports" && e.claimId === claimId));
+      /* The third way, and the only one an adjudicator has: a correction that
+         cites the anchor of a reviewer, from another domain, who read that
+         value off the reopened source. An adjudication resting on nothing but
+         the readings it is settling accepts nothing. */
+      const corrected = [...this.decisions.values()].some((d) => d.authority === "adjudicator"
+        && d.evidence.some((e) => e.link === "supports" && e.claimId === claimId)
+        && d.evidence.some((e) => {
+          const anchor = e.anchorId ? this.anchors.get(e.anchorId) : null;
+          const assessment = anchor?.assessmentId ? this.assessments.get(anchor.assessmentId) : null;
+          return Boolean(assessment) && this.attempts.get(assessment!.attemptId)?.independenceDomain !== claim.independenceDomain;
+        }));
+      if (!verified && !ruled && !corrected) throw new Error(`core-v2: claim ${claimId} is accepted with no independent verification, deterministic rule or person behind it`);
+    }
   }
   async listAnchors(claimIds: string[]) {
     return [...this.anchors.values()].filter((a) => a.claimId !== null && claimIds.includes(a.claimId));
@@ -635,6 +680,11 @@ export class InMemoryOrchestrationRepository implements OrchestrationRepository 
     if (this.decisions.has(decision.decisionId)) {
       const existing = this.decisions.get(decision.decisionId)!;
       if (canonical({ ...existing, status: null }) !== canonical({ ...decision, status: null })) throw new Error(`core-v2: decision ${decision.decisionId} already exists with different content`);
+      /* The row is already written, but the call may be the one that decides
+         it: a decision proposed by an earlier commit and decided by a later
+         one is one decision, and returning the proposed row unchanged would
+         leave it undecided for ever. Deciding it runs the same guards. */
+      if (decideTo && existing.status === "proposed") return this.decide(existing, decideTo);
       return existing;
     }
     if (decision.status !== "proposed") throw new Error("core-v2: a decision is written proposed and then decided");
@@ -644,18 +694,23 @@ export class InMemoryOrchestrationRepository implements OrchestrationRepository 
       if (e.claimId && e.anchorId && this.anchors.get(e.anchorId)!.claimId !== e.claimId) throw new Error("core-v2: that anchor belongs to another claim — a decision cites a claim through its own source");
     }
     if (decision.disagreementId && !this.disagreements.has(decision.disagreementId)) throw new Error("core-v2: decision settles a disagreement that does not exist");
-    let record: DecisionRecord = { ...decision };
+    const record: DecisionRecord = { ...decision };
     this.decisions.set(record.decisionId, record);
-    if (decideTo) {
-      if (!decisionMoveAllowed("proposed", decideTo)) throw new IllegalTransition("decision", "proposed", decideTo);
-      if (decideTo === "machine_decided") {
-        if (!record.decidedByAttemptId || !this.attempts.has(record.decidedByAttemptId)) throw new Error(`core-v2: decision ${record.decisionId} is machine decided by no attempt`);
-        this.assertDecisionRests(record);
-      }
-      record = { ...record, status: decideTo };
-      this.decisions.set(record.decisionId, record);
+    return decideTo ? this.decide(record, decideTo) : record;
+  }
+
+  /* Proposed to decided, under the guards that make a decision mean
+     something: the move must be legal, a machine decision must name the
+     attempt that made it, and it must rest on evidence the record holds. */
+  private decide(record: DecisionRecord, decideTo: Exclude<DecisionApplication["decideTo"], null>): DecisionRecord {
+    if (!decisionMoveAllowed("proposed", decideTo)) throw new IllegalTransition("decision", "proposed", decideTo);
+    if (decideTo === "machine_decided") {
+      if (!record.decidedByAttemptId || !this.attempts.has(record.decidedByAttemptId)) throw new Error(`core-v2: decision ${record.decisionId} is machine decided by no attempt`);
+      this.assertDecisionRests(record);
     }
-    return record;
+    const decided = { ...record, status: decideTo };
+    this.decisions.set(decided.decisionId, decided);
+    return decided;
   }
   private assertDecisionRests(d: DecisionRecord) {
     if (d.decisionType === "supersede") return;

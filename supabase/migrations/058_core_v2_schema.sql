@@ -200,27 +200,40 @@ returns boolean language sql immutable as $$
   );
 $$;
 
--- A time range, when a locator carries one: both ends present, both numbers,
--- start no later than end. A locator with one end and not the other is not a
--- range at all.
-create or replace function public.core_v2_is_time_range(p_locator jsonb)
+-- A range, whatever it measures: both ends present, both numbers, start no
+-- later than end. A locator with one end and not the other is not a range at
+-- all. Every `start_x`/`end_x` pair is held to this, so a register's rows and
+-- a stream's bytes get the guarantee a recording's seconds always had — and
+-- time runs forward from zero, so nothing is cited before a recording began.
+create or replace function public.core_v2_ranges_well_formed(p_locator jsonb)
 returns boolean language sql immutable as $$
-  select case
-    when p_locator is null then true
-    when not (p_locator ? 'start_ms' or p_locator ? 'end_ms') then true
-    when jsonb_typeof(p_locator -> 'start_ms') is distinct from 'number'
-      or jsonb_typeof(p_locator -> 'end_ms') is distinct from 'number' then false
-    else (p_locator ->> 'start_ms')::numeric <= (p_locator ->> 'end_ms')::numeric
-  end;
+  select p_locator is null
+     or (not exists (
+           select 1 from jsonb_object_keys(p_locator) as k(key)
+            where key like 'start!_%' escape '!'
+              and (jsonb_typeof(p_locator -> key) is distinct from 'number'
+                   or jsonb_typeof(p_locator -> ('end_' || substr(key, 7))) is distinct from 'number'
+                   or (p_locator ->> key)::numeric
+                      > (p_locator ->> ('end_' || substr(key, 7)))::numeric))
+         and not exists (
+           select 1 from jsonb_object_keys(p_locator) as k(key)
+            where key like 'end!_%' escape '!'
+              and jsonb_typeof(p_locator -> ('start_' || substr(key, 5))) is distinct from 'number')
+         and coalesce((p_locator ->> 'start_ms')::numeric >= 0, true));
 $$;
 
--- The kernel does not know what a locator means. It does know the two shapes
--- that must compare across readings, and refuses either when malformed.
+-- The kernel does not know what a locator means. It does know the shapes that
+-- must compare across readings — a normalised box and a range of any measure —
+-- and refuses either when malformed.
 create or replace function public.core_v2_locator_well_formed(p_locator jsonb)
 returns boolean language sql immutable as $$
   select public.core_v2_is_normalised_bbox(p_locator -> 'bbox')
-     and public.core_v2_is_time_range(p_locator);
+     and public.core_v2_ranges_well_formed(p_locator);
 $$;
+
+-- The older, narrower spelling. Nothing calls it now that every range is
+-- checked the same way.
+drop function if exists public.core_v2_is_time_range(jsonb);
 
 create or replace function public.core_v2_bbox_within(p_inner jsonb, p_outer jsonb)
 returns boolean language sql immutable as $$
@@ -228,6 +241,20 @@ returns boolean language sql immutable as $$
      and (p_inner ->> 1)::numeric >= (p_outer ->> 1)::numeric
      and (p_inner ->> 2)::numeric <= (p_outer ->> 2)::numeric
      and (p_inner ->> 3)::numeric <= (p_outer ->> 3)::numeric;
+$$;
+
+-- Whether every range the inner locator shares with the outer one lies inside
+-- it. The kernel does not know what a row or a millisecond means; it does know
+-- that a piece of a thing is not allowed to sit outside the thing.
+create or replace function public.core_v2_range_within(p_inner jsonb, p_outer jsonb)
+returns boolean language sql immutable as $$
+  select not exists (
+    select 1 from jsonb_object_keys(p_outer) as k(key)
+     where key like 'start!_%' escape '!'
+       and p_inner ? key
+       and ((p_inner ->> key)::numeric < (p_outer ->> key)::numeric
+            or (p_inner ->> ('end_' || substr(key, 7)))::numeric
+               > (p_outer ->> ('end_' || substr(key, 7)))::numeric));
 $$;
 
 -- A budget is read by triggers as integers. A budget that cannot be read that
@@ -363,9 +390,8 @@ create table if not exists public.workflow_sources (
   ordinal integer not null check (ordinal >= 0),
   source_kind text not null,
   label text,
-  -- An opaque locator. A signed url expires and carries a credential; neither
-  -- belongs in a permanent record.
-  uri text not null check (uri !~* 'x-amz-signature|signature=|token='),
+  -- An opaque locator. The rule it must satisfy is named below the table.
+  uri text not null,
   content_hash text,
   hash_algorithm text,
   object_version_id text,
@@ -380,6 +406,15 @@ comment on table public.workflow_sources is
   'The immutable sources a workflow read: kind, opaque locator, content identity, size and domain metadata. Append-only; a changed source is a new workflow.';
 comment on column public.workflow_sources.media is
   'Domain metadata about the source — how many parts it has, how long it runs, how large it is. The kernel stores it and does not read it.';
+
+-- A signed url expires and carries a credential; neither belongs in a
+-- permanent record. The refusal reads the query string, which is where a
+-- credential lives, so a locator whose path happens to contain the word
+-- `signature` is still a locator and a records domain can name its own files.
+alter table public.workflow_sources drop constraint if exists workflow_sources_uri_check;
+alter table public.workflow_sources drop constraint if exists workflow_sources_uri_carries_no_credential;
+alter table public.workflow_sources add constraint workflow_sources_uri_carries_no_credential
+  check (uri !~* '[?&](x-amz-signature|x-goog-signature|sig|signature|token|access_token)=');
 
 create unique index if not exists workflow_sources_identity
   on public.workflow_sources(workflow_id, uri, coalesce(content_hash, ''), coalesce(object_version_id, ''));
@@ -396,8 +431,9 @@ create table if not exists public.source_segments (
   segment_kind text not null,
   label text,
   ordinal integer not null default 0 check (ordinal >= 0),
-  -- Domain geometry: a normalised box, a time range, a row range. The kernel
-  -- checks the two shapes it compares and stores the rest untouched.
+  -- Domain geometry: a normalised box, a time range, a row range, a byte
+  -- range. The kernel checks the shapes it compares — a box, and any
+  -- `start_x`/`end_x` pair — and stores the rest untouched.
   locator jsonb not null default '{}'::jsonb,
   content_hash text not null,
   status text not null default 'proposed' check (status in ('proposed','accepted','rejected','superseded')),
@@ -411,9 +447,16 @@ create table if not exists public.source_segments (
 comment on table public.source_segments is
   'A bounded part of one source, discovered once and handed to every reader alike. What a segment is belongs to the domain pack; that it stays put belongs here.';
 
+-- A segment is identified by what it holds AND where it is. Re-discovering the
+-- same part reports the same locator and the same hash and collides, which is
+-- the deduplication discovery relies on; the same words said twice in one
+-- recording, or the same row printed twice in a register, are two places and
+-- stay two rows.
+drop index if exists source_segments_identity;
 create unique index if not exists source_segments_identity
   on public.source_segments(workflow_id, source_id,
-    coalesce(parent_segment_id, '00000000-0000-0000-0000-000000000000'::uuid), segment_kind, content_hash);
+    coalesce(parent_segment_id, '00000000-0000-0000-0000-000000000000'::uuid), segment_kind,
+    content_hash, md5(locator::text));
 create index if not exists source_segments_by_source on public.source_segments(source_id, segment_kind, ordinal);
 create index if not exists source_segments_by_workflow on public.source_segments(workflow_id, status);
 
@@ -767,6 +810,13 @@ create table if not exists public.disagreement_claims (
 comment on table public.disagreement_claims is
   'The competing claims of one disagreement, as real foreign keys with a stable position. Every claim belongs to the disagreement''s organisation and workflow.';
 
+-- `restrict`, like every other link in the chain: removing a disagreement must
+-- not take the claim set it was settled between with it, past a guard that
+-- never sees a parent already gone.
+alter table public.disagreement_claims drop constraint if exists disagreement_claims_disagreement_id_fkey;
+alter table public.disagreement_claims add constraint disagreement_claims_disagreement_id_fkey
+  foreign key (disagreement_id) references public.disagreements(id) on delete restrict;
+
 create index if not exists disagreement_claims_by_claim on public.disagreement_claims(claim_id);
 create index if not exists disagreement_claims_ordered on public.disagreement_claims(disagreement_id, position);
 
@@ -822,7 +872,14 @@ create table if not exists public.decisions (
   constraint decisions_machine_decided_by_attempt check (
     status <> 'machine_decided' or decided_by_attempt_id is not null),
   constraint decisions_human_decided_by_person check (
-    status <> 'human_decided' or decided_by_user_id is not null)
+    status <> 'human_decided' or decided_by_user_id is not null),
+  -- A supersession borrows the evidence of the decision it replaces, so it has
+  -- to say which one that is. Without a predecessor it is a decided decision
+  -- resting on nothing.
+  constraint decisions_supersede_names_predecessor check (
+    decision_type <> 'supersede'
+    or status not in ('machine_decided','human_decided')
+    or supersedes_decision_id is not null)
 );
 
 comment on table public.decisions is
@@ -856,14 +913,22 @@ create table if not exists public.decision_actions (
   id uuid primary key default gen_random_uuid(),
   organization_id uuid not null references public.organizations(id) on delete cascade,
   decision_id uuid not null references public.decisions(id) on delete cascade,
-  action_type text not null check (action_type in (
-    'review','verify_source','request_information','proceed','hold')),
+  -- What must be done next. The kernel's own five, or a value the domain pack
+  -- namespaces with its own prefix — `owner_role` beside it is free text for
+  -- the same reason.
+  action_type text not null,
   owner_role text not null,
   status text not null default 'open' check (status in ('open','assigned','completed','waived','superseded')),
   due_at timestamptz,
   created_at timestamptz not null default now(),
   updated_at timestamptz not null default now()
 );
+
+alter table public.decision_actions drop constraint if exists decision_actions_action_type_check;
+alter table public.decision_actions drop constraint if exists decision_actions_action_type_named;
+alter table public.decision_actions add constraint decision_actions_action_type_named
+  check (action_type in ('review','verify_source','request_information','proceed','hold')
+         or action_type like '%:%');
 
 create index if not exists decision_actions_open on public.decision_actions(decision_id, status, due_at);
 
@@ -1001,6 +1066,15 @@ begin
       raise exception 'core_v2: segment % is nested under a segment of another source', new.id
         using errcode = 'check_violation';
     end if;
+    -- And inside it. A child that sits somewhere else would let an anchor
+    -- "inside its segment" point far outside the region a reader was handed,
+    -- because an anchor is only ever compared with the segment it names.
+    if (parent.locator ? 'bbox' and new.locator ? 'bbox'
+        and not public.core_v2_bbox_within(new.locator -> 'bbox', parent.locator -> 'bbox'))
+       or not public.core_v2_range_within(new.locator, parent.locator) then
+      raise exception 'core_v2: segment % lies outside its parent %', new.id, parent.id
+        using errcode = 'check_violation';
+    end if;
   end if;
   if TG_OP = 'INSERT' then return new; end if;
   if new.status is distinct from old.status
@@ -1062,7 +1136,13 @@ begin
     -- not go back into the queue on its own. A person authorises it, and
     -- core_v2_authorize_task_retry is the only thing that can say so.
     if old.state in ('outcome_unknown','failed_known') and new.state = 'queued' then
-      if coalesce(current_setting('core_v2.authorized_retry', true), '') <> old.id::text then
+      -- The marker says which door was used; the row says who walked through
+      -- it. A worker runs as the service role, for which auth.uid() is null, so
+      -- it cannot produce the second half however it sets the first.
+      if coalesce(current_setting('core_v2.authorized_retry', true), '') <> old.id::text
+         or new.retry_authorized_by is null
+         or new.retry_authorized_by is distinct from auth.uid()
+         or new.retry_authorized_at is not distinct from old.retry_authorized_at then
         raise exception 'core_v2: task % ended as % — a person must authorise running it again', old.id, old.state
           using errcode = 'check_violation';
       end if;
@@ -1099,6 +1179,12 @@ declare
   existing integer;
   siblings integer;
 begin
+  -- One admission into one workflow at a time. Without this the count below is
+  -- a reading of the past: two planners each see room for one more task and
+  -- both take it. An advisory transaction lock rather than a row lock, because
+  -- core_v2_submit_attempt already holds the workflow row and locking it the
+  -- other way round here would put admission and submission in each other's way.
+  perform pg_advisory_xact_lock(hashtextextended(new.workflow_id::text, 0));
   select w.budget into budget from public.intelligence_workflows w where w.id = new.workflow_id;
   if budget is null then
     raise exception 'core_v2: task % names a workflow that does not exist', new.id
@@ -1133,6 +1219,7 @@ declare
   existing integer;
 begin
   select t.workflow_id into workflow from public.workflow_tasks t where t.id = new.task_id;
+  perform pg_advisory_xact_lock(hashtextextended(workflow::text, 0));
   select w.budget into budget from public.intelligence_workflows w where w.id = workflow;
   select count(*) into existing
     from public.task_dependencies d join public.workflow_tasks t on t.id = d.task_id
@@ -1153,6 +1240,16 @@ declare
   moved text;
   written text;
 begin
+  -- The one move that spends money. core_v2_submit_attempt proves the workflow
+  -- is active and uncancelled, the task running under an unexpired lease, and
+  -- the independence of a blind reading — under the task's row lock. A plain
+  -- UPDATE proves none of that, so it is not a way to send a request.
+  if old.state = 'prepared' and new.state = 'submitted'
+     and coalesce(current_setting('core_v2.submitting_attempt', true), '') <> old.id::text then
+    raise exception 'core_v2: attempt % is submitted through core_v2_submit_attempt, which proves the lease and the cancellation', old.id
+      using errcode = 'check_violation';
+  end if;
+
   if new.state is distinct from old.state
      and not public.core_v2_transition_allowed('attempt', old.state, new.state) then
     raise exception 'core_v2: an attempt cannot go from % to %', old.state, new.state
@@ -1214,6 +1311,12 @@ begin
   if new.status is distinct from old.status
      and not public.core_v2_transition_allowed('claim', old.status, new.status) then
     raise exception 'core_v2: a claim cannot go from % to %', old.status, new.status
+      using errcode = 'check_violation';
+  end if;
+  -- Where the reading came from is a fact about the past. Clearing the flag on
+  -- a claim still in motion would launder it into acceptance.
+  if old.incomplete_source_attempt and not new.incomplete_source_attempt then
+    raise exception 'core_v2: claim % came from a cut-short attempt — that does not stop being true', old.id
       using errcode = 'check_violation';
   end if;
   -- Once a decision has admitted or refused a claim, the claim itself stops
@@ -1278,10 +1381,21 @@ begin
     raise exception 'core_v2: anchor % locates a box outside segment %', new.id, seg.id
       using errcode = 'check_violation';
   end if;
-  if seg.locator ? 'start_ms' and new.locator ? 'start_ms'
-     and ((new.locator ->> 'start_ms')::numeric < (seg.locator ->> 'start_ms')::numeric
-          or (new.locator ->> 'end_ms')::numeric > (seg.locator ->> 'end_ms')::numeric) then
-    raise exception 'core_v2: anchor % locates a time range outside segment %', new.id, seg.id
+  -- Every range the segment names, not only a time range: a register's rows and
+  -- a stream's bytes are places in a source too, and an anchor that leaves them
+  -- leaves the region a reader was actually handed.
+  if not public.core_v2_range_within(new.locator, seg.locator) then
+    raise exception 'core_v2: anchor % locates a range outside segment %', new.id, seg.id
+      using errcode = 'check_violation';
+  end if;
+  -- An anchor that names a place inside a segment has to name it in terms the
+  -- segment uses, or nothing above could have checked it. The engine refuses
+  -- such an anchor on the way in; the database refuses to hold one.
+  if new.source_kind = 'segment_locator'
+     and not (seg.locator ? 'bbox' and new.locator ? 'bbox')
+     and not exists (select 1 from jsonb_object_keys(seg.locator) as k(key)
+                      where key like 'start!_%' escape '!' and new.locator ? key) then
+    raise exception 'core_v2: anchor % names a place in segment % with no box or range to compare', new.id, seg.id
       using errcode = 'check_violation';
   end if;
   return new;
@@ -1298,7 +1412,10 @@ declare
 begin
   owning_claim := coalesce(old.claim_id,
     (select a.claim_id from public.claim_assessments a where a.id = old.assessment_id));
-  select c.status into claim_status from public.evidence_claims c where c.id = owning_claim;
+  -- `for share`, so that a transaction accepting this claim and a transaction
+  -- pulling its anchor out cannot both look, both see nothing wrong, and both
+  -- commit. The lock makes them queue; the loser then reads what the winner did.
+  select c.status into claim_status from public.evidence_claims c where c.id = owning_claim for share;
   if claim_status in ('verified','accepted','rejected','superseded') then
     -- One wording for every status: "a accepted claim" is what comes of
     -- inflecting a word the schema does not choose.
@@ -1334,27 +1451,77 @@ declare
   decision_status text;
   anchor_claim uuid;
 begin
-  select d.status into decision_status from public.decisions d where d.id = row_link.decision_id;
+  -- `for share`, so a transaction deciding the decision and a transaction
+  -- adding evidence to it cannot pass each other in the dark.
+  select d.status into decision_status from public.decisions d
+   where d.id = row_link.decision_id for share;
   if decision_status in ('machine_decided','human_decided') then
     raise exception 'core_v2: decision % is decided — its evidence set is closed; more evidence makes a superseding decision',
       row_link.decision_id using errcode = 'check_violation';
   end if;
   if TG_OP = 'UPDATE' and old.decision_id is distinct from new.decision_id then
-    select d.status into decision_status from public.decisions d where d.id = old.decision_id;
+    select d.status into decision_status from public.decisions d
+     where d.id = old.decision_id for share;
     if decision_status in ('machine_decided','human_decided') then
       raise exception 'core_v2: evidence cannot be moved off decided decision %', old.decision_id
         using errcode = 'check_violation';
     end if;
   end if;
   if TG_OP = 'DELETE' then return old; end if;
-  if new.claim_id is not null and new.anchor_id is not null then
+  -- Whenever an anchor is named, not only when one row names both. Splitting
+  -- the claim and the anchor across two rows is the same citation written
+  -- twice, and it has to be the same refusal.
+  if new.anchor_id is not null then
     select a.claim_id into anchor_claim from public.evidence_anchors a where a.id = new.anchor_id;
-    if anchor_claim is distinct from new.claim_id then
+    if new.claim_id is not null and anchor_claim is distinct from new.claim_id then
+      raise exception 'core_v2: that anchor belongs to another claim — a decision cites a claim through its own source'
+        using errcode = 'check_violation';
+    end if;
+    if new.claim_id is null and new.link = 'supports' and anchor_claim is not null
+       and not exists (select 1 from public.decision_evidence e
+                        where e.decision_id = new.decision_id and e.claim_id = anchor_claim
+                          and e.link = 'supports') then
       raise exception 'core_v2: that anchor belongs to another claim — a decision cites a claim through its own source'
         using errcode = 'check_violation';
     end if;
   end if;
   return new;
+end $$;
+
+-- A critic round and an arbiter round are paid for. The counters exist so the
+-- budget is checked against the record rather than against a worker's memory,
+-- which only works if something actually checks them.
+create or replace function public.core_v2_assert_rounds_within_budget(dis public.disagreements)
+returns void language plpgsql stable as $$
+declare budget jsonb;
+begin
+  select w.budget into budget from public.intelligence_workflows w where w.id = dis.workflow_id;
+  if dis.critic_rounds > coalesce((budget ->> 'maximum_critic_rounds')::int, 2147483647)
+     or dis.arbiter_rounds > coalesce((budget ->> 'maximum_arbiter_rounds')::int, 2147483647) then
+    raise exception 'core_v2: disagreement % has spent its rounds — the workflow allows % critic and % arbiter',
+      dis.id, coalesce(budget ->> 'maximum_critic_rounds', 'any'),
+      coalesce(budget ->> 'maximum_arbiter_rounds', 'any')
+      using errcode = 'check_violation';
+  end if;
+end $$;
+
+create or replace function public.core_v2_guard_disagreement_insert() returns trigger
+language plpgsql as $$
+begin
+  perform public.core_v2_assert_rounds_within_budget(new);
+  return new;
+end $$;
+
+-- A resolved disagreement is the record of what was settled and between which
+-- readings. It is superseded, not removed.
+create or replace function public.core_v2_guard_disagreement_delete() returns trigger
+language plpgsql as $$
+begin
+  if old.state in ('resolved','superseded') then
+    raise exception 'core_v2: disagreement % is % — it stays in the record', old.id, old.state
+      using errcode = 'check_violation';
+  end if;
+  return old;
 end $$;
 
 create or replace function public.core_v2_guard_disagreement() returns trigger
@@ -1372,6 +1539,7 @@ begin
     raise exception 'core_v2: the rounds of disagreement % do not decrease', old.id
       using errcode = 'check_violation';
   end if;
+  perform public.core_v2_assert_rounds_within_budget(new);
   if old.state in ('resolved','superseded') then
     moved := public.core_v2_frozen_except(to_jsonb(old), to_jsonb(new), array['state','updated_at']);
     if moved is not null then
@@ -1392,7 +1560,9 @@ declare
   dis public.disagreements;
   claim public.evidence_claims;
 begin
-  select * into dis from public.disagreements where id = row_link.disagreement_id;
+  -- `for share`: settling the disagreement and adding a claim to it are two
+  -- writers of two different rows, and only a lock makes them one story.
+  select * into dis from public.disagreements where id = row_link.disagreement_id for share;
   if found and dis.state in ('resolved','superseded') then
     raise exception 'core_v2: disagreement % is % — the claims it was settled between are the record',
       dis.id, dis.state using errcode = 'check_violation';
@@ -1414,6 +1584,51 @@ language plpgsql as $$
 begin
   raise exception 'core_v2: a follow-up of disagreement % is append-only — a round that happened stays', old.disagreement_id
     using errcode = 'check_violation';
+end $$;
+
+-- And a round that has not been paid for does not happen at all.
+create or replace function public.core_v2_guard_follow_up_insert() returns trigger
+language plpgsql as $$
+declare budget jsonb;
+begin
+  select w.budget into budget
+    from public.disagreements d join public.intelligence_workflows w on w.id = d.workflow_id
+   where d.id = new.disagreement_id;
+  if new.round > coalesce((budget ->> 'maximum_critic_rounds')::int, 2147483647) then
+    raise exception 'core_v2: disagreement % has spent its rounds — the workflow allows % critic and % arbiter',
+      new.disagreement_id, coalesce(budget ->> 'maximum_critic_rounds', 'any'),
+      coalesce(budget ->> 'maximum_arbiter_rounds', 'any')
+      using errcode = 'check_violation';
+  end if;
+  return new;
+end $$;
+
+-- The answer a person read. Editing it is refused above; removing it would be
+-- the same erasure with a shorter statement.
+create or replace function public.core_v2_guard_decision_delete() returns trigger
+language plpgsql as $$
+begin
+  if old.status in ('machine_decided','human_decided','superseded')
+     or exists (select 1 from public.disagreements d where d.resolution_decision_id = old.id) then
+    raise exception 'core_v2: decision % is part of the record — it is superseded, not deleted', old.id
+      using errcode = 'check_violation';
+  end if;
+  return old;
+end $$;
+
+-- A verdict answers the claims its task was handed. A packet cannot quietly
+-- widen on the way out; an answer cannot quietly widen on the way back.
+create or replace function public.core_v2_guard_assessment() returns trigger
+language plpgsql as $$
+begin
+  if new.task_id is not null
+     and exists (select 1 from public.task_target_claims t where t.task_id = new.task_id)
+     and not exists (select 1 from public.task_target_claims t
+                      where t.task_id = new.task_id and t.claim_id = new.claim_id) then
+    raise exception 'core_v2: task % was not asked about claim % — a verdict does not widen the packet',
+      new.task_id, new.claim_id using errcode = 'check_violation';
+  end if;
+  return new;
 end $$;
 
 create or replace function public.core_v2_guard_decision() returns trigger
@@ -1489,15 +1704,30 @@ create trigger core_v2_decision_evidence_guard before insert or update or delete
 drop trigger if exists core_v2_disagreement_guard on public.disagreements;
 create trigger core_v2_disagreement_guard before update on public.disagreements
   for each row execute function public.core_v2_guard_disagreement();
+drop trigger if exists core_v2_disagreement_insert_guard on public.disagreements;
+create trigger core_v2_disagreement_insert_guard before insert on public.disagreements
+  for each row execute function public.core_v2_guard_disagreement_insert();
+drop trigger if exists core_v2_disagreement_delete_guard on public.disagreements;
+create trigger core_v2_disagreement_delete_guard before delete on public.disagreements
+  for each row execute function public.core_v2_guard_disagreement_delete();
 drop trigger if exists core_v2_disagreement_claims_guard on public.disagreement_claims;
 create trigger core_v2_disagreement_claims_guard before insert or update or delete on public.disagreement_claims
   for each row execute function public.core_v2_guard_disagreement_claims();
 drop trigger if exists core_v2_follow_up_guard on public.disagreement_follow_ups;
 create trigger core_v2_follow_up_guard before update or delete on public.disagreement_follow_ups
   for each row execute function public.core_v2_guard_follow_up();
+drop trigger if exists core_v2_follow_up_insert_guard on public.disagreement_follow_ups;
+create trigger core_v2_follow_up_insert_guard before insert on public.disagreement_follow_ups
+  for each row execute function public.core_v2_guard_follow_up_insert();
 drop trigger if exists core_v2_decision_guard on public.decisions;
 create trigger core_v2_decision_guard before update on public.decisions
   for each row execute function public.core_v2_guard_decision();
+drop trigger if exists core_v2_decision_delete_guard on public.decisions;
+create trigger core_v2_decision_delete_guard before delete on public.decisions
+  for each row execute function public.core_v2_guard_decision_delete();
+drop trigger if exists core_v2_assessment_guard on public.claim_assessments;
+create trigger core_v2_assessment_guard before insert or update on public.claim_assessments
+  for each row execute function public.core_v2_guard_assessment();
 drop trigger if exists core_v2_action_touch on public.decision_actions;
 create trigger core_v2_action_touch before update on public.decision_actions
   for each row execute function public.core_v2_touch();
@@ -1524,9 +1754,58 @@ begin
       using errcode = 'check_violation';
   end if;
   -- A claim parsed out of a result that ran out of room may be shown. It
-  -- cannot be accepted until something complete verifies it.
-  if claim.status = 'accepted' and claim.incomplete_source_attempt then
+  -- cannot be accepted until something complete verifies it. The flag the
+  -- writer set is one way to know that; the attempt the claim itself names is
+  -- the other, and it is the one nobody has to remember to set.
+  if claim.status = 'accepted'
+     and (claim.incomplete_source_attempt
+          or exists (select 1 from public.agent_attempts a
+                      where a.id = claim.attempt_id and a.state = 'output_limited')) then
     raise exception 'core_v2: claim % came from an attempt that was cut short — it needs a complete verification before acceptance', claim.id
+      using errcode = 'check_violation';
+  end if;
+
+  -- A person's own record is a real anchor — for what a person reported. Under
+  -- a machine's reading it is a sentence the machine wrote about itself, and
+  -- the chain stops there instead of reaching a source.
+  if claim.status = 'accepted'
+     and claim.observation_basis <> 'reported'
+     and not exists (select 1 from public.evidence_anchors a
+                      where a.claim_id = claim.id and a.source_kind <> 'human_record') then
+    raise exception 'core_v2: claim % is accepted on a person''s record but was not reported by a person', claim.id
+      using errcode = 'check_violation';
+  end if;
+
+  -- Agreement is not proof. A machine reading becomes accepted on a verdict
+  -- from a different executor domain, on a deterministic rule, or on a person
+  -- — never on a verdict from its own domain, and never on its own.
+  if claim.status = 'accepted' and claim.independence_domain is not null
+     and not exists (
+       select 1 from public.claim_assessments s
+         join public.agent_attempts a on a.id = s.attempt_id
+        where s.claim_id = claim.id and s.assessment = 'supports'
+          and a.independence_domain is distinct from claim.independence_domain)
+     and not exists (
+       select 1 from public.decision_evidence e
+         join public.decisions d on d.id = e.decision_id
+        where e.claim_id = claim.id and e.link = 'supports'
+          and d.authority in ('deterministic_rule','human'))
+     -- The third way, and the only one an adjudicator has: a correction. When
+     -- the readers all read wrong, what stands is not the arbiter's opinion
+     -- but the value a reviewer read off the reopened source, and the decision
+     -- that accepts it must cite that reviewer's own anchor. An adjudication
+     -- resting on nothing but the readings it is settling accepts nothing.
+     and not exists (
+       select 1 from public.decision_evidence supports
+         join public.decisions d on d.id = supports.decision_id
+         join public.decision_evidence cited on cited.decision_id = d.id
+         join public.evidence_anchors anchor on anchor.id = cited.anchor_id
+         join public.claim_assessments s on s.id = anchor.assessment_id
+         join public.agent_attempts a on a.id = s.attempt_id
+        where supports.claim_id = claim.id and supports.link = 'supports'
+          and d.authority = 'adjudicator'
+          and a.independence_domain is distinct from claim.independence_domain) then
+    raise exception 'core_v2: claim % is accepted with no independent verification, deterministic rule or person behind it', claim.id
       using errcode = 'check_violation';
   end if;
 end $$;
@@ -1545,7 +1824,21 @@ language plpgsql as $$
 declare claim public.evidence_claims;
 begin
   select * into claim from public.evidence_claims
-   where id = case when TG_OP = 'DELETE' then old.claim_id else new.claim_id end;
+   where id = case when TG_OP = 'DELETE' then old.claim_id else new.claim_id end
+   for share;
+  if found then perform public.core_v2_assert_claim_anchored(claim); end if;
+  return null;
+end $$;
+
+-- The verdict an acceptance rests on is part of the record too: pulling it out
+-- afterwards would leave the claim standing on nothing.
+create or replace function public.core_v2_recheck_claim_of_assessment() returns trigger
+language plpgsql as $$
+declare claim public.evidence_claims;
+begin
+  select * into claim from public.evidence_claims
+   where id = case when TG_OP = 'DELETE' then old.claim_id else new.claim_id end
+   for share;
   if found then perform public.core_v2_assert_claim_anchored(claim); end if;
   return null;
 end $$;
@@ -1565,8 +1858,13 @@ begin
     return null;
   end if;
   -- A supersession is administrative: it records that a later reading replaced
-  -- an earlier one, and the evidence lives on the decision it replaces.
+  -- an earlier one, and the evidence lives on the decision it replaces — which
+  -- only holds if it says which decision that is.
   if decided.decision_type = 'supersede' then
+    if decided.supersedes_decision_id is null then
+      raise exception 'core_v2: decision % supersedes nothing — a supersession names the decision it replaces', decided.id
+        using errcode = 'check_violation';
+    end if;
     return null;
   end if;
 
@@ -1600,10 +1898,14 @@ begin
     return null;
   end if;
 
-  select count(*) into supporting
-    from public.decision_evidence e
-    join public.evidence_claims c on c.id = e.claim_id
-   where e.decision_id = decided.id and e.link = 'supports' and c.status = 'accepted';
+  -- `for share` on the claims counted: superseding one of them and deciding
+  -- this decision are two transactions writing two different rows, and without
+  -- the lock each reads a world in which the other never happened.
+  select count(*) into supporting from (
+    select 1 from public.decision_evidence e
+      join public.evidence_claims c on c.id = e.claim_id
+     where e.decision_id = decided.id and e.link = 'supports' and c.status = 'accepted'
+     for share of c) s;
   if supporting = 0 then
     raise exception 'core_v2: decision % is decided with no accepted claim supporting it', decided.id
       using errcode = 'check_violation';
@@ -1615,8 +1917,17 @@ create or replace function public.core_v2_check_decision_evidence_for(decided pu
 returns void language plpgsql stable as $$
 declare supporting integer;
 begin
-  if decided.status not in ('machine_decided','human_decided')
-     or decided.decision_type in ('supersede','reject_all') then
+  if decided.status not in ('machine_decided','human_decided') then
+    return;
+  end if;
+  if decided.decision_type = 'supersede' then
+    if decided.supersedes_decision_id is null then
+      raise exception 'core_v2: decision % supersedes nothing — a supersession names the decision it replaces', decided.id
+        using errcode = 'check_violation';
+    end if;
+    return;
+  end if;
+  if decided.decision_type = 'reject_all' then
     return;
   end if;
   select count(*) into supporting
@@ -1635,7 +1946,7 @@ declare
   target uuid := case when TG_OP = 'DELETE' then old.decision_id else new.decision_id end;
   probe public.decisions;
 begin
-  select * into probe from public.decisions where id = target;
+  select * into probe from public.decisions where id = target for share;
   if found then perform public.core_v2_check_decision_evidence_for(probe); end if;
   return null;
 end $$;
@@ -1658,10 +1969,16 @@ begin
     join public.decisions d on d.id = e.decision_id
    where e.claim_id = claim.id and e.link = 'supports'
      and d.status in ('machine_decided','human_decided')
-   limit 1;
+   limit 1 for share of d;
   if standing is not null then
     raise exception 'core_v2: claim % was superseded while decision % still rests on it — supersede the decision in the same breath',
       claim.id, standing using errcode = 'check_violation';
+  end if;
+  -- And supersession is a replacement, not a disappearance: something has to
+  -- be the later reading, or the word is a deletion the delete guard refuses.
+  if not exists (select 1 from public.evidence_claims r where r.supersedes_claim_id = claim.id) then
+    raise exception 'core_v2: claim % is superseded by nothing — supersession names the reading that replaces it', claim.id
+      using errcode = 'check_violation';
   end if;
   return null;
 end $$;
@@ -1677,6 +1994,12 @@ create constraint trigger core_v2_claim_supersession_check
   after update on public.evidence_claims
   deferrable initially deferred
   for each row execute function public.core_v2_check_superseded_claim_decisions();
+
+drop trigger if exists core_v2_assessment_removal_check on public.claim_assessments;
+create constraint trigger core_v2_assessment_removal_check
+  after insert or update or delete on public.claim_assessments
+  deferrable initially deferred
+  for each row execute function public.core_v2_recheck_claim_of_assessment();
 
 drop trigger if exists core_v2_anchor_removal_check on public.evidence_anchors;
 create constraint trigger core_v2_anchor_removal_check
@@ -1744,10 +2067,19 @@ create trigger core_v2_claim_supersession_audit after update on public.evidence_
 -- place and the guards above are never routed around. The lease, heartbeat and
 -- submission moves are each one statement, because two workers racing for one
 -- task must be settled by the row lock, not by whichever read its state first.
+--
+-- Each takes the state the caller believes the record is in. Say it and the
+-- move is compare-and-set: a worker that read the row a moment ago, and acts on
+-- a reading somebody else has since replaced, is told so instead of marching
+-- the record on from a state it never saw.
+drop function if exists public.core_v2_workflow_transition(uuid, text, text, text);
 create or replace function public.core_v2_workflow_transition(
-  p_workflow_id uuid, p_to_state text, p_error_code text default null, p_error_message text default null
+  p_workflow_id uuid, p_to_state text, p_error_code text default null, p_error_message text default null,
+  p_from text default null
 ) returns public.intelligence_workflows language plpgsql security definer set search_path = public as $$
-declare row public.intelligence_workflows;
+declare
+  row public.intelligence_workflows;
+  actual text;
 begin
   update public.intelligence_workflows
      set state = p_to_state,
@@ -1755,31 +2087,47 @@ begin
          error_message = coalesce(p_error_message, error_message),
          started_at = case when p_to_state = 'planning' and started_at is null then now() else started_at end,
          finished_at = case when p_to_state in ('completed','partial','failed','cancelled') then now() else finished_at end
-   where id = p_workflow_id
+   where id = p_workflow_id and (p_from is null or state = p_from)
   returning * into row;
-  if not found then raise exception 'core_v2: no workflow %', p_workflow_id; end if;
+  if not found then
+    select w.state into actual from public.intelligence_workflows w where w.id = p_workflow_id;
+    if actual is null then raise exception 'core_v2: no workflow %', p_workflow_id; end if;
+    raise exception 'core_v2: workflow % is %, not % — the move was made from a stale reading',
+      p_workflow_id, actual, p_from using errcode = 'check_violation';
+  end if;
   return row;
 end $$;
 
+drop function if exists public.core_v2_task_transition(uuid, text, text);
 create or replace function public.core_v2_task_transition(
-  p_task_id uuid, p_to_state text, p_terminal_reason text default null
+  p_task_id uuid, p_to_state text, p_terminal_reason text default null, p_from text default null
 ) returns public.workflow_tasks language plpgsql security definer set search_path = public as $$
-declare row public.workflow_tasks;
+declare
+  row public.workflow_tasks;
+  actual text;
 begin
   update public.workflow_tasks
      set state = p_to_state,
          terminal_reason = coalesce(p_terminal_reason, terminal_reason)
-   where id = p_task_id
+   where id = p_task_id and (p_from is null or state = p_from)
   returning * into row;
-  if not found then raise exception 'core_v2: no task %', p_task_id; end if;
+  if not found then
+    select t.state into actual from public.workflow_tasks t where t.id = p_task_id;
+    if actual is null then raise exception 'core_v2: no task %', p_task_id; end if;
+    raise exception 'core_v2: task % is %, not % — the move was made from a stale reading',
+      p_task_id, actual, p_from using errcode = 'check_violation';
+  end if;
   return row;
 end $$;
 
+drop function if exists public.core_v2_attempt_transition(uuid, text, text, text, jsonb);
 create or replace function public.core_v2_attempt_transition(
   p_attempt_id uuid, p_to_state text, p_error_code text default null, p_error_message text default null,
-  p_usage jsonb default null
+  p_usage jsonb default null, p_from text default null
 ) returns public.agent_attempts language plpgsql security definer set search_path = public as $$
-declare row public.agent_attempts;
+declare
+  row public.agent_attempts;
+  actual text;
 begin
   update public.agent_attempts
      set state = p_to_state,
@@ -1791,48 +2139,82 @@ begin
          finished_at = case when p_to_state in ('succeeded','failed_known','output_limited','outcome_unknown',
                                                 'rejected_before_submission','cancelled_before_submission')
                             then now() else finished_at end
-   where id = p_attempt_id
+   where id = p_attempt_id and (p_from is null or state = p_from)
   returning * into row;
-  if not found then raise exception 'core_v2: no attempt %', p_attempt_id; end if;
+  if not found then
+    select a.state into actual from public.agent_attempts a where a.id = p_attempt_id;
+    if actual is null then raise exception 'core_v2: no attempt %', p_attempt_id; end if;
+    raise exception 'core_v2: attempt % is %, not % — the move was made from a stale reading',
+      p_attempt_id, actual, p_from using errcode = 'check_violation';
+  end if;
   return row;
 end $$;
 
-create or replace function public.core_v2_claim_transition(p_claim_id uuid, p_to_status text)
-returns public.evidence_claims language plpgsql security definer set search_path = public as $$
-declare row public.evidence_claims;
+drop function if exists public.core_v2_claim_transition(uuid, text);
+create or replace function public.core_v2_claim_transition(
+  p_claim_id uuid, p_to_status text, p_from text default null
+) returns public.evidence_claims language plpgsql security definer set search_path = public as $$
+declare
+  row public.evidence_claims;
+  actual text;
 begin
-  update public.evidence_claims set status = p_to_status where id = p_claim_id returning * into row;
-  if not found then raise exception 'core_v2: no claim %', p_claim_id; end if;
+  update public.evidence_claims set status = p_to_status
+   where id = p_claim_id and (p_from is null or status = p_from)
+  returning * into row;
+  if not found then
+    select c.status into actual from public.evidence_claims c where c.id = p_claim_id;
+    if actual is null then raise exception 'core_v2: no claim %', p_claim_id; end if;
+    raise exception 'core_v2: claim % is %, not % — the move was made from a stale reading',
+      p_claim_id, actual, p_from using errcode = 'check_violation';
+  end if;
   return row;
 end $$;
 
+drop function if exists public.core_v2_disagreement_transition(uuid, text, uuid);
 create or replace function public.core_v2_disagreement_transition(
-  p_disagreement_id uuid, p_to_state text, p_resolution_decision_id uuid default null
+  p_disagreement_id uuid, p_to_state text, p_resolution_decision_id uuid default null,
+  p_from text default null
 ) returns public.disagreements language plpgsql security definer set search_path = public as $$
-declare row public.disagreements;
+declare
+  row public.disagreements;
+  actual text;
 begin
   update public.disagreements
      set state = p_to_state,
          resolution_decision_id = coalesce(p_resolution_decision_id, resolution_decision_id)
-   where id = p_disagreement_id
+   where id = p_disagreement_id and (p_from is null or state = p_from)
   returning * into row;
-  if not found then raise exception 'core_v2: no disagreement %', p_disagreement_id; end if;
+  if not found then
+    select d.state into actual from public.disagreements d where d.id = p_disagreement_id;
+    if actual is null then raise exception 'core_v2: no disagreement %', p_disagreement_id; end if;
+    raise exception 'core_v2: disagreement % is %, not % — the move was made from a stale reading',
+      p_disagreement_id, actual, p_from using errcode = 'check_violation';
+  end if;
   return row;
 end $$;
 
+drop function if exists public.core_v2_decision_transition(uuid, text, uuid);
 create or replace function public.core_v2_decision_transition(
-  p_decision_id uuid, p_to_status text, p_decided_by_attempt_id uuid default null
+  p_decision_id uuid, p_to_status text, p_decided_by_attempt_id uuid default null,
+  p_from text default null
 ) returns public.decisions language plpgsql security definer set search_path = public as $$
-declare row public.decisions;
+declare
+  row public.decisions;
+  actual text;
 begin
   update public.decisions
      set status = p_to_status,
          decided_by_attempt_id = coalesce(p_decided_by_attempt_id, decided_by_attempt_id),
          effective_at = case when p_to_status in ('machine_decided','human_decided') and effective_at is null
                              then now() else effective_at end
-   where id = p_decision_id
+   where id = p_decision_id and (p_from is null or status = p_from)
   returning * into row;
-  if not found then raise exception 'core_v2: no decision %', p_decision_id; end if;
+  if not found then
+    select d.status into actual from public.decisions d where d.id = p_decision_id;
+    if actual is null then raise exception 'core_v2: no decision %', p_decision_id; end if;
+    raise exception 'core_v2: decision % is %, not % — the move was made from a stale reading',
+      p_decision_id, actual, p_from using errcode = 'check_violation';
+  end if;
   return row;
 end $$;
 
@@ -1932,12 +2314,16 @@ begin
     end if;
   end if;
 
+  -- Everything above has been proved; the marker says so to the row guard,
+  -- which refuses this move to anybody who has not proved it.
+  perform set_config('core_v2.submitting_attempt', p_attempt_id::text, true);
   update public.agent_attempts
      set state = 'submitted',
          submitted_at = now(),
          lease_token = p_lease_token
    where id = p_attempt_id
   returning * into row;
+  perform set_config('core_v2.submitting_attempt', '', true);
   return row;
 end $$;
 
@@ -2315,9 +2701,13 @@ begin
 
   select jsonb_agg(dc.claim_id order by dc.position, dc.claim_id) into kept
     from public.disagreement_claims dc where dc.disagreement_id = dis.id;
+  -- The template a correction is written from, and the set a rejection covers,
+  -- are the claims that actually competed. A reading carried for context, or a
+  -- counterpart that was never there, did not disagree with anything.
   select c.* into template from public.disagreement_claims dc
     join public.evidence_claims c on c.id = dc.claim_id
-   where dc.disagreement_id = dis.id order by dc.position, dc.claim_id limit 1;
+   where dc.disagreement_id = dis.id and dc.role = 'candidate'
+   order by dc.position, dc.claim_id limit 1;
 
   -- Asking for more evidence settles nothing, and says so. It moves the
   -- disagreement to where a person can see it and writes its own event; it never
@@ -2333,7 +2723,8 @@ begin
   if p_outcome = 'accept_claim' then
     if p_accepted_claim_id is null
        or not exists (select 1 from public.disagreement_claims dc
-                       where dc.disagreement_id = dis.id and dc.claim_id = p_accepted_claim_id) then
+                       where dc.disagreement_id = dis.id and dc.claim_id = p_accepted_claim_id
+                         and dc.role = 'candidate') then
       raise exception 'core_v2: the accepted claim must be one of the claims that disagreed';
     end if;
     winner := public.core_v2_claim_transition(p_accepted_claim_id, 'accepted');
@@ -2396,7 +2787,8 @@ begin
   -- and still there to read.
   for loser in
     select dc.claim_id from public.disagreement_claims dc
-     where dc.disagreement_id = dis.id and dc.claim_id is distinct from winner.id
+     where dc.disagreement_id = dis.id and dc.role = 'candidate'
+       and dc.claim_id is distinct from winner.id
      order by dc.position, dc.claim_id
   loop
     perform public.core_v2_claim_transition(loser, 'rejected');
@@ -2457,24 +2849,24 @@ end $$;
 
 -- The machine's own moves belong to the machine. A signed-out visitor has no
 -- path to any of them, and no path to starting work either.
-revoke all on function public.core_v2_workflow_transition(uuid, text, text, text) from public, anon, authenticated;
-revoke all on function public.core_v2_task_transition(uuid, text, text) from public, anon, authenticated;
-revoke all on function public.core_v2_attempt_transition(uuid, text, text, text, jsonb) from public, anon, authenticated;
-revoke all on function public.core_v2_claim_transition(uuid, text) from public, anon, authenticated;
-revoke all on function public.core_v2_disagreement_transition(uuid, text, uuid) from public, anon, authenticated;
-revoke all on function public.core_v2_decision_transition(uuid, text, uuid) from public, anon, authenticated;
+revoke all on function public.core_v2_workflow_transition(uuid, text, text, text, text) from public, anon, authenticated;
+revoke all on function public.core_v2_task_transition(uuid, text, text, text) from public, anon, authenticated;
+revoke all on function public.core_v2_attempt_transition(uuid, text, text, text, jsonb, text) from public, anon, authenticated;
+revoke all on function public.core_v2_claim_transition(uuid, text, text) from public, anon, authenticated;
+revoke all on function public.core_v2_disagreement_transition(uuid, text, uuid, text) from public, anon, authenticated;
+revoke all on function public.core_v2_decision_transition(uuid, text, uuid, text) from public, anon, authenticated;
 revoke all on function public.core_v2_lease_task(uuid, text, integer) from public, anon, authenticated;
 revoke all on function public.core_v2_heartbeat_lease(uuid, uuid, integer) from public, anon, authenticated;
 revoke all on function public.core_v2_submit_attempt(uuid, uuid) from public, anon, authenticated;
 revoke all on function public.core_v2_claim_outbox(uuid, text) from public, anon, authenticated;
 revoke all on function public.core_v2_acknowledge_outbox(uuid) from public, anon, authenticated;
 revoke all on function public.core_v2_audit(uuid, text, text, text, jsonb) from public, anon, authenticated;
-grant execute on function public.core_v2_workflow_transition(uuid, text, text, text) to service_role;
-grant execute on function public.core_v2_task_transition(uuid, text, text) to service_role;
-grant execute on function public.core_v2_attempt_transition(uuid, text, text, text, jsonb) to service_role;
-grant execute on function public.core_v2_claim_transition(uuid, text) to service_role;
-grant execute on function public.core_v2_disagreement_transition(uuid, text, uuid) to service_role;
-grant execute on function public.core_v2_decision_transition(uuid, text, uuid) to service_role;
+grant execute on function public.core_v2_workflow_transition(uuid, text, text, text, text) to service_role;
+grant execute on function public.core_v2_task_transition(uuid, text, text, text) to service_role;
+grant execute on function public.core_v2_attempt_transition(uuid, text, text, text, jsonb, text) to service_role;
+grant execute on function public.core_v2_claim_transition(uuid, text, text) to service_role;
+grant execute on function public.core_v2_disagreement_transition(uuid, text, uuid, text) to service_role;
+grant execute on function public.core_v2_decision_transition(uuid, text, uuid, text) to service_role;
 grant execute on function public.core_v2_lease_task(uuid, text, integer) to service_role;
 grant execute on function public.core_v2_heartbeat_lease(uuid, uuid, integer) to service_role;
 grant execute on function public.core_v2_submit_attempt(uuid, uuid) to service_role;

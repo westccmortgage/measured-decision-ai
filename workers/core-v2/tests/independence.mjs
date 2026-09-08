@@ -450,13 +450,13 @@ t.section("(h) a critic is never routed to a domain that authored what it judges
     const readers = await w2.repo.independenceDomainsForSubject(w2.wf, subjectOf(c));
     return { critic: c, submitted: a ?? null, tookPart: a ? readers.includes(a.independenceDomain) : false };
   }));
-  t.check("KERNEL DEFECT: both critics shared: no verify_claim attempt is submitted in a domain that authored one of the corroborated readings it judges",
+  t.check("both critics shared: no verify_claim attempt is submitted in a domain that authored one of the corroborated readings it judges",
     critics2.length > 0 && criticDomainsUsed.every((x) => !x.tookPart),
     criticDomainsUsed.map((x) => `${x.submitted ? x.submitted.executorFamily : "none"}:${x.tookPart ? "took part" : "independent"}`).join(", "));
   const blind2 = (await w2.repo.listClaims({ workflowId: w2.wf })).filter((c) => c.independenceGroup !== null);
   const dis2 = await w2.repo.listDisagreements(w2.wf);
   const dec2 = await w2.repo.listDecisions(w2.wf);
-  t.check("KERNEL DEFECT: both critics shared: the corroborated claims are not accepted and each subject is held for a person",
+  t.check("both critics shared: the corroborated claims are not accepted and each subject is held for a person",
     blind2.length > 0 && blind2.every((c) => c.status !== "accepted") && every(critics2, (c) => holdOf(dis2, dec2, c.subjectKey).dis?.state === "needs_human" || holdOf(dis2, dec2, subjectOf(c)).dis?.state === "needs_human"),
     `claims ${[...new Set(blind2.map((c) => c.status))].join("/")}; workflow ${driven2.report.workflow.state}; holds ${dis2.filter((d) => d.state === "needs_human").length}`);
 }

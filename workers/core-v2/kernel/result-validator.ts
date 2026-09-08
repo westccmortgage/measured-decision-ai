@@ -245,9 +245,9 @@ export function validateEnvelope(packet: WorkPacket, envelope: AgentResultEnvelo
 type Reach = { sources: Set<string>; segments: Set<string> };
 
 /* What an envelope may point at: the sources and segments in the packet —
-   and, for a role that works from the record rather than from sheets, the
-   places the claims it was handed point at. A blind reader cites nothing but
-   what it was handed. */
+   and, for a role that works from the record rather than from the source
+   itself, the places the claims it was handed point at. A blind reader cites
+   nothing but what it was handed. */
 function anchorReach(packet: WorkPacket, lookup: Lookup): Reach {
   const sources = new Set<string>();
   const segments = new Set<string>();

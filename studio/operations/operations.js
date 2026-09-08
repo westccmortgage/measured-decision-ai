@@ -96,7 +96,12 @@ async function load() {
 function render() {
   const counts={ toSend:state.tasks.filter(t=>t.status==="ready"&&!state.assignments.some(a=>a.capture_task_id===t.id&&a.status!=="revoked")).length, field:0, check:0, retake:0, review:0, completed:0 };
   state.assignments.forEach(a=>{ if(["sent","opened","in_progress","uploading"].includes(a.status)) counts.field++; else if(a.status==="ai_check") counts.check++; else if(a.status==="retake") counts.retake++; else if(a.status==="ready_for_review") counts.review++; else if(a.status==="completed") counts.completed++; });
-  const metrics=[["Ready to send",counts.toSend,"Approved tasks"],["In the field",counts.field,"Worker active"],["AI check",counts.check,"Automatic review"],["Retake",counts.retake,"Needs action"],["Human review",counts.review,"Decision waiting"],["Complete",counts.completed,"Verified tasks"]];
+  /* Six zeros read as "nothing is happening". Before a roadmap exists nothing
+     can be happening yet, and the tiles say that instead of counting to zero:
+     absent coverage is not evidence of none. */
+  const roadmap=state.tasks.length>0||state.assignments.length>0;
+  const tile=(count,copy)=>roadmap?[count,copy]:["—","No roadmap yet"];
+  const metrics=[["Ready to send",...tile(counts.toSend,"Approved tasks")],["In the field",...tile(counts.field,"Worker active")],["AI check",...tile(counts.check,"Automatic review")],["Retake",...tile(counts.retake,"Needs action")],["Human review",...tile(counts.review,"Decision waiting")],["Complete",...tile(counts.completed,"Verified tasks")]];
   $("#metrics").innerHTML=metrics.map(([name,count,copy])=>`<article class="metric"><span>${name}</span><strong>${count}</strong><small>${copy}</small></article>`).join("");
   renderCaptureSessions();
   const nextStep=$("#next-step");
@@ -120,9 +125,22 @@ function render() {
     const delivery=a.email_delivery_state==="sent"?"Email provider accepted":a.email_delivery_state==="failed"?"Email failed — use private link":"Private link only";
     const retry=unknown?`<button class="button secondary qc-retry" data-qc-retry="${a.id}" title="Confirm before the automated check runs again">Run check again</button>`:"";
     return `<article class="assignment"><div><h3>${escapeHtml(req?.title||a.instructions_snapshot?.title||"Field capture")}</h3><p>${escapeHtml(a.instructions_snapshot?.location?.name||"Project-wide")}</p></div><div class="cell"><span>Worker</span><strong>${escapeHtml(a.worker_name)}</strong><small>${escapeHtml(a.worker_email)}</small></div><div class="cell"><span>Due</span><strong>${escapeHtml(shortDate(a.due_at))}</strong><small title="${escapeHtml(a.email_delivery_error||"")}">${escapeHtml(delivery)}</small></div><div class="qc${unknown?" unknown":""}"><strong>${escapeHtml(qc?label(qc.state):"Waiting")}</strong>${escapeHtml(summary)}${retry}</div><div class="cell"><span class="status ${escapeHtml(a.status)}">${escapeHtml(label(a.status))}</span>${reviewable?`<button class="button secondary" data-review="${a.id}">Review</button>`:""}</div></article>`;
-  }).join("") : `<div class="empty"><h3>${counts.toSend?"The roadmap is ready; no task has been sent yet.":"No assignments in this view."}</h3><p>${counts.toSend?"Use the Next action above to send the first task.":"New field work and completed reviews will appear here."}</p></div>`;
+  }).join("") : emptyQueue(counts, filter, roadmap);
+  $("#empty-show-all")?.addEventListener("click",()=>{ $("#status-filter").value="all"; render(); });
   document.querySelectorAll("[data-review]").forEach(button=>button.addEventListener("click",()=>openReview(button.dataset.review)));
   document.querySelectorAll("[data-qc-retry]").forEach(button=>button.addEventListener("click",()=>retryQualityCheck(button.dataset.qcRetry)));
+}
+
+/* An empty queue still says what to do next. Three different emptinesses,
+   three different answers: a roadmap with a task waiting to be sent, a
+   roadmap with nothing in this particular filter, and a project with no
+   roadmap at all — which is the one that used to offer nothing but Refresh.
+   The assignments come from the plan set, so that is where the answer is. */
+function emptyQueue(counts, filter, roadmap) {
+  if(counts.toSend) return `<div class="empty"><h3>The roadmap is ready; no task has been sent yet.</h3><p>Use the Next action above to send the first task.</p></div>`;
+  if(roadmap && filter!=="all") return `<div class="empty"><h3>Nothing in this view.</h3><p>Other field work may be under way. <button type="button" class="button secondary" id="empty-show-all">Show every assignment</button></p></div>`;
+  if(roadmap) return `<div class="empty"><h3>No assignments yet.</h3><p>New field work and completed reviews will appear here. <a class="button secondary" href="${escapeHtml(propertyUrl())}">Open the project plans →</a></p></div>`;
+  return `<div class="empty"><h3>No field work has been planned yet.</h3><p>Field tasks come from the plan set: the plans are read, the required captures are worked out, and approved tasks arrive here to be sent. <a class="button secondary" href="${escapeHtml(propertyUrl())}">Open the project plans →</a></p></div>`;
 }
 
 /* A reviewer repeats a check whose outcome nobody could establish.

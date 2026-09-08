@@ -1390,13 +1390,38 @@ function updateMetrics() {
     0,
   );
   const confirmed = rooms.filter((room) => room.status === "confirmed").length;
-  $("#metric-rooms").textContent = rooms.length;
-  $("#metric-evidence").textContent = evidenceCount;
-  $("#metric-evidence-copy").textContent =
-    `${evidenceCount} evidence item${evidenceCount === 1 ? "" : "s"}`;
-  $("#metric-review").textContent = `${confirmed}/${rooms.length}`;
-  $("#metric-review-copy").textContent =
-    `${rooms.length - confirmed} require verification`;
+  const documented = rooms.filter((room) => room.evidence.length > 0).length;
+  /* An empty record says it is empty. A zero where a count belongs reads as
+     "nothing is happening"; an em-dash with a sentence reads as "nothing has
+     been recorded yet", which is what is true. */
+  $("#metric-rooms").textContent = rooms.length || "—";
+  $("#metric-rooms-copy").textContent = rooms.length
+    ? `${documented} documented`
+    : "No rooms yet";
+  $("#metric-evidence").textContent = evidenceCount || "—";
+  $("#metric-evidence-copy").textContent = evidenceCount
+    ? `${evidenceCount} evidence item${evidenceCount === 1 ? "" : "s"}`
+    : "No evidence yet";
+  $("#metric-review").textContent = rooms.length
+    ? `${confirmed}/${rooms.length}`
+    : "—";
+  $("#metric-review-copy").textContent = rooms.length
+    ? `${rooms.length - confirmed} require verification`
+    : "Nothing to verify yet";
+  /* The last capture is read off the evidence itself, so the tile can only
+     ever say a date the record holds. */
+  const captured = rooms
+    .flatMap((room) => room.evidence)
+    .map((item) => item.capturedAt)
+    .filter(Boolean)
+    .sort();
+  const latest = captured[captured.length - 1] || null;
+  $("#metric-last-capture").textContent = latest
+    ? formatEvidenceDate(latest)
+    : "—";
+  $("#metric-last-capture-copy").textContent = latest
+    ? "Most recent evidence in this record"
+    : "No evidence yet";
   $("#review-nav-count").textContent = rooms.length - confirmed;
 }
 
@@ -3888,10 +3913,16 @@ async function openFileList() {
     renderFileList();
   } catch (error) {
     console.error("project files", error);
-    /* Never an empty box. If the list cannot be read, the reason is the list. */
+    /* Never an empty box, and never a stack trace either. The record refusing
+       to be read says why in words a person can act on, and that sentence is
+       worth showing; a fault in this page says something like "x is not a
+       function", which is for the console. Either way the panel offers the
+       way onward. */
+    const refusal = error && typeof error === "object" && "code" in error && error.message;
     $("#focus-files-list").innerHTML = `<p class="focus-files-empty">${escapeText(
-      error.message || "The file list could not be read.",
-    )}</p>`;
+      refusal || "The file list could not be read just now. Nothing in the record has changed.",
+    )} <button type="button" class="focus-text-button" id="focus-files-retry">Try again</button></p>`;
+    $("#focus-files-retry")?.addEventListener("click", () => { openFileList(); });
   }
 }
 
