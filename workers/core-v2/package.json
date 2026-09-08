@@ -1,0 +1,12 @@
+{
+  "name": "@measured-decision/core-v2-orchestration",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Core V2 agent orchestration engine: bounded assignments, blind readers, comparison, criticism, arbitration. No provider is called from here.",
+  "type": "module",
+  "scripts": {
+    "core-v2:orchestrate": "node --experimental-strip-types --no-warnings cli.ts",
+    "test": "bash tests/run.sh"
+  },
+  "dependencies": {}
+}

@@ -1,0 +1,81 @@
+import { harness, closeNetwork } from "./harness.mjs";
+import { buildTaskGraph, specToRecord } from "../graph-builder.ts";
+import { syntheticManifest } from "../fixtures/synthetic-project.ts";
+import { DEFAULT_POLICY, policyWith } from "../orchestration-policy.ts";
+import { InMemoryOrchestrationRepository } from "../repository.ts";
+import { planFollowUps } from "../follow-up-planner.ts";
+import { simulate } from "../cli.ts";
+
+const t = harness("an agent asks; the orchestrator decides");
+const tripped = closeNetwork();
+const manifest = syntheticManifest();
+const graph = buildTaskGraph(manifest, DEFAULT_POLICY);
+const repo = new InMemoryOrchestrationRepository();
+await repo.createWorkflow({ workflowId: manifest.workflowId, organizationId: "o", propertyId: "p", state: "running", cancelRequested: false, totalUnits: 0, completedUnits: 0, attentionUnits: 0 });
+await repo.planTasks(graph.tasks.map((s) => ({ ...specToRecord(s, manifest.workflowId), dependsOn: s.dependsOn })));
+const locator = await repo.getTask(graph.tasks.find((x) => x.taskType === "locate_symbol_family" && x.subjectKey === "pg_x2/rg_x2_plan/HDR-H" && x.independenceGroup === "reader-a").taskId);
+const request = (over = {}) => ({ actionType: "read_legend", reasonCode: "legend_needed", targetSourceIds: ["rg_x2_legend"], expectedInformation: "what HDR means",
+  parentTaskId: locator.taskId, currentDepth: 0, idempotencyFingerprint: "fp-legend", ...over });
+
+t.section("a permitted request creates one bounded child");
+let plan = await planFollowUps(locator, [request()], manifest, repo, DEFAULT_POLICY);
+t.check("one child task, one level deeper, of the legend reader", plan.children.length === 1 && plan.children[0].depth === 1 && plan.children[0].roleKey === "legend_reader" && plan.children[0].parentTaskId === locator.taskId);
+t.check("the child carries only the legend region", plan.children[0].sourceIds.length === 1 && plan.children[0].sourceIds[0] === "rg_x2_legend");
+const { created, reused } = await repo.createChildTasks(plan.children);
+t.check("the same work already planned is reused rather than created again", created.length === 0 && reused.length === 1, `created ${created.length}, reused ${reused.length}`);
+
+t.section("the same request twice is one task");
+plan = await planFollowUps(locator, [request(), request()], manifest, repo, DEFAULT_POLICY);
+t.check("the second identical request in one envelope is refused as a duplicate", plan.children.length === 1 && plan.refused.length === 1);
+const expand = (fp) => ({ actionType: "expand_region", reasonCode: "cut", targetSourceIds: ["rg_x2_plan"], expectedInformation: "the lower edge", parentTaskId: locator.taskId, currentDepth: 0, idempotencyFingerprint: fp });
+const plan1 = await planFollowUps(locator, [expand("x")], manifest, repo, DEFAULT_POLICY);
+const first = await repo.createChildTasks(plan1.children);
+const plan2 = await planFollowUps(locator, [expand("y")], manifest, repo, DEFAULT_POLICY);
+const second = await repo.createChildTasks(plan2.children);
+t.check("the same expansion asked for later, under another fingerprint, reuses the same child", first.created.length === 1 && second.created.length === 0 && second.reused[0]?.taskId === first.created[0].taskId);
+
+t.section("prohibited actions are refused");
+plan = await planFollowUps(locator, [request({ actionType: "request_disagreement_verification" })], manifest, repo, DEFAULT_POLICY);
+t.check("a locator may not ask for disagreement verification", plan.children.length === 0 && plan.refused.length === 1 && /may not ask/.test(plan.refused[0].reason));
+plan = await planFollowUps(locator, [request({ targetSourceIds: ["rg_y3_notes"] })], manifest, repo, DEFAULT_POLICY);
+t.check("a request to read a region unrelated to the assignment is refused", plan.children.length === 0 && plan.refused.length === 1);
+plan = await planFollowUps(locator, [request({ targetSourceIds: ["rg_nowhere"] })], manifest, repo, DEFAULT_POLICY);
+t.check("a request naming a source outside the manifest is refused", plan.children.length === 0 && plan.refused.length === 1);
+plan = await planFollowUps(locator, [request({ parentTaskId: "someone-else" })], manifest, repo, DEFAULT_POLICY);
+t.check("a request that names another parent is refused", plan.children.length === 0);
+plan = await planFollowUps(locator, [request({ actionType: "read_legend", targetSourceIds: ["rg_x2_sched"] })], manifest, repo, DEFAULT_POLICY);
+t.check("read_legend must name a legend", plan.children.length === 0 && /legend/.test(plan.refused[0].reason));
+const counter = await repo.getTask(graph.tasks.find((x) => x.taskType === "count_instances").taskId);
+plan = await planFollowUps(counter, [{ ...request(), parentTaskId: counter.taskId }], manifest, repo, DEFAULT_POLICY);
+t.check("a code role cannot ask for a follow-up at all", plan.children.length === 0 && plan.refused.length === 1);
+
+t.section("depth stops recursion");
+const deep = { ...locator, depth: DEFAULT_POLICY.maximumFollowUpDepth };
+plan = await planFollowUps(deep, [expand("z")], manifest, repo, DEFAULT_POLICY);
+t.check("a request that would exceed the depth creates no task and escalates to a person", plan.children.length === 0 && plan.escalations.length === 1 && /depth/.test(plan.escalations[0].reason));
+plan = await planFollowUps(locator, [request({ actionType: "request_human_review" })], manifest, repo, DEFAULT_POLICY);
+t.check("a locator may not ask for a person directly — the request is refused", plan.children.length === 0 && plan.refused.length === 1);
+const composer = await repo.getTask(graph.tasks.find((x) => x.taskType === "compose_decision").taskId);
+plan = await planFollowUps(composer, [{ ...request({ actionType: "request_human_review" }), parentTaskId: composer.taskId }], manifest, repo, DEFAULT_POLICY);
+t.check("a composer's request for human review creates no task — it is an escalation", plan.children.length === 0 && plan.escalations.length === 1 && plan.refused.length === 0);
+const tight = policyWith({ maximumChildTasksPerParent: 1 });
+plan = await planFollowUps(locator, [expand("p"), { ...request(), idempotencyFingerprint: "q", targetSourceIds: ["rg_x2_legend"], actionType: "read_related_region" }], manifest, repo, tight);
+t.check("a parent that has used its children escalates the rest", plan.escalations.some((e) => /follow-ups/.test(e.reason)));
+
+t.section("in the simulation");
+const { repo: sim, executors } = await simulate({ quiet: true });
+const children = [...sim.tasks.values()].filter((x) => x.parentTaskId);
+t.check("the run created bounded children — verifiers, arbiters, one legend re-read, one expanded re-read", children.length > 0 && children.every((c) => c.depth >= 1 && c.depth <= DEFAULT_POLICY.maximumFollowUpDepth));
+t.check("no child is deeper than the policy allows", Math.max(...children.map((c) => c.depth)) <= DEFAULT_POLICY.maximumFollowUpDepth);
+t.check("no task depends on itself and no child is its own parent", [...sim.tasks.values()].every((x) => x.parentTaskId !== x.taskId) && sim.dependencies.every((d) => d.taskId !== d.dependsOnTaskId));
+const h3 = [...sim.disagreements.values()].find((d) => d.subjectSignature.subject_key === "HDRHH3");
+t.check("the H-3 dispute needed one expanded re-read and was then settled", h3?.state === "resolved" && h3.criticRounds === 2);
+const expanded = [...sim.tasks.values()].filter((x) => /expanded/.test(x.subjectKey) && x.taskType === "verify_disagreement");
+t.check("that re-read was one bounded child of the first verifier", expanded.length >= 1 && expanded.every((x) => x.depth === 2));
+const n2 = [...sim.disagreements.values()].find((d) => d.subjectSignature.subject_key === "N2");
+t.check("an arbiter that asked for the same evidence twice was stopped and the dispute went to a person", n2?.state === "needs_human" && /same evidence again/.test(n2.needsHumanReason));
+t.check("its arbiter ran twice and no more", n2?.arbiterRounds === 2 && [...sim.tasks.values()].filter((x) => x.taskType === "adjudicate" && x.disagreementId === n2.disagreementId && x.state === "completed").length === 2);
+t.check("the follow-up fingerprint was recorded once, so the repeat could be seen", n2?.followUpFingerprints.length === 1);
+t.check("nothing ran more times than its task count — no agent called itself", executors.invocations.length === [...sim.attempts.values()].length);
+t.check("no network call was attempted", tripped() === 0);
+t.finish();
