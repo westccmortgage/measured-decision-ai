@@ -249,5 +249,42 @@ t.section("a field a domain requires is a field a provider can write");
       .claims[0].value.attributes.category === undefined);
 }
 
+t.section("the shared schema, spoken in each provider's dialect");
+{
+  /* Google's responseSchema is a protobuf message, not JSON Schema: `type` is
+     a single enum there, so a union is rejected — "Proto field is not
+     repeating, cannot start list", 400 in 83 ms, which is what both of this
+     canary's Google calls got. */
+  const built = new GoogleProtocol().buildRequest({
+    model: "gemini-3.1-pro-preview", maximumOutputTokens: 4096, timeoutMs: 1000,
+    apiKey: "not-a-key", configuration: { baseUrl: "https://generativelanguage.googleapis.com" },
+    prompt: { system: "s", user: "u" }, material: [], expectedOutputContract: "c",
+  });
+  const sent = JSON.parse(built.body);
+  const schema = sent.generationConfig.responseSchema;
+  const unions = [];
+  const nullables = [];
+  const additional = [];
+  const walk = (node, path) => {
+    if (Array.isArray(node)) { node.forEach((n, i) => walk(n, `${path}[${i}]`)); return; }
+    if (!node || typeof node !== "object") return;
+    if (Array.isArray(node.type)) unions.push(path);
+    if (node.nullable === true) nullables.push(path);
+    if ("additionalProperties" in node) additional.push(path);
+    for (const [k, v] of Object.entries(node)) walk(v, `${path}.${k}`);
+  };
+  walk(schema, "$");
+  t.check("no type is written as a list, because the field does not repeat",
+    unions.length === 0, unions.join(" "));
+  t.check("the nullable fields are nullable with a flag instead",
+    nullables.length >= 3, `${nullables.length}: ${nullables.slice(0, 3).join(" ")}`);
+  t.check("and additionalProperties, which that message has no field for, is gone",
+    additional.length === 0, additional.join(" "));
+  t.check("a claim's quantity is still a number that may be absent",
+    schema.properties.claims.items.properties.value.properties.quantity.type === "number"
+    && schema.properties.claims.items.properties.value.properties.quantity.nullable === true,
+    JSON.stringify(schema.properties.claims.items.properties.value.properties.quantity));
+}
+
 t.check("nothing in this suite tried to open a socket", tripped() === 0, `guard tripped ${tripped()} times`);
 t.finish();
