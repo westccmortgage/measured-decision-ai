@@ -95,6 +95,27 @@ function misreadOneRow(target) {
   };
 }
 
+/* One row the critic cannot confirm at its anchor.
+ *
+ * Without this the demonstration is misleading by being too tidy: every fact
+ * either gets verified or becomes the disagreement, and "Needs more proof"
+ * stays empty — so the screen never shows the case the whole system exists
+ * for. Two readers agreeing on a value that nothing could confirm is the most
+ * important thing this engine does differently, and a person should see it.
+ *
+ * So the critic withholds support for one reading. It is a mock declining to
+ * confirm, through the same scripts seam the misreading reader uses; the
+ * engine's own rule then does the rest, and the rule is the point: a
+ * corroborated claim with no verification is NOT accepted. */
+function withholdOneVerification() {
+  return (packet, base) => {
+    if (packet.roleKey === "evidence_critic" && Array.isArray(base.assessments) && base.assessments.length > 1) {
+      base.assessments = base.assessments.slice(0, -1);
+    }
+    return base;
+  };
+}
+
 export function newRunId() {
   /* A different seed every time, so "Run again" is a different workflow with
      different ids — never the same run re-rendered. */
@@ -115,7 +136,10 @@ export function createRun(options = {}) {
      entries so the misreading is about real material. */
   const contested = options.contested ?? `entry/${truth.entries[0].id}`;
   const { registry, executors } = mockExecutors(truth, {
-    scripts: { "reader-family-two": misreadOneRow(contested) },
+    scripts: {
+      "reader-family-two": misreadOneRow(contested),
+      "critic-family-one": withholdOneVerification(),
+    },
   });
   const world = assemble({
     manifest: truth.manifest,
@@ -124,6 +148,43 @@ export function createRun(options = {}) {
     clock: manualClock(),
   });
   return { seed, truth, registry, executors, contested, ...world, workflowId: truth.manifest.workflowId };
+}
+
+/* ─────────────────────────────────────────── one fact, however many rows
+
+   The record keeps a claim per reader, which is right: two readers reading the
+   same row are two independent readings and the engine must be able to tell
+   them apart. But a PERSON looking at the screen sees one fact. Showing
+   "Row E-002 · 22 each" as an accepted finding and again as an unproved one —
+   because Reader A's claim was accepted and Reader B's identical claim is
+   recorded as corroborated — makes the system look as though it cannot make up
+   its mind, when in truth it did exactly the right thing.
+
+   So the screen groups claims into FINDINGS by what the fact is: its subject,
+   what is being said about it, and the value said. The readers behind a
+   finding become part of the finding rather than separate cards, and the
+   individual claims stay reachable inside View evidence, which is where
+   somebody who wants the rows should find them. */
+function dedupeEvidence(pieces) {
+  const seen = new Set();
+  const out = [];
+  for (const piece of pieces) {
+    const key = `${piece.sourceId}|${piece.segmentId}|${piece.contentHash}|${JSON.stringify(piece.locator ?? {})}|${piece.quotedText ?? ""}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    out.push(piece);
+  }
+  return out;
+}
+
+export function canonicalKey(claim) {
+  const value = claim?.value ?? {};
+  const said = value.quantity !== null && value.quantity !== undefined
+    ? `q:${value.quantity}`
+    : value.known === false
+      ? "unreadable"
+      : `t:${String(value.text ?? "").trim().toLowerCase()}`;
+  return `${claim.subjectKey}|${claim.predicate}|${said}`;
 }
 
 /* Why the engine has not accepted a claim, in the words a buyer would use.
@@ -242,7 +303,8 @@ export async function readRun(run, report = null) {
     independenceDomain: claim.independenceDomain,
     evidence: evidenceFor(claim),
     assessments: (assessmentsByClaim.get(claim.claimId) ?? []).map((a) => ({
-      verdict: a.verdict, rationale: a.rationale, madeBy: workerNameFor(a.roleKey, null, groupOrder),
+      kind: a.assessment, reasonCode: a.reasonCode, explanation: a.explanation,
+      madeBy: workerNameFor(taskById.get(a.taskId)?.roleKey ?? null, null, groupOrder),
     })),
   }));
 
@@ -253,6 +315,45 @@ export async function readRun(run, report = null) {
   const byClaimId = new Map(shaped.map((c) => [c.claimId, c]));
   const contestedClaimIds = new Set(disagreements.flatMap((d) => d.claimIds ?? []));
 
+  /* Group the rows into facts. A fact contested by a disagreement belongs to
+     the disagreement and to nothing else, so it cannot appear twice. */
+  const groups = new Map();
+  for (const claim of shaped) {
+    const key = canonicalKey(claim);
+    if (!groups.has(key)) groups.set(key, []);
+    groups.get(key).push(claim);
+  }
+  const READER = /^Independent Reader /;
+  const findings = [...groups.entries()].map(([key, group]) => {
+    const accepted = group.find((c) => c.status === "accepted") ?? null;
+    const lead = accepted ?? group[0];
+    const contested = group.some((c) => contestedClaimIds.has(c.claimId));
+    const supporters = [...new Set(group.map((c) => c.madeBy))];
+    const readers = supporters.filter((who) => READER.test(who));
+    const verification = group.flatMap((c) => c.assessments)
+      .find((a) => typeof a.explanation === "string" && a.explanation.length > 0) ?? null;
+    return {
+      key,
+      subjectKey: lead.subjectKey,
+      predicate: lead.predicate,
+      value: lead.value,
+      status: lead.status,
+      madeBy: lead.madeBy,
+      supporters,
+      readers,
+      /* Every row behind the fact, so View evidence can show the workings. */
+      claims: group,
+      /* Two readers reading the same row anchor at the same place, so the
+         same piece of evidence would otherwise be listed once per reader. It
+         is one piece of evidence; who relied on it is on the finding. */
+      evidence: dedupeEvidence(group.flatMap((c) => c.evidence)),
+      assessments: group.flatMap((c) => c.assessments),
+      verification,
+      outcome: contested ? "contested" : accepted ? "verified" : "needs_more_proof",
+      why: accepted ? null : (WHY_NOT_ACCEPTED[lead.status] ?? `recorded as ${lead.status}`),
+    };
+  });
+
   const finished = report ? FINISHED.includes(report.workflowState) : FINISHED.includes(workflow?.state);
 
   return {
@@ -261,8 +362,12 @@ export async function readRun(run, report = null) {
     state: workflow?.state ?? "created",
     stage: stageOf(tasks, disagreements, finished),
     finished,
-    /* AGREED — accepted by the engine, and only ever with an anchor. */
-    agreed: shaped.filter((c) => c.status === "accepted" && !contestedClaimIds.has(c.claimId)),
+    /* VERIFIED — one card per fact the engine accepted, naming the readers
+       behind it. */
+    verified: findings.filter((f) => f.outcome === "verified"),
+    /* Kept under its old name so nothing else has to change at once; the
+       screen reads `verified`. */
+    agreed: findings.filter((f) => f.outcome === "verified"),
     /* DISAGREEMENT — the engine's own disagreement rows, each side with its
        evidence, plus how it ended. The sides are the claims the disagreement
        itself names. */
@@ -275,13 +380,14 @@ export async function readRun(run, report = null) {
       needsHumanReason: d.needsHumanReason ?? null,
       sides: (d.claimIds ?? []).map((id) => byClaimId.get(id)).filter(Boolean),
     })),
-    /* UNPROVED — everything the engine has NOT accepted, with the reason it
-       gives. `corroborated` lives here on purpose: two readers agreeing is the
-       engine noticing agreement, not the engine accepting a fact, and a screen
-       that showed it as a finding would be making exactly the claim this
-       system exists to refuse. */
-    unproved: shaped.filter((c) => c.status !== "accepted" && c.status !== "superseded")
-      .map((c) => ({ ...c, why: WHY_NOT_ACCEPTED[c.status] ?? `recorded as ${c.status}` })),
+    /* NEEDS MORE PROOF — facts where NO claim was accepted, no decision
+       established them, and the evidence burden is still unmet. A fact two
+       readers agreed on but nothing verified lives here, which is the whole
+       point: agreement is not proof. A fact that WAS accepted does not appear
+       here at all, even though a corroborated sibling row exists in the
+       record. */
+    needsMoreProof: findings.filter((f) => f.outcome === "needs_more_proof"),
+    unproved: findings.filter((f) => f.outcome === "needs_more_proof"),
     /* DECISION — what the engine decided, and on whose authority. */
     decisions: decisions.map((d) => ({
       decisionId: d.decisionId,

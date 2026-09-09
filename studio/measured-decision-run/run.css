@@ -124,7 +124,7 @@ h1 { font-size: clamp(32px, 5vw, 46px); line-height: 1.12; letter-spacing: -.02e
 .result.decision .findings { grid-template-columns: repeat(auto-fit, minmax(min(300px, 100%), 1fr)); }
 .result.decision .technical { grid-column: 1 / -1; }
 .results .panel { margin: 0; }
-.result.agreed .count { background: var(--agreed-wash); border-color: #cfe3d4; color: var(--agreed); }
+.result.verified .count { background: var(--agreed-wash); border-color: #cfe3d4; color: var(--agreed); }
 .result.disputed .count { background: var(--amber-wash); border-color: #efdcb8; color: var(--amber); }
 .result.decision .count { background: var(--teal-wash); border-color: #cfe4e3; color: var(--teal); }
 
@@ -150,6 +150,13 @@ h1 { font-size: clamp(32px, 5vw, 46px); line-height: 1.12; letter-spacing: -.02e
 
 .evidence-open { margin-top: 10px; font: inherit; font-size: 14px; font-weight: 600; color: var(--teal); background: none; border: 0; padding: 0; cursor: pointer; text-decoration: underline; text-underline-offset: 3px; }
 .evidence-open:focus-visible { outline: 3px solid var(--teal); outline-offset: 3px; }
+
+/* Who stands behind a finding, and why it was accepted. */
+.finding-readers { display: flex; flex-wrap: wrap; gap: 6px; margin: 10px 0 0; }
+.finding-readers span {
+  font-size: 13px; border: 1px solid var(--line); background: var(--ivory);
+  border-radius: 999px; padding: 2px 10px; color: var(--navy-soft);
+}
 
 /* ── operational facts ────────────────────────────────────────────────── */
 .facts-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 16px 24px; margin: 0; }
@@ -181,7 +188,17 @@ h1 { font-size: clamp(32px, 5vw, 46px); line-height: 1.12; letter-spacing: -.02e
   border-radius: 10px; font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
   font-size: 13px; line-height: 1.6; white-space: pre-wrap; overflow-x: auto; max-height: 320px; overflow-y: auto;
 }
-.evidence img { display: block; max-width: 100%; height: auto; margin-top: 16px; border: 1px solid var(--line); border-radius: 10px; background: #fff; }
+/* The synthetic pack draws its evidence regions as small images — a note is
+   sixteen pixels across. Shown at its natural size it reads as a speck, so it
+   is scaled up without smoothing: what is on screen is the material, enlarged,
+   not a redrawing of it. */
+.evidence figure { margin: 16px 0 0; }
+.evidence img {
+  display: block; width: 100%; max-width: 420px; height: auto; margin: 0;
+  border: 1px solid var(--line); border-radius: 10px; background: #fff;
+  image-rendering: pixelated; padding: 8px;
+}
+.evidence figcaption { color: var(--slate); font-size: 13px; margin-top: 8px; }
 
 @media (max-width: 640px) {
   main { padding: 0 16px 64px; }

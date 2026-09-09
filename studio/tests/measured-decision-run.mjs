@@ -103,16 +103,25 @@ section("a run, watched from the outside");
 
 section("the screen against the engine's own record");
 const shown = await page.evaluate(() => ({
-  agreed: Number(document.getElementById("count-agreed").textContent),
+  verified: Number(document.getElementById("count-verified").textContent),
   disagreement: Number(document.getElementById("count-disagreement").textContent),
-  unproved: Number(document.getElementById("count-unproved").textContent),
+  needsProof: Number(document.getElementById("count-needs-proof").textContent),
   decision: Number(document.getElementById("count-decision").textContent),
   workers: [...document.querySelectorAll("#workers li")].map((li) => li.textContent),
   workflowId: [...document.querySelectorAll("#technical dd")][0]?.textContent ?? "",
   facts: [...document.querySelectorAll("#facts div")].map((d) => d.textContent.replace(/\s+/g, " ").trim()),
   evidenceButtons: document.querySelectorAll(".evidence-open").length,
-  agreedWithoutEvidence: [...document.querySelectorAll("#list-agreed .finding")]
+  verifiedWithoutEvidence: [...document.querySelectorAll("#list-verified .finding")]
     .filter((f) => !f.querySelector(".evidence-open")).length,
+  /* The headline of every card in each primary outcome section, so a fact
+     appearing in two of them is visible from the outside. */
+  headings: {
+    verified: [...document.querySelectorAll("#list-verified .finding > .finding-head .finding-what")].map((n) => n.textContent),
+    disagreement: [...document.querySelectorAll("#list-disagreement > .finding > .finding-head .finding-what")].map((n) => n.textContent),
+    needsProof: [...document.querySelectorAll("#list-needs-proof .finding > .finding-head .finding-what")].map((n) => n.textContent),
+  },
+  sectionTitles: [...document.querySelectorAll(".result .panel-title")].map((n) => n.textContent.replace(/\s+/g, " ").trim()),
+  verifiedSubtitle: document.querySelector(".result.verified .panel-note").textContent.trim(),
 }));
 
 const record = await page.evaluate(async () => {
@@ -122,32 +131,47 @@ const record = await page.evaluate(async () => {
   const tasks = await run.repo.listTasks(run.workflowId);
   return {
     workflowId: run.workflowId,
-    agreed: view.agreed.length,
+    verified: view.verified.length,
     disagreement: view.disagreements.length,
-    unproved: view.unproved.length,
+    needsProof: view.needsMoreProof.length,
     decision: view.decisions.length,
     acceptedClaims: claims.filter((c) => c.status === "accepted").length,
     corroboratedNotAccepted: claims.filter((c) => c.status === "corroborated").length,
     taskCount: tasks.length,
     /* every packet every executor was actually handed */
     packets: run.registry.packetsSeen.length,
-    acceptedWithoutAnchor: view.agreed.filter((c) => c.evidence.length === 0).length,
+    acceptedWithoutAnchor: view.verified.filter((f) => f.evidence.length === 0).length,
+    /* Canonical identity of every finding in each primary section. */
+    canonical: {
+      verified: view.verified.map((f) => f.key),
+      needsProof: view.needsMoreProof.map((f) => f.key),
+      contested: view.disagreements.flatMap((d) => d.sides.map((s) => `${s.subjectKey}|${s.predicate}`)),
+    },
+    /* A fact accepted for one reader and merely corroborated for another —
+       the case that used to appear in two columns at once. */
+    acceptedWithCorroboratedSibling: view.verified
+      .filter((f) => f.claims.some((c) => c.status === "accepted") && f.claims.some((c) => c.status === "corroborated"))
+      .map((f) => f.key),
+    corroboratedNeverAccepted: view.needsMoreProof
+      .filter((f) => f.claims.every((c) => c.status !== "accepted"))
+      .map((f) => f.key),
+    claimRows: claims.length,
     disagreementSides: view.disagreements.map((d) => d.sides.map((s) => ({ who: s.madeBy, status: s.status, value: s.value?.quantity }))),
-    unprovedStatuses: view.unproved.map((c) => c.status),
+    needsProofStatuses: view.needsMoreProof.map((f) => f.status),
   };
 });
 
 check("the four counts on the screen are the engine's own counts, not a UI array",
-  shown.agreed === record.agreed && shown.disagreement === record.disagreement
-  && shown.unproved === record.unproved && shown.decision === record.decision,
-  `screen ${JSON.stringify(shown)} vs record ${JSON.stringify({ agreed: record.agreed, disagreement: record.disagreement, unproved: record.unproved, decision: record.decision })}`);
+  shown.verified === record.verified && shown.disagreement === record.disagreement
+  && shown.needsProof === record.needsProof && shown.decision === record.decision,
+  `screen ${JSON.stringify({ verified: shown.verified, disagreement: shown.disagreement, needsProof: shown.needsProof, decision: shown.decision })} vs record ${JSON.stringify({ verified: record.verified, disagreement: record.disagreement, needsProof: record.needsProof, decision: record.decision })}`);
 check("the workflow id shown is the workflow the scheduler actually ran",
   shown.workflowId === record.workflowId && /^[0-9a-f-]{36}$/.test(record.workflowId), record.workflowId);
 check("the run really did work — assignments and packets exist",
   record.taskCount > 5 && record.packets > 5, `${record.taskCount} assignments, ${record.packets} packets`);
 check("EVERY accepted finding has an evidence anchor",
-  record.acceptedWithoutAnchor === 0 && shown.agreedWithoutEvidence === 0,
-  `${record.acceptedWithoutAnchor} unanchored in the record, ${shown.agreedWithoutEvidence} without a control on screen`);
+  record.acceptedWithoutAnchor === 0 && shown.verifiedWithoutEvidence === 0,
+  `${record.acceptedWithoutAnchor} unanchored in the record, ${shown.verifiedWithoutEvidence} without a control on screen`);
 check("every visible claim offers View evidence", shown.evidenceButtons > 0, `${shown.evidenceButtons} controls`);
 
 section("agreement is not proof, and the screen says so");
@@ -157,12 +181,46 @@ check("a real disagreement was found, with two sides that differ",
   JSON.stringify(record.disagreementSides[0]));
 check("one side was accepted and the other rejected — settled on evidence, not by counting readers",
   record.disagreementSides[0]?.some((s) => s.status === "accepted") && record.disagreementSides[0]?.some((s) => s.status === "rejected"));
-check("claims two readers agreed on are NOT shown as accepted findings",
-  record.corroboratedNotAccepted > 0 && record.unprovedStatuses.includes("corroborated"),
-  `${record.corroboratedNotAccepted} corroborated, and they appear under Unproved`);
-check("an unsupported claim stays unproved rather than quietly becoming a finding",
-  record.unproved > 0 && record.agreed === record.acceptedClaims - record.disagreementSides.flat().filter((s) => s.status === "accepted").length,
-  `${record.unproved} unproved, ${record.acceptedClaims} accepted in the record`);
+check("a fact two readers agreed on that nothing could verify stays under Needs more proof",
+  record.needsProof > 0 && record.needsProofStatuses.includes("corroborated")
+  && record.corroboratedNeverAccepted.length === record.needsProof,
+  `${record.needsProof} needing proof, none of them accepted anywhere`);
+
+section("one fact, one place on the screen");
+check("the sections are named for what they mean",
+  shown.sectionTitles.some((t) => /^Verified/.test(t)) && shown.sectionTitles.some((t) => /^Needs more proof/.test(t)),
+  shown.sectionTitles.join(" | "));
+check("and Verified says what it is",
+  shown.verifiedSubtitle === "Findings accepted after evidence verification.", shown.verifiedSubtitle);
+{
+  /* THE DEFECT THIS REPLACED: the same fact appearing under two contradictory
+     outcomes because the record holds one claim per reader. */
+  const all = [...record.canonical.verified, ...record.canonical.needsProof];
+  const twice = all.filter((k, i) => all.indexOf(k) !== i);
+  check("no canonical finding appears in more than one primary outcome section",
+    twice.length === 0, twice.join(", "));
+
+  const subjectOf = (key) => key.split("|").slice(0, 2).join("|");
+  const contested = new Set(record.canonical.contested);
+  const alsoElsewhere = all.filter((k) => contested.has(subjectOf(k)));
+  check("a disputed fact lives in Disagreement and nowhere else",
+    alsoElsewhere.length === 0, alsoElsewhere.join(", "));
+
+  check("an accepted fact whose sibling reading is merely corroborated appears ONLY under Verified",
+    record.acceptedWithCorroboratedSibling.length > 0
+    && record.acceptedWithCorroboratedSibling.every((k) => !record.canonical.needsProof.includes(k)),
+    `${record.acceptedWithCorroboratedSibling.length} such fact(s), none of them under Needs more proof`);
+
+  const headings = [...shown.headings.verified, ...shown.headings.needsProof];
+  const shownTwice = headings.filter((h, i) => headings.indexOf(h) !== i);
+  check("and a person never reads the same headline in two columns",
+    shownTwice.length === 0, shownTwice.join(" | "));
+
+  check("the counts are counts of findings on the screen, not of claim rows in the record",
+    shown.verified + shown.needsProof < record.claimRows
+    && shown.verified === record.canonical.verified.length && shown.needsProof === record.canonical.needsProof.length,
+    `${shown.verified} + ${shown.needsProof} findings from ${record.claimRows} claim rows`);
+}
 
 section("no reader was shown another reader's answer");
 const blind = await page.evaluate(() => {
@@ -208,7 +266,10 @@ check("the provider network is stated as sealed",
 
 section("View evidence shows the evidence, not a description of it");
 {
-  await page.click("#list-agreed .evidence-open");
+  /* A row read from the table, not the source-identity digest: the point of
+     the control is the evidence a person would want to check. */
+  const rowFinding = page.locator("#list-verified .finding", { hasText: /Row .* each|Row .* kg/ }).first();
+  await rowFinding.locator(".evidence-open").click();
   await page.waitForSelector("#evidence[open]", { timeout: 10000 });
   const dialog = await page.evaluate(() => {
     const body = document.getElementById("evidence-body");

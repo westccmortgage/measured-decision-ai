@@ -133,8 +133,20 @@ function evidenceButton(claim) {
 function openEvidence(claim) {
   const body = el("evidence-body");
   body.replaceChildren();
-  body.append(text("h3", null, `${readable(claim.subjectKey)} — ${claim.predicate.replace(/_/g, " ")}`));
+  body.append(text("h3", null, `${readable(claim.subjectKey)} — ${predicateOf(claim)}`));
   body.append(text("p", "finding-why", `Recorded value: ${valueOf(claim)}`));
+
+  /* Who stands behind the finding, and where it stands — said once, not once
+     per piece of evidence. */
+  const who = text("dl", "evidence-meta");
+  const line = (label, value) => {
+    const wrap = text("div");
+    wrap.append(text("dt", null, label), text("dd", null, String(value)));
+    who.append(wrap);
+  };
+  line("Claimed by", (claim.supporters ?? [claim.madeBy]).join(", "));
+  line("Verification state", claim.status);
+  body.append(who);
 
   if (claim.evidence.length === 0) {
     body.append(text("p", "finding-why", "No anchor was recorded for this claim, which is why it was not accepted."));
@@ -153,51 +165,93 @@ function openEvidence(claim) {
     if (piece.locator?.bbox) row("Where on it", `x ${piece.locator.bbox[0].toFixed(3)}–${piece.locator.bbox[2].toFixed(3)}, y ${piece.locator.bbox[1].toFixed(3)}–${piece.locator.bbox[3].toFixed(3)}`);
     if (piece.locator?.timeRange) row("Time range", `${piece.locator.timeRange.startsAt}s – ${piece.locator.timeRange.endsAt}s`);
     if (piece.locator?.page !== undefined) row("Page", piece.locator.page);
-    row("Claimed by", claim.madeBy);
-    row("Verification state", claim.status);
     body.append(meta);
 
     if (piece.bytes && piece.mediaKind === "text") {
       body.append(text("pre", "excerpt", new TextDecoder().decode(piece.bytes)));
     } else if (piece.bytes && piece.mediaKind === "image") {
+      const figure = text("figure");
       const image = document.createElement("img");
       let binary = "";
       for (const byte of piece.bytes) binary += String.fromCharCode(byte);
       image.src = `data:${piece.mimeType};base64,${btoa(binary)}`;
-      image.alt = `The evidence region for ${readable(claim.subjectKey)}`;
-      body.append(image);
+      image.alt = `The region of ${piece.sourceLabel} this finding points at`;
+      figure.append(image);
+      figure.append(text("figcaption", null, `The region of the source this reading points at, enlarged. ${piece.mimeType}, ${piece.byteLength ?? piece.bytes.length} bytes.`));
+      body.append(figure);
     }
     if (piece.quotedText) body.append(text("pre", "excerpt", piece.quotedText));
   }
 
-  for (const assessment of claim.assessments) {
-    body.append(text("p", "finding-why", `${assessment.madeBy}: ${assessment.verdict} — ${assessment.rationale ?? "no rationale recorded"}`));
+  for (const assessment of claim.assessments ?? []) {
+    if (!assessment.explanation) continue;
+    body.append(text("p", "finding-why", `${assessment.madeBy}: ${assessment.explanation}`));
+  }
+
+  /* The individual readings behind the fact — where somebody who wants the
+     rows should find them, rather than in a second outcome column. */
+  if (Array.isArray(claim.claims) && claim.claims.length > 0) {
+    const rows = text("details", "technical");
+    rows.append(text("summary", null, `Show the ${claim.claims.length} individual reading${claim.claims.length === 1 ? "" : "s"} behind this finding`));
+    const list = text("dl", "evidence-meta");
+    for (const row of claim.claims) {
+      const wrap = text("div");
+      wrap.append(text("dt", null, row.madeBy), text("dd", null, `${valueOf(row)} — recorded as ${row.status}`));
+      list.append(wrap);
+    }
+    rows.append(list);
+    body.append(rows);
   }
   el("evidence").showModal();
 }
 
-function findingNode(claim, { why } = {}) {
+/* ONE CARD PER FACT. The record keeps a claim per reader — which is right,
+   because two readers reading the same row are two independent readings — but
+   a person seeing the same fact in two columns cannot tell what the system
+   decided. So a finding names the readers behind it, and the individual rows
+   stay inside View evidence. */
+function findingNode(finding) {
   const li = text("li", "finding");
   const head = text("div", "finding-head");
-  head.append(text("span", "finding-what", `${readable(claim.subjectKey)} · ${valueOf(claim)}`));
-  head.append(text("span", "finding-who", claim.madeBy));
+  head.append(text("span", "finding-what", `${readable(finding.subjectKey)} · ${valueOf(finding)}`));
   li.append(head);
-  li.append(text("p", "finding-why", predicateOf(claim)));
-  if (why) li.append(text("p", "finding-why", why));
-  li.append(evidenceButton(claim));
+  li.append(text("p", "finding-why", predicateOf(finding)));
+
+  if (finding.readers.length > 0) {
+    const who = text("div", "finding-readers");
+    for (const reader of finding.readers) who.append(text("span", null, reader));
+    li.append(who);
+  } else if (finding.supporters.length > 0) {
+    li.append(text("p", "finding-who", finding.supporters.join(", ")));
+  }
+
+  if (finding.outcome === "verified") {
+    const readers = finding.readers.length;
+    const how = readers > 1
+      ? `Read the same way by ${readers} independent readers, and checked against the source.`
+      : "Checked against the source before it was accepted.";
+    li.append(text("p", "finding-why", finding.verification?.explanation
+      ? `${how} ${finding.verification.explanation}.` : how));
+  } else if (finding.why) {
+    li.append(text("p", "finding-why", finding.why));
+  }
+
+  li.append(evidenceButton(finding));
   return li;
 }
 
 function drawResults(view) {
-  el("count-agreed").textContent = view.agreed.length;
+  /* The counts are counts of FINDINGS — what is on the screen — not of claim
+     rows in the record. */
+  el("count-verified").textContent = view.verified.length;
   el("count-disagreement").textContent = view.disagreements.length;
-  el("count-unproved").textContent = view.unproved.length;
+  el("count-needs-proof").textContent = view.needsMoreProof.length;
   el("count-decision").textContent = view.decisions.length;
 
-  const agreed = el("list-agreed");
-  agreed.replaceChildren();
-  for (const claim of view.agreed) agreed.append(findingNode(claim));
-  if (view.agreed.length === 0) agreed.append(text("li", "finding-why", "Nothing accepted yet."));
+  const verified = el("list-verified");
+  verified.replaceChildren();
+  for (const finding of view.verified) verified.append(findingNode(finding));
+  if (view.verified.length === 0) verified.append(text("li", "finding-why", "Nothing accepted yet."));
 
   const disputed = el("list-disagreement");
   disputed.replaceChildren();
@@ -225,10 +279,10 @@ function drawResults(view) {
   }
   if (view.disagreements.length === 0) disputed.append(text("li", "finding-why", "No conflicting readings."));
 
-  const unproved = el("list-unproved");
-  unproved.replaceChildren();
-  for (const claim of view.unproved) unproved.append(findingNode(claim, { why: claim.why }));
-  if (view.unproved.length === 0) unproved.append(text("li", "finding-why", "Nothing outstanding."));
+  const needsProof = el("list-needs-proof");
+  needsProof.replaceChildren();
+  for (const finding of view.needsMoreProof) needsProof.append(findingNode(finding));
+  if (view.needsMoreProof.length === 0) needsProof.append(text("li", "finding-why", "Nothing outstanding."));
 
   const decisions = el("list-decision");
   decisions.replaceChildren();

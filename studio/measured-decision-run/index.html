@@ -6,7 +6,7 @@
     <meta name="robots" content="noindex,nofollow,noarchive">
     <meta name="theme-color" content="#fbfaf7">
     <title>Measured Decision Run</title>
-    <link rel="stylesheet" href="run.css?v=f9d6308c8a">
+    <link rel="stylesheet" href="run.css?v=ab516aad11">
   </head>
   <body>
     <header class="masthead">
@@ -56,10 +56,10 @@
       </section>
 
       <section class="results" id="results" hidden>
-        <article class="panel result agreed">
-          <h2 class="panel-title">Agreed <span class="count" id="count-agreed">0</span></h2>
-          <p class="panel-note">Findings independently supported by evidence.</p>
-          <ul class="findings" id="list-agreed"></ul>
+        <article class="panel result verified">
+          <h2 class="panel-title">Verified <span class="count" id="count-verified">0</span></h2>
+          <p class="panel-note">Findings accepted after evidence verification.</p>
+          <ul class="findings" id="list-verified"></ul>
         </article>
 
         <article class="panel result disputed">
@@ -68,10 +68,10 @@
           <ul class="findings" id="list-disagreement"></ul>
         </article>
 
-        <article class="panel result unproved">
-          <h2 class="panel-title">Unproved <span class="count" id="count-unproved">0</span></h2>
-          <p class="panel-note">Claims the system refused to accept.</p>
-          <ul class="findings" id="list-unproved"></ul>
+        <article class="panel result needs-proof">
+          <h2 class="panel-title">Needs more proof <span class="count" id="count-needs-proof">0</span></h2>
+          <p class="panel-note">Findings the evidence does not yet establish. Nothing here has been accepted.</p>
+          <ul class="findings" id="list-needs-proof"></ul>
         </article>
 
         <article class="panel result decision">
@@ -97,6 +97,6 @@
     </dialog>
 
     <noscript><p class="opening-note">This demonstration runs the decision engine in your browser, so it needs JavaScript.</p></noscript>
-    <script type="module" src="run.js?v=5e282542d0"></script>
+    <script type="module" src="run.js?v=410156ad3b"></script>
   </body>
 </html>
