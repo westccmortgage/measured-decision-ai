@@ -16,6 +16,14 @@ on:
         required: false
         default: false
         type: boolean
+      start_new_generation:
+        description: >-
+          Begin a new canary generation instead of continuing the last
+          unfinished one. For a generation left half-run by a defect in the
+          operator itself; it rewrites nothing already recorded.
+        required: false
+        default: false
+        type: boolean
 
 permissions:
   contents: read
@@ -117,6 +125,7 @@ jobs:
       cancel-in-progress: false
     env:
       PROJECT_REF: hbqlhplgqwuesrovbiye
+      START_NEW_GENERATION: ${{ inputs.start_new_generation }}
       SUPABASE_ACCESS_TOKEN: ${{ secrets.SUPABASE_ACCESS_TOKEN }}
     steps:
       - name: Check out repository
@@ -279,7 +288,7 @@ jobs:
             -X POST "$endpoint" \
             -H "x-canary-trigger: ${TRIGGER}" \
             -H 'content-type: application/json' \
-            -d '{"allowProviderNetwork":true,"allowPaidCalls":true}')"
+            -d "{\"allowProviderNetwork\":true,\"allowPaidCalls\":true,\"startNewGeneration\":${START_NEW_GENERATION:-false}}")"
           CURL_RC=$?
           set -e
           [ -f canary-report.json ] || echo '{"refused":"no body was returned"}' > canary-report.json

@@ -107,6 +107,24 @@ const SETTLEMENT_ROOM_MS = 20_000;
    third of its life starting work and the rest not allowed to. */
 const STOP_STARTING_MS = DRAIN_DEADLINE_MS - ANSWER_WITHIN_MS - SETTLEMENT_ROOM_MS;
 
+/* HOW LONG A LEASE LASTS, AND WHY IT IS THE OPERATOR'S NUMBER TOO.
+ *
+ * The default is five minutes, which is right for a worker that outlives
+ * its work. This one does not: the container is gone after two and a half,
+ * and every lease it was holding stays held for another two and a half
+ * after that. The next pass then finds four readers "leased" and "running"
+ * by a process that no longer exists, cannot reclaim them because their
+ * leases are still in the future, finds nothing runnable behind them, and
+ * declares the workflow stalled — a whole pass spent, nothing dispatched.
+ * That is exactly what generation nine's second pass did.
+ *
+ * A lease has to outlive the work it covers and nothing more: one answer
+ * inside its window, plus the room to write it down. While the work really
+ * is running the heartbeat renews it every twenty seconds, so a short lease
+ * is never taken from a live attempt — only from a dead one, which is the
+ * whole point. */
+const LEASE_TTL_MS = ANSWER_WITHIN_MS + SETTLEMENT_ROOM_MS + 40_000;
+
 /* WHICH RUN THIS IS. The canary id is immutable per run; a run whose
    workflow already reached a terminal state cannot be continued, so a
    corrected attempt gets the next generation and its own workflow. The
@@ -211,7 +229,7 @@ const ORGANIZATION_ID = entityId("core-v2-canary-organization", "core-v2-canary"
  * query, and the first that either does not exist or has not finished is
  * this run's. An operator can still pin one with
  * CORE_V2_CANARY_GENERATION when they want a specific workflow. */
-async function chooseGeneration(db: CanaryDatabase): Promise<{ generation: number; runId: string; workflowId: string; resuming: boolean }> {
+async function chooseGeneration(db: CanaryDatabase, startFresh = false): Promise<{ generation: number; runId: string; workflowId: string; resuming: boolean }> {
   if (PINNED_GENERATION) {
     const pinned = Number(PINNED_GENERATION);
     return { generation: pinned, runId: runIdFor(pinned), workflowId: workflowIdFor(pinned), resuming: false };
@@ -223,7 +241,17 @@ async function chooseGeneration(db: CanaryDatabase): Promise<{ generation: numbe
      person authorises that — so a workflow the engine has escalated is one
      the engine has finished with, however many tasks are still open on it.
      Counting those as resumable would wedge the canary on a workflow
-     waiting for a human forever. */
+     waiting for a human forever.
+
+     `startFresh` is the operator saying this pass is a beginning and not a
+     continuation. It exists for one situation and says so plainly: a
+     generation left half-run by a DEFECT IN THIS OPERATOR — a lease that
+     outlived the process, a request the container was killed underneath —
+     is not a workflow that has learned anything, and resuming it only
+     carries the damage forward. It never deletes or rewrites what that
+     generation recorded: those rows stay exactly as they are, holds
+     included, and the next generation starts beside them with the money
+     they committed already subtracted from the lifetime authority. */
   const seen = await db.query(
     `select w.id::text as id,
             (select count(*) from public.workflow_tasks k
@@ -241,7 +269,7 @@ async function chooseGeneration(db: CanaryDatabase): Promise<{ generation: numbe
     const id = workflowIdFor(g);
     const found = standingOf.get(id);
     if (found === undefined) return { generation: g, runId: runIdFor(g), workflowId: id, resuming: false };
-    if (found.unfinished > 0 && found.awaitingPerson === 0) {
+    if (!startFresh && found.unfinished > 0 && found.awaitingPerson === 0) {
       return { generation: g, runId: runIdFor(g), workflowId: id, resuming: true };
     }
   }
@@ -359,7 +387,7 @@ Deno.serve(async (request: Request): Promise<Response> => {
     dispatcherDb = await CanaryDatabase.connect(databaseUrl, `${CANARY_ID}-dispatcher`);
 
     /* ── 5a · which generation, decided from the record ──────────────── */
-    const chosen = await chooseGeneration(db);
+    const chosen = await chooseGeneration(db, body.startNewGeneration === true);
     RUN_ID = chosen.runId;
     WORKFLOW_ID = chosen.workflowId;
 
@@ -492,6 +520,7 @@ Deno.serve(async (request: Request): Promise<Response> => {
         },
       ),
       pack,
+      leaseTtlMs: LEASE_TTL_MS,
       executors: () => executors.registry,
       events: (event: unknown) => { events.push(event); },
       now: () => Date.now(),
