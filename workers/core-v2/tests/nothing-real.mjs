@@ -30,6 +30,7 @@ import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { harness, closeNetwork } from "./harness.mjs";
 import { syntheticRecordSet } from "../domains/synthetic-records/fixture.ts";
+import { sha256Bytes } from "../kernel/ids.ts";
 import { SyntheticRecordsPack } from "../domains/synthetic-records/pack.ts";
 import { mockExecutors } from "../domains/synthetic-records/mocks.ts";
 import { syntheticTranscriptSet } from "../domains/synthetic-transcripts/fixture.ts";
@@ -389,8 +390,17 @@ t.check("every source of both synthetic packs is addressed under a scheme nothin
   && [...recordsA.manifest.sources, ...transcripts.manifest.sources].every((s) => s.uri.split("://")[0] === "fixture"),
   recordsA.manifest.sources[0].uri);
 
-t.check("every content hash in the record fixture — source, declared sheet, discovered region — is an invented one, marked fx-",
-  recordHashes(recordsA).length >= 12 && recordHashes(recordsA).every((h) => h.startsWith("fx-")), `${recordHashes(recordsA).length} hashes`);
+/* The record fixture's hashes are the sha-256 of material it invented and
+   holds: that is what lets a runtime check that what a resolver handed it is
+   what an assignment named. So the test is no longer "they are marked as
+   invented" but the stronger "each one is the hash of bytes this fixture
+   made up, and the bytes are here". */
+t.check("every content hash in the record fixture is the sha-256 of material the fixture invented, and the material is in the fixture",
+  recordHashes(recordsA).length >= 12
+  && recordHashes(recordsA).every((h) => /^[0-9a-f]{64}$/.test(h))
+  && [...recordsA.material].every(([hash, item]) => sha256Bytes(item.bytes) === hash)
+  && recordHashes(recordsA).filter((h) => recordsA.material.has(h)).length >= 4,
+  `${recordHashes(recordsA).length} hashes over ${recordsA.material.size} pieces of material`);
 
 t.check("every content hash in the recording fixture is invented too, marked fx-",
   transcriptHashes(transcripts).length >= 8 && transcriptHashes(transcripts).every((h) => h.startsWith("fx-")), `${transcriptHashes(transcripts).length} hashes`);

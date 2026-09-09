@@ -12,10 +12,11 @@
  */
 import type {
   DependencyKind, SegmentRecord, SourceDescriptor, SourceManifest, TaskPhase, TaskRecord, TaskSourceRef,
+  WorkflowBudget, WorkflowRecord,
 } from "./contracts.ts";
 import { ENGINE_VERSION, KERNEL_TASK_TYPES } from "./contracts.ts";
 import type { DomainPack, TaskSpec } from "./domain.ts";
-import { entityId, fingerprint } from "./ids.ts";
+import { canonical, entityId, fingerprint, sha256 } from "./ids.ts";
 import type { OrchestrationPolicy } from "./policy.ts";
 import type { NewTask } from "./repository.ts";
 import type { RoleRegistry } from "./roles.ts";
@@ -125,6 +126,25 @@ export function specsToTasks(
     });
   }
   return { tasks, refusals };
+}
+
+/* The workflow row a manifest implies. Its two fingerprints are what make a
+   run the same run: ask for the same sources under the same scope with the
+   same pack, and you are asking for the work that already exists rather than
+   a second copy of it. This lives here, and not inside the scheduler, so
+   whoever puts a workflow on the queue and the scheduler that picks it up
+   compute it the same way — two definitions of one identity would agree
+   until the day one of them changed. */
+export function workflowRecordFor(manifest: SourceManifest, pack: DomainPack, budget: WorkflowBudget): WorkflowRecord {
+  const sourceSetFingerprint = sha256(canonical(manifest.sources.map((s) => [s.ordinal, s.sourceKind, s.uri, s.contentHash ?? `version=${s.objectVersionId}`, s.byteSize])));
+  return {
+    workflowId: manifest.workflowId, organizationId: manifest.organizationId, domainPack: pack.id, domainPackVersion: pack.version,
+    workflowType: manifest.workflowType, engineVersion: ENGINE_VERSION, state: "created",
+    sourceSetFingerprint,
+    requestFingerprint: sha256(canonical([pack.id, pack.version, manifest.workflowType, sourceSetFingerprint, manifest.requestedScope, ENGINE_VERSION])),
+    requestedScope: manifest.requestedScope, budget, cancelRequestedAt: null,
+    totalUnits: 0, completedUnits: 0, attentionUnits: 0, errorCode: null, errorMessage: null,
+  };
 }
 
 /* Phase A: what the kernel plans before any pack is asked anything. */

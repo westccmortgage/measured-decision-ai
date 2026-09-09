@@ -19,7 +19,7 @@
  */
 import type {
   AnchorRecord, AssessmentRecord, AttemptRecord, AttemptState, AuditRecord, ClaimRecord, ClaimStatus,
-  DecisionRecord, DecisionStatus, DependencyKind, DependencyRecord, DisagreementRecord, DisagreementState, ReconciliationOutcome,
+  DecisionRecord, DecisionStatus, DependencyKind, DependencyRecord, DisagreementRecord, DisagreementState, ProviderFacts, ReconciliationOutcome,
   SegmentRecord, SegmentStatus, SourceDescriptor, TaskRecord, TaskState, ValidationState, WorkflowRecord, WorkflowState,
 } from "./contracts.ts";
 
@@ -82,6 +82,34 @@ export type ClaimFilter = {
 
 export type SubmitOutcome = { ok: true; attempt: AttemptRecord } | { ok: false; reason: string };
 
+/* SOMETHING THAT MUST HAPPEN WITH THE SUBMISSION, OR NOT AT ALL.
+ *
+ * The kernel does not know that answering costs anything, and it must not
+ * learn: an engine that priced its readers would be a client of whoever it
+ * priced. But something outside the kernel does — and that something has to
+ * write its row in the SAME unit of work as the move from prepared to
+ * submitted, or there is a window in which one exists without the other. A
+ * hold taken and then not spent is money a run cannot use; a request sent
+ * with no hold is money nobody counted. A crash lands in that window, and so
+ * does every refusal the submission itself makes.
+ *
+ * So the move takes a rider. It is handed the record's own unit of work —
+ * whatever that is — and it is run after every submission rule has passed and
+ * before the attempt moves. Its refusal is the submission's refusal, and
+ * whatever it wrote goes with the rest of the unit of work when the
+ * submission does not happen.
+ *
+ * A record with NO unit of work passes `null`, and that is a statement, not a
+ * placeholder: it means "there is nothing here to roll back". A rider whose
+ * writes are durable elsewhere must refuse when it sees it, because such a
+ * record cannot undo them. Riders that only read, or that write nothing
+ * outside this process, may carry on.
+ *
+ * What is in it is not the kernel's business. That it is atomic with the
+ * submission is. */
+export type RiderOutcome = { ok: true } | { ok: false; reason: string };
+export type SubmissionRider = (unitOfWork: unknown) => Promise<RiderOutcome>;
+
 /* A subject held for a person outside any attempt: the coverage dispute, the
    hold decision, the transition to needs_human and the audit, one write. */
 export type SubjectHold = {
@@ -107,6 +135,9 @@ export type ResultCommit = {
     rawResultHash: string;
     errorCode: string | null;
     errorMessage: string | null;
+    /* What the executor saw of the thing that answered it, if it could say.
+       Written with the result, in the same commit, never afterwards. */
+    providerFacts?: ProviderFacts;
   };
   task: { to: Extract<TaskState, "completed" | "failed_known" | "outcome_unknown">; reason: string | null };
   segments: NewSegment[];
@@ -171,7 +202,10 @@ export interface OrchestrationRepository {
   listAttempts(taskId: string): Promise<AttemptRecord[]>;
   getAttempt(attemptId: string): Promise<AttemptRecord | null>;
   createAttempt(record: AttemptRecord): Promise<AttemptRecord>;
-  submitAttempt(attemptId: string, leaseToken: string, now: number): Promise<SubmitOutcome>;
+  /* `alongside` is run inside this move's own unit of work, after every rule
+     has passed and before the attempt moves. If it refuses, the submission is
+     refused and nothing it wrote survives. */
+  submitAttempt(attemptId: string, leaseToken: string, now: number, alongside?: SubmissionRider): Promise<SubmitOutcome>;
   transitionAttempt(attemptId: string, from: AttemptState, to: AttemptState, patch?: { errorCode?: string | null; errorMessage?: string | null; usage?: Record<string, unknown> }): Promise<AttemptRecord>;
   independenceDomainsForSubject(workflowId: string, subjectKey: string): Promise<string[]>;
   commitValidatedResult(commit: ResultCommit): Promise<CommitOutcome>;

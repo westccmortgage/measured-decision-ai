@@ -1,0 +1,183 @@
+{
+  "_": "INVENTED. Nothing here was copied from a provider and nothing here proves that a provider would accept the request that produced it: the ids, the model names and the counts are made up. What it does prove is that this adapter reads an answer OF THIS SHAPE the same way every time. Which official field each part stands for is written in \"documents\" below; \"expectedNormalized\" is what budget/usage.ts must make of the good answer's counts, kept separate from the raw answer on purpose, because the whole billing question is what the raw numbers MEAN.",
+  "documents": {
+    "endpoint": "POST /v1beta/models/{model}:generateContent (non-streaming)",
+    "responseId": "the identifier of the call",
+    "modelVersion": "the model that actually answered",
+    "candidates[0].finishReason": "STOP when it finished; MAX_TOKENS at the ceiling; anything else is a refusal",
+    "candidates[0].content.parts[].text": "the structured answer",
+    "promptFeedback.blockReason": "the request itself was declined",
+    "usageMetadata.promptTokenCount": "prompt tokens INCLUDING cachedContentTokenCount",
+    "usageMetadata.cachedContentTokenCount": "the cached subset of promptTokenCount",
+    "usageMetadata.candidatesTokenCount": "visible output tokens, NOT including thoughts",
+    "usageMetadata.thoughtsTokenCount": "reasoning tokens, counted BESIDE candidatesTokenCount"
+  },
+  "expectedNormalized": {
+    "uncached_input_tokens": 400,
+    "cached_input_read_tokens": 800,
+    "cached_input_write_tokens": 0,
+    "visible_output_tokens": 340,
+    "reasoning_output_tokens": 96
+  },
+  "askedModel": "gamma-reader-1",
+  "reportedModel": "gamma-reader-1-002",
+  "requestId": "rsp_gamma_77b3e1",
+  "good": {
+    "status": 200,
+    "headers": {
+      "content-type": "application/json"
+    },
+    "body": {
+      "responseId": "rsp_gamma_77b3e1",
+      "modelVersion": "gamma-reader-1-002",
+      "candidates": [
+        {
+          "index": 0,
+          "finishReason": "STOP",
+          "content": {
+            "role": "model",
+            "parts": [
+              {
+                "text": "{\"outcome\":\"completed\",\"claims\":[{\"claimKey\":\"c1\",\"subjectType\":\"entry\",\"subjectKey\":\"entry/E-001\",\"predicate\":\"recorded_amount\",\"value\":{\"known\":true,\"quantity\":12,\"text\":\"12 units\"},\"unit\":\"units\",\"observationBasis\":\"observed\",\"scope\":{\"table\":\"t1\"},\"anchorKeys\":[\"a1\"]}],\"anchors\":[{\"anchorKey\":\"a1\",\"sourceKind\":\"segment_locator\",\"sourceId\":\"src-1\",\"segmentId\":\"seg-1\",\"locator\":{\"bbox\":[0.1,0.2,0.3,0.4]},\"quotedText\":\"12 units\"}],\"assessments\":[],\"limitations\":[]}"
+              }
+            ]
+          }
+        }
+      ],
+      "usageMetadata": {
+        "promptTokenCount": 1200,
+        "candidatesTokenCount": 340,
+        "cachedContentTokenCount": 800,
+        "thoughtsTokenCount": 96,
+        "totalTokenCount": 1540
+      }
+    }
+  },
+  "refusal": {
+    "status": 200,
+    "headers": {
+      "content-type": "application/json"
+    },
+    "body": {
+      "responseId": "rsp_gamma_refuse",
+      "modelVersion": "gamma-reader-1-002",
+      "candidates": [
+        {
+          "index": 0,
+          "finishReason": "SAFETY",
+          "content": {
+            "role": "model",
+            "parts": []
+          }
+        }
+      ],
+      "usageMetadata": {
+        "promptTokenCount": 1200,
+        "candidatesTokenCount": 0
+      }
+    }
+  },
+  "outputCeiling": {
+    "status": 200,
+    "headers": {
+      "content-type": "application/json"
+    },
+    "body": {
+      "modelVersion": "gamma-reader-1-002",
+      "candidates": [
+        {
+          "index": 0,
+          "finishReason": "MAX_TOKENS",
+          "content": {
+            "role": "model",
+            "parts": [
+              {
+                "text": "{\"outcome\":\"completed\",\"claims\":[{\"claimKey\":\"c1\",\"subjectKey\":\"entry/E-001\",\"value\":{\"known\":true,\"quantity\":1"
+              }
+            ]
+          }
+        }
+      ],
+      "usageMetadata": {
+        "promptTokenCount": 1200,
+        "candidatesTokenCount": 4096,
+        "cachedContentTokenCount": 800
+      }
+    }
+  },
+  "malformedAnswer": {
+    "status": 200,
+    "headers": {
+      "content-type": "application/json"
+    },
+    "body": {
+      "responseId": "rsp_gamma_malformed",
+      "modelVersion": "gamma-reader-1-002",
+      "candidates": [
+        {
+          "index": 0,
+          "finishReason": "STOP",
+          "content": {
+            "role": "model",
+            "parts": [
+              {
+                "text": "Here is what I read: entry E-001 shows 12 units."
+              }
+            ]
+          }
+        }
+      ],
+      "usageMetadata": {
+        "promptTokenCount": 1200,
+        "candidatesTokenCount": 14
+      }
+    }
+  },
+  "malformedBody": {
+    "status": 200,
+    "headers": {
+      "content-type": "text/plain"
+    },
+    "body": "not an answer, and not JSON either"
+  },
+  "unauthorized": {
+    "status": 401,
+    "headers": {
+      "content-type": "application/json"
+    },
+    "body": {
+      "error": {
+        "code": 401,
+        "message": "the credential presented was not accepted",
+        "status": "UNAUTHENTICATED"
+      }
+    }
+  },
+  "rateLimited": {
+    "status": 429,
+    "headers": {
+      "content-type": "application/json",
+      "retry-after": "1"
+    },
+    "body": {
+      "error": {
+        "code": 429,
+        "message": "too many requests were made; this one was not taken",
+        "status": "RESOURCE_EXHAUSTED"
+      }
+    }
+  },
+  "serverError": {
+    "status": 500,
+    "headers": {
+      "content-type": "application/json"
+    },
+    "body": {
+      "error": {
+        "code": 500,
+        "message": "something went wrong on our side",
+        "status": "INTERNAL"
+      }
+    }
+  }
+}

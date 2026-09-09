@@ -12,16 +12,22 @@
  * settles the kernel keeps counting it against concurrency.
  */
 import { randomBytes } from "node:crypto";
-import type { AgentResultEnvelope, ReconciliationOutcome, WorkPacket } from "./contracts.ts";
+import type { AgentResultEnvelope, ProviderFacts, ReconciliationOutcome, WorkPacket } from "./contracts.ts";
 import { sha256 } from "./ids.ts";
 
 export type ExecutionContext = {
   attemptId: string;
   taskId: string;
   signal: AbortSignal;
+  /* Where an executor puts what it saw of the thing that answered it. The
+     kernel writes whatever arrives here onto the attempt in the same commit
+     as the result, so the record holds the answer and the facts about it
+     together. An executor that reports nothing leaves the attempt as it was;
+     reporting twice merges, and a fact already reported is not rewritten. */
+  report(facts: ProviderFacts): void;
 };
 
-export type { ReconciliationOutcome };
+export type { ProviderFacts, ReconciliationOutcome };
 
 export interface AgentExecutor {
   readonly family: string;
@@ -48,11 +54,24 @@ export class ExecutorRegistry {
   invocations: Invocation[] = [];
   packetsSeen: WorkPacket[] = [];
 
-  /* One instance, one domain, whatever it is called. */
-  register(executor: AgentExecutor, families: string[]): string {
+  /* One instance, one domain, whatever it is called.
+
+     A caller that can name an instance in a way that outlives the process
+     passes that name, and the domain is derived from it. That matters at a
+     restart: the record says which domain read a subject, and a fresh
+     registry that invented new domain ids would call every domain unused and
+     let one reader read the same subject twice under two names. A caller
+     with nothing durable to say leaves it out and gets a domain unique to
+     this registry, which is the honest answer for an executor that exists
+     only while this process does. Two different instances may not claim one
+     durable name: that would be two opinions wearing one domain. */
+  register(executor: AgentExecutor, families: string[], durableIdentity?: string): string {
     let domain = this.domains.get(executor);
     if (!domain) {
-      domain = `domain:${sha256(`${this.nonce}:${this.domains.size}`).slice(0, 12)}`;
+      domain = `domain:${sha256(durableIdentity ? `durable-executor:${durableIdentity}` : `${this.nonce}:${this.domains.size}`).slice(0, 12)}`;
+      for (const [other, taken] of this.domains) {
+        if (taken === domain && other !== executor) throw new Error(`core-v2: two executors claim the durable identity ${durableIdentity}, and one identity is one domain`);
+      }
       this.domains.set(executor, domain);
     }
     for (const family of families) {

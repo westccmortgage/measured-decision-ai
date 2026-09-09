@@ -1,0 +1,14 @@
+{
+  "name": "@measured-decision/core-v2-runtime",
+  "version": "0.1.0",
+  "private": true,
+  "description": "The execution layer for the Core V2 kernel: an injected transport sealed by default, provider adapters behind one executor contract, a provider-neutral prompt compiler, a durable cost ledger and an outbox dispatcher. Nothing here can reach a provider without four separate authorizations.",
+  "type": "module",
+  "scripts": {
+    "core-v2:dry-run": "node --experimental-strip-types --no-warnings cli.ts --dry-run",
+    "core-v2:simulate": "node --experimental-strip-types --no-warnings cli.ts --simulate",
+    "core-v2:simulate-postgres": "node --experimental-strip-types --no-warnings cli.ts --simulate-postgres",
+    "test": "bash tests/run.sh"
+  },
+  "dependencies": {}
+}

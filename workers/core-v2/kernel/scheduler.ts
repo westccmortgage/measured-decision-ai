@@ -25,7 +25,7 @@
  */
 import type {
   AgentResultEnvelope, AssessmentRecord, AttemptRecord, AttemptState, AuditRecord, ClaimRecord, DecisionRecord, DisagreementRecord,
-  ProposedAdjudication, SegmentRecord, SourceManifest, TaskRecord, TaskState, WorkPacket, WorkflowRecord, WorkflowState,
+  ProposedAdjudication, ProviderFacts, SegmentRecord, SourceManifest, TaskRecord, TaskState, WorkPacket, WorkflowRecord, WorkflowState,
 } from "./contracts.ts";
 import { ENGINE_VERSION, KERNEL_TASK_TYPES } from "./contracts.ts";
 import { KernelDeterministicExecutor } from "./deterministic.ts";
@@ -37,7 +37,7 @@ import type { FollowUpContext } from "./follow-up-planner.ts";
 import { canonical, entityId, sha256 } from "./ids.ts";
 import { PacketOverBudget, buildPacket } from "./packet-builder.ts";
 import type { Lookup } from "./planning.ts";
-import { lookupOf, planCompositions, planDiscovery, segmentIdFor, sourceIdentityOf, specsToTasks } from "./planning.ts";
+import { lookupOf, planCompositions, planDiscovery, segmentIdFor, sourceIdentityOf, specsToTasks, workflowRecordFor } from "./planning.ts";
 import type { OrchestrationPolicy } from "./policy.ts";
 import { budgetOf } from "./policy.ts";
 import type {
@@ -157,15 +157,7 @@ export class Scheduler {
   async plan(): Promise<{ created: string[]; existing: string[]; refusals: string[] }> {
     const wf = this.manifest.workflowId;
     const sources = this.manifest.sources;
-    const sourceSet = sha256(canonical(sources.map((s) => [s.ordinal, s.sourceKind, s.uri, s.contentHash ?? `version=${s.objectVersionId}`, s.byteSize])));
-    await this.repo.createWorkflow({
-      workflowId: wf, organizationId: this.manifest.organizationId, domainPack: this.pack.id, domainPackVersion: this.pack.version,
-      workflowType: this.manifest.workflowType, engineVersion: ENGINE_VERSION, state: "created",
-      sourceSetFingerprint: sourceSet,
-      requestFingerprint: sha256(canonical([this.pack.id, this.pack.version, this.manifest.workflowType, sourceSet, this.manifest.requestedScope, ENGINE_VERSION])),
-      requestedScope: this.manifest.requestedScope, budget: budgetOf(this.policy), cancelRequestedAt: null,
-      totalUnits: 0, completedUnits: 0, attentionUnits: 0, errorCode: null, errorMessage: null,
-    }, sources);
+    await this.repo.createWorkflow(workflowRecordFor(this.manifest, this.pack, budgetOf(this.policy)), sources);
     let workflow = (await this.repo.getWorkflow(wf))!;
     if (workflow.state === "created") {
       if (await this.repo.claimOutbox(wf, this.options.dispatcher ?? this.options.owner)) workflow = (await this.repo.getWorkflow(wf))!;
@@ -488,12 +480,20 @@ export class Scheduler {
        nothing retries it — not after an exception, not after a timeout, not
        after a restart. */
     const controller = new AbortController();
+    /* What the executor says it saw. It reports while it works, so a timed-out
+       or thrown execution still leaves behind whatever was learned before it
+       went wrong — a request id and a token count are exactly what a cost
+       dispute needs, and they are lost if only a clean finish records them. */
+    let facts: ProviderFacts = {};
+    const report = (more: ProviderFacts) => {
+      facts = { ...facts, ...more, usage: { ...(facts.usage ?? {}), ...(more.usage ?? {}) } };
+    };
     const heartbeat = this.startHeartbeat(task.taskId, leaseToken);
     let envelope: AgentResultEnvelope;
     /* What came back, before the kernel gave it a shape. The record keeps
        this; the engine works from the normalised copy. */
     let raw: unknown = null;
-    const execution = this.executors.run(selection, packet, { attemptId: attempt.attemptId, taskId: task.taskId, signal: controller.signal });
+    const execution = this.executors.run(selection, packet, { attemptId: attempt.attemptId, taskId: task.taskId, signal: controller.signal, report });
     const flight = { taskId: task.taskId, roleKey: task.roleKey, family: selection.executorFamily, timedOut: false, promise: execution.then(() => undefined, () => undefined), controller };
     this.inFlight.set(attempt.attemptId, flight);
     flight.promise.then(() => { if (this.inFlight.get(attempt.attemptId) === flight && flight.timedOut) this.inFlight.delete(attempt.attemptId); });
@@ -505,8 +505,19 @@ export class Scheduler {
       if (timedOut) { flight.timedOut = true; controller.abort(); } else this.inFlight.delete(attempt.attemptId);
       heartbeat.stop();
       const code = timedOut ? "attempt_timeout" : "executor_threw";
-      await this.repo.transitionAttempt(attempt.attemptId, "submitted", "outcome_unknown", { errorCode: code, errorMessage: String((error as Error).message) });
-      await this.repo.transitionTask(task.taskId, "running", "outcome_unknown", code);
+      /* One write, so whatever the executor managed to report about the thing
+         that answered it — a request id, a token count — is on the attempt
+         even though the outcome never came back. Those are exactly the facts
+         a cost dispute needs, and an engine that records them only on a clean
+         finish loses them precisely when they matter. If the commit itself
+         cannot land, the attempt and its task are still moved by hand. */
+      try {
+        await this.repo.commitValidatedResult(this.emptyCommit(task, attempt.attemptId, null, "outcome_unknown", "outcome_unknown", `${code}: ${(error as Error).message}`, [String((error as Error).message)], facts, code));
+      } catch {
+        try { await this.repo.transitionAttempt(attempt.attemptId, "submitted", "outcome_unknown", { errorCode: code, errorMessage: String((error as Error).message) }); } catch { /* already moved */ }
+        const now = await this.repo.getTask(task.taskId);
+        if (now && now.state === "running") await this.repo.transitionTask(task.taskId, "running", "outcome_unknown", code);
+      }
       await this.repo.audit({ action: "core_v2.attempt.outcome_unknown", entityType: "agent_attempt", entityId: attempt.attemptId, detail: { task: task.taskId, code } });
       return done("outcome_unknown");
     }
@@ -514,7 +525,7 @@ export class Scheduler {
     heartbeat.stop();
 
     try {
-      return await this.settle(task, attempt, packet, refToClaimId, envelope, raw, lookup, done);
+      return await this.settle(task, attempt, packet, refToClaimId, envelope, raw, facts, lookup, done);
     } catch (error) {
       /* A fault in this engine after the answer came back. The answer is kept
          on the attempt if the commit landed; if not, the task fails known and
@@ -524,7 +535,7 @@ export class Scheduler {
         const a = await this.repo.getAttempt(attempt.attemptId);
         if (a && !["succeeded", "failed_known", "outcome_unknown", "output_limited"].includes(a.state)) {
           try {
-            await this.repo.commitValidatedResult(this.emptyCommit(task, attempt.attemptId, raw, "failed_known", "failed_known", `engine_error: ${(error as Error).message}`, [`engine: ${(error as Error).message}`]));
+            await this.repo.commitValidatedResult(this.emptyCommit(task, attempt.attemptId, raw, "failed_known", "failed_known", `engine_error: ${(error as Error).message}`, [`engine: ${(error as Error).message}`], facts));
           } catch { try { await this.repo.transitionTask(task.taskId, "running", "failed_known", `engine_error: ${(error as Error).message}`); } catch { /* already terminal */ } }
         } else {
           try { await this.repo.transitionTask(task.taskId, "running", "failed_known", `engine_error: ${(error as Error).message}`); } catch { /* already terminal */ }
@@ -535,11 +546,14 @@ export class Scheduler {
     }
   }
 
-  private emptyCommit(task: TaskRecord, attemptId: string, raw: unknown, attemptTo: ResultCommit["attempt"]["to"], taskTo: ResultCommit["task"]["to"], reason: string | null, problems: string[]): ResultCommit {
+  /* `reason` is what the attempt says happened, in a sentence. `taskReason`
+     is what the task is filed under, which is the short code a person scans a
+     queue by; when they are the same thing the sentence serves for both. */
+  private emptyCommit(task: TaskRecord, attemptId: string, raw: unknown, attemptTo: ResultCommit["attempt"]["to"], taskTo: ResultCommit["task"]["to"], reason: string | null, problems: string[], providerFacts: ProviderFacts = {}, taskReason: string | null = reason): ResultCommit {
     return {
       workflowId: task.workflowId, taskId: task.taskId, attemptId,
-      attempt: { to: attemptTo, validationState: problems.length ? "invalid" : "not_applicable", validationProblems: problems, rawResult: raw, rawResultHash: sha256(canonical(raw)), errorCode: attemptTo === "succeeded" ? null : reason?.split(":")[0] ?? null, errorMessage: reason },
-      task: { to: taskTo, reason }, segments: [], claims: [], assessments: [], disagreements: [], claimTransitions: [], disagreementRounds: [],
+      attempt: { to: attemptTo, validationState: problems.length ? "invalid" : "not_applicable", validationProblems: problems, rawResult: raw, rawResultHash: sha256(canonical(raw)), errorCode: attemptTo === "succeeded" ? null : reason?.split(":")[0] ?? null, errorMessage: reason, providerFacts },
+      task: { to: taskTo, reason: taskReason }, segments: [], claims: [], assessments: [], disagreements: [], claimTransitions: [], disagreementRounds: [],
       disagreementTransitions: [], decisions: [], children: [], dependencies: [], followUps: [], taskTransitions: [], audits: [], limits: this.limits,
     };
   }
@@ -620,7 +634,8 @@ export class Scheduler {
     return {
       attemptId, workflowId: task.workflowId, taskId: task.taskId, attemptNo, roleKey: task.roleKey, roleVersion: task.roleVersion,
       executorKind: kind, executorFamily: family, independenceDomain: domain, modelConfiguration: configuration, state: "prepared",
-      leaseToken, packetFingerprint, packetBytes, providerRequestId: null, modelReported: null, usage: {}, rawResult: null, rawResultHash: null,
+      leaseToken, packetFingerprint, packetBytes, providerRequestId: null, modelReported: null, usage: {},
+      providerStopReason: null, providerDurationMs: null, providerResponse: null, rawResult: null, rawResultHash: null,
       validationState: "pending", validationProblems: [], errorCode: null, errorMessage: null, reconciliationOutcome: null,
     };
   }
@@ -628,17 +643,17 @@ export class Scheduler {
   /* ─────────────────────────────────────────────── settling an answer */
 
   private async settle(
-    task: TaskRecord, attempt: AttemptRecord, packet: WorkPacket, refToClaimId: Record<string, string>, envelope: AgentResultEnvelope, raw: unknown, lookup: Lookup,
+    task: TaskRecord, attempt: AttemptRecord, packet: WorkPacket, refToClaimId: Record<string, string>, envelope: AgentResultEnvelope, raw: unknown, facts: ProviderFacts, lookup: Lookup,
     done: (state: string, extra?: Partial<{ childrenCreated: number; childrenReused: number; escalations: string[]; discovered: boolean }>) => { taskId: string; state: string; childrenCreated: number; childrenReused: number; escalations: string[]; discovered: boolean },
   ) {
     const role = this.registry.role(task.roleKey);
     if (envelope.outcome === "outcome_unknown") {
-      await this.repo.commitValidatedResult(this.emptyCommit(task, attempt.attemptId, raw, "outcome_unknown", "outcome_unknown", "provider_outcome_unknown", []));
+      await this.repo.commitValidatedResult(this.emptyCommit(task, attempt.attemptId, raw, "outcome_unknown", "outcome_unknown", "provider_outcome_unknown", [], facts));
       await this.repo.audit({ action: "core_v2.attempt.outcome_unknown", entityType: "agent_attempt", entityId: attempt.attemptId, detail: { task: task.taskId } });
       return done("outcome_unknown");
     }
     if (envelope.outcome === "failed_known") {
-      await this.repo.commitValidatedResult(this.emptyCommit(task, attempt.attemptId, raw, "failed_known", "failed_known", envelope.limitations[0] ?? "failed_known", []));
+      await this.repo.commitValidatedResult(this.emptyCommit(task, attempt.attemptId, raw, "failed_known", "failed_known", envelope.limitations[0] ?? "failed_known", [], facts));
       return done("failed_known");
     }
 
@@ -646,7 +661,7 @@ export class Scheduler {
     try { validation = validateEnvelope(packet, envelope, { role, pack: this.pack, lookup, policy: this.policy }); }
     catch (error) { validation = { ok: false, problems: [`the envelope could not be validated: ${(error as Error).message}`] }; }
     if (!validation.ok) {
-      await this.repo.commitValidatedResult(this.emptyCommit(task, attempt.attemptId, raw, "failed_known", "failed_known", `invalid_envelope: ${validation.problems[0]}`, validation.problems));
+      await this.repo.commitValidatedResult(this.emptyCommit(task, attempt.attemptId, raw, "failed_known", "failed_known", `invalid_envelope: ${validation.problems[0]}`, validation.problems, facts));
       await this.repo.audit({ action: "core_v2.attempt.invalid_envelope", entityType: "agent_attempt", entityId: attempt.attemptId, detail: { task: task.taskId, problems: validation.problems } });
       return done("failed_known");
     }
@@ -656,7 +671,7 @@ export class Scheduler {
     const s = await this.settlementOf(task, attempt, packet, refToClaimId, envelope, lookup);
     const commit: ResultCommit = {
       workflowId: task.workflowId, taskId: task.taskId, attemptId: attempt.attemptId,
-      attempt: { to: "succeeded", validationState: "valid", validationProblems: [], rawResult: raw, rawResultHash: sha256(canonical(raw)), errorCode: null, errorMessage: null },
+      attempt: { to: "succeeded", validationState: "valid", validationProblems: [], rawResult: raw, rawResultHash: sha256(canonical(raw)), errorCode: null, errorMessage: null, providerFacts: facts },
       task: { to: "completed", reason: envelope.outcome === "insufficient_evidence" ? "insufficient_evidence" : null },
       segments: s.segments, claims: s.claims, assessments: s.assessments, disagreements: s.disagreements,
       claimTransitions: s.claimTransitions, disagreementRounds: s.disagreementRounds, disagreementTransitions: s.disagreementTransitions,
@@ -954,9 +969,14 @@ export class Scheduler {
       case "correct": {
         const template = await this.repo.getClaim([...dis.claimIds].sort()[0]);
         if (!template || anchorsOf.length === 0) return this.escalateExisting(dis, task, "a correction needs source anchors", s);
-        const assessmentIds = (await this.repo.listAssessments(dis.claimIds)).map((a) => a.assessmentId);
-        const anchors = [...await this.repo.listAnchors(dis.claimIds), ...await this.repo.listAssessmentAnchors(assessmentIds)].filter((a) => anchorsOf.includes(a.anchorId));
+        const reviewers = await this.repo.listAssessments(dis.claimIds);
+        const anchors = [...await this.repo.listAnchors(dis.claimIds), ...await this.repo.listAssessmentAnchors(reviewers.map((a) => a.assessmentId))].filter((a) => anchorsOf.includes(a.anchorId));
         if (anchors.length === 0) return this.escalateExisting(dis, task, "the correction rests on anchors the record does not hold", s);
+        /* Whether the correction rests on somebody else's reading of the
+           source. An arbiter that corrects on nothing but its own domain's
+           reviewing has proposed a value, not established one. */
+        const reviewedElsewhere = anchors.some((a) => a.assessmentId !== null
+          && reviewers.some((r) => r.assessmentId === a.assessmentId && r.independenceDomain !== attempt.independenceDomain));
         const claimId = entityId("claim", attempt.attemptId, "corrected");
         s.claims.push({
           claimId, workflowId: task.workflowId, taskId: task.taskId, attemptId: attempt.attemptId, independenceGroup: null, independenceDomain: attempt.independenceDomain,
@@ -964,7 +984,7 @@ export class Scheduler {
           observationBasis: template.observationBasis, scope: template.scope, status: "proposed", machineConfidence: null, inputClaimIds: [], incompleteSourceAttempt: false, supersedesClaimId: null,
           anchors: anchors.map((a) => ({ anchorId: entityId("anchor", claimId, a.anchorId), sourceKind: a.sourceKind, sourceId: a.sourceId, segmentId: a.segmentId, locator: a.locator, quotedText: a.quotedText, anchorHash: a.anchorHash })),
         });
-        return this.resolveWith(task, attempt, dis, "accept_claim", proposal, claimId, anchorsOf, s, "corrected");
+        return this.resolveWith(task, attempt, dis, "accept_claim", proposal, claimId, anchorsOf, s, "corrected", reviewedElsewhere);
       }
       case "reject_all":
         return this.resolveWith(task, attempt, dis, "reject_all", proposal, null, anchorsOf, s);
@@ -989,7 +1009,7 @@ export class Scheduler {
     }
   }
 
-  private async resolveWith(task: TaskRecord, attempt: AttemptRecord, dis: DisagreementRecord, type: "accept_claim" | "reject_all", proposal: ProposedAdjudication, acceptedClaimId: string | null, anchorIds: string[], s: Settlement, label: string = type) {
+  private async resolveWith(task: TaskRecord, attempt: AttemptRecord, dis: DisagreementRecord, type: "accept_claim" | "reject_all", proposal: ProposedAdjudication, acceptedClaimId: string | null, anchorIds: string[], s: Settlement, label: string = type, reviewedElsewhere: boolean = false) {
     const decisionId = entityId("decision", task.taskId, label);
     const evidence: DecisionRecord["evidence"] = [];
     if (acceptedClaimId) {
@@ -997,6 +1017,10 @@ export class Scheduler {
       const accepted = pending ?? await this.repo.getClaim(acceptedClaimId);
       const anchorsCount = pending ? pending.anchors.length : (accepted as ClaimRecord | null)?.anchorIds.length ?? 0;
       if (!accepted || anchorsCount === 0 || accepted.incompleteSourceAttempt) return this.escalateExisting(dis, task, "the arbiter accepted a reading that is unanchored or was cut short — a person decides", s);
+      if (!await this.acceptanceCanStand(task.workflowId, acceptedClaimId, accepted.independenceDomain ?? null, reviewedElsewhere)) {
+        return this.escalateExisting(dis, task,
+          "nothing from outside the domain that produced this value has confirmed it: an acceptance needs a reading of the source from another domain, a deterministic rule or a person, so a person decides", s);
+      }
       s.claimTransitions.push({ claimId: acceptedClaimId, from: accepted.status, to: "accepted" });
       evidence.push({ claimId: acceptedClaimId, anchorId: null, link: "supports", rule: null });
     }
@@ -1015,6 +1039,30 @@ export class Scheduler {
     } });
     s.disagreementTransitions.push({ disagreementId: dis.disagreementId, from: dis.state, to: "resolved", resolutionDecisionId: decisionId });
     s.audits.push({ action: "core_v2.disagreement.adjudicated", entityType: "disagreement", entityId: dis.disagreementId, detail: { outcome: label, decision: decisionId, accepted: acceptedClaimId, kept: dis.claimIds } });
+  }
+
+  /* WHAT THE RECORD WILL LET STAND, ASKED BEFORE IT IS WRITTEN.
+     docs/core-v2.md §4, and the guard migration 058 enforces at the end of
+     every write: a machine reading becomes accepted on a verdict from
+     another executor domain, on a deterministic rule, on a person — or, for
+     an adjudicator's correction, on a reviewer's anchor from a domain other
+     than the one that made the correction. This is not a second rule beside
+     that one; it is the same rule asked in time. Without it an engine that
+     composes an acceptance the record refuses ends its attempt with an
+     engine error, where the honest outcome was a subject held for a person.
+
+     Three domains are not always enough for this to be satisfiable. Two
+     blind readings, a reviewer that is neither of them, and an arbiter that
+     is none of the three is four domains; with three providers configured,
+     an arbiter's correction is a proposal a person settles, and that is the
+     correct answer rather than a failure. */
+  private async acceptanceCanStand(workflowId: string, claimId: string, domain: string | null, reviewedElsewhere: boolean): Promise<boolean> {
+    if (!domain) return true;
+    if (reviewedElsewhere) return true;
+    const supported = (await this.repo.listAssessments([claimId])).some((a) => a.assessment === "supports" && a.independenceDomain !== domain);
+    if (supported) return true;
+    return (await this.repo.listDecisions(workflowId)).some((d) => (d.authority === "deterministic_rule" || d.authority === "human")
+      && d.evidence.some((e) => e.claimId === claimId && e.link === "supports"));
   }
 
   /* A dispute that goes to a person: the claims become unresolved, a hold

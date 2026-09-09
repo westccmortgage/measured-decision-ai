@@ -1,0 +1,219 @@
+{
+  "_": "INVENTED. Nothing here was copied from a provider and nothing here proves that a provider would accept the request that produced it: the ids, the model names and the counts are made up. What it does prove is that this adapter reads an answer OF THIS SHAPE the same way every time. Which official field each part stands for is written in \"documents\" below; \"expectedNormalized\" is what budget/usage.ts must make of the good answer's counts, kept separate from the raw answer on purpose, because the whole billing question is what the raw numbers MEAN.",
+  "documents": {
+    "endpoint": "POST /v1/messages (non-streaming)",
+    "id": "the message id; the request-id header is the identifier of the call",
+    "model": "the model that actually answered",
+    "stop_reason": "tool_use when the forced tool was called; max_tokens at the output ceiling; refusal when it declined",
+    "content[].type=tool_use": "the forced tool call whose input is the result envelope",
+    "content[].type=text": "prose beside the call \u2014 only ever a partial answer here",
+    "usage.input_tokens": "input tokens NOT served from or written to a cache",
+    "usage.cache_read_input_tokens": "input tokens served from a cache, counted separately from input_tokens",
+    "usage.cache_creation_input_tokens": "input tokens written into a cache, counted separately from input_tokens",
+    "usage.output_tokens": "output tokens, INCLUDING any thinking the model did"
+  },
+  "expectedNormalized": {
+    "uncached_input_tokens": 1200,
+    "cached_input_read_tokens": 800,
+    "cached_input_write_tokens": 64,
+    "visible_output_tokens": 340,
+    "reasoning_output_tokens": 0
+  },
+  "askedModel": "alpha-reader-1",
+  "reportedModel": "alpha-reader-1-2026-04-01",
+  "requestId": "req_alpha_0f31c7",
+  "good": {
+    "status": 200,
+    "headers": {
+      "content-type": "application/json",
+      "request-id": "req_alpha_0f31c7"
+    },
+    "body": {
+      "id": "msg_alpha_a1b2c3",
+      "type": "message",
+      "role": "assistant",
+      "model": "alpha-reader-1-2026-04-01",
+      "stop_reason": "tool_use",
+      "stop_sequence": null,
+      "content": [
+        {
+          "type": "tool_use",
+          "id": "toolu_alpha_9x",
+          "name": "result_envelope",
+          "input": {
+            "outcome": "completed",
+            "claims": [
+              {
+                "claimKey": "c1",
+                "subjectType": "entry",
+                "subjectKey": "entry/E-001",
+                "predicate": "recorded_amount",
+                "value": {
+                  "known": true,
+                  "quantity": 12,
+                  "text": "12 units"
+                },
+                "unit": "units",
+                "observationBasis": "observed",
+                "scope": {
+                  "table": "t1"
+                },
+                "anchorKeys": [
+                  "a1"
+                ]
+              }
+            ],
+            "anchors": [
+              {
+                "anchorKey": "a1",
+                "sourceKind": "segment_locator",
+                "sourceId": "src-1",
+                "segmentId": "seg-1",
+                "locator": {
+                  "bbox": [
+                    0.1,
+                    0.2,
+                    0.3,
+                    0.4
+                  ]
+                },
+                "quotedText": "12 units"
+              }
+            ],
+            "assessments": [],
+            "limitations": []
+          }
+        }
+      ],
+      "usage": {
+        "input_tokens": 1200,
+        "output_tokens": 340,
+        "cache_read_input_tokens": 800,
+        "cache_creation_input_tokens": 64
+      }
+    }
+  },
+  "refusal": {
+    "status": 200,
+    "headers": {
+      "content-type": "application/json",
+      "request-id": "req_alpha_refuse"
+    },
+    "body": {
+      "id": "msg_alpha_refuse",
+      "type": "message",
+      "role": "assistant",
+      "model": "alpha-reader-1-2026-04-01",
+      "stop_reason": "refusal",
+      "content": [
+        {
+          "type": "text",
+          "text": "I will not answer this request."
+        }
+      ],
+      "usage": {
+        "input_tokens": 1200,
+        "output_tokens": 9
+      }
+    }
+  },
+  "outputCeiling": {
+    "status": 200,
+    "headers": {
+      "content-type": "application/json",
+      "request-id": "req_alpha_ceiling"
+    },
+    "body": {
+      "id": "msg_alpha_ceiling",
+      "type": "message",
+      "role": "assistant",
+      "model": "alpha-reader-1-2026-04-01",
+      "stop_reason": "max_tokens",
+      "content": [
+        {
+          "type": "text",
+          "text": "{\"outcome\":\"completed\",\"claims\":[{\"claimKey\":\"c1\",\"subjectKey\":\"entry/E-001\",\"value\":{\"known\":true,\"quantity\":1"
+        }
+      ],
+      "usage": {
+        "input_tokens": 1200,
+        "output_tokens": 4096,
+        "cache_read_input_tokens": 800
+      }
+    }
+  },
+  "malformedAnswer": {
+    "status": 200,
+    "headers": {
+      "content-type": "application/json",
+      "request-id": "req_alpha_malformed"
+    },
+    "body": {
+      "id": "msg_alpha_malformed",
+      "type": "message",
+      "role": "assistant",
+      "model": "alpha-reader-1-2026-04-01",
+      "stop_reason": "end_turn",
+      "content": [
+        {
+          "type": "text",
+          "text": "Here is what I read: entry E-001 shows 12 units."
+        }
+      ],
+      "usage": {
+        "input_tokens": 1200,
+        "output_tokens": 14
+      }
+    }
+  },
+  "malformedBody": {
+    "status": 200,
+    "headers": {
+      "content-type": "text/plain"
+    },
+    "body": "not an answer, and not JSON either"
+  },
+  "unauthorized": {
+    "status": 401,
+    "headers": {
+      "content-type": "application/json",
+      "request-id": "req_alpha_401"
+    },
+    "body": {
+      "type": "error",
+      "error": {
+        "type": "authentication_error",
+        "message": "the credential presented was not accepted"
+      }
+    }
+  },
+  "rateLimited": {
+    "status": 429,
+    "headers": {
+      "content-type": "application/json",
+      "request-id": "req_alpha_429",
+      "retry-after": "1"
+    },
+    "body": {
+      "type": "error",
+      "error": {
+        "type": "rate_limit_error",
+        "message": "too many requests were made; this one was not taken"
+      }
+    }
+  },
+  "serverError": {
+    "status": 500,
+    "headers": {
+      "content-type": "application/json",
+      "request-id": "req_alpha_500"
+    },
+    "body": {
+      "type": "error",
+      "error": {
+        "type": "internal_error",
+        "message": "something went wrong on our side"
+      }
+    }
+  }
+}

@@ -555,12 +555,15 @@ const crossImports = [
   ...packSources("synthetic-records").filter((s) => /synthetic-transcripts/.test(s.text)).map((s) => s.file),
 ];
 t.check("neither pack imports, mentions or otherwise reaches the other — a pack is optional, and nothing depends on which one is installed",
-  crossImports.length === 0 && packSources("synthetic-transcripts").length === 3 && packSources("synthetic-records").length === 3,
+  crossImports.length === 0 && packSources("synthetic-transcripts").length >= 3 && packSources("synthetic-records").length >= 3,
   crossImports.join(", ") || "no cross-reference in either direction");
 
-t.check("every import a pack file makes goes to the kernel, to the shared scripted executor, or to its own directory",
+/* A pack may use node's own standard library — one of them renders its
+   material, and rendering an image needs a compressor. What it may not do is
+   reach any other part of this repository, or any dependency at all. */
+t.check("every import a pack file makes goes to the kernel, to the shared scripted executor, to its own directory, or to node itself",
   [...packSources("synthetic-transcripts"), ...packSources("synthetic-records")].every((s) =>
-    (s.text.match(/from "([^"]+)"/g) ?? []).every((m) => /"\.\.\/\.\.\/kernel\/|"\.\.\/mock-executor\.ts"|"\.\/[a-z-]+\.ts"/.test(m))));
+    (s.text.match(/from "([^"]+)"/g) ?? []).every((m) => /"\.\.\/\.\.\/kernel\/|"\.\.\/mock-executor\.ts"|"\.\/[a-z-]+\.ts"|"node:[a-z_]+"/.test(m))));
 
 /* ═══════════════════════════ (5) the fixture invents the same world twice */
 

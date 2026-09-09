@@ -20,7 +20,7 @@ import { canonical, sha256 } from "./ids.ts";
 import { locatorInside, locatorProblem } from "./locators.ts";
 import type {
   Admission, AdmissionLimits, ClaimFilter, CommitOutcome, DecisionApplication, DisagreementTransition, NewAnchor,
-  HoldOutcome, NewClaim, NewSegment, NewTask, OrchestrationRepository, ResultCommit, SubjectHold, SubmitOutcome,
+  HoldOutcome, NewClaim, NewSegment, NewTask, OrchestrationRepository, ResultCommit, SubjectHold, SubmissionRider, SubmitOutcome,
 } from "./repository.ts";
 import { taskPayload } from "./repository.ts";
 import {
@@ -41,6 +41,10 @@ export class InMemoryOrchestrationRepository implements OrchestrationRepository 
   tasks = new Map<string, TaskRecord>();
   dependencies: DependencyRecord[] = [];
   attempts = new Map<string, AttemptRecord>();
+  /* Attempts whose submission is waiting for a rider. This record has no
+     transaction, so this set is what keeps two submissions of one attempt
+     from both running one. */
+  private submitting = new Set<string>();
   claims = new Map<string, ClaimRecord>();
   anchors = new Map<string, AnchorRecord>();
   assessments = new Map<string, AssessmentRecord>();
@@ -344,7 +348,7 @@ export class InMemoryOrchestrationRepository implements OrchestrationRepository 
     this.attempts.set(record.attemptId, { ...record, workflowId: task.workflowId });
     return this.attempts.get(record.attemptId)!;
   }
-  async submitAttempt(attemptId: string, leaseToken: string, now: number): Promise<SubmitOutcome> {
+  async submitAttempt(attemptId: string, leaseToken: string, now: number, alongside?: SubmissionRider): Promise<SubmitOutcome> {
     const attempt = this.attempts.get(attemptId);
     if (!attempt) return { ok: false, reason: "no such attempt" };
     const task = this.tasks.get(attempt.taskId);
@@ -362,6 +366,33 @@ export class InMemoryOrchestrationRepository implements OrchestrationRepository 
       const peers = new Set([...this.tasks.values()].filter((t) => t.workflowId === task.workflowId && t.subjectKey === task.subjectKey && t.independenceGroup !== null && t.independenceGroup !== task.independenceGroup).map((t) => t.taskId));
       const clash = [...this.attempts.values()].find((a) => peers.has(a.taskId) && SUBMITTED_ATTEMPT_STATES.includes(a.state) && a.independenceDomain === attempt.independenceDomain);
       if (clash) return { ok: false, reason: `independence: domain ${attempt.independenceDomain} already read ${task.subjectKey} as another group` };
+    }
+    /* THIS RECORD HAS NO UNIT OF WORK, AND DOES NOT PRETEND OTHERWISE.
+       It runs the rider last, after every rule has passed, and moves the
+       attempt only if the rider agreed — which is enough when the rider only
+       reads, or writes somewhere that dies with this process.
+
+       It is NOT enough when the rider writes something durable elsewhere. The
+       guards below reduce the window and do not close it: `submitting` stops a
+       second submission of the same attempt from running a second rider, and
+       the recheck stops a rider being paired with an attempt that moved — but
+       neither can roll back what the rider already made durable somewhere this
+       record cannot reach, and nothing here stops transitionAttempt from
+       moving the attempt while the rider is awaited. So `null` is passed
+       deliberately: it is this record telling the rider, truthfully, that
+       there is no unit of work to join. A rider that needs one must refuse on
+       seeing it, and the runtime's own rider does exactly that. */
+    if (alongside) {
+      if (this.submitting.has(attemptId)) return { ok: false, reason: "the attempt is already being submitted" };
+      this.submitting.add(attemptId);
+      try {
+        const rode = await alongside(null);
+        if (!rode.ok) return { ok: false, reason: rode.reason };
+      } finally {
+        this.submitting.delete(attemptId);
+      }
+      const still = this.attempts.get(attemptId);
+      if (!still || still.state !== "prepared") return { ok: false, reason: `attempt is ${still ? still.state : "gone"}` };
     }
     const next = { ...attempt, state: "submitted" as AttemptState, leaseToken };
     this.attempts.set(attemptId, next);
@@ -427,8 +458,19 @@ export class InMemoryOrchestrationRepository implements OrchestrationRepository 
     if (attempt.rawResult !== null && attempt.rawResult !== undefined && attempt.rawResultHash !== commit.attempt.rawResultHash) throw new Error("core-v2: a stored result is not replaced");
 
     /* The attempt: raw result once, then its states in order. */
+    /* The facts the executor reported are written with the result and never
+       afterwards: a fact already on the row stands, and a fact the executor
+       could not give leaves the row as it was. */
+    const facts = commit.attempt.providerFacts ?? {};
+    const kept = <T,>(existing: T, arriving: T | null | undefined): T => (existing !== null && existing !== undefined ? existing : (arriving ?? existing));
     let current: AttemptRecord = { ...attempt, rawResult: commit.attempt.rawResult, rawResultHash: commit.attempt.rawResultHash,
-      validationState: commit.attempt.validationState, validationProblems: commit.attempt.validationProblems };
+      validationState: commit.attempt.validationState, validationProblems: commit.attempt.validationProblems,
+      providerRequestId: kept(attempt.providerRequestId, facts.requestId),
+      modelReported: kept(attempt.modelReported, facts.modelReported),
+      usage: Object.keys(attempt.usage).length ? attempt.usage : (facts.usage ?? {}),
+      providerStopReason: kept(attempt.providerStopReason, facts.stopReason),
+      providerDurationMs: kept(attempt.providerDurationMs, facts.durationMs),
+      providerResponse: kept(attempt.providerResponse, facts.response) };
     this.attempts.set(current.attemptId, current);
     const path: AttemptState[] = commit.attempt.to === "succeeded" ? ["response_received", "parsed", "succeeded"]
       : commit.attempt.to === "failed_known" ? (current.state === "submitted" ? ["response_received", "failed_known"] : ["failed_known"])
