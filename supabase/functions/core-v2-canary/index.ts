@@ -71,20 +71,13 @@ const MAY_HAVE_BEEN_BILLED = [
    outcome nobody knows rather than lost with the container. */
 const DRAIN_DEADLINE_MS = 140_000;
 
-/* WHEN TO STOP STARTING, AS OPPOSED TO WHEN TO STOP.
- *
- * A pass that is killed mid-flight orphans whatever it had submitted, and
- * the next pass finds those leases expired. The engine then does the right
- * thing and the wrong thing at once: it refuses to settle a subject whose
- * blind reader was lost, raises a coverage disagreement and escalates it to
- * a person — correct, and entirely caused by the wall clock rather than by
- * anything either reader said.
- *
- * So the dispatcher is given a signal that fires well before the hard
- * deadline. It stops STARTING work then, and stop() waits for what is
- * already in flight, which leaves an attempt either finished or never begun
- * — never abandoned halfway. */
-const STOP_STARTING_MS = 45_000;
+/* A pass killed mid-flight orphans whatever it had submitted, and the next
+   pass finds those leases expired. The engine then does the right thing and
+   the wrong thing at once: it refuses to settle a subject whose blind reader
+   was lost, raises a coverage disagreement and escalates it to a person —
+   correct, and entirely caused by the wall clock rather than by anything
+   either reader said. The three numbers below are how that is avoided, and
+   they are one piece of arithmetic, not three preferences. */
 
 /* HOW LONG A PROVIDER MAY TAKE, AS OPPOSED TO HOW LONG IT SAYS IT MAY TAKE.
  *
@@ -95,12 +88,24 @@ const STOP_STARTING_MS = 45_000;
  * whose outcome nobody will ever know. The engine never retries one of
  * those, so every one of them costs a subject its coverage.
  *
- * The window is what is left after the last request may be started, minus
- * the room a finished answer needs to be parsed, priced, settled and
- * written. Inside it a provider that does not answer becomes a KNOWN
- * failure, on this pass, with a reason — which the engine can act on. */
-const SETTLEMENT_ROOM_MS = 35_000;
-const ANSWER_WITHIN_MS = DRAIN_DEADLINE_MS - STOP_STARTING_MS - SETTLEMENT_ROOM_MS;
+ * Thirty seconds is not a guess. Every answer this canary has actually
+ * received came back between six and thirteen seconds; thirty is more than
+ * twice the slowest. Inside it a provider that does not answer becomes a
+ * KNOWN failure, on this pass, with a reason the engine can act on. */
+const ANSWER_WITHIN_MS = 30_000;
+
+/* The room a finished answer needs after it arrives: parsed, validated,
+   priced, settled, its claims and anchors written, its task closed. */
+const SETTLEMENT_ROOM_MS = 20_000;
+
+/* WHEN TO STOP STARTING, AS OPPOSED TO WHEN TO STOP — and it is derived, not
+   chosen. The last request this pass starts must be able to answer inside
+   its window and still be written down before the container goes. Everything
+   before that moment is time the pass can spend on work. The first version
+   of this file picked forty-five seconds by hand while a provider was
+   allowed two minutes; the arithmetic did not hold, and the pass spent a
+   third of its life starting work and the rest not allowed to. */
+const STOP_STARTING_MS = DRAIN_DEADLINE_MS - ANSWER_WITHIN_MS - SETTLEMENT_ROOM_MS;
 
 /* WHICH RUN THIS IS. The canary id is immutable per run; a run whose
    workflow already reached a terminal state cannot be continued, so a
