@@ -7,7 +7,65 @@ taken away.
 Everything in this directory is finished and tested. It has **not** been
 deployed and has **not** been invoked.
 
-## The run that happened, and what it measured
+## The canary happened. Run 34381192492, 2026-09-09.
+
+The engine ran end to end against the production record and made one real
+provider submission. Workflow `88fdf095-4d86-51fe-8afa-bd6b299ef4a4`,
+organisation synthetic, state **partial / needs a person**.
+
+The probe passed first — one backend across BEGIN, SAVEPOINT, ROLLBACK TO
+SAVEPOINT and COMMIT through Supavisor session mode at
+`aws-1-us-east-2.pooler.supabase.com:5432`, with 058 and 059 visible — and
+only then was the paid gate opened.
+
+Two attempts, which is what a stop-on-first-failure engine produces here:
+
+| role | family | domain | state | request id |
+|---|---|---|---|---|
+| `source_ingestor` | deterministic | `domain:a591e9f4772b` | **succeeded** | — |
+| `region_discoverer` | reader-family-one → anthropic | `domain:5ea05a21a32d` | **failed_known** | `req_011CetEibm38GVpzR5k9wstZ` |
+
+The paid one reached Anthropic and came back **404**,
+`provider_rejected_request`. The request id proves it arrived; the 404 says
+the endpoint or the model id in the registry is not one that account can
+serve. No retry, no fallback, no second submission: the workflow went to
+`partial` and stopped, which is the rule working.
+
+**The money.** Authorised $5.000000. Reserved $0.184320 — the ceiling, and
+the stored basis reproduces it exactly:
+
+    ceiling_rule                     core-v2.ceiling.1
+    ceiling_input_per_million        10      (the cache-write rate, not the $5 input rate)
+    ceiling_output_per_million       25
+    maximum_input_tokens             8192
+    maximum_output_tokens            4096
+    maximum_cost                     0.18432
+
+Settled **nothing**, and the reason is the one Codex spent two review rounds
+insisting on:
+
+    settlement refused: the provider reported no usage at all,
+    so what this attempt cost is not known
+
+A 404 carries no usage block. The ledger did not settle it at zero, because
+"free" and "unknown" are different facts and only one of them may be written
+down as a number. So **one unresolved hold of $0.184320 stands** against the
+authority, flagged for attention. Anthropic almost certainly billed nothing
+for a rejected request — but the engine refuses to assert that on its own,
+which is correct, and a person closes it.
+
+Evidence: 1 claim (`source:0 / content_identity`, accepted, `derived`), 1
+anchor, 1 machine decision (`accept_claim`, `deterministic_rule`,
+`source_identity_matches_manifest`), 0 assessments, 0 disagreements — the
+reader never answered, so there was nothing to compare or assess.
+
+**The HTTP 500 was mine, not the engine's.** The report query selected
+`r.currency` from `attempt_cost_reservations`, which has no such column, so
+the handler threw after the workflow had already settled and the ledger had
+already closed the unused authority. Fixed in this commit. Everything the
+response would have carried is in the record and is quoted above.
+
+## The earlier run, and what it measured
 
 Run 34340500490, 2026-09-09, dispatched once against this branch.
 

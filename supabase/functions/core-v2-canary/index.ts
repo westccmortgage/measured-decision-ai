@@ -500,7 +500,7 @@ async function report(db: CanaryDatabase, ledger: BudgetLedger, extra: Record<st
          from public.agent_attempts a where a.workflow_id = $1 order by a.created_at`, [WORKFLOW_ID]),
     reservations: await rows(
       `select r.attempt_id, r.state, r.reserved_cost::text as reserved_cost, r.settled_cost::text as settled_cost,
-              r.currency, r.reserved_input_tokens, r.reserved_output_tokens,
+              r.reserved_input_tokens, r.reserved_output_tokens,
               r.usage::text as raw_usage, r.normalized_usage::text as normalized_usage, r.normalization_version,
               r.price_basis::text as price_basis, r.release_reason, r.attention_reason,
               r.reserved_at, r.settled_at, r.released_at
