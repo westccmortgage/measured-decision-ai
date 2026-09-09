@@ -197,19 +197,32 @@ async function chooseGeneration(db: CanaryDatabase): Promise<{ generation: numbe
   }
   const candidates: string[] = [];
   for (let g = 1; g <= MAXIMUM_GENERATIONS; g++) candidates.push(workflowIdFor(g));
+  /* Unfinished tasks are not the same as work a machine can still do. An
+     attempt whose outcome nobody knows is never retried automatically — a
+     person authorises that — so a workflow the engine has escalated is one
+     the engine has finished with, however many tasks are still open on it.
+     Counting those as resumable would wedge the canary on a workflow
+     waiting for a human forever. */
   const seen = await db.query(
     `select w.id::text as id,
             (select count(*) from public.workflow_tasks k
-              where k.workflow_id = w.id and k.state <> all($2::text[]))::text as unfinished
+              where k.workflow_id = w.id and k.state <> all($2::text[]))::text as unfinished,
+            (select count(*) from public.disagreements d
+              where d.workflow_id = w.id and d.state = 'needs_human')::text as awaiting_person
        from public.intelligence_workflows w where w.id = any($1::uuid[])`,
     [`{${candidates.join(",")}}`, `{${TASK_IS_DONE.join(",")}}`],
   );
-  const unfinishedOf = new Map(seen.rows.map((row) => [String(row.id), Number(row.unfinished ?? "0")]));
+  const standingOf = new Map(seen.rows.map((row) => [String(row.id), {
+    unfinished: Number(row.unfinished ?? "0"),
+    awaitingPerson: Number(row.awaiting_person ?? "0"),
+  }]));
   for (let g = 1; g <= MAXIMUM_GENERATIONS; g++) {
     const id = workflowIdFor(g);
-    const unfinished = unfinishedOf.get(id);
-    if (unfinished === undefined) return { generation: g, runId: runIdFor(g), workflowId: id, resuming: false };
-    if (unfinished > 0) return { generation: g, runId: runIdFor(g), workflowId: id, resuming: true };
+    const found = standingOf.get(id);
+    if (found === undefined) return { generation: g, runId: runIdFor(g), workflowId: id, resuming: false };
+    if (found.unfinished > 0 && found.awaitingPerson === 0) {
+      return { generation: g, runId: runIdFor(g), workflowId: id, resuming: true };
+    }
   }
   throw new Error(`core-v2-canary: ${MAXIMUM_GENERATIONS} generations have all finished; nothing further runs without a decision`);
 }
@@ -341,15 +354,20 @@ Deno.serve(async (request: Request): Promise<Response> => {
     const standing = await db.query(
       `select w.state,
               (select count(*) from public.workflow_tasks k
-                where k.workflow_id = w.id and k.state <> all($2::text[]))::text as unfinished
+                where k.workflow_id = w.id and k.state <> all($2::text[]))::text as unfinished,
+              (select count(*) from public.disagreements d
+                where d.workflow_id = w.id and d.state = 'needs_human')::text as awaiting_person
          from public.intelligence_workflows w where w.id = $1`,
       [WORKFLOW_ID, `{${TASK_IS_DONE.join(",")}}`],
     );
     const state = standing.rows[0]?.state ?? null;
     const unfinishedTasks = Number(standing.rows[0]?.unfinished ?? "0");
-    if (state !== null && unfinishedTasks === 0) {
+    const awaitingPerson = Number(standing.rows[0]?.awaiting_person ?? "0");
+    if (state !== null && (unfinishedTasks === 0 || awaitingPerson > 0)) {
       return json(409, {
-        refused: `${RUN_ID} has no work left (state "${state}"); a finished workflow is not re-run`,
+        refused: awaitingPerson > 0
+          ? `${RUN_ID} is waiting for a person on ${awaitingPerson} disagreement(s); the engine is finished with it`
+          : `${RUN_ID} has no work left (state "${state}"); a finished workflow is not re-run`,
         hint: "set CORE_V2_CANARY_GENERATION to the next number for a fresh workflow",
         workflowId: WORKFLOW_ID,
       });
