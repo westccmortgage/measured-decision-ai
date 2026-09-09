@@ -104,10 +104,19 @@ Deno.serve(async (request: Request): Promise<Response> => {
   /* ── 1 · the trigger ───────────────────────────────────────────────── */
   const offered = request.headers.get(TRIGGER_HEADER) ?? "";
   if (!offered) return json(401, { refused: `no ${TRIGGER_HEADER}` });
-  if (!sameDigest(await sha256Hex(offered), TRIGGER_DIGEST)) return json(401, { refused: "the trigger does not match" });
+  /* Two ways to hold the lock, and exactly one is in force. When the
+     operator set the secret, that is the trigger and the digest below is
+     irrelevant — no source is edited to deploy. When they did not, the
+     digest compiled in at deploy time is the trigger, and its token was
+     generated on the operator's machine, never written to the repository
+     and never stored here: a hash is not a credential. */
   const storedTrigger = Deno.env.get(TRIGGER_VARIABLE);
-  if (storedTrigger !== undefined && storedTrigger !== offered) {
-    return json(401, { refused: `${TRIGGER_VARIABLE} is set and does not match the trigger offered` });
+  if (storedTrigger !== undefined && storedTrigger !== "") {
+    if (!sameDigest(await sha256Hex(offered), await sha256Hex(storedTrigger))) {
+      return json(401, { refused: `the trigger does not match ${TRIGGER_VARIABLE}` });
+    }
+  } else if (!sameDigest(await sha256Hex(offered), TRIGGER_DIGEST)) {
+    return json(401, { refused: "the trigger does not match" });
   }
 
   let body: Record<string, unknown> = {};
