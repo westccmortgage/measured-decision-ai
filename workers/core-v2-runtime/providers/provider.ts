@@ -100,21 +100,37 @@ export function schemaIsClosed(schema: unknown): boolean {
  * returned an envelope with no `outcome` at all, which is a whole paid
  * attempt thrown away over a field the provider would have insisted on.
  *
- * So the WIRE says the same thing in a shape that can be closed — a list of
- * key/value pairs — and the adapter turns it back into a map before anybody
- * downstream sees it. The kernel's contract does not change; only how it is
- * spelled to a provider does, which is what an adapter is for. */
-const KEY_VALUE_PAIRS = {
-  type: "array",
-  description: "an open map written as pairs: [{key, value}, ...]. A value that is not "
-    + "plain text is written as JSON — a list of numbers as \"[0.05,0.1,0.95,0.6]\", an object as "
-    + "\"{\\\"row\\\":7}\". Plain text is written as itself, unquoted.",
-  items: {
-    type: "object",
-    additionalProperties: false,
-    required: ["key", "value"],
-    properties: { key: { type: "string" }, value: { type: "string" } },
-  },
+ * So the WIRE says the same thing in a shape that can be closed, and the
+ * adapter turns it back into a map before anybody downstream sees it. The
+ * kernel's contract does not change; only how it is spelled to a provider
+ * does, which is what an adapter is for.
+ *
+ * THE SHAPE IS ONE STRING OF JSON, AND THE REASON IS A MEASURED LIMIT.
+ *
+ * It was a list of {key, value} pairs first, which is closed and reads well.
+ * Adding a fourth of them — attributes, so that a domain could require a
+ * field a provider could actually write — got this back from Anthropic in
+ * 481 ms, on req_011CetcvK1sHAcZCEv8T2WkP:
+ *
+ *   "The compiled grammar is too large, which would cause performance
+ *    issues. Simplify your tool schemas or reduce the number of strict
+ *    tools."
+ *
+ * Strict is constrained decoding: the schema is compiled into a grammar, and
+ * an array of objects is an expensive node in one. Four of them, inside an
+ * envelope that already carries claims, anchors, segments, assessments,
+ * disagreements, decisions and calculations, is over the line.
+ *
+ * A string is the cheapest node there is, and this is not a loss of meaning:
+ * the pair form already required a value that was not plain text to be
+ * written as JSON, so JSON was already the language of the leaves. Now the
+ * whole map is written in it. The reader stays tolerant of the pair form, so
+ * a provider that sends pairs anyway is understood rather than refused. */
+const OPEN_MAP = {
+  type: "string",
+  description: "an open map written as one JSON object, e.g. "
+    + "\"{\\\"bbox\\\":[0.05,0.1,0.95,0.6],\\\"page\\\":\\\"1\\\"}\". "
+    + "Numbers and lists are written as numbers and lists; text is quoted. An empty map is \"{}\".",
 };
 
 /* A pair's value is a string on the wire, because a union of types cannot
@@ -133,18 +149,26 @@ function valueOf(raw: unknown): unknown {
   return raw;
 }
 
-/* The other half: pairs back into the map the kernel reads. Tolerant on
-   purpose — a provider that sent an object anyway is not an error, and text
-   that is not an envelope at all (a spoken refusal) is passed through. */
-function pairsToMap(value: unknown): unknown {
-  if (!Array.isArray(value)) return value ?? {};
-  const out: Record<string, unknown> = {};
-  for (const pair of value) {
-    if (pair && typeof pair === "object" && typeof (pair as { key?: unknown }).key === "string") {
-      out[(pair as { key: string }).key] = valueOf((pair as { value?: unknown }).value);
+/* The other half: whatever the provider wrote, back into the map the kernel
+   reads. Deliberately tolerant of all three shapes it could arrive in — the
+   JSON text the schema asks for, the pair list an earlier schema asked for,
+   and a plain object from a provider that ignored both. A reading is not
+   worth throwing away over which of those it chose. */
+function openMapOf(value: unknown): unknown {
+  if (Array.isArray(value)) {
+    const out: Record<string, unknown> = {};
+    for (const pair of value) {
+      if (pair && typeof pair === "object" && typeof (pair as { key?: unknown }).key === "string") {
+        out[(pair as { key: string }).key] = valueOf((pair as { value?: unknown }).value);
+      }
     }
+    return out;
   }
-  return out;
+  if (typeof value === "string") {
+    const parsed = valueOf(value);
+    return parsed && typeof parsed === "object" && !Array.isArray(parsed) ? parsed : {};
+  }
+  return value ?? {};
 }
 
 /* What the rest of the runtime is handed: the envelope as text, with every
@@ -161,15 +185,15 @@ export function envelopeText(value: unknown): string | null {
   for (const claim of Array.isArray(e.claims) ? e.claims : []) {
     if (!claim || typeof claim !== "object") continue;
     const c = claim as Record<string, unknown>;
-    c.scope = pairsToMap(c.scope);
+    c.scope = openMapOf(c.scope);
     if (c.value && typeof c.value === "object") {
       const v = c.value as Record<string, unknown>;
-      v.attributes = pairsToMap(v.attributes);
+      v.attributes = openMapOf(v.attributes);
     }
   }
   for (const field of ["anchors", "segments"] as const) {
     for (const item of Array.isArray(e[field]) ? e[field] as unknown[] : []) {
-      if (item && typeof item === "object") (item as Record<string, unknown>).locator = pairsToMap((item as Record<string, unknown>).locator);
+      if (item && typeof item === "object") (item as Record<string, unknown>).locator = openMapOf((item as Record<string, unknown>).locator);
     }
   }
   return JSON.stringify(envelope);
@@ -213,12 +237,12 @@ export const RESULT_ENVELOPE_SCHEMA: Record<string, unknown> = {
               known: { type: "boolean" },
               quantity: { type: ["number", "null"] },
               text: { type: ["string", "null"] },
-              attributes: KEY_VALUE_PAIRS,
+              attributes: OPEN_MAP,
             },
           },
           unit: { type: ["string", "null"] },
           observationBasis: { type: "string", enum: ["observed", "inferred"] },
-          scope: KEY_VALUE_PAIRS,
+          scope: OPEN_MAP,
           anchorKeys: { type: "array", items: { type: "string" } },
         },
       },
@@ -272,7 +296,7 @@ export const RESULT_ENVELOPE_SCHEMA: Record<string, unknown> = {
           segmentKind: { type: "string" },
           label: { type: ["string", "null"] },
           ordinal: { type: "integer" },
-          locator: KEY_VALUE_PAIRS,
+          locator: OPEN_MAP,
           contentHash: { type: "string" },
         },
       },
@@ -289,7 +313,7 @@ export const RESULT_ENVELOPE_SCHEMA: Record<string, unknown> = {
           sourceKind: { type: "string", enum: ["segment_locator", "segment", "source"] },
           sourceId: { type: ["string", "null"] },
           segmentId: { type: ["string", "null"] },
-          locator: KEY_VALUE_PAIRS,
+          locator: OPEN_MAP,
           quotedText: { type: ["string", "null"] },
         },
       },

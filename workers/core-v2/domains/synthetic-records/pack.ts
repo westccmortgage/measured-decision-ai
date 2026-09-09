@@ -45,8 +45,9 @@ export const ROLES: AgentRoleDefinition[] = [
     inputContract: "one sheet segment",
     outputContract: "segments[] — one per region found inside this sheet. Each: segmentKind "
       + "\"table\" or \"note\"; parentSegmentId = the sheet you were handed; ordinal from 0 in "
-      + "reading order; a label; a contentHash; and a locator whose bbox is four numbers "
-      + "normalised 0..1 written as JSON, e.g. \"[0.05,0.1,0.95,0.6]\". No claims: this role "
+      + "reading order; a label; a contentHash; and a locator written as the JSON object "
+      + "\"{\\\"bbox\\\":[0.05,0.1,0.95,0.6]}\" — four numbers normalised 0..1, left, top, "
+      + "right, bottom of the region inside the sheet. No claims: this role "
       + "reports where things are, never what they say.",
     maximumSources: 1, maximumClaims: 0, maximumFollowUpDepth: 0, requiresVisualInput: true, requiresIndependentReading: false,
     allowedActions: [], routingProfile: "visual_analysis", executorKind: "model",
@@ -60,12 +61,13 @@ export const ROLES: AgentRoleDefinition[] = [
       + "predicate \"quantity\"; subjectType \"entry\"; subjectKey in the form \"entry/E-001\" "
       + "(the literal prefix \"entry/\" followed by the row's own code, three digits); unit "
       + "either \"each\" or \"kg\"; value.known true with value.quantity as the number, and "
-      + "the row's category in value.attributes as the pair {key:\"category\", value:\"alpha\"} "
-      + "— in value.attributes, not in scope, because that is where a category is read from. "
+      + "the row's category in value.attributes, written as the JSON object "
+      + "\"{\\\"category\\\":\\\"alpha\\\"}\" — in value.attributes, not in scope, because that "
+      + "is where a category is read from. "
       + "A row you cannot read is value.known false with the reason in limitations[], not a "
       + "guess. Every claim names an anchor in anchors[] pointing at that row, and that "
-      + "anchor's locator carries the pair {key:\"bbox\", value:\"[0.1,0.2,0.9,0.3]\"} — four "
-      + "numbers 0..1 written as JSON, left, top, right, bottom of the row inside the sheet. "
+      + "anchor's locator is the JSON object \"{\\\"bbox\\\":[0.1,0.2,0.9,0.3]}\" — four numbers "
+      + "0..1, left, top, right, bottom of the row inside the sheet. "
       + "A locator naming the row and nothing else is refused: a row number is not a place.",
     maximumSources: 1, maximumClaims: 64, maximumFollowUpDepth: 1, requiresVisualInput: true, requiresIndependentReading: true,
     allowedActions: ["read_reference_segment", "request_human_review"], routingProfile: "visual_analysis", executorKind: "model",
@@ -79,9 +81,9 @@ export const ROLES: AgentRoleDefinition[] = [
       + "\"revision_status\"; subjectType \"entry\"; subjectKey in the form \"entry/E-001\"; "
       + "value.known true and value.text the status the note gives that entry. A note that "
       + "names no entry produces no claims and says so in limitations[]. Every claim names an "
-      + "anchor in anchors[] pointing at the note, and that anchor's locator carries the pair "
-      + "{key:\"bbox\", value:\"[0.1,0.7,0.9,0.8]\"} — four numbers 0..1 written as JSON, the "
-      + "note's place inside the sheet.",
+      + "anchor in anchors[] pointing at the note, and that anchor's locator is the JSON object "
+      + "\"{\\\"bbox\\\":[0.1,0.7,0.9,0.8]}\" — four numbers 0..1, the note's place inside "
+      + "the sheet.",
     maximumSources: 1, maximumClaims: 8, maximumFollowUpDepth: 1, requiresVisualInput: false, requiresIndependentReading: true,
     allowedActions: ["request_human_review"], routingProfile: "general_analysis", executorKind: "model",
     producesAssessments: false, producesAdjudication: false, producesDecisions: false, producesCalculations: false, producesSegments: false,

@@ -161,6 +161,18 @@ t.section("strict follows the schema, because two of its objects are open on pur
      generation returned "0.05,0.1,0.95,0.6" and the kernel refused it as a
      box that is not normalised 0..1 — correctly. A value written as JSON is
      read as JSON; anything else stays the text it is. */
+  const asJson = JSON.parse(envelopeText({
+    segments: [{ locator: "{\"bbox\":[0.05,0.1,0.95,0.6],\"label\":\"table 1\",\"page\":\"1\"}" }],
+  })).segments[0].locator;
+  t.check("a locator written as one JSON object comes back as the map the kernel reads",
+    Array.isArray(asJson.bbox) && asJson.bbox[0] === 0.05 && asJson.label === "table 1" && asJson.page === "1",
+    JSON.stringify(asJson));
+  t.check("and a map that is not a map is an empty map, not a crash",
+    JSON.stringify(JSON.parse(envelopeText({ segments: [{ locator: "I did not fill this in" }] })).segments[0].locator) === "{}");
+
+  /* THE PAIR FORM IS STILL UNDERSTOOD. An earlier schema asked for it, and a
+     provider that answers in it is not wrong enough to throw a reading away
+     over — the map it means is unambiguous either way. */
   const typed = JSON.parse(envelopeText({
     segments: [{ locator: [
       { key: "bbox", value: "[0.05,0.1,0.95,0.6]" },
@@ -170,7 +182,7 @@ t.section("strict follows the schema, because two of its objects are open on pur
       { key: "flag", value: "true" },
     ] }],
   })).segments[0].locator;
-  t.check("a list written as JSON comes back as a list of numbers",
+  t.check("a list written as JSON inside a pair comes back as a list of numbers",
     Array.isArray(typed.bbox) && typed.bbox.length === 4 && typed.bbox[0] === 0.05, JSON.stringify(typed.bbox));
   t.check("an object written as JSON comes back as an object",
     typed.cell && typed.cell.row === 7, JSON.stringify(typed.cell));
@@ -197,19 +209,37 @@ t.section("a field a domain requires is a field a provider can write");
   t.check("value declares attributes", claimValue.properties.attributes !== undefined);
   t.check("and requires it, because strict admits no optional field",
     claimValue.required.includes("attributes"), claimValue.required.join(","));
-  t.check("and it is the pairs shape, so the object it sits in can stay closed",
-    claimValue.properties.attributes.type === "array"
-    && claimValue.properties.attributes.items.additionalProperties === false);
+  t.check("and it is a string, the cheapest node a compiled grammar has",
+    claimValue.properties.attributes.type === "string", String(claimValue.properties.attributes.type));
   t.check("the whole envelope is still closed enough for strict",
     schemaIsClosed(RESULT_ENVELOPE_SCHEMA) === true);
+
+  /* AND EVERY OPEN MAP STAYS A STRING. Strict is constrained decoding: the
+     schema becomes a grammar, and an array of objects is an expensive node
+     in one. Four of them inside this envelope is over Anthropic's line —
+     "The compiled grammar is too large", 400 in 481 ms, on
+     req_011CetcvK1sHAcZCEv8T2WkP. This is the check that stops the next
+     open map being added back as a list of pairs. */
+  const openMapSites = [
+    ["claim scope", RESULT_ENVELOPE_SCHEMA.properties.claims.items.properties.scope],
+    ["claim value attributes", claimValue.properties.attributes],
+    ["anchor locator", RESULT_ENVELOPE_SCHEMA.properties.anchors.items.properties.locator],
+    ["segment locator", RESULT_ENVELOPE_SCHEMA.properties.segments.items.properties.locator],
+  ];
+  for (const [where, node] of openMapSites) {
+    t.check(`${where} is one string, not a list of pairs`, node !== undefined && node.type === "string",
+      node === undefined ? "missing" : String(node.type));
+  }
 
   const read = JSON.parse(envelopeText({
     claims: [{
       claimKey: "E-001", subjectKey: "entry/E-001", predicate: "quantity",
-      value: { known: true, quantity: 25, text: null, attributes: [{ key: "category", value: "alpha" }] },
-      scope: [{ key: "sheet", value: "0" }],
+      value: { known: true, quantity: 25, text: null, attributes: "{\"category\":\"alpha\"}" },
+      scope: "{\"sheet\":\"0\"}",
     }],
   })).claims[0];
+  t.check("and the claim's scope comes back the same way",
+    read.scope.sheet === "0", JSON.stringify(read.scope));
   t.check("attributes come back as the map the kernel reads",
     read.value.attributes.category === "alpha", JSON.stringify(read.value.attributes));
   t.check("and the value's own fields are untouched beside it",
