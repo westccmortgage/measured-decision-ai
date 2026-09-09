@@ -258,8 +258,8 @@ Deno.serve(async (request: Request): Promise<Response> => {
   let db: CanaryDatabase | null = null;
   let dispatcherDb: CanaryDatabase | null = null;
   try {
-    db = await CanaryDatabase.connect(databaseUrl, CANARY_ID);
-    dispatcherDb = await CanaryDatabase.connect(databaseUrl, `${CANARY_ID}-dispatcher`);
+    db = await CanaryDatabase.connect(databaseUrl, RUN_ID);
+    dispatcherDb = await CanaryDatabase.connect(databaseUrl, `${RUN_ID}-dispatcher`);
 
     /* ── 6 · a synthetic tenancy of its own ──────────────────────────── */
     await db.query(
@@ -306,8 +306,13 @@ Deno.serve(async (request: Request): Promise<Response> => {
     const maximumAttempts = Math.max(1, Math.min(CANARY_MAXIMUM_SUBMISSIONS, Math.floor(lifetimeRemaining / worst.perAttempt)));
 
     /* ── 8 · the invented material, and nobody's document ────────────── */
+    /* Seeded by the RUN, not by the canary. The fixture derives its source
+       identities from the seed, and workflow_sources is keyed on them — so a
+       second generation seeded with the first one's name collides on
+       workflow_sources_pkey before a single task is planned. Generation 2
+       found that; the seed is the generation's. */
     const truth = syntheticRecordSet({
-      seed: CANARY_ID, sources: 1, sheetsPerSource: 1, entriesPerTable: 3,
+      seed: RUN_ID, sources: 1, sheetsPerSource: 1, entriesPerTable: 3,
       organizationId: ORGANIZATION_ID, workflowId: WORKFLOW_ID,
     });
     if (!truth.manifest.sources.every((s) => s.uri.startsWith("fixture://"))) {
@@ -446,7 +451,7 @@ async function probeDatabase(): Promise<Response> {
     /* One connection, opened once, with the deadline the first run lacked. */
     const at = Date.now();
     try {
-      db = await CanaryDatabase.connect(databaseUrl, `${CANARY_ID}-probe`, CONNECT_TIMEOUT_MS);
+      db = await CanaryDatabase.connect(databaseUrl, `${RUN_ID}-probe`, CONNECT_TIMEOUT_MS);
       phases.push({ phase: "connect", ms: Date.now() - at, detail: { route, passwordFrom, tls: "required", connectTimeoutMs: CONNECT_TIMEOUT_MS } });
     } catch (error) {
       phases.push({ phase: "connect", ms: Date.now() - at, detail: `FAILED: ${String((error as Error).message ?? error).slice(0, 300)}` });
