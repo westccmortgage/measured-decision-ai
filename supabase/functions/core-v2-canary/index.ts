@@ -77,8 +77,10 @@ const DRAIN_DEADLINE_MS = 140_000;
    synthetic tenancy is deliberately NOT per generation: one organisation
    holds every canary, which is what makes the lifetime ceiling below a
    single question with a single answer. */
-const GENERATION = Deno.env.get("CORE_V2_CANARY_GENERATION") ?? "2";
-const RUN_ID = `${CANARY_ID}-g${GENERATION}`;
+const PINNED_GENERATION = Deno.env.get("CORE_V2_CANARY_GENERATION");
+const MAXIMUM_GENERATIONS = 50;
+const runIdFor = (generation: number) => `${CANARY_ID}-g${generation}`;
+const workflowIdFor = (generation: number) => entityId("core-v2-canary-workflow", runIdFor(generation));
 
 /* Workflow states that are still going. Anything else is finished, and a
    finished workflow is not resumed — it is superseded by a new generation. */
@@ -152,7 +154,36 @@ function routeToRecord(): Route | { problem: string } {
 }
 
 const ORGANIZATION_ID = entityId("core-v2-canary-organization", "core-v2-canary");
-const WORKFLOW_ID = entityId("core-v2-canary-workflow", RUN_ID);
+
+/* WHICH GENERATION THIS DISPATCH IS.
+ *
+ * A finished workflow is never re-run, so a corrected canary needs the next
+ * generation — and having a person remember to bump a number is how a
+ * dispatch turns into a 409 instead of a run. So it is worked out from the
+ * record: the generations' workflow ids are derived, asked about in one
+ * query, and the first that either does not exist or has not finished is
+ * this run's. An operator can still pin one with
+ * CORE_V2_CANARY_GENERATION when they want a specific workflow. */
+async function chooseGeneration(db: CanaryDatabase): Promise<{ generation: number; runId: string; workflowId: string; resuming: boolean }> {
+  if (PINNED_GENERATION) {
+    const pinned = Number(PINNED_GENERATION);
+    return { generation: pinned, runId: runIdFor(pinned), workflowId: workflowIdFor(pinned), resuming: false };
+  }
+  const candidates: string[] = [];
+  for (let g = 1; g <= MAXIMUM_GENERATIONS; g++) candidates.push(workflowIdFor(g));
+  const seen = await db.query(
+    `select id::text as id, state from public.intelligence_workflows where id = any($1::uuid[])`,
+    [`{${candidates.join(",")}}`],
+  );
+  const stateOf = new Map(seen.rows.map((row) => [String(row.id), String(row.state)]));
+  for (let g = 1; g <= MAXIMUM_GENERATIONS; g++) {
+    const id = workflowIdFor(g);
+    const state = stateOf.get(id);
+    if (state === undefined) return { generation: g, runId: runIdFor(g), workflowId: id, resuming: false };
+    if (UNFINISHED.includes(state)) return { generation: g, runId: runIdFor(g), workflowId: id, resuming: true };
+  }
+  throw new Error(`core-v2-canary: ${MAXIMUM_GENERATIONS} generations have all finished; nothing further runs without a decision`);
+}
 
 async function sha256Hex(text: string): Promise<string> {
   const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(text));
@@ -237,9 +268,7 @@ Deno.serve(async (request: Request): Promise<Response> => {
     networkFlag,
     environment: gateFromEnvironment ? environment : { [PAID_CALLS_VARIABLE]: "true" },
   });
-  /* The dispatcher names this generation, so the outbox and every event say
-     which run they belong to. */
-  const config = { ...assembled, dispatcherName: RUN_ID };
+  const config = assembled;
 
   /* ── 5 · the arithmetic, before anything is opened ─────────────────── */
   const worst = worstCase(config);
@@ -257,9 +286,18 @@ Deno.serve(async (request: Request): Promise<Response> => {
   const events: unknown[] = [];
   let db: CanaryDatabase | null = null;
   let dispatcherDb: CanaryDatabase | null = null;
+  /* Named before the generation is known, so a failure on the way to
+     knowing it still has something to report. */
+  let RUN_ID = CANARY_ID;
+  let WORKFLOW_ID = "";
   try {
-    db = await CanaryDatabase.connect(databaseUrl, RUN_ID);
-    dispatcherDb = await CanaryDatabase.connect(databaseUrl, `${RUN_ID}-dispatcher`);
+    db = await CanaryDatabase.connect(databaseUrl, CANARY_ID);
+    dispatcherDb = await CanaryDatabase.connect(databaseUrl, `${CANARY_ID}-dispatcher`);
+
+    /* ── 5a · which generation, decided from the record ──────────────── */
+    const chosen = await chooseGeneration(db);
+    RUN_ID = chosen.runId;
+    WORKFLOW_ID = chosen.workflowId;
 
     /* ── 6 · a synthetic tenancy of its own ──────────────────────────── */
     await db.query(
@@ -346,7 +384,9 @@ Deno.serve(async (request: Request): Promise<Response> => {
     });
 
     const dispatcher = new Dispatcher({
-      name: config.dispatcherName,
+      /* Names this generation, so the outbox and every event say which run
+         they belong to. */
+      name: RUN_ID,
       connect: async () => dispatcherDb as never,
       repository: () => meteredRepository(
         new PostgresOrchestrationRepository(dispatcherDb as never, { organizationId: ORGANIZATION_ID }),
@@ -372,14 +412,15 @@ Deno.serve(async (request: Request): Promise<Response> => {
       ? `${RUN_ID} stopped at its deadline — unused authority closed`
       : `${RUN_ID} complete — unused authority closed`).catch(() => undefined);
 
-    return json(200, await report(db, ledger, {
+    return json(200, await report(db, ledger, RUN_ID, WORKFLOW_ID, {
       transport: transport.name,
       allowedOrigins: transport.allowedOrigins,
       unresolvedHosts: transport.unresolvedHosts,
       gate: gateFromEnvironment ? PAID_CALLS_VARIABLE : "invocation",
       installedGlobals,
-      generation: GENERATION,
+      generation: chosen.generation,
       runId: RUN_ID,
+      resumingAnUnfinishedWorkflow: chosen.resuming,
       lifetimeAuthorized: CANARY_AUTHORIZED,
       committedByEarlierGenerations: committedBefore,
       lifetimeRemaining,
@@ -451,7 +492,7 @@ async function probeDatabase(): Promise<Response> {
     /* One connection, opened once, with the deadline the first run lacked. */
     const at = Date.now();
     try {
-      db = await CanaryDatabase.connect(databaseUrl, `${RUN_ID}-probe`, CONNECT_TIMEOUT_MS);
+      db = await CanaryDatabase.connect(databaseUrl, `${CANARY_ID}-probe`, CONNECT_TIMEOUT_MS);
       phases.push({ phase: "connect", ms: Date.now() - at, detail: { route, passwordFrom, tls: "required", connectTimeoutMs: CONNECT_TIMEOUT_MS } });
     } catch (error) {
       phases.push({ phase: "connect", ms: Date.now() - at, detail: `FAILED: ${String((error as Error).message ?? error).slice(0, 300)}` });
@@ -536,7 +577,7 @@ async function probeDatabase(): Promise<Response> {
 }
 
 /* WHAT HAPPENED, READ BACK OUT OF THE RECORD rather than remembered. */
-async function report(db: CanaryDatabase, ledger: BudgetLedger, extra: Record<string, unknown>): Promise<Record<string, unknown>> {
+async function report(db: CanaryDatabase, ledger: BudgetLedger, RUN_ID: string, WORKFLOW_ID: string, extra: Record<string, unknown>): Promise<Record<string, unknown>> {
   const rows = async (sql: string, params: (string | number)[] = []) => (await db.query(sql, params)).rows;
   const standing = await ledger.standing(WORKFLOW_ID).catch(() => null);
   return {
