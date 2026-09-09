@@ -117,10 +117,12 @@ try{var t=localStorage.getItem("mdai-theme");document.documentElement.dataset.th
         </section>
 
         <section class="metrics" aria-label="Plan intelligence summary">
-          <article><span>Source documents</span><strong id="metric-documents">0</strong><small id="metric-documents-copy">Upload the issued set</small></article>
+          <!-- A tile before its subject exists reads "—" and says what is
+               missing. A bare zero would read as a measurement of none. -->
+          <article><span>Source documents</span><strong id="metric-documents">—</strong><small id="metric-documents-copy">Upload the issued set</small></article>
           <article><span>Baseline</span><strong id="metric-baseline">—</strong><small id="metric-baseline-copy">Not analyzed</small></article>
-          <article><span>Capture gates</span><strong id="metric-phases">0</strong><small>Construction stages</small></article>
-          <article><span>Required captures</span><strong id="metric-tasks">0</strong><small id="metric-tasks-copy">Waiting for plans</small></article>
+          <article><span>Capture gates</span><strong id="metric-phases">—</strong><small id="metric-phases-copy">Waiting for plans</small></article>
+          <article><span>Required captures</span><strong id="metric-tasks">—</strong><small id="metric-tasks-copy">Waiting for plans</small></article>
         </section>
 
         <section class="roadmap-divergence" id="roadmap-divergence" hidden>
@@ -549,6 +551,6 @@ try{var t=localStorage.getItem("mdai-theme");document.documentElement.dataset.th
     <script src="../page-renders.js?v=0f50a64fc6"></script>
     <script src="../pdf-split.js?v=28cecd16c7"></script>
     <script src="../ai-usage.js?v=92381d12a3"></script>
-    <script src="plans.js?v=9b79bd3b1e"></script>
+    <script src="plans.js?v=7a07a5df08"></script>
   </body>
 </html>

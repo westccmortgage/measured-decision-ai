@@ -2689,4 +2689,2401 @@ select pg_temp.check('and a comparison a reader could not finish has a word for 
   (select pg_get_constraintdef(oid) like '%incomplete%'
      from pg_constraint where conname = 'reading_comparisons_state_check'));
 
+-- ══════════════════ CORE V2 · THE CHAIN A DECISION HANGS FROM ═══════════════
+--
+-- Everything below tests one sentence: a decision can be traced to an accepted
+-- claim, which can be traced to a source anchor, which points at an immutable
+-- source. Each check is a way somebody could break that chain — by writing
+-- from the wrong organisation or the wrong workflow, by accepting a claim
+-- nobody located, by editing a decided record instead of superseding it, by
+-- pulling the anchor out from under an accepted claim, or by quietly sending a
+-- request again after nobody knew whether the first one ran.
+--
+-- The kernel does not know what a source is. The fixture is a synthetic
+-- register and a synthetic recording, and the subjects and predicates named
+-- here mean nothing outside this file.
+--
+-- `reset role` is the worker, which runs as the service role and is NOT subject
+-- to row-level security. That distinction matters here: an authenticated insert
+-- failing because there is no write policy proves nothing about what a worker
+-- can do. Every structural invariant below is attacked with the service role.
+
+reset role;
+set local test.uid = '';
+
+create or replace function pg_temp.allowed(label text, statement text) returns void
+language plpgsql as $$
+begin
+  execute statement;
+  raise notice 'PASS  %', label;
+end $$;
+
+-- A refusal for the wrong reason is not a pass. Where the reason is the point
+-- — another organisation, an expired lease, a spent budget — the message is
+-- checked as well as the refusal.
+create or replace function pg_temp.refused_because(label text, statement text, reason text) returns void
+language plpgsql as $$
+begin
+  begin
+    execute statement;
+  exception when others then
+    if sqlerrm like '%' || reason || '%' then
+      raise notice 'PASS  % (refused: %)', label, left(sqlerrm, 60);
+      return;
+    end if;
+    raise exception 'FAIL  % — refused, but for another reason: %', label, sqlerrm;
+  end;
+  raise exception 'FAIL  % — the statement was allowed', label;
+end $$;
+
+-- Fire Core V2's own deferred checks here and now, then leave them deferred
+-- again. `set constraints all immediate` would leave every deferrable
+-- constraint immediate for the rest of the file, which would test a different
+-- database from the one that runs in production.
+create or replace function pg_temp.core_v2_settle() returns void language plpgsql as $$
+begin
+  set constraints core_v2_claim_evidence_check, core_v2_decision_evidence_check,
+                  core_v2_anchor_removal_check, core_v2_claim_supersession_check,
+                  core_v2_decision_evidence_link_check, core_v2_assessment_removal_check immediate;
+  set constraints core_v2_claim_evidence_check, core_v2_decision_evidence_check,
+                  core_v2_anchor_removal_check, core_v2_claim_supersession_check,
+                  core_v2_decision_evidence_link_check, core_v2_assessment_removal_check deferred;
+end $$;
+
+create or replace function pg_temp.core_v2_tables() returns text[] language sql immutable as $$
+  select array['intelligence_workflows','workflow_outbox','workflow_sources','source_segments',
+    'workflow_tasks','task_sources','task_dependencies','task_target_claims','agent_attempts',
+    'evidence_claims','claim_inputs','evidence_anchors','claim_assessments',
+    'disagreements','disagreement_claims','disagreement_follow_ups',
+    'decisions','decision_evidence','decision_actions'] $$;
+
+-- What one organisation's rows look like from where the caller stands. Under
+-- row-level security this is the caller's view, which is the point.
+create or replace function pg_temp.core_v2_rows_of(p_org uuid) returns bigint language plpgsql as $$
+declare t text; n bigint; total bigint := 0;
+begin
+  foreach t in array pg_temp.core_v2_tables() loop
+    execute format('select count(*) from public.%I where organization_id = $1', t) into n using p_org;
+    total := total + n;
+  end loop;
+  return total;
+end $$;
+
+-- How many rows a browser update reaches across every Core V2 table. With no
+-- write policy the answer is zero whatever the membership.
+create or replace function pg_temp.core_v2_browser_reaches(p_org uuid) returns bigint language plpgsql as $$
+declare t text; n bigint; total bigint := 0;
+begin
+  foreach t in array pg_temp.core_v2_tables() loop
+    execute format('update public.%I set organization_id = organization_id where organization_id = $1', t) using p_org;
+    get diagnostics n = row_count;
+    total := total + n;
+  end loop;
+  return total;
+end $$;
+
+-- Scratch tables carrying generated ids, hashes and counts between statements.
+-- The roles that act in this file must be able to read them.
+create temporary table core_v2_ids(k text primary key, v uuid);
+create temporary table core_v2_hashes(k text primary key, v text);
+create temporary table core_v2_counts(k text primary key, n bigint);
+create temporary table core_v2_cancel(k text primary key, result jsonb);
+grant all on core_v2_ids, core_v2_hashes, core_v2_counts, core_v2_cancel to authenticated, anon;
+create or replace function pg_temp.id(p_key text) returns uuid language sql stable as $$
+  select v from core_v2_ids where k = p_key $$;
+
+-- What V1 looks like before Core V2 touches anything. Compared again at the end
+-- of this section: V2 lives beside V1, and a schema that quietly rewrote plan
+-- history would be worse than no V2 at all. The audit trail is deliberately not
+-- in this list — it is a shared ledger that Core V2 appends to, and 018 already
+-- forbids updating or deleting a row of it.
+create or replace function pg_temp.v1_fingerprint() returns text language plpgsql as $$
+declare t text; part text; out text := '';
+begin
+  foreach t in array array['project_documents','document_baselines','plan_spaces','project_requirements',
+                           'material_takeoffs','plan_analysis_jobs','plan_analysis_chunks',
+                           'evidence_items','capture_tasks','ai_runs'] loop
+    execute format('select md5(coalesce(string_agg(x::text, %L order by x::text), %L)) from public.%I x',
+                   '|', 'empty', t) into part;
+    out := out || t || '=' || part || ' ';
+  end loop;
+  return out;
+end $$;
+
+create temporary table core_v2_before(fingerprint text);
+insert into core_v2_before select pg_temp.v1_fingerprint();
+grant all on core_v2_before to authenticated, anon;
+
+-- A workflow row for the fixture to hang from. Written directly, as the worker
+-- would: the start door refuses a request that names no sources, and the
+-- fixture's two sources are this workflow's source set.
+insert into public.intelligence_workflows(
+  id, organization_id, domain_pack, domain_pack_version, workflow_type, engine_version,
+  source_set_fingerprint, request_fingerprint, requested_by)
+values (
+  '0c0e0000-0000-0000-0000-000000000001', 'aaaaaaaa-0000-0000-0000-000000000001',
+  'synthetic-records', '1', 'synthetic_review', 'core-v2.1',
+  'fixture-source-set-fingerprint', 'fixture-request-fingerprint',
+  '11111111-1111-1111-1111-111111111111');
+
+\ir ../fixtures/core_v2_synthetic.sql
+select pg_temp.core_v2_synthetic_fixture(
+  'aaaaaaaa-0000-0000-0000-000000000001',
+  '0c0e0000-0000-0000-0000-000000000001');
+
+select pg_temp.check('the synthetic fixture stands in the record: two sources and six accepted segments',
+  (select count(*) from public.workflow_sources
+     where workflow_id = '0c0e0000-0000-0000-0000-000000000001') = 2
+  and (select count(*) from public.source_segments
+         where workflow_id = '0c0e0000-0000-0000-0000-000000000001' and status = 'accepted') = 6);
+
+-- ═══════════════ 1 · ONE ORGANISATION, ONE WORKFLOW, ALL THE WAY DOWN ═══════
+--
+-- The browser cannot write these tables at all, so the risk is not a form
+-- post. It is a worker, a fixture or a later migration writing a row whose
+-- references belong to somebody else. A row of another organisation, and a
+-- second workflow of the same organisation, so that every refusal below is
+-- about crossing a line and never about a missing row.
+insert into public.intelligence_workflows(id, organization_id, domain_pack, domain_pack_version,
+  workflow_type, engine_version, source_set_fingerprint, request_fingerprint, requested_by)
+values
+  ('0c0e0000-0000-0000-0000-0000000000b0', 'aaaaaaaa-0000-0000-0000-000000000002',
+   'synthetic-records', '1', 'synthetic_review', 'core-v2.1',
+   'elsewhere-source-set', 'elsewhere-request', '44444444-4444-4444-4444-444444444444'),
+  ('0c0e0000-0000-0000-0000-0000000000a2', 'aaaaaaaa-0000-0000-0000-000000000001',
+   'synthetic-records', '1', 'synthetic_review', 'core-v2.1',
+   'second-source-set', 'second-request', '11111111-1111-1111-1111-111111111111');
+insert into public.workflow_sources(id, organization_id, workflow_id, ordinal, source_kind, label, uri,
+  content_hash, hash_algorithm, byte_size)
+values
+  ('0a0e00b0-0000-0000-0000-000000000000', 'aaaaaaaa-0000-0000-0000-000000000002',
+   '0c0e0000-0000-0000-0000-0000000000b0', 0, 'document', 'elsewhere register',
+   'fixture://elsewhere/register', 'elsewhere-hash', 'sha-256', 4096),
+  ('0a0e00a2-0000-0000-0000-000000000000', 'aaaaaaaa-0000-0000-0000-000000000001',
+   '0c0e0000-0000-0000-0000-0000000000a2', 0, 'document', 'second register',
+   'fixture://second/register', 'second-hash', 'sha-256', 4096);
+insert into public.source_segments(id, organization_id, workflow_id, source_id, segment_kind, label,
+  locator, content_hash, status, discovered_by)
+values
+  ('0b0e00b0-0000-0000-0000-000000000001', 'aaaaaaaa-0000-0000-0000-000000000002',
+   '0c0e0000-0000-0000-0000-0000000000b0', '0a0e00b0-0000-0000-0000-000000000000', 'page', 'page 1',
+   '{"page": 0, "bbox": [0, 0, 1, 1]}'::jsonb, 'elsewhere-segment', 'accepted', 'deterministic'),
+  ('0b0e00a2-0000-0000-0000-000000000001', 'aaaaaaaa-0000-0000-0000-000000000001',
+   '0c0e0000-0000-0000-0000-0000000000a2', '0a0e00a2-0000-0000-0000-000000000000', 'page', 'page 1',
+   '{"page": 0, "bbox": [0, 0, 1, 1]}'::jsonb, 'second-segment', 'accepted', 'deterministic');
+insert into public.workflow_tasks(id, organization_id, workflow_id, phase, task_type, role_key, role_version,
+  subject_key, input_fingerprint, contract_version)
+values
+  ('0c0e0001-0000-0000-0000-0000000000b0', 'aaaaaaaa-0000-0000-0000-000000000002',
+   '0c0e0000-0000-0000-0000-0000000000b0', 'analyze', 'read_register', 'reader', '1',
+   'elsewhere/row-1', 'fp-elsewhere', 'read_register@1'),
+  ('0c0e0001-0000-0000-0000-0000000000a2', 'aaaaaaaa-0000-0000-0000-000000000001',
+   '0c0e0000-0000-0000-0000-0000000000a2', 'analyze', 'read_register', 'reader', '1',
+   'second/row-1', 'fp-second', 'read_register@1'),
+  ('0c0e0001-0000-0000-0000-000000000001', 'aaaaaaaa-0000-0000-0000-000000000001',
+   '0c0e0000-0000-0000-0000-000000000001', 'discover', 'find_segments', 'discoverer', '1',
+   'register-a', 'fp-discover-a', 'find_segments@1');
+insert into public.evidence_claims(id, organization_id, workflow_id, subject_type, subject_key, predicate,
+  value, observation_basis)
+values
+  ('0e0e0000-0000-0000-0000-0000000000b0', 'aaaaaaaa-0000-0000-0000-000000000002',
+   '0c0e0000-0000-0000-0000-0000000000b0', 'row', 'elsewhere/row-1', 'quantity', '{"n": 1}'::jsonb, 'observed'),
+  ('0e0e0000-0000-0000-0000-0000000000a2', 'aaaaaaaa-0000-0000-0000-000000000001',
+   '0c0e0000-0000-0000-0000-0000000000a2', 'row', 'second/row-1', 'quantity', '{"n": 1}'::jsonb, 'observed'),
+  ('0e0e0000-0000-0000-0000-000000000001', 'aaaaaaaa-0000-0000-0000-000000000001',
+   '0c0e0000-0000-0000-0000-000000000001', 'row', 'register-a/row-1', 'quantity', '{"n": 4}'::jsonb, 'observed');
+insert into public.evidence_anchors(id, organization_id, workflow_id, claim_id, source_kind, segment_id, anchor_hash)
+values ('0f0e0000-0000-0000-0000-0000000000a2', 'aaaaaaaa-0000-0000-0000-000000000001',
+  '0c0e0000-0000-0000-0000-0000000000a2', '0e0e0000-0000-0000-0000-0000000000a2', 'segment',
+  '0b0e00a2-0000-0000-0000-000000000001', 'second-anchor');
+insert into public.disagreements(id, organization_id, workflow_id, disagreement_key, kind)
+values
+  ('1c0e0000-0000-0000-0000-0000000000a2', 'aaaaaaaa-0000-0000-0000-000000000001',
+   '0c0e0000-0000-0000-0000-0000000000a2', 'second/row-1/quantity', 'value'),
+  ('1c0e0000-0000-0000-0000-000000000000', 'aaaaaaaa-0000-0000-0000-000000000001',
+   '0c0e0000-0000-0000-0000-000000000001', 'register-a/probe', 'value');
+insert into public.decisions(id, organization_id, workflow_id, decision_type, title, authority)
+values
+  ('1b0e0000-0000-0000-0000-0000000000a2', 'aaaaaaaa-0000-0000-0000-000000000001',
+   '0c0e0000-0000-0000-0000-0000000000a2', 'hold', 'second hold', 'deterministic_rule'),
+  ('1b0e0000-0000-0000-0000-000000000000', 'aaaaaaaa-0000-0000-0000-000000000001',
+   '0c0e0000-0000-0000-0000-000000000001', 'hold', 'probe hold', 'deterministic_rule');
+insert into public.agent_attempts(id, organization_id, workflow_id, task_id, attempt_no, role_key, role_version,
+  executor_kind, executor_family, independence_domain, packet_fingerprint)
+values ('0d0e0000-0000-0000-0000-000000000001', 'aaaaaaaa-0000-0000-0000-000000000001',
+  '0c0e0000-0000-0000-0000-000000000001', '0c0e0001-0000-0000-0000-000000000001', 1, 'discoverer', '1',
+  'deterministic', 'kernel', 'deterministic:kernel', 'packet-discover-a');
+select pg_temp.core_v2_settle();
+
+select pg_temp.check('every Core V2 table carries the tenancy guard — nineteen tables, nineteen triggers',
+  (select count(distinct c.relname) from pg_trigger t join pg_class c on c.oid = t.tgrelid
+    where t.tgname = 'core_v2_tenancy' and not t.tgisinternal
+      and c.relname = any(pg_temp.core_v2_tables())) = 19);
+select pg_temp.refused('a workflow cannot be filed under an organisation that does not exist',
+  $$insert into public.intelligence_workflows(organization_id, domain_pack, domain_pack_version,
+      workflow_type, engine_version, source_set_fingerprint, request_fingerprint)
+    values ('aaaaaaaa-0000-0000-0000-00000000ffff', 'p', '1', 't', 'core-v2.1', 'fp', 'rq')$$);
+
+-- ─────────────────────────────────── across organisations, table by table
+select pg_temp.refused_because('a start command cannot be filed under another organisation''s workflow',
+  $$insert into public.workflow_outbox(organization_id, workflow_id)
+    values ('aaaaaaaa-0000-0000-0000-000000000002', '0c0e0000-0000-0000-0000-000000000001')$$,
+  'another organisation');
+select pg_temp.refused_because('nor a source',
+  $$insert into public.workflow_sources(organization_id, workflow_id, ordinal, source_kind, uri, content_hash)
+    values ('aaaaaaaa-0000-0000-0000-000000000002', '0c0e0000-0000-0000-0000-000000000001', 9, 'document',
+            'fixture://borrowed', 'h')$$,
+  'another organisation');
+select pg_temp.refused_because('nor a segment filed under the wrong organisation',
+  $$insert into public.source_segments(organization_id, workflow_id, source_id, segment_kind, content_hash, discovered_by)
+    values ('aaaaaaaa-0000-0000-0000-000000000002', '0c0e0000-0000-0000-0000-000000000001',
+            '0a0e0001-0000-0000-0000-000000000000', 'page', 'h', 'deterministic')$$,
+  'another organisation');
+select pg_temp.refused_because('nor a segment of this workflow cut from another organisation''s source',
+  $$insert into public.source_segments(organization_id, workflow_id, source_id, segment_kind, content_hash, discovered_by)
+    values ('aaaaaaaa-0000-0000-0000-000000000001', '0c0e0000-0000-0000-0000-000000000001',
+            '0a0e00b0-0000-0000-0000-000000000000', 'page', 'h', 'deterministic')$$,
+  'another organisation');
+select pg_temp.refused_because('nor a task',
+  $$insert into public.workflow_tasks(organization_id, workflow_id, phase, task_type, role_key, role_version,
+      subject_key, input_fingerprint, contract_version)
+    values ('aaaaaaaa-0000-0000-0000-000000000002', '0c0e0000-0000-0000-0000-000000000001', 'analyze',
+            'read_register', 'reader', '1', 'borrowed', 'fp', 'v1')$$,
+  'another organisation');
+select pg_temp.refused_because('nor an attempt at another organisation''s task',
+  $$insert into public.agent_attempts(organization_id, workflow_id, task_id, attempt_no, role_key, role_version,
+      executor_kind, executor_family, independence_domain, packet_fingerprint)
+    values ('aaaaaaaa-0000-0000-0000-000000000001', '0c0e0000-0000-0000-0000-000000000001',
+            '0c0e0001-0000-0000-0000-0000000000b0', 1, 'reader', '1', 'model', 'family', 'domain', 'pf')$$,
+  'another organisation');
+select pg_temp.refused_because('nor a claim made by another organisation''s task',
+  $$insert into public.evidence_claims(organization_id, workflow_id, task_id, subject_type, subject_key,
+      predicate, observation_basis)
+    values ('aaaaaaaa-0000-0000-0000-000000000001', '0c0e0000-0000-0000-0000-000000000001',
+            '0c0e0001-0000-0000-0000-0000000000b0', 'row', 'x', 'quantity', 'observed')$$,
+  'another organisation');
+select pg_temp.refused_because('nor an anchor into another organisation''s source',
+  $$insert into public.evidence_anchors(organization_id, workflow_id, claim_id, source_kind, segment_id, anchor_hash)
+    values ('aaaaaaaa-0000-0000-0000-000000000001', '0c0e0000-0000-0000-0000-000000000001',
+            '0e0e0000-0000-0000-0000-000000000001', 'segment', '0b0e00b0-0000-0000-0000-000000000001', 'borrowed')$$,
+  'another');
+select pg_temp.refused_because('nor a derivation from another organisation''s claim',
+  $$insert into public.claim_inputs(organization_id, claim_id, input_claim_id)
+    values ('aaaaaaaa-0000-0000-0000-000000000001', '0e0e0000-0000-0000-0000-000000000001',
+            '0e0e0000-0000-0000-0000-0000000000b0')$$,
+  'another organisation');
+select pg_temp.refused_because('nor a task handed another organisation''s source',
+  $$insert into public.task_sources(organization_id, task_id, ordinal, source_id)
+    values ('aaaaaaaa-0000-0000-0000-000000000001', '0c0e0001-0000-0000-0000-000000000001', 0,
+            '0a0e00b0-0000-0000-0000-000000000000')$$,
+  'another organisation');
+select pg_temp.refused_because('nor a task waiting on another organisation''s task',
+  $$insert into public.task_dependencies(organization_id, task_id, depends_on_task_id, dependency_kind)
+    values ('aaaaaaaa-0000-0000-0000-000000000001', '0c0e0001-0000-0000-0000-000000000001',
+            '0c0e0001-0000-0000-0000-0000000000b0', 'requires_completion')$$,
+  'another organisation');
+select pg_temp.refused_because('nor a verification aimed at another organisation''s claim',
+  $$insert into public.task_target_claims(organization_id, task_id, claim_id)
+    values ('aaaaaaaa-0000-0000-0000-000000000001', '0c0e0001-0000-0000-0000-000000000001',
+            '0e0e0000-0000-0000-0000-0000000000b0')$$,
+  'another organisation');
+select pg_temp.refused_because('nor a verdict written under another organisation''s task',
+  $$insert into public.claim_assessments(organization_id, workflow_id, claim_id, attempt_id, task_id, assessment, reason_code)
+    values ('aaaaaaaa-0000-0000-0000-000000000001', '0c0e0000-0000-0000-0000-000000000001',
+            '0e0e0000-0000-0000-0000-000000000001', '0d0e0000-0000-0000-0000-000000000001',
+            '0c0e0001-0000-0000-0000-0000000000b0', 'supports', 'r')$$,
+  'another organisation');
+select pg_temp.refused_because('nor a disagreement over another organisation''s claim',
+  $$insert into public.disagreement_claims(organization_id, disagreement_id, claim_id)
+    values ('aaaaaaaa-0000-0000-0000-000000000001', '1c0e0000-0000-0000-0000-000000000000',
+            '0e0e0000-0000-0000-0000-0000000000b0')$$,
+  'another');
+select pg_temp.refused_because('nor a follow-up run by another organisation''s task',
+  $$insert into public.disagreement_follow_ups(organization_id, disagreement_id, round, fingerprint, task_id)
+    values ('aaaaaaaa-0000-0000-0000-000000000001', '1c0e0000-0000-0000-0000-000000000000', 1, 'fp',
+            '0c0e0001-0000-0000-0000-0000000000b0')$$,
+  'another organisation');
+select pg_temp.refused_because('nor a decision',
+  $$insert into public.decisions(organization_id, workflow_id, decision_type, title, authority)
+    values ('aaaaaaaa-0000-0000-0000-000000000002', '0c0e0000-0000-0000-0000-000000000001', 'hold', 'x', 'human')$$,
+  'another organisation');
+select pg_temp.refused_because('nor evidence borrowed from another organisation',
+  $$insert into public.decision_evidence(organization_id, decision_id, claim_id, link)
+    values ('aaaaaaaa-0000-0000-0000-000000000001', '1b0e0000-0000-0000-0000-000000000000',
+            '0e0e0000-0000-0000-0000-0000000000b0', 'supports')$$,
+  'another organisation');
+select pg_temp.refused_because('nor an action on another organisation''s decision',
+  $$insert into public.decision_actions(organization_id, decision_id, action_type, owner_role)
+    values ('aaaaaaaa-0000-0000-0000-000000000002', '1b0e0000-0000-0000-0000-000000000000', 'review', 'reviewer')$$,
+  'another organisation');
+
+-- ────────────────────── across workflows of one organisation, table by table
+--
+-- Same organisation, other workflow: the id is real, the owner is the same,
+-- and the row is still refused. A decision that opens a source of a different
+-- reading cannot be followed back.
+select pg_temp.refused_because('a segment cannot be cut from a source of another workflow',
+  $$insert into public.source_segments(organization_id, workflow_id, source_id, segment_kind, content_hash, discovered_by)
+    values ('aaaaaaaa-0000-0000-0000-000000000001', '0c0e0000-0000-0000-0000-000000000001',
+            '0a0e00a2-0000-0000-0000-000000000000', 'page', 'h', 'deterministic')$$,
+  'another workflow');
+select pg_temp.refused('nor nested under a segment of another workflow',
+  $$insert into public.source_segments(organization_id, workflow_id, source_id, parent_segment_id, segment_kind,
+      content_hash, discovered_by)
+    values ('aaaaaaaa-0000-0000-0000-000000000001', '0c0e0000-0000-0000-0000-000000000001',
+            '0a0e0001-0000-0000-0000-000000000000', '0b0e00a2-0000-0000-0000-000000000001', 'table', 'h', 'deterministic')$$);
+select pg_temp.refused_because('a task cannot be the child of a task of another workflow',
+  $$insert into public.workflow_tasks(organization_id, workflow_id, parent_task_id, phase, task_type, role_key,
+      role_version, subject_key, input_fingerprint, contract_version)
+    values ('aaaaaaaa-0000-0000-0000-000000000001', '0c0e0000-0000-0000-0000-000000000001',
+            '0c0e0001-0000-0000-0000-0000000000a2', 'analyze', 'read_register', 'reader', '1', 'x', 'fp', 'v1')$$,
+  'another workflow');
+select pg_temp.refused_because('nor say it was created by one',
+  $$insert into public.workflow_tasks(organization_id, workflow_id, created_by_task_id, phase, task_type, role_key,
+      role_version, subject_key, input_fingerprint, contract_version)
+    values ('aaaaaaaa-0000-0000-0000-000000000001', '0c0e0000-0000-0000-0000-000000000001',
+            '0c0e0001-0000-0000-0000-0000000000a2', 'analyze', 'read_register', 'reader', '1', 'x', 'fp', 'v1')$$,
+  'another workflow');
+select pg_temp.refused_because('nor follow up a disagreement of another workflow',
+  $$insert into public.workflow_tasks(organization_id, workflow_id, disagreement_id, phase, task_type, role_key,
+      role_version, subject_key, input_fingerprint, contract_version)
+    values ('aaaaaaaa-0000-0000-0000-000000000001', '0c0e0000-0000-0000-0000-000000000001',
+            '1c0e0000-0000-0000-0000-0000000000a2', 'verify', 'verify_row', 'verifier', '1', 'x', 'fp', 'v1')$$,
+  'another workflow');
+select pg_temp.refused_because('a task cannot be handed a source of another workflow',
+  $$insert into public.task_sources(organization_id, task_id, ordinal, source_id)
+    values ('aaaaaaaa-0000-0000-0000-000000000001', '0c0e0001-0000-0000-0000-000000000001', 0,
+            '0a0e00a2-0000-0000-0000-000000000000')$$,
+  'another workflow');
+select pg_temp.refused_because('nor a segment of one',
+  $$insert into public.task_sources(organization_id, task_id, ordinal, segment_id)
+    values ('aaaaaaaa-0000-0000-0000-000000000001', '0c0e0001-0000-0000-0000-000000000001', 0,
+            '0b0e00a2-0000-0000-0000-000000000001')$$,
+  'another workflow');
+select pg_temp.refused_because('a dependency does not cross workflows — a row with no workflow of its own takes the first it names',
+  $$insert into public.task_dependencies(organization_id, task_id, depends_on_task_id, dependency_kind)
+    values ('aaaaaaaa-0000-0000-0000-000000000001', '0c0e0001-0000-0000-0000-000000000001',
+            '0c0e0001-0000-0000-0000-0000000000a2', 'requires_completion')$$,
+  'another workflow');
+select pg_temp.refused_because('a verification cannot target a claim of another workflow',
+  $$insert into public.task_target_claims(organization_id, task_id, claim_id)
+    values ('aaaaaaaa-0000-0000-0000-000000000001', '0c0e0001-0000-0000-0000-000000000001',
+            '0e0e0000-0000-0000-0000-0000000000a2')$$,
+  'another workflow');
+select pg_temp.refused_because('an attempt cannot be filed under a task of another workflow',
+  $$insert into public.agent_attempts(organization_id, workflow_id, task_id, attempt_no, role_key, role_version,
+      executor_kind, executor_family, independence_domain, packet_fingerprint)
+    values ('aaaaaaaa-0000-0000-0000-000000000001', '0c0e0000-0000-0000-0000-000000000001',
+            '0c0e0001-0000-0000-0000-0000000000a2', 1, 'reader', '1', 'model', 'family', 'domain', 'pf')$$,
+  'another workflow');
+select pg_temp.refused_because('a claim cannot be made by a task of another workflow',
+  $$insert into public.evidence_claims(organization_id, workflow_id, task_id, subject_type, subject_key,
+      predicate, observation_basis)
+    values ('aaaaaaaa-0000-0000-0000-000000000001', '0c0e0000-0000-0000-0000-000000000001',
+            '0c0e0001-0000-0000-0000-0000000000a2', 'row', 'x', 'quantity', 'observed')$$,
+  'another workflow');
+select pg_temp.refused_because('nor supersede a claim of another workflow',
+  $$insert into public.evidence_claims(organization_id, workflow_id, supersedes_claim_id, subject_type, subject_key,
+      predicate, observation_basis)
+    values ('aaaaaaaa-0000-0000-0000-000000000001', '0c0e0000-0000-0000-0000-000000000001',
+            '0e0e0000-0000-0000-0000-0000000000a2', 'row', 'x', 'quantity', 'observed')$$,
+  'another workflow');
+select pg_temp.refused_because('nor be derived from one',
+  $$insert into public.claim_inputs(organization_id, claim_id, input_claim_id)
+    values ('aaaaaaaa-0000-0000-0000-000000000001', '0e0e0000-0000-0000-0000-000000000001',
+            '0e0e0000-0000-0000-0000-0000000000a2')$$,
+  'another workflow');
+select pg_temp.refused_because('an anchor cannot point into a segment of another workflow',
+  $$insert into public.evidence_anchors(organization_id, workflow_id, claim_id, source_kind, segment_id, anchor_hash)
+    values ('aaaaaaaa-0000-0000-0000-000000000001', '0c0e0000-0000-0000-0000-000000000001',
+            '0e0e0000-0000-0000-0000-000000000001', 'segment', '0b0e00a2-0000-0000-0000-000000000001', 'borrowed')$$,
+  'another workflow');
+select pg_temp.refused_because('nor at a source of another workflow',
+  $$insert into public.evidence_anchors(organization_id, workflow_id, claim_id, source_kind, source_id, anchor_hash)
+    values ('aaaaaaaa-0000-0000-0000-000000000001', '0c0e0000-0000-0000-0000-000000000001',
+            '0e0e0000-0000-0000-0000-000000000001', 'source', '0a0e00a2-0000-0000-0000-000000000000', 'borrowed')$$,
+  'another workflow');
+select pg_temp.refused_because('nor hang from a claim of another workflow',
+  $$insert into public.evidence_anchors(organization_id, workflow_id, claim_id, source_kind, segment_id, anchor_hash)
+    values ('aaaaaaaa-0000-0000-0000-000000000001', '0c0e0000-0000-0000-0000-000000000001',
+            '0e0e0000-0000-0000-0000-0000000000a2', 'segment', '0b0e0001-0000-0000-0000-000000000001', 'borrowed')$$,
+  'another workflow');
+select pg_temp.refused_because('a verdict cannot be about a claim of another workflow',
+  $$insert into public.claim_assessments(organization_id, workflow_id, claim_id, attempt_id, assessment, reason_code)
+    values ('aaaaaaaa-0000-0000-0000-000000000001', '0c0e0000-0000-0000-0000-000000000001',
+            '0e0e0000-0000-0000-0000-0000000000a2', '0d0e0000-0000-0000-0000-000000000001', 'supports', 'r')$$,
+  'another workflow');
+select pg_temp.refused_because('a disagreement compares claims of one workflow',
+  $$insert into public.disagreement_claims(organization_id, disagreement_id, claim_id)
+    values ('aaaaaaaa-0000-0000-0000-000000000001', '1c0e0000-0000-0000-0000-000000000000',
+            '0e0e0000-0000-0000-0000-0000000000a2')$$,
+  'another');
+select pg_temp.refused_because('and is followed up by a task of its own workflow',
+  $$insert into public.disagreement_follow_ups(organization_id, disagreement_id, round, fingerprint, task_id)
+    values ('aaaaaaaa-0000-0000-0000-000000000001', '1c0e0000-0000-0000-0000-000000000000', 1, 'fp',
+            '0c0e0001-0000-0000-0000-0000000000a2')$$,
+  'another workflow');
+select pg_temp.refused_because('a disagreement is not settled by a decision of another workflow',
+  $$update public.disagreements set resolution_decision_id = '1b0e0000-0000-0000-0000-0000000000a2'
+     where id = '1c0e0000-0000-0000-0000-000000000000'$$,
+  'another workflow');
+select pg_temp.refused_because('a decision does not settle a disagreement of another workflow',
+  $$insert into public.decisions(organization_id, workflow_id, disagreement_id, decision_type, title, authority)
+    values ('aaaaaaaa-0000-0000-0000-000000000001', '0c0e0000-0000-0000-0000-000000000001',
+            '1c0e0000-0000-0000-0000-0000000000a2', 'hold', 'x', 'human')$$,
+  'another workflow');
+select pg_temp.refused_because('nor supersede a decision of one',
+  $$insert into public.decisions(organization_id, workflow_id, supersedes_decision_id, decision_type, title, authority)
+    values ('aaaaaaaa-0000-0000-0000-000000000001', '0c0e0000-0000-0000-0000-000000000001',
+            '1b0e0000-0000-0000-0000-0000000000a2', 'supersede', 'x', 'human')$$,
+  'another workflow');
+select pg_temp.refused_because('nor rest on a claim of one',
+  $$insert into public.decision_evidence(organization_id, decision_id, claim_id, link)
+    values ('aaaaaaaa-0000-0000-0000-000000000001', '1b0e0000-0000-0000-0000-000000000000',
+            '0e0e0000-0000-0000-0000-0000000000a2', 'supports')$$,
+  'another workflow');
+select pg_temp.refused_because('nor cite an anchor of one',
+  $$insert into public.decision_evidence(organization_id, decision_id, anchor_id, link)
+    values ('aaaaaaaa-0000-0000-0000-000000000001', '1b0e0000-0000-0000-0000-000000000000',
+            '0f0e0000-0000-0000-0000-0000000000a2', 'context')$$,
+  'another workflow');
+select pg_temp.refused_because('a reference to a row that is not there is named as such, not as a foreign key surprise',
+  $$insert into public.workflow_tasks(organization_id, workflow_id, parent_task_id, phase, task_type, role_key,
+      role_version, subject_key, input_fingerprint, contract_version)
+    values ('aaaaaaaa-0000-0000-0000-000000000001', '0c0e0000-0000-0000-0000-000000000001',
+            '0c0e0001-0000-0000-0000-00000000ffff', 'analyze', 'read_register', 'reader', '1', 'x', 'fp', 'v1')$$,
+  'does not exist');
+
+-- ─────────────────────────────────────────── and a row does not move house
+select pg_temp.refused_because('a workflow does not change organisation after it is written',
+  $$update public.intelligence_workflows set organization_id = 'aaaaaaaa-0000-0000-0000-000000000002'
+     where id = '0c0e0000-0000-0000-0000-000000000001'$$,
+  'does not change organisation');
+select pg_temp.refused_because('nor does a task',
+  $$update public.workflow_tasks set organization_id = 'aaaaaaaa-0000-0000-0000-000000000002'
+     where id = '0c0e0001-0000-0000-0000-000000000001'$$,
+  'does not change organisation');
+select pg_temp.refused_because('nor a claim',
+  $$update public.evidence_claims set organization_id = 'aaaaaaaa-0000-0000-0000-000000000002'
+     where id = '0e0e0000-0000-0000-0000-000000000001'$$,
+  'does not change organisation');
+select pg_temp.refused_because('nor an attempt',
+  $$update public.agent_attempts set organization_id = 'aaaaaaaa-0000-0000-0000-000000000002'
+     where id = '0d0e0000-0000-0000-0000-000000000001'$$,
+  'does not change organisation');
+select pg_temp.refused_because('a task does not change workflow after it is written',
+  $$update public.workflow_tasks set workflow_id = '0c0e0000-0000-0000-0000-0000000000a2'
+     where id = '0c0e0001-0000-0000-0000-000000000001'$$,
+  'does not change workflow');
+select pg_temp.refused_because('nor does a claim',
+  $$update public.evidence_claims set workflow_id = '0c0e0000-0000-0000-0000-0000000000a2'
+     where id = '0e0e0000-0000-0000-0000-000000000001'$$,
+  'does not change workflow');
+select pg_temp.refused_because('nor an attempt',
+  $$update public.agent_attempts set workflow_id = '0c0e0000-0000-0000-0000-0000000000a2'
+     where id = '0d0e0000-0000-0000-0000-000000000001'$$,
+  'does not change workflow');
+select pg_temp.refused_because('nor a disagreement',
+  $$update public.disagreements set workflow_id = '0c0e0000-0000-0000-0000-0000000000a2'
+     where id = '1c0e0000-0000-0000-0000-000000000000'$$,
+  'does not change workflow');
+select pg_temp.refused_because('nor a decision',
+  $$update public.decisions set workflow_id = '0c0e0000-0000-0000-0000-0000000000a2'
+     where id = '1b0e0000-0000-0000-0000-000000000000'$$,
+  'does not change workflow');
+
+-- ═══════════════════════════════ 2 · THE SOURCE UNDERNEATH ═══════════════════
+--
+-- A source is identified by its content, kept whole, and never edited: anchors
+-- under accepted decisions point here. A segment of it may be refined while it
+-- is only proposed and stops moving once accepted.
+select pg_temp.refused_because('a source is append-only — a corrected label is not a corrected source',
+  $$update public.workflow_sources set label = 'synthetic register A (revised)'
+     where id = '0a0e0001-0000-0000-0000-000000000000'$$, 'append-only');
+select pg_temp.refused('nor is its content identity rewritten',
+  $$update public.workflow_sources set content_hash = 'a-different-hash'
+     where id = '0a0e0001-0000-0000-0000-000000000000'$$);
+select pg_temp.refused('nor its locator',
+  $$update public.workflow_sources set uri = 'fixture://synthetic/register-a-v2'
+     where id = '0a0e0001-0000-0000-0000-000000000000'$$);
+select pg_temp.refused_because('and it is not deleted — a changed source set is a new workflow',
+  $$delete from public.workflow_sources where id = '0a0e0001-0000-0000-0000-000000000000'$$,
+  'part of the record');
+select pg_temp.refused('a signed url is not a locator: it expires and carries a credential',
+  $$insert into public.workflow_sources(organization_id, workflow_id, ordinal, source_kind, uri, content_hash, hash_algorithm)
+    values ('aaaaaaaa-0000-0000-0000-000000000001', '0c0e0000-0000-0000-0000-000000000001', 7, 'document',
+            'https://store.example/register?X-Amz-Signature=deadbeef', 'h', 'sha-256')$$);
+select pg_temp.refused('nor is a url carrying a token',
+  $$insert into public.workflow_sources(organization_id, workflow_id, ordinal, source_kind, uri, content_hash, hash_algorithm)
+    values ('aaaaaaaa-0000-0000-0000-000000000001', '0c0e0000-0000-0000-0000-000000000001', 7, 'document',
+            'https://store.example/register?token=abc', 'h', 'sha-256')$$);
+select pg_temp.refused('a source with neither a digest nor a storage version has no identity, and is refused',
+  $$insert into public.workflow_sources(organization_id, workflow_id, ordinal, source_kind, uri, byte_size)
+    values ('aaaaaaaa-0000-0000-0000-000000000001', '0c0e0000-0000-0000-0000-000000000001', 7, 'document',
+            'fixture://synthetic/unhashed', 10)$$);
+select pg_temp.allowed('the storage system''s own immutable version id is an identity',
+  $$insert into public.workflow_sources(id, organization_id, workflow_id, ordinal, source_kind, uri, object_version_id, byte_size)
+    values ('0a0e0003-0000-0000-0000-000000000000', 'aaaaaaaa-0000-0000-0000-000000000001',
+            '0c0e0000-0000-0000-0000-000000000001', 2, 'dataset', 'fixture://synthetic/dataset-c', 'version-3', 512)$$);
+select pg_temp.refused('the same locator at the same version is the same source, not a third one',
+  $$insert into public.workflow_sources(organization_id, workflow_id, ordinal, source_kind, uri, object_version_id)
+    values ('aaaaaaaa-0000-0000-0000-000000000001', '0c0e0000-0000-0000-0000-000000000001', 3, 'dataset',
+            'fixture://synthetic/dataset-c', 'version-3')$$);
+select pg_temp.refused('and one position in the set holds one source',
+  $$insert into public.workflow_sources(organization_id, workflow_id, ordinal, source_kind, uri, content_hash, hash_algorithm)
+    values ('aaaaaaaa-0000-0000-0000-000000000001', '0c0e0000-0000-0000-0000-000000000001', 2, 'document',
+            'fixture://synthetic/another', 'h2', 'sha-256')$$);
+select pg_temp.refused('a source is not a negative number of bytes long',
+  $$insert into public.workflow_sources(organization_id, workflow_id, ordinal, source_kind, uri, content_hash, hash_algorithm, byte_size)
+    values ('aaaaaaaa-0000-0000-0000-000000000001', '0c0e0000-0000-0000-0000-000000000001', 8, 'document',
+            'fixture://synthetic/negative', 'h3', 'sha-256', -1)$$);
+
+-- ─────────────────────────────────────── a segment: refined, then fixed
+insert into public.source_segments(id, organization_id, workflow_id, source_id, parent_segment_id, segment_kind, label,
+  ordinal, locator, content_hash, status, discovered_by)
+values ('0b0e0003-0000-0000-0000-000000000001', 'aaaaaaaa-0000-0000-0000-000000000001',
+  '0c0e0000-0000-0000-0000-000000000001', '0a0e0001-0000-0000-0000-000000000000',
+  '0b0e0001-0000-0000-0000-000000000003', 'figure', 'figure 1', 1,
+  '{"page": 1, "bbox": [0.10, 0.10, 0.30, 0.30]}'::jsonb, 'fixture-segment-hash-a-figure-1', 'proposed', 'model');
+select pg_temp.allowed('a proposed segment may still be refined',
+  $$update public.source_segments set locator = '{"page": 1, "bbox": [0.11, 0.11, 0.31, 0.31]}'::jsonb,
+       label = 'figure 1 (tightened)'
+     where id = '0b0e0003-0000-0000-0000-000000000001'$$);
+-- The same piece means the same content in the same place. Re-discovery
+-- reports both and collides, which is the deduplication discovery relies on.
+-- The same content somewhere else is a different piece; that is asserted where
+-- the recording is read, below.
+select pg_temp.refused('the same piece of the same source is one segment, not two',
+  $$insert into public.source_segments(organization_id, workflow_id, source_id, parent_segment_id, segment_kind,
+      locator, content_hash, discovered_by)
+    values ('aaaaaaaa-0000-0000-0000-000000000001', '0c0e0000-0000-0000-0000-000000000001',
+            '0a0e0001-0000-0000-0000-000000000000', '0b0e0001-0000-0000-0000-000000000003', 'figure',
+            '{"page": 1, "bbox": [0.11, 0.11, 0.31, 0.31]}'::jsonb, 'fixture-segment-hash-a-figure-1', 'model')$$);
+select pg_temp.refused_because('a segment is nested under a segment of its own source, never another',
+  $$insert into public.source_segments(organization_id, workflow_id, source_id, parent_segment_id, segment_kind,
+      locator, content_hash, discovered_by)
+    values ('aaaaaaaa-0000-0000-0000-000000000001', '0c0e0000-0000-0000-0000-000000000001',
+            '0a0e0001-0000-0000-0000-000000000000', '0b0e0002-0000-0000-0000-000000000001', 'figure',
+            '{"page": 1, "bbox": [0.5, 0.5, 0.6, 0.6]}'::jsonb, 'crossed-parent', 'model')$$,
+  'another source');
+select pg_temp.refused('a box in pixels is not a box every reader can compare',
+  $$insert into public.source_segments(organization_id, workflow_id, source_id, segment_kind, locator, content_hash, discovered_by)
+    values ('aaaaaaaa-0000-0000-0000-000000000001', '0c0e0000-0000-0000-0000-000000000001',
+            '0a0e0001-0000-0000-0000-000000000000', 'figure', '{"bbox": [120, 340, 900, 1200]}'::jsonb, 'pixels', 'model')$$);
+select pg_temp.refused('nor is a box with three corners',
+  $$insert into public.source_segments(organization_id, workflow_id, source_id, segment_kind, locator, content_hash, discovered_by)
+    values ('aaaaaaaa-0000-0000-0000-000000000001', '0c0e0000-0000-0000-0000-000000000001',
+            '0a0e0001-0000-0000-0000-000000000000', 'figure', '{"bbox": [0.1, 0.1, 0.3]}'::jsonb, 'three', 'model')$$);
+select pg_temp.refused('nor one whose right edge is left of its left edge',
+  $$insert into public.source_segments(organization_id, workflow_id, source_id, segment_kind, locator, content_hash, discovered_by)
+    values ('aaaaaaaa-0000-0000-0000-000000000001', '0c0e0000-0000-0000-0000-000000000001',
+            '0a0e0001-0000-0000-0000-000000000000', 'figure', '{"bbox": [0.3, 0.1, 0.1, 0.3]}'::jsonb, 'inside-out', 'model')$$);
+select pg_temp.refused('a time range that ends before it starts is not a range',
+  $$insert into public.source_segments(organization_id, workflow_id, source_id, segment_kind, locator, content_hash, discovered_by)
+    values ('aaaaaaaa-0000-0000-0000-000000000001', '0c0e0000-0000-0000-0000-000000000001',
+            '0a0e0002-0000-0000-0000-000000000000', 'scene', '{"start_ms": 9000, "end_ms": 1000}'::jsonb, 'backwards', 'model')$$);
+select pg_temp.refused('nor is one with only a start',
+  $$insert into public.source_segments(organization_id, workflow_id, source_id, segment_kind, locator, content_hash, discovered_by)
+    values ('aaaaaaaa-0000-0000-0000-000000000001', '0c0e0000-0000-0000-0000-000000000001',
+            '0a0e0002-0000-0000-0000-000000000000', 'scene', '{"start_ms": 9000}'::jsonb, 'half', 'model')$$);
+select pg_temp.refused('nor one written in words',
+  $$insert into public.source_segments(organization_id, workflow_id, source_id, segment_kind, locator, content_hash, discovered_by)
+    values ('aaaaaaaa-0000-0000-0000-000000000001', '0c0e0000-0000-0000-0000-000000000001',
+            '0a0e0002-0000-0000-0000-000000000000', 'scene', '{"start_ms": "nine", "end_ms": 1000}'::jsonb, 'words', 'model')$$);
+select pg_temp.refused('who found a segment is one of three words',
+  $$insert into public.source_segments(organization_id, workflow_id, source_id, segment_kind, locator, content_hash, discovered_by)
+    values ('aaaaaaaa-0000-0000-0000-000000000001', '0c0e0000-0000-0000-0000-000000000001',
+            '0a0e0001-0000-0000-0000-000000000000', 'figure', '{}'::jsonb, 'guessed', 'a guess')$$);
+select pg_temp.refused('and a segment has only four states',
+  $$insert into public.source_segments(organization_id, workflow_id, source_id, segment_kind, locator, content_hash, discovered_by, status)
+    values ('aaaaaaaa-0000-0000-0000-000000000001', '0c0e0000-0000-0000-0000-000000000001',
+            '0a0e0001-0000-0000-0000-000000000000', 'figure', '{}'::jsonb, 'final', 'model', 'final')$$);
+update public.source_segments set status = 'accepted' where id = '0b0e0003-0000-0000-0000-000000000001';
+select pg_temp.refused_because('once accepted a segment stops — its label is what anchors were made against',
+  $$update public.source_segments set label = 'figure 1 (again)' where id = '0b0e0003-0000-0000-0000-000000000001'$$,
+  'cannot be rewritten under an anchor');
+select pg_temp.refused('nor does it move',
+  $$update public.source_segments set locator = '{"page": 1, "bbox": [0.2, 0.2, 0.4, 0.4]}'::jsonb
+     where id = '0b0e0003-0000-0000-0000-000000000001'$$);
+select pg_temp.refused('nor change what it is',
+  $$update public.source_segments set segment_kind = 'table' where id = '0b0e0003-0000-0000-0000-000000000001'$$);
+select pg_temp.refused('nor who found it',
+  $$update public.source_segments set discovered_by = 'human' where id = '0b0e0003-0000-0000-0000-000000000001'$$);
+select pg_temp.refused('nor go back to being merely proposed',
+  $$update public.source_segments set status = 'proposed' where id = '0b0e0003-0000-0000-0000-000000000001'$$);
+select pg_temp.refused_because('and an accepted segment is not deleted',
+  $$delete from public.source_segments where id = '0b0e0003-0000-0000-0000-000000000001'$$,
+  'stays in the record');
+select pg_temp.refused('a fixture segment from the discoverer is just as fixed',
+  $$update public.source_segments set locator = '{"page": 0, "bbox": [0.1, 0.1, 0.2, 0.2]}'::jsonb
+     where id = '0b0e0001-0000-0000-0000-000000000002'$$);
+insert into public.source_segments(id, organization_id, workflow_id, source_id, segment_kind, locator, content_hash, discovered_by)
+values ('0b0e0003-0000-0000-0000-000000000002', 'aaaaaaaa-0000-0000-0000-000000000001',
+  '0c0e0000-0000-0000-0000-000000000001', '0a0e0001-0000-0000-0000-000000000000', 'figure',
+  '{"page": 0, "bbox": [0.7, 0.7, 0.8, 0.8]}'::jsonb, 'fixture-segment-hash-a-stray', 'model');
+select pg_temp.affects('a segment that was only ever proposed may be withdrawn',
+  $$delete from public.source_segments where id = '0b0e0003-0000-0000-0000-000000000002'$$, 1);
+
+-- ──────────────────────────────────── an anchor is one consistent tuple
+--
+-- The persisted segment is the authority for where an anchor points. An anchor
+-- that names a segment of one source and the id of another, or a box outside
+-- the segment it claims to sit in, is not a place anybody can open.
+select pg_temp.refused_because('an anchor cannot name a segment of one source and the id of another',
+  $$insert into public.evidence_anchors(organization_id, workflow_id, claim_id, source_kind, source_id, segment_id, anchor_hash)
+    values ('aaaaaaaa-0000-0000-0000-000000000001', '0c0e0000-0000-0000-0000-000000000001',
+            '0e0e0000-0000-0000-0000-000000000001', 'segment', '0a0e0002-0000-0000-0000-000000000000',
+            '0b0e0001-0000-0000-0000-000000000002', 'crossed')$$,
+  'one source and the id of another');
+select pg_temp.refused_because('nor locate a box outside the segment it sits in',
+  $$insert into public.evidence_anchors(organization_id, workflow_id, claim_id, source_kind, segment_id, locator, anchor_hash)
+    values ('aaaaaaaa-0000-0000-0000-000000000001', '0c0e0000-0000-0000-0000-000000000001',
+            '0e0e0000-0000-0000-0000-000000000001', 'segment_locator', '0b0e0001-0000-0000-0000-000000000002',
+            '{"bbox": [0.50, 0.00, 0.60, 0.10]}'::jsonb, 'outside')$$,
+  'outside segment');
+select pg_temp.refused_because('nor a time range outside the scene it names',
+  $$insert into public.evidence_anchors(organization_id, workflow_id, claim_id, source_kind, segment_id, locator, anchor_hash)
+    values ('aaaaaaaa-0000-0000-0000-000000000001', '0c0e0000-0000-0000-0000-000000000001',
+            '0e0e0000-0000-0000-0000-000000000001', 'segment_locator', '0b0e0002-0000-0000-0000-000000000001',
+            '{"start_ms": 40000, "end_ms": 50000}'::jsonb, 'overrun')$$,
+  'outside segment');
+select pg_temp.refused('nor is a box drawn in some other rendering''s pixels',
+  $$insert into public.evidence_anchors(organization_id, workflow_id, claim_id, source_kind, segment_id, locator, anchor_hash)
+    values ('aaaaaaaa-0000-0000-0000-000000000001', '0c0e0000-0000-0000-0000-000000000001',
+            '0e0e0000-0000-0000-0000-000000000001', 'segment_locator', '0b0e0001-0000-0000-0000-000000000002',
+            '{"bbox": [120, 340, 900, 1200]}'::jsonb, 'pixels')$$);
+select pg_temp.refused('an anchor that points nowhere is not an anchor',
+  $$insert into public.evidence_anchors(organization_id, workflow_id, claim_id, source_kind, anchor_hash)
+    values ('aaaaaaaa-0000-0000-0000-000000000001', '0c0e0000-0000-0000-0000-000000000001',
+            '0e0e0000-0000-0000-0000-000000000001', 'segment', 'nowhere')$$);
+select pg_temp.refused('a locator anchor with no locator is not one either',
+  $$insert into public.evidence_anchors(organization_id, workflow_id, claim_id, source_kind, segment_id, anchor_hash)
+    values ('aaaaaaaa-0000-0000-0000-000000000001', '0c0e0000-0000-0000-0000-000000000001',
+            '0e0e0000-0000-0000-0000-000000000001', 'segment_locator', '0b0e0001-0000-0000-0000-000000000002', 'empty')$$);
+select pg_temp.refused('nor a source anchor that names no source',
+  $$insert into public.evidence_anchors(organization_id, workflow_id, claim_id, source_kind, anchor_hash)
+    values ('aaaaaaaa-0000-0000-0000-000000000001', '0c0e0000-0000-0000-0000-000000000001',
+            '0e0e0000-0000-0000-0000-000000000001', 'source', 'nowhere')$$);
+select pg_temp.refused('nor a person''s record that records nothing',
+  $$insert into public.evidence_anchors(organization_id, workflow_id, claim_id, source_kind, anchor_hash)
+    values ('aaaaaaaa-0000-0000-0000-000000000001', '0c0e0000-0000-0000-0000-000000000001',
+            '0e0e0000-0000-0000-0000-000000000001', 'human_record', 'silent')$$);
+select pg_temp.refused('nor an anchor of a kind the kernel has no word for',
+  $$insert into public.evidence_anchors(organization_id, workflow_id, claim_id, source_kind, segment_id, anchor_hash)
+    values ('aaaaaaaa-0000-0000-0000-000000000001', '0c0e0000-0000-0000-0000-000000000001',
+            '0e0e0000-0000-0000-0000-000000000001', 'hearsay', '0b0e0001-0000-0000-0000-000000000002', 'hearsay')$$);
+select pg_temp.refused('an anchor belongs to a claim or an assessment, not to nothing',
+  $$insert into public.evidence_anchors(organization_id, workflow_id, source_kind, segment_id, anchor_hash)
+    values ('aaaaaaaa-0000-0000-0000-000000000001', '0c0e0000-0000-0000-0000-000000000001',
+            'segment', '0b0e0001-0000-0000-0000-000000000002', 'orphan')$$);
+insert into public.evidence_anchors(id, organization_id, workflow_id, claim_id, source_kind, segment_id, locator, anchor_hash)
+values
+  ('0f0e0000-0000-0000-0000-000000000001', 'aaaaaaaa-0000-0000-0000-000000000001',
+   '0c0e0000-0000-0000-0000-000000000001', '0e0e0000-0000-0000-0000-000000000001', 'segment_locator',
+   '0b0e0001-0000-0000-0000-000000000002', '{"bbox": [0.60, 0.10, 0.70, 0.20], "row": 3}'::jsonb, 'anchor-row-1-table'),
+  ('0f0e0000-0000-0000-0000-000000000002', 'aaaaaaaa-0000-0000-0000-000000000001',
+   '0c0e0000-0000-0000-0000-000000000001', '0e0e0000-0000-0000-0000-000000000001', 'segment_locator',
+   '0b0e0002-0000-0000-0000-000000000001', '{"start_ms": 10000, "end_ms": 20000}'::jsonb, 'anchor-row-1-scene');
+select pg_temp.check('a box inside its segment and a range inside its scene are anchors, and each learns its source from the segment',
+  (select source_id from public.evidence_anchors where id = '0f0e0000-0000-0000-0000-000000000001')
+    = '0a0e0001-0000-0000-0000-000000000000'
+  and (select source_id from public.evidence_anchors where id = '0f0e0000-0000-0000-0000-000000000002')
+    = '0a0e0002-0000-0000-0000-000000000000');
+select pg_temp.refused_because('an anchor is a fingerprint of a source: even under a claim still in motion it is not repointed',
+  $$update public.evidence_anchors set locator = '{"bbox": [0.61, 0.11, 0.71, 0.21]}'::jsonb
+     where id = '0f0e0000-0000-0000-0000-000000000001'$$,
+  'a different source is a different anchor');
+select pg_temp.refused('nor its quoted source rewritten',
+  $$update public.evidence_anchors set quoted_text = 'something else entirely'
+     where id = '0f0e0000-0000-0000-0000-000000000001'$$);
+select pg_temp.refused('nor moved onto another claim',
+  $$update public.evidence_anchors set claim_id = '0e0e0000-0000-0000-0000-0000000000a2'
+     where id = '0f0e0000-0000-0000-0000-000000000001'$$);
+insert into public.evidence_anchors(id, organization_id, workflow_id, claim_id, source_kind, segment_id, anchor_hash)
+values ('0f0e0000-0000-0000-0000-000000000003', 'aaaaaaaa-0000-0000-0000-000000000001',
+  '0c0e0000-0000-0000-0000-000000000001', '0e0e0000-0000-0000-0000-000000000001', 'segment',
+  '0b0e0001-0000-0000-0000-000000000001', 'anchor-row-1-stray');
+select pg_temp.affects('an anchor under a claim still in motion may be withdrawn',
+  $$delete from public.evidence_anchors where id = '0f0e0000-0000-0000-0000-000000000003'$$, 1);
+select pg_temp.core_v2_settle();
+
+-- ═════════════════════════ 3 · WHAT WAS ASKED, AND OF WHICH SOURCES ══════════
+--
+-- Two hashes, computed on the server: which immutable sources were read, and
+-- what was asked of them. A caller may state what it believes and be told it
+-- is stale; it never supplies the value.
+create or replace function pg_temp.sources(p_set text) returns jsonb language sql immutable as $$
+  select case p_set
+    when 'started' then jsonb_build_array(
+      jsonb_build_object('source_kind', 'document', 'label', 'started register', 'uri', 'fixture://started/register',
+                         'content_hash', 'started-hash-register', 'hash_algorithm', 'sha-256', 'byte_size', 20480,
+                         'media', jsonb_build_object('page_count', 3)),
+      jsonb_build_object('source_kind', 'recording', 'label', 'started recording', 'uri', 'fixture://started/recording',
+                         'object_version_id', 'version-7', 'byte_size', 655360))
+    when 'reversed' then jsonb_build_array(
+      jsonb_build_object('source_kind', 'recording', 'label', 'started recording', 'uri', 'fixture://started/recording',
+                         'object_version_id', 'version-7', 'byte_size', 655360),
+      jsonb_build_object('source_kind', 'document', 'label', 'started register', 'uri', 'fixture://started/register',
+                         'content_hash', 'started-hash-register', 'hash_algorithm', 'sha-256', 'byte_size', 20480,
+                         'media', jsonb_build_object('page_count', 3)))
+    when 'rehashed' then jsonb_build_array(
+      jsonb_build_object('source_kind', 'document', 'label', 'started register', 'uri', 'fixture://started/register',
+                         'content_hash', 'started-hash-register-v2', 'hash_algorithm', 'sha-256', 'byte_size', 20480),
+      jsonb_build_object('source_kind', 'recording', 'label', 'started recording', 'uri', 'fixture://started/recording',
+                         'object_version_id', 'version-7', 'byte_size', 655360))
+    when 'unidentified' then jsonb_build_array(
+      jsonb_build_object('source_kind', 'document', 'label', 'just uploaded', 'uri', 'fixture://started/unhashed', 'byte_size', 10))
+    when 'signed' then jsonb_build_array(
+      jsonb_build_object('source_kind', 'document', 'label', 'signed', 'uri', 'https://store.example/x?X-Amz-Signature=abc',
+                         'content_hash', 'h', 'hash_algorithm', 'sha-256'))
+  end $$;
+
+select pg_temp.check('a digest with its algorithm is an identity, and so is a storage version',
+  public.core_v2_source_identity('{"content_hash":"h","hash_algorithm":"sha-256"}'::jsonb) = 'digest=sha-256:h'
+  and public.core_v2_source_identity('{"object_version_id":"v7"}'::jsonb) = 'version=v7');
+select pg_temp.check('a digest without its algorithm is not one, and neither is an empty string',
+  public.core_v2_source_identity('{"content_hash":"h"}'::jsonb) is null
+  and public.core_v2_source_identity('{"content_hash":"","hash_algorithm":"sha-256","object_version_id":""}'::jsonb) is null);
+select pg_temp.refused_because('a workflow must name the sources it reads',
+  $$select public.core_v2_source_set_fingerprint('[]'::jsonb)$$, 'must name the sources');
+select pg_temp.refused_because('and a source nobody has identified is not a Core V2 source — the refusal names it',
+  $$select public.core_v2_source_set_fingerprint(pg_temp.sources('unidentified'))$$, 'just uploaded');
+insert into core_v2_hashes(k, v) select 'started', public.core_v2_source_set_fingerprint(pg_temp.sources('started'));
+select pg_temp.check('the same sources in another order are another set',
+  public.core_v2_source_set_fingerprint(pg_temp.sources('reversed')) <> (select v from core_v2_hashes where k = 'started'));
+select pg_temp.check('a source whose content identity changed is a different set at the same locator and size',
+  public.core_v2_source_set_fingerprint(pg_temp.sources('rehashed')) <> (select v from core_v2_hashes where k = 'started'));
+select pg_temp.check('and the same sources again are the same set',
+  public.core_v2_source_set_fingerprint(pg_temp.sources('started')) = (select v from core_v2_hashes where k = 'started'));
+select pg_temp.check('one meaning has one written form: keys sorted, members sorted',
+  public.core_v2_canonical_json('{"b":[3,1,2],"a":{"y":1,"x":[{"k":2},{"k":1}]}}'::jsonb)::text
+    = '{"a": {"x": [{"k": 1}, {"k": 2}], "y": 1}, "b": [1, 2, 3]}');
+select pg_temp.check('the same question written in another order is the same question',
+  public.core_v2_request_fingerprint('synthetic-records', '1', 'synthetic_review',
+    (select v from core_v2_hashes where k = 'started'), '{"parts":["b","a"],"depth":2}'::jsonb, 'core-v2.1')
+  = public.core_v2_request_fingerprint('synthetic-records', '1', 'synthetic_review',
+    (select v from core_v2_hashes where k = 'started'), '{"depth":2,"parts":["a","b"]}'::jsonb, 'core-v2.1'));
+select pg_temp.check('while a different scope over the same sources is a different question',
+  public.core_v2_request_fingerprint('synthetic-records', '1', 'synthetic_review',
+    (select v from core_v2_hashes where k = 'started'), '{"parts":["a"]}'::jsonb, 'core-v2.1')
+  <> public.core_v2_request_fingerprint('synthetic-records', '1', 'synthetic_review',
+    (select v from core_v2_hashes where k = 'started'), '{"parts":["a","b"]}'::jsonb, 'core-v2.1'));
+select pg_temp.check('and so is the same question under another pack version, or another engine',
+  public.core_v2_request_fingerprint('synthetic-records', '2', 'synthetic_review',
+    (select v from core_v2_hashes where k = 'started'), '{}'::jsonb, 'core-v2.1')
+  <> public.core_v2_request_fingerprint('synthetic-records', '1', 'synthetic_review',
+    (select v from core_v2_hashes where k = 'started'), '{}'::jsonb, 'core-v2.1')
+  and public.core_v2_request_fingerprint('synthetic-records', '1', 'synthetic_review',
+    (select v from core_v2_hashes where k = 'started'), '{}'::jsonb, 'core-v2.2')
+  <> public.core_v2_request_fingerprint('synthetic-records', '1', 'synthetic_review',
+    (select v from core_v2_hashes where k = 'started'), '{}'::jsonb, 'core-v2.1'));
+
+-- ─────────────────────────────────────────────── starting is the machine's
+--
+-- Until a dispatcher exists, a person who could start a workflow could leave
+-- a permanent start command nothing consumes. So the door is the service
+-- role's, and an owner at the keyboard is refused before anything is written.
+insert into core_v2_counts select 'workflows', count(*) from public.intelligence_workflows;
+insert into core_v2_counts select 'commands', count(*) from public.workflow_outbox;
+set local role authenticated;
+set local test.uid = '11111111-1111-1111-1111-111111111111';
+select pg_temp.refused('an owner does not start a workflow from the browser',
+  $$select public.core_v2_start_workflow('aaaaaaaa-0000-0000-0000-000000000001', 'synthetic-records', '1',
+      'synthetic_review', pg_temp.sources('started'))$$);
+set local test.uid = '22222222-2222-2222-2222-222222222222';
+select pg_temp.refused('nor does a contributor',
+  $$select public.core_v2_start_workflow('aaaaaaaa-0000-0000-0000-000000000001', 'synthetic-records', '1',
+      'synthetic_review', pg_temp.sources('started'))$$);
+select pg_temp.check('though a member may ask what a set of sources hashes to',
+  public.core_v2_source_set_fingerprint(pg_temp.sources('started')) = (select v from core_v2_hashes where k = 'started'));
+set local role anon;
+set local test.uid = '';
+select pg_temp.refused('and a signed-out visitor has no way to start anything',
+  $$select public.core_v2_start_workflow('aaaaaaaa-0000-0000-0000-000000000001', 'synthetic-records', '1',
+      'synthetic_review', pg_temp.sources('started'))$$);
+select pg_temp.refused('nor to ask what a set of sources hashes to',
+  $$select public.core_v2_source_set_fingerprint(pg_temp.sources('started'))$$);
+reset role;
+select pg_temp.check('the refusals left no workflow and no start command behind',
+  (select count(*) from public.intelligence_workflows) = (select n from core_v2_counts where k = 'workflows')
+  and (select count(*) from public.workflow_outbox) = (select n from core_v2_counts where k = 'commands'));
+
+set local test.uid = '11111111-1111-1111-1111-111111111111';
+select pg_temp.refused_because('the worker cannot start work for an organisation that does not exist',
+  $$select public.core_v2_start_workflow('aaaaaaaa-0000-0000-0000-00000000ffff', 'synthetic-records', '1',
+      'synthetic_review', pg_temp.sources('started'))$$, 'no such organisation');
+select pg_temp.refused_because('nor without naming the domain pack',
+  $$select public.core_v2_start_workflow('aaaaaaaa-0000-0000-0000-000000000001', '', '1',
+      'synthetic_review', pg_temp.sources('started'))$$, 'names its domain pack');
+select pg_temp.refused_because('nor a reading of a source with no trustworthy identity',
+  $$select public.core_v2_start_workflow('aaaaaaaa-0000-0000-0000-000000000001', 'synthetic-records', '1',
+      'synthetic_review', pg_temp.sources('unidentified'))$$, 'cannot identify');
+select pg_temp.refused('nor of a source located by a signed url',
+  $$select public.core_v2_start_workflow('aaaaaaaa-0000-0000-0000-000000000001', 'synthetic-records', '1',
+      'synthetic_review', pg_temp.sources('signed'))$$);
+select pg_temp.refused_because('a fingerprint that no longer matches the sources stops the start',
+  $$select public.core_v2_start_workflow('aaaaaaaa-0000-0000-0000-000000000001', 'synthetic-records', '1',
+      'synthetic_review', pg_temp.sources('started'), '{}'::jsonb, 'core-v2.1', '{}'::jsonb, 'a-stale-hash')$$,
+  'sources have changed');
+select pg_temp.refused('an engine that is not Core V2 does not start a Core V2 workflow',
+  $$select public.core_v2_start_workflow('aaaaaaaa-0000-0000-0000-000000000001', 'synthetic-records', '1',
+      'synthetic_review', pg_temp.sources('started'), '{}'::jsonb, 'legacy-1')$$);
+select pg_temp.refused('a budget the triggers could not read is refused at the door, not at the first task',
+  $$select public.core_v2_start_workflow('aaaaaaaa-0000-0000-0000-000000000001', 'synthetic-records', '1',
+      'synthetic_review', pg_temp.sources('started'), '{}'::jsonb, 'core-v2.1', '{"maximum_tasks": "three"}'::jsonb)$$);
+select pg_temp.refused('and so is a budget of two and a half tasks',
+  $$select public.core_v2_start_workflow('aaaaaaaa-0000-0000-0000-000000000001', 'synthetic-records', '1',
+      'synthetic_review', pg_temp.sources('started'), '{}'::jsonb, 'core-v2.1', '{"maximum_tasks": 2.5}'::jsonb)$$);
+select pg_temp.refused('or of minus one',
+  $$select public.core_v2_start_workflow('aaaaaaaa-0000-0000-0000-000000000001', 'synthetic-records', '1',
+      'synthetic_review', pg_temp.sources('started'), '{}'::jsonb, 'core-v2.1', '{"maximum_tasks": -1}'::jsonb)$$);
+
+insert into core_v2_ids(k, v)
+select 'w1', (public.core_v2_start_workflow('aaaaaaaa-0000-0000-0000-000000000001', 'synthetic-records', '1',
+  'synthetic_review', pg_temp.sources('started'), '{"parts":["b","a"]}'::jsonb, 'core-v2.1',
+  '{"maximum_critic_rounds": 2, "maximum_arbiter_rounds": 1}'::jsonb)).id;
+select pg_temp.check('the worker starts a reading, and nothing has run yet',
+  (select state from public.intelligence_workflows where id = pg_temp.id('w1')) = 'created'
+  and (select started_at is null and finished_at is null from public.intelligence_workflows where id = pg_temp.id('w1')));
+select pg_temp.check('it records both hashes: which sources, and what was asked of them',
+  (select source_set_fingerprint from public.intelligence_workflows where id = pg_temp.id('w1'))
+    = (select v from core_v2_hashes where k = 'started')
+  and (select request_fingerprint from public.intelligence_workflows where id = pg_temp.id('w1'))
+    = public.core_v2_request_fingerprint('synthetic-records', '1', 'synthetic_review',
+        (select v from core_v2_hashes where k = 'started'), '{"parts":["a","b"]}'::jsonb, 'core-v2.1'));
+select pg_temp.check('the scope and the budget are kept in their canonical form, and the asker is named',
+  (select requested_scope from public.intelligence_workflows where id = pg_temp.id('w1')) = '{"parts": ["a", "b"]}'::jsonb
+  and (select budget from public.intelligence_workflows where id = pg_temp.id('w1'))
+        = '{"maximum_arbiter_rounds": 1, "maximum_critic_rounds": 2}'::jsonb
+  and (select requested_by from public.intelligence_workflows where id = pg_temp.id('w1'))
+        = '11111111-1111-1111-1111-111111111111');
+select pg_temp.check('its sources are rows, in the order they were given, with their identity and metadata intact',
+  (select array_agg(ordinal order by ordinal) from public.workflow_sources where workflow_id = pg_temp.id('w1')) = array[0, 1]
+  and (select content_hash from public.workflow_sources where workflow_id = pg_temp.id('w1') and ordinal = 0) = 'started-hash-register'
+  and (select media ->> 'page_count' from public.workflow_sources where workflow_id = pg_temp.id('w1') and ordinal = 0) = '3'
+  and (select object_version_id from public.workflow_sources where workflow_id = pg_temp.id('w1') and ordinal = 1) = 'version-7'
+  and (select source_kind from public.workflow_sources where workflow_id = pg_temp.id('w1') and ordinal = 1) = 'recording');
+select pg_temp.check('the workflow and its one start command were committed together',
+  (select count(*) from public.workflow_outbox where workflow_id = pg_temp.id('w1')) = 1
+  and (select state from public.workflow_outbox where workflow_id = pg_temp.id('w1')) = 'pending'
+  and (select command from public.workflow_outbox where workflow_id = pg_temp.id('w1')) = 'start');
+select pg_temp.check('the command carries ids and fingerprints and nothing else — no locator, no bytes, no scope',
+  (select bool_and(key in ('workflow_id', 'organization_id', 'domain_pack', 'domain_pack_version', 'workflow_type',
+                           'engine_version', 'source_count', 'source_set_fingerprint', 'request_fingerprint'))
+     from public.workflow_outbox o, jsonb_object_keys(o.payload) as key where o.workflow_id = pg_temp.id('w1'))
+  and (select payload ->> 'source_set_fingerprint' from public.workflow_outbox where workflow_id = pg_temp.id('w1'))
+        = (select v from core_v2_hashes where k = 'started')
+  and (select payload::text not like '%fixture://%' from public.workflow_outbox where workflow_id = pg_temp.id('w1')));
+select pg_temp.check('starting work is in the trail, with the sources and the request it was given',
+  exists (select 1 from public.audit_events
+           where action = 'core_v2.workflow.started' and entity_id = pg_temp.id('w1')::text
+             and actor_id = '11111111-1111-1111-1111-111111111111'
+             and detail ->> 'source_set_fingerprint' = (select v from core_v2_hashes where k = 'started')
+             and detail ? 'request_fingerprint' and (detail ->> 'source_count')::int = 2));
+
+select pg_temp.refused_because('the same question over the same sources is not asked twice at once',
+  $$select public.core_v2_start_workflow('aaaaaaaa-0000-0000-0000-000000000001', 'synthetic-records', '1',
+      'synthetic_review', pg_temp.sources('started'), '{"parts":["a","b"]}'::jsonb)$$, 'already being read');
+select pg_temp.check('a fingerprint that still matches the sources lets a different question start',
+  (public.core_v2_start_workflow('aaaaaaaa-0000-0000-0000-000000000001', 'synthetic-records', '1',
+     'synthetic_review', pg_temp.sources('started'), '{"parts":["a"]}'::jsonb, 'core-v2.1', '{}'::jsonb,
+     (select v from core_v2_hashes where k = 'started'))).state = 'created');
+insert into core_v2_ids(k, v)
+select 'w2', id from public.intelligence_workflows where requested_scope = '{"parts": ["a"]}'::jsonb;
+set local test.uid = '';
+select pg_temp.refused_because('a second live reading of the same request is a person''s to authorise, and nobody is signed in',
+  $$select public.core_v2_start_workflow('aaaaaaaa-0000-0000-0000-000000000001', 'synthetic-records', '1',
+      'synthetic_review', pg_temp.sources('started'), '{"parts":["a","b"]}'::jsonb, 'core-v2.1', '{}'::jsonb, null, true)$$,
+  'nobody is signed in');
+set local test.uid = '11111111-1111-1111-1111-111111111111';
+insert into core_v2_ids(k, v)
+select 'w3', (public.core_v2_start_workflow('aaaaaaaa-0000-0000-0000-000000000001', 'synthetic-records', '1',
+  'synthetic_review', pg_temp.sources('started'), '{"parts":["a","b"]}'::jsonb, 'core-v2.1', '{}'::jsonb, null, true)).id;
+select pg_temp.check('a person may say to read it again, and it is recorded that they did',
+  (select duplicate_authorized_by from public.intelligence_workflows where id = pg_temp.id('w3'))
+    = '11111111-1111-1111-1111-111111111111'
+  and exists (select 1 from public.audit_events where action = 'core_v2.workflow.started'
+               and entity_id = pg_temp.id('w3')::text and (detail ->> 'duplicate_authorized')::boolean));
+
+-- ─────────────────────────────── one transaction, or none: the outbox atomicity
+create or replace function pg_temp.break_outbox() returns trigger language plpgsql as $$
+begin raise exception 'the outbox is unavailable'; end $$;
+create trigger core_v2_test_break_outbox before insert on public.workflow_outbox
+  for each row execute function pg_temp.break_outbox();
+insert into core_v2_counts select 'workflows_before_break', count(*) from public.intelligence_workflows;
+insert into core_v2_counts select 'sources_before_break', count(*) from public.workflow_sources;
+select pg_temp.refused_because('a start whose command cannot be written fails',
+  $$select public.core_v2_start_workflow('aaaaaaaa-0000-0000-0000-000000000001', 'synthetic-records', '1',
+      'synthetic_review', pg_temp.sources('started'), '{"parts":["c"]}'::jsonb)$$, 'outbox is unavailable');
+select pg_temp.check('and leaves no workflow and no source behind — every row, or none',
+  (select count(*) from public.intelligence_workflows) = (select n from core_v2_counts where k = 'workflows_before_break')
+  and (select count(*) from public.workflow_sources) = (select n from core_v2_counts where k = 'sources_before_break'));
+drop trigger core_v2_test_break_outbox on public.workflow_outbox;
+select pg_temp.check('every workflow the door started has exactly one start command',
+  not exists (select 1 from public.intelligence_workflows w
+               where w.id in (pg_temp.id('w1'), pg_temp.id('w2'), pg_temp.id('w3'))
+                 and (select count(*) from public.workflow_outbox o where o.workflow_id = w.id) <> 1)
+  and (select count(*) from public.workflow_outbox) = (select n from core_v2_counts where k = 'commands') + 3);
+select pg_temp.refused('and a workflow never holds two start commands',
+  $$insert into public.workflow_outbox(organization_id, workflow_id)
+    values ('aaaaaaaa-0000-0000-0000-000000000001', pg_temp.id('w1'))$$);
+
+-- ─────────────────────────────────────────── the dispatcher's two moves
+select pg_temp.check('claiming the command takes it to dispatching and the workflow to queued, naming the dispatcher',
+  (select state from public.core_v2_claim_outbox(pg_temp.id('w1'), 'dispatcher-a')) = 'dispatching');
+select pg_temp.check('and the claim is on the row: who, and how many times',
+  (select state from public.workflow_outbox where workflow_id = pg_temp.id('w1')) = 'dispatching'
+  and (select dispatcher from public.workflow_outbox where workflow_id = pg_temp.id('w1')) = 'dispatcher-a'
+  and (select attempt_count from public.workflow_outbox where workflow_id = pg_temp.id('w1')) = 1
+  and (select state from public.intelligence_workflows where id = pg_temp.id('w1')) = 'queued');
+select pg_temp.check('claiming it again returns nothing — losing a race is not a failure',
+  public.core_v2_claim_outbox(pg_temp.id('w1'), 'dispatcher-b') is null);
+select pg_temp.check('nor does acknowledging a command nobody is dispatching',
+  public.core_v2_acknowledge_outbox(pg_temp.id('w3')) is null);
+select pg_temp.check('acknowledging a dispatching command settles it',
+  (select state from public.core_v2_acknowledge_outbox(pg_temp.id('w1'))) = 'acknowledged');
+select pg_temp.check('and acknowledging it twice returns nothing, so a late acknowledgement is told apart from a lost one',
+  public.core_v2_acknowledge_outbox(pg_temp.id('w1')) is null
+  and (select state from public.workflow_outbox where workflow_id = pg_temp.id('w1')) = 'acknowledged');
+select public.core_v2_claim_outbox(pg_temp.id('w2'), 'dispatcher-a');
+select public.core_v2_acknowledge_outbox(pg_temp.id('w2'));
+select pg_temp.refused_because('a command in flight is not rewritten',
+  $$update public.workflow_outbox set payload = '{"workflow_id": "x"}'::jsonb where workflow_id = pg_temp.id('w3')$$,
+  'not rewritten in flight');
+select pg_temp.refused('nor repointed at another workflow',
+  $$update public.workflow_outbox set workflow_id = pg_temp.id('w1') where workflow_id = pg_temp.id('w3')$$);
+select pg_temp.refused('nor turned into another command',
+  $$update public.workflow_outbox set command = 'stop' where workflow_id = pg_temp.id('w3')$$);
+select pg_temp.refused('nor moved to another organisation',
+  $$update public.workflow_outbox set organization_id = 'aaaaaaaa-0000-0000-0000-000000000002' where workflow_id = pg_temp.id('w3')$$);
+select pg_temp.allowed('while the dispatcher may record that it is trying, when to try again, and what went wrong',
+  $$update public.workflow_outbox set state = 'dispatching', attempt_count = 1, dispatcher = 'dispatcher-c',
+       available_at = now() + interval '1 minute', last_error = 'the orchestrator did not answer'
+     where workflow_id = pg_temp.id('w3')$$);
+select pg_temp.allowed('and give up, in a word the row has',
+  $$update public.workflow_outbox set state = 'failed' where workflow_id = pg_temp.id('w3')$$);
+select pg_temp.refused('but not in a word it does not',
+  $$update public.workflow_outbox set state = 'lost' where workflow_id = pg_temp.id('w3')$$);
+
+-- ══════════════════════════════ 4 · INTENT IS WRITTEN ONCE ═══════════════════
+select pg_temp.refused_because('a worker cannot rewrite what a reading was asked to do',
+  $$update public.intelligence_workflows set requested_scope = '{"parts": ["everything"]}'::jsonb where id = pg_temp.id('w1')$$,
+  'its intent is fixed at creation');
+select pg_temp.refused('nor which sources it read',
+  $$update public.intelligence_workflows set source_set_fingerprint = 'other' where id = pg_temp.id('w1')$$);
+select pg_temp.refused('nor what request that made',
+  $$update public.intelligence_workflows set request_fingerprint = 'other' where id = pg_temp.id('w1')$$);
+select pg_temp.refused('nor who asked for it',
+  $$update public.intelligence_workflows set requested_by = '44444444-4444-4444-4444-444444444444' where id = pg_temp.id('w1')$$);
+select pg_temp.refused('nor under which pack',
+  $$update public.intelligence_workflows set domain_pack = 'other-pack' where id = pg_temp.id('w1')$$);
+select pg_temp.refused('nor which version of it',
+  $$update public.intelligence_workflows set domain_pack_version = '2' where id = pg_temp.id('w1')$$);
+select pg_temp.refused('nor what kind of work',
+  $$update public.intelligence_workflows set workflow_type = 'something_else' where id = pg_temp.id('w1')$$);
+select pg_temp.refused('nor which engine',
+  $$update public.intelligence_workflows set engine_version = 'core-v2.9' where id = pg_temp.id('w1')$$);
+select pg_temp.refused('nor the limits it was admitted under',
+  $$update public.intelligence_workflows set budget = '{"maximum_tasks": 1000000}'::jsonb where id = pg_temp.id('w1')$$);
+select pg_temp.refused('nor who authorised a duplicate, after the fact',
+  $$update public.intelligence_workflows set duplicate_authorized_by = '11111111-1111-1111-1111-111111111111' where id = pg_temp.id('w1')$$);
+select pg_temp.refused('nor when it was created',
+  $$update public.intelligence_workflows set created_at = now() - interval '1 year' where id = pg_temp.id('w1')$$);
+select pg_temp.allowed('while progress and the orchestrator''s handle may move',
+  $$update public.intelligence_workflows set orchestrator_run_id = 'run-1', total_units = 6 where id = pg_temp.id('w1')$$);
+select pg_temp.refused('though progress is counted, and a count is not negative',
+  $$update public.intelligence_workflows set completed_units = -1 where id = pg_temp.id('w1')$$);
+select pg_temp.check('planning is when work started, and the record says so',
+  (select started_at is not null from public.core_v2_workflow_transition(pg_temp.id('w1'), 'planning')));
+select pg_temp.check('and running is a state a planning workflow reaches',
+  (select state from public.core_v2_workflow_transition(pg_temp.id('w1'), 'running')) = 'running');
+select pg_temp.refused_because('but a running workflow is not completed by skipping the decision',
+  $$select public.core_v2_workflow_transition(pg_temp.id('w1'), 'completed')$$, 'cannot go from running to completed');
+select pg_temp.refused_because('and a workflow that does not exist cannot be moved',
+  $$select public.core_v2_workflow_transition('0c0e0000-0000-0000-0000-00000000ffff', 'planning')$$, 'no workflow');
+select public.core_v2_workflow_transition(pg_temp.id('w2'), 'planning');
+select public.core_v2_workflow_transition(pg_temp.id('w2'), 'running');
+select public.core_v2_workflow_transition(pg_temp.id('w2'), 'ready_for_decision');
+select public.core_v2_workflow_transition(pg_temp.id('w2'), 'deciding');
+select pg_temp.check('a workflow that completes records when it finished',
+  (select finished_at is not null and state = 'completed'
+     from public.core_v2_workflow_transition(pg_temp.id('w2'), 'completed')));
+select pg_temp.refused('and a finished workflow does not start again',
+  $$select public.core_v2_workflow_transition(pg_temp.id('w2'), 'running')$$);
+
+-- ══════════════════════════════ 5 · THE BOUNDED WORK ═════════════════════════
+--
+-- The worker writes these rows. What the tests prove is that even the worker
+-- cannot do the things that cost money for nothing: exceed the budget a
+-- workflow was admitted under, requeue work that may already be with an
+-- executor, send a request without an unexpired lease, run a call whose
+-- outcome nobody knows, or edit what an executor said after the fact.
+
+-- ──────────────────────────────────────── the budget, applied where a task is born
+insert into core_v2_ids(k, v)
+select 'w4', (public.core_v2_start_workflow('aaaaaaaa-0000-0000-0000-000000000001', 'synthetic-records', '1',
+  'synthetic_review', pg_temp.sources('started'), '{"parts":["budget"]}'::jsonb, 'core-v2.1',
+  '{"maximum_tasks": 4, "maximum_child_tasks_per_parent": 1, "maximum_follow_up_depth": 1, "maximum_dependency_edges": 1}'::jsonb)).id;
+insert into public.workflow_tasks(id, organization_id, workflow_id, parent_task_id, depth, phase, task_type, role_key,
+  role_version, subject_key, input_fingerprint, contract_version)
+values
+  ('0c0e0001-0000-0000-0000-000000000041', 'aaaaaaaa-0000-0000-0000-000000000001', pg_temp.id('w4'), null, 0,
+   'discover', 'find_segments', 'discoverer', '1', 'register', 'fp-b1', 'find_segments@1'),
+  ('0c0e0001-0000-0000-0000-000000000042', 'aaaaaaaa-0000-0000-0000-000000000001', pg_temp.id('w4'),
+   '0c0e0001-0000-0000-0000-000000000041', 1,
+   'analyze', 'read_register', 'reader', '1', 'register/row-1', 'fp-b2', 'read_register@1'),
+  ('0c0e0001-0000-0000-0000-000000000043', 'aaaaaaaa-0000-0000-0000-000000000001', pg_temp.id('w4'), null, 0,
+   'analyze', 'read_register', 'reader', '1', 'register/row-2', 'fp-b3', 'read_register@1');
+select pg_temp.refused_because('a parent has as many children as the workflow allows, and no more',
+  $$insert into public.workflow_tasks(organization_id, workflow_id, parent_task_id, depth, phase, task_type, role_key,
+      role_version, subject_key, input_fingerprint, contract_version)
+    values ('aaaaaaaa-0000-0000-0000-000000000001', pg_temp.id('w4'), '0c0e0001-0000-0000-0000-000000000041', 1,
+            'analyze', 'read_register', 'reader', '1', 'register/row-3', 'fp-b4', 'read_register@1')$$,
+  'children');
+select pg_temp.refused_because('a follow-up of a follow-up is deeper than the workflow allows',
+  $$insert into public.workflow_tasks(organization_id, workflow_id, parent_task_id, depth, phase, task_type, role_key,
+      role_version, subject_key, input_fingerprint, contract_version)
+    values ('aaaaaaaa-0000-0000-0000-000000000001', pg_temp.id('w4'), '0c0e0001-0000-0000-0000-000000000042', 2,
+            'verify', 'verify_row', 'verifier', '1', 'register/row-1', 'fp-b5', 'verify_row@1')$$,
+  'deep');
+select pg_temp.allowed('the fourth task is within the budget',
+  $$insert into public.workflow_tasks(id, organization_id, workflow_id, phase, task_type, role_key,
+      role_version, subject_key, input_fingerprint, contract_version)
+    values ('0c0e0001-0000-0000-0000-000000000044', 'aaaaaaaa-0000-0000-0000-000000000001', pg_temp.id('w4'),
+            'analyze', 'read_register', 'reader', '1', 'register/row-4', 'fp-b6', 'read_register@1')$$);
+select pg_temp.refused_because('the fifth is not — the budget is counted from persisted rows, not a planner''s memory',
+  $$insert into public.workflow_tasks(organization_id, workflow_id, phase, task_type, role_key,
+      role_version, subject_key, input_fingerprint, contract_version)
+    values ('aaaaaaaa-0000-0000-0000-000000000001', pg_temp.id('w4'),
+            'analyze', 'read_register', 'reader', '1', 'register/row-5', 'fp-b7', 'read_register@1')$$,
+  'its budget allows no more');
+select pg_temp.allowed('one dependency edge is within the budget',
+  $$insert into public.task_dependencies(organization_id, task_id, depends_on_task_id, dependency_kind)
+    values ('aaaaaaaa-0000-0000-0000-000000000001', '0c0e0001-0000-0000-0000-000000000043',
+            '0c0e0001-0000-0000-0000-000000000041', 'requires_completion')$$);
+select pg_temp.refused_because('a second is past it',
+  $$insert into public.task_dependencies(organization_id, task_id, depends_on_task_id, dependency_kind)
+    values ('aaaaaaaa-0000-0000-0000-000000000001', '0c0e0001-0000-0000-0000-000000000044',
+            '0c0e0001-0000-0000-0000-000000000041', 'requires_completion')$$,
+  'dependency edges');
+select pg_temp.refused('a task does not wait for itself',
+  $$insert into public.task_dependencies(organization_id, task_id, depends_on_task_id, dependency_kind)
+    values ('aaaaaaaa-0000-0000-0000-000000000001', '0c0e0001-0000-0000-0000-000000000001',
+            '0c0e0001-0000-0000-0000-000000000001', 'requires_completion')$$);
+select pg_temp.refused('nor for something the kernel has no word for',
+  $$insert into public.task_dependencies(organization_id, task_id, depends_on_task_id, dependency_kind)
+    values ('aaaaaaaa-0000-0000-0000-000000000001', '0c0e0001-0000-0000-0000-000000000041',
+            '0c0e0001-0000-0000-0000-000000000043', 'requires_luck')$$);
+select pg_temp.check('a workflow admitted with no limit has no limit, and one with a limit keeps it',
+  (select count(*) from public.workflow_tasks where workflow_id = pg_temp.id('w4')) = 4
+  and (select budget ->> 'maximum_tasks' from public.intelligence_workflows where id = pg_temp.id('w1')) is null);
+
+-- ─────────────────────────────────────────────── the identity of a task
+select pg_temp.check('the identity of a task is its phase, type, subject, input, contract and independence group',
+  exists (select 1 from pg_indexes where indexname = 'workflow_tasks_identity' and indexdef like '%UNIQUE%'
+           and indexdef like '%independence_group%'));
+select pg_temp.refused('so the same bounded work is not queued twice inside one reading',
+  $$insert into public.workflow_tasks(organization_id, workflow_id, phase, task_type, role_key, role_version,
+      subject_key, input_fingerprint, contract_version)
+    values ('aaaaaaaa-0000-0000-0000-000000000001', '0c0e0000-0000-0000-0000-000000000001', 'discover',
+            'find_segments', 'discoverer', '1', 'register-a', 'fp-discover-a', 'find_segments@1')$$);
+select pg_temp.allowed('while a second blind reading of the same thing is a second task, in its own group',
+  $$insert into public.workflow_tasks(id, organization_id, workflow_id, phase, task_type, role_key, role_version,
+      subject_key, input_fingerprint, contract_version, independence_group)
+    values ('0c0e0001-0000-0000-0000-000000000002', 'aaaaaaaa-0000-0000-0000-000000000001',
+            '0c0e0000-0000-0000-0000-000000000001', 'discover', 'find_segments', 'discoverer', '1',
+            'register-a', 'fp-discover-a', 'find_segments@1', 'second-reader')$$);
+select pg_temp.refused('a phase is one of the kernel''s eight',
+  $$insert into public.workflow_tasks(organization_id, workflow_id, phase, task_type, role_key, role_version,
+      subject_key, input_fingerprint, contract_version)
+    values ('aaaaaaaa-0000-0000-0000-000000000001', '0c0e0000-0000-0000-0000-000000000001', 'guess',
+            'find_segments', 'discoverer', '1', 'x', 'fp', 'v1')$$);
+-- Zero claims is a real assignment: a critic, an arbiter, a comparator and a
+-- composer assert nothing. A negative allowance is not.
+select pg_temp.allowed('a task may be allowed no claims at all — a reviewer asserts nothing',
+  $$insert into public.workflow_tasks(organization_id, workflow_id, phase, task_type, role_key, role_version,
+      subject_key, input_fingerprint, contract_version, max_claims)
+    values ('aaaaaaaa-0000-0000-0000-000000000001', '0c0e0000-0000-0000-0000-000000000001', 'verify',
+            'verify_claim', 'evidence_critic', '1', 'zero-claims', 'fp-zero', 'v1', 0)$$);
+select pg_temp.refused('but never fewer than none',
+  $$insert into public.workflow_tasks(organization_id, workflow_id, phase, task_type, role_key, role_version,
+      subject_key, input_fingerprint, contract_version, max_claims)
+    values ('aaaaaaaa-0000-0000-0000-000000000001', '0c0e0000-0000-0000-0000-000000000001', 'analyze',
+            'read_register', 'reader', '1', 'x', 'fp', 'v1', -1)$$);
+select pg_temp.allowed('a task is handed a whole source or one segment of it',
+  $$insert into public.task_sources(organization_id, task_id, ordinal, source_id)
+    values ('aaaaaaaa-0000-0000-0000-000000000001', '0c0e0001-0000-0000-0000-000000000001', 0,
+            '0a0e0001-0000-0000-0000-000000000000');
+    insert into public.task_sources(organization_id, task_id, ordinal, segment_id)
+    values ('aaaaaaaa-0000-0000-0000-000000000001', '0c0e0001-0000-0000-0000-000000000001', 1,
+            '0b0e0001-0000-0000-0000-000000000002')$$);
+select pg_temp.refused('never both in one row',
+  $$insert into public.task_sources(organization_id, task_id, ordinal, source_id, segment_id)
+    values ('aaaaaaaa-0000-0000-0000-000000000001', '0c0e0001-0000-0000-0000-000000000001', 2,
+            '0a0e0001-0000-0000-0000-000000000000', '0b0e0001-0000-0000-0000-000000000002')$$);
+select pg_temp.refused('and never neither',
+  $$insert into public.task_sources(organization_id, task_id, ordinal)
+    values ('aaaaaaaa-0000-0000-0000-000000000001', '0c0e0001-0000-0000-0000-000000000001', 2)$$);
+select pg_temp.refused_because('a source a task was handed is not deleted from under it',
+  $$delete from public.workflow_sources where id = '0a0e0003-0000-0000-0000-000000000000'$$,
+  'part of the record');
+
+-- ──────────────────────────────────── the lease: a fencing token, not a name
+insert into public.workflow_tasks(id, organization_id, workflow_id, phase, task_type, role_key, role_version,
+  subject_key, input_fingerprint, contract_version, lease_owner)
+values ('0c0e0001-0000-0000-0000-000000000011', 'aaaaaaaa-0000-0000-0000-000000000001', pg_temp.id('w1'),
+  'analyze', 'read_register', 'reader', '1', 'started/row-1', 'fp-w1-row-1', 'read_register@1', 'nobody-yet');
+select pg_temp.check('a task that is not leased carries no lease, whatever was written',
+  (select lease_owner is null from public.workflow_tasks where id = '0c0e0001-0000-0000-0000-000000000011'));
+select pg_temp.refused_because('a task is not written as leased without a token and an expiry',
+  $$insert into public.workflow_tasks(organization_id, workflow_id, phase, task_type, role_key, role_version,
+      subject_key, input_fingerprint, contract_version, state)
+    values ('aaaaaaaa-0000-0000-0000-000000000001', pg_temp.id('w1'), 'analyze', 'read_register', 'reader', '1',
+            'started/unleased', 'fp-unleased', 'read_register@1', 'leased')$$,
+  'without a token and an expiry');
+select pg_temp.check('a created task is not leased — it is queued first',
+  public.core_v2_lease_task('0c0e0001-0000-0000-0000-000000000011', 'worker-a', 60000) is null);
+select public.core_v2_task_transition('0c0e0001-0000-0000-0000-000000000011', 'queued');
+insert into core_v2_ids(k, v)
+select 'lease1', (public.core_v2_lease_task('0c0e0001-0000-0000-0000-000000000011', 'worker-a', 60000)).lease_token;
+select pg_temp.check('a queued task is leased under a fresh token, to a named owner, for a bounded time',
+  pg_temp.id('lease1') is not null
+  and (select state from public.workflow_tasks where id = '0c0e0001-0000-0000-0000-000000000011') = 'leased'
+  and (select lease_owner from public.workflow_tasks where id = '0c0e0001-0000-0000-0000-000000000011') = 'worker-a'
+  and (select lease_expires_at > now() and lease_expires_at <= now() + interval '60 seconds'
+         from public.workflow_tasks where id = '0c0e0001-0000-0000-0000-000000000011'));
+select pg_temp.check('a live lease is not granted again, to anyone',
+  public.core_v2_lease_task('0c0e0001-0000-0000-0000-000000000011', 'worker-b', 60000) is null
+  and public.core_v2_lease_task('0c0e0001-0000-0000-0000-000000000011', 'worker-a', 60000) is null);
+select pg_temp.check('a heartbeat under the wrong token extends nothing',
+  public.core_v2_heartbeat_lease('0c0e0001-0000-0000-0000-000000000011', gen_random_uuid(), 120000) = false
+  and (select lease_expires_at <= now() + interval '60 seconds'
+         from public.workflow_tasks where id = '0c0e0001-0000-0000-0000-000000000011'));
+select pg_temp.check('and under the right one it extends the lease',
+  public.core_v2_heartbeat_lease('0c0e0001-0000-0000-0000-000000000011', pg_temp.id('lease1'), 120000) = true);
+select pg_temp.check('by the time it asked for',
+  (select lease_expires_at > now() + interval '60 seconds'
+     from public.workflow_tasks where id = '0c0e0001-0000-0000-0000-000000000011'));
+update public.workflow_tasks set lease_expires_at = now() - interval '1 second'
+ where id = '0c0e0001-0000-0000-0000-000000000011';
+insert into core_v2_ids(k, v)
+select 'lease2', (public.core_v2_lease_task('0c0e0001-0000-0000-0000-000000000011', 'worker-b', 60000)).lease_token;
+select pg_temp.check('a lease that ran out before anything was sent is taken over, under a new token',
+  pg_temp.id('lease2') is not null and pg_temp.id('lease2') <> pg_temp.id('lease1')
+  and (select lease_owner from public.workflow_tasks where id = '0c0e0001-0000-0000-0000-000000000011') = 'worker-b');
+select pg_temp.check('and the worker that lost it can no longer extend it — it knows its name, not the new token',
+  public.core_v2_heartbeat_lease('0c0e0001-0000-0000-0000-000000000011', pg_temp.id('lease1'), 120000) = false);
+
+-- ─────────────────────────────── the one moment money may leave: submission
+insert into public.agent_attempts(id, organization_id, workflow_id, task_id, attempt_no, role_key, role_version,
+  executor_kind, executor_family, independence_domain, packet_fingerprint, packet_bytes)
+values ('0d0e0000-0000-0000-0000-000000000011', 'aaaaaaaa-0000-0000-0000-000000000001', pg_temp.id('w1'),
+  '0c0e0001-0000-0000-0000-000000000011', 1, 'reader', '1', 'model', 'family-x', 'model:family-x', 'packet-w1-row-1', 4096);
+select pg_temp.refused_because('a request is not sent from a task that is only leased',
+  $$select public.core_v2_submit_attempt('0d0e0000-0000-0000-0000-000000000011', pg_temp.id('lease2'))$$,
+  'not running');
+select public.core_v2_task_transition('0c0e0001-0000-0000-0000-000000000011', 'running');
+select pg_temp.refused_because('nor under a token the task no longer carries',
+  $$select public.core_v2_submit_attempt('0d0e0000-0000-0000-0000-000000000011', pg_temp.id('lease1'))$$,
+  'lease token does not match');
+select pg_temp.refused_because('nor under no token at all',
+  $$select public.core_v2_submit_attempt('0d0e0000-0000-0000-0000-000000000011', null)$$,
+  'lease token does not match');
+update public.workflow_tasks set lease_expires_at = now() - interval '1 second'
+ where id = '0c0e0001-0000-0000-0000-000000000011';
+select pg_temp.refused_because('nor under a lease that has run out',
+  $$select public.core_v2_submit_attempt('0d0e0000-0000-0000-0000-000000000011', pg_temp.id('lease2'))$$,
+  'has expired');
+update public.workflow_tasks set lease_expires_at = now() + interval '5 minutes'
+ where id = '0c0e0001-0000-0000-0000-000000000011';
+update public.intelligence_workflows set cancel_requested_at = now() where id = pg_temp.id('w1');
+select pg_temp.refused_because('nor once somebody has asked for the workflow to stop',
+  $$select public.core_v2_submit_attempt('0d0e0000-0000-0000-0000-000000000011', pg_temp.id('lease2'))$$,
+  'cancellation');
+update public.intelligence_workflows set cancel_requested_at = null where id = pg_temp.id('w1');
+insert into public.agent_attempts(id, organization_id, workflow_id, task_id, attempt_no, role_key, role_version,
+  executor_kind, executor_family, independence_domain, packet_fingerprint, state)
+values ('0d0e0000-0000-0000-0000-000000000012', 'aaaaaaaa-0000-0000-0000-000000000001', pg_temp.id('w1'),
+  '0c0e0001-0000-0000-0000-000000000011', 2, 'reader', '1', 'model', 'family-x', 'model:family-x', 'packet-w1-row-1',
+  'rejected_before_submission');
+select pg_temp.refused_because('nor is an attempt sent that is not prepared',
+  $$select public.core_v2_submit_attempt('0d0e0000-0000-0000-0000-000000000012', pg_temp.id('lease2'))$$,
+  'not prepared');
+insert into public.workflow_tasks(id, organization_id, workflow_id, phase, task_type, role_key, role_version,
+  subject_key, input_fingerprint, contract_version, state, lease_token, lease_expires_at)
+values ('0c0e0001-0000-0000-0000-000000000021', 'aaaaaaaa-0000-0000-0000-000000000001', pg_temp.id('w2'),
+  'analyze', 'read_register', 'reader', '1', 'started/row-1', 'fp-w2-row-1', 'read_register@1', 'running',
+  '0d0e0000-0000-0000-0000-00000000aaaa', now() + interval '5 minutes');
+insert into public.agent_attempts(id, organization_id, workflow_id, task_id, attempt_no, role_key, role_version,
+  executor_kind, executor_family, independence_domain, packet_fingerprint)
+values ('0d0e0000-0000-0000-0000-000000000021', 'aaaaaaaa-0000-0000-0000-000000000001', pg_temp.id('w2'),
+  '0c0e0001-0000-0000-0000-000000000021', 1, 'reader', '1', 'model', 'family-x', 'model:family-x', 'packet-w2-row-1');
+select pg_temp.refused_because('nor from a workflow that has already finished, whatever its task says',
+  $$select public.core_v2_submit_attempt('0d0e0000-0000-0000-0000-000000000021', '0d0e0000-0000-0000-0000-00000000aaaa')$$,
+  'is completed');
+select pg_temp.refused_because('and an attempt that does not exist is not sent',
+  $$select public.core_v2_submit_attempt('0d0e0000-0000-0000-0000-00000000ffff', pg_temp.id('lease2'))$$,
+  'no attempt');
+select pg_temp.check('with an unexpired lease, a running task and a prepared attempt, the request goes out',
+  (select state = 'submitted' and submitted_at is not null and lease_token = pg_temp.id('lease2')
+     from public.core_v2_submit_attempt('0d0e0000-0000-0000-0000-000000000011', pg_temp.id('lease2'))));
+select pg_temp.refused_because('and it does not go out twice',
+  $$select public.core_v2_submit_attempt('0d0e0000-0000-0000-0000-000000000011', pg_temp.id('lease2'))$$,
+  'not prepared');
+select pg_temp.check('the attempt records the token it was sent under',
+  (select lease_token from public.agent_attempts where id = '0d0e0000-0000-0000-0000-000000000011') = pg_temp.id('lease2'));
+
+-- Independence is not the router's private business. A second blind reading of
+-- one subject is refused at this door when it would run in an executor domain
+-- that already read that subject under another group — whatever the caller
+-- believed when it chose. Two family names on one executor are one domain, so
+-- this is the check that makes aliases useless as a way to fake independence.
+insert into public.workflow_tasks(id, organization_id, workflow_id, phase, task_type, role_key, role_version,
+  subject_key, input_fingerprint, contract_version, independence_group, state, lease_token, lease_expires_at)
+values ('0c0e0001-0000-0000-0000-0000000009a1', 'aaaaaaaa-0000-0000-0000-000000000001', pg_temp.id('w1'),
+  'analyze', 'read_register', 'reader', '1', 'blind/subject-1', 'fp-blind-a', 'read_register@1', 'reader-a',
+  'running', '0d0e0000-0000-0000-0000-0000000009c1', now() + interval '5 minutes'),
+  ('0c0e0001-0000-0000-0000-0000000009a2', 'aaaaaaaa-0000-0000-0000-000000000001', pg_temp.id('w1'),
+  'analyze', 'read_register', 'reader', '1', 'blind/subject-1', 'fp-blind-b', 'read_register@1', 'reader-b',
+  'running', '0d0e0000-0000-0000-0000-0000000009c2', now() + interval '5 minutes');
+insert into public.agent_attempts(id, organization_id, workflow_id, task_id, attempt_no, role_key, role_version,
+  executor_kind, executor_family, independence_domain, packet_fingerprint)
+values ('0d0e0000-0000-0000-0000-0000000009b1', 'aaaaaaaa-0000-0000-0000-000000000001', pg_temp.id('w1'),
+  '0c0e0001-0000-0000-0000-0000000009a1', 1, 'reader', '1', 'model', 'family-one', 'domain:one', 'packet-blind-a'),
+  ('0d0e0000-0000-0000-0000-0000000009b2', 'aaaaaaaa-0000-0000-0000-000000000001', pg_temp.id('w1'),
+  '0c0e0001-0000-0000-0000-0000000009a2', 1, 'reader', '1', 'model', 'family-two', 'domain:one', 'packet-blind-b'),
+  ('0d0e0000-0000-0000-0000-0000000009b3', 'aaaaaaaa-0000-0000-0000-000000000001', pg_temp.id('w1'),
+  '0c0e0001-0000-0000-0000-0000000009a2', 2, 'reader', '1', 'model', 'family-three', 'domain:two', 'packet-blind-b2');
+select pg_temp.check('the first blind reading of a subject goes out',
+  (select state from public.core_v2_submit_attempt('0d0e0000-0000-0000-0000-0000000009b1',
+     '0d0e0000-0000-0000-0000-0000000009c1')) = 'submitted');
+select pg_temp.refused_because('the second is refused when its domain is the one that already read this subject — two family names, one executor, one domain',
+  $$select public.core_v2_submit_attempt('0d0e0000-0000-0000-0000-0000000009b2', '0d0e0000-0000-0000-0000-0000000009c2')$$,
+  'independence');
+select pg_temp.check('and the refused reading was never sent',
+  (select state from public.agent_attempts where id = '0d0e0000-0000-0000-0000-0000000009b2') = 'prepared');
+select pg_temp.check('a second reading in a domain that has not read this subject goes out',
+  (select state from public.core_v2_submit_attempt('0d0e0000-0000-0000-0000-0000000009b3',
+     '0d0e0000-0000-0000-0000-0000000009c2')) = 'submitted');
+
+
+select pg_temp.check('the heartbeat keeps working while the request is out',
+  public.core_v2_heartbeat_lease('0c0e0001-0000-0000-0000-000000000011', pg_temp.id('lease2'), 120000) = true);
+update public.workflow_tasks set lease_expires_at = now() - interval '1 second'
+ where id = '0c0e0001-0000-0000-0000-000000000011';
+select pg_temp.check('a lease that expires after the request went out is not taken over — the executor may have run',
+  public.core_v2_lease_task('0c0e0001-0000-0000-0000-000000000011', 'worker-c', 60000) is null
+  and (select state from public.workflow_tasks where id = '0c0e0001-0000-0000-0000-000000000011') = 'running');
+update public.workflow_tasks set lease_expires_at = now() + interval '5 minutes'
+ where id = '0c0e0001-0000-0000-0000-000000000011';
+select pg_temp.refused_because('and the task is not cancelled as though it never left',
+  $$select public.core_v2_task_transition('0c0e0001-0000-0000-0000-000000000011', 'cancelled')$$,
+  'already submitted');
+
+-- A leased task whose request went out, as a worker that died between the two
+-- moves would leave it. It is reconciled, not requeued and not cancelled.
+insert into public.workflow_tasks(id, organization_id, workflow_id, phase, task_type, role_key, role_version,
+  subject_key, input_fingerprint, contract_version, state, lease_owner, lease_token, lease_expires_at)
+values ('0c0e0001-0000-0000-0000-000000000012', 'aaaaaaaa-0000-0000-0000-000000000001', pg_temp.id('w1'),
+  'analyze', 'read_register', 'reader', '1', 'started/row-2', 'fp-w1-row-2', 'read_register@1', 'leased',
+  'worker-d', '0d0e0000-0000-0000-0000-00000000bbbb', now() - interval '2 minutes');
+insert into public.agent_attempts(id, organization_id, workflow_id, task_id, attempt_no, role_key, role_version,
+  executor_kind, executor_family, independence_domain, packet_fingerprint, state, submitted_at)
+values ('0d0e0000-0000-0000-0000-000000000014', 'aaaaaaaa-0000-0000-0000-000000000001', pg_temp.id('w1'),
+  '0c0e0001-0000-0000-0000-000000000012', 1, 'reader', '1', 'model', 'family-x', 'model:family-x', 'packet-w1-row-2',
+  'submitted', now() - interval '1 minute');
+select pg_temp.refused_because('a lease that ran out after the request went out does not go back to the queue',
+  $$select public.core_v2_task_transition('0c0e0001-0000-0000-0000-000000000012', 'queued')$$,
+  'already submitted');
+select pg_temp.refused('and not by writing the state directly either',
+  $$update public.workflow_tasks set state = 'queued' where id = '0c0e0001-0000-0000-0000-000000000012'$$);
+select pg_temp.refused_because('nor is it cancelled',
+  $$update public.workflow_tasks set state = 'cancelled' where id = '0c0e0001-0000-0000-0000-000000000012'$$,
+  'already submitted');
+select pg_temp.check('nor taken over by another worker, expired or not',
+  public.core_v2_lease_task('0c0e0001-0000-0000-0000-000000000012', 'worker-e', 60000) is null
+  and (select state from public.workflow_tasks where id = '0c0e0001-0000-0000-0000-000000000012') = 'leased');
+
+-- ─────────────────────────────── what an executor said is written once
+select pg_temp.refused('two attempts of one task do not share a number',
+  $$insert into public.agent_attempts(organization_id, workflow_id, task_id, attempt_no, role_key, role_version,
+      executor_kind, executor_family, independence_domain, packet_fingerprint)
+    values ('aaaaaaaa-0000-0000-0000-000000000001', pg_temp.id('w1'), '0c0e0001-0000-0000-0000-000000000011', 1,
+            'reader', '1', 'model', 'family-x', 'model:family-x', 'packet-w1-row-1')$$);
+select pg_temp.refused('and attempts are counted from one',
+  $$insert into public.agent_attempts(organization_id, workflow_id, task_id, attempt_no, role_key, role_version,
+      executor_kind, executor_family, independence_domain, packet_fingerprint)
+    values ('aaaaaaaa-0000-0000-0000-000000000001', pg_temp.id('w1'), '0c0e0001-0000-0000-0000-000000000011', 0,
+            'reader', '1', 'model', 'family-x', 'model:family-x', 'packet-w1-row-1')$$);
+select pg_temp.refused('an executor with no family is not an executor the registry knows',
+  $$insert into public.agent_attempts(organization_id, workflow_id, task_id, attempt_no, role_key, role_version,
+      executor_kind, executor_family, independence_domain, packet_fingerprint)
+    values ('aaaaaaaa-0000-0000-0000-000000000001', pg_temp.id('w1'), '0c0e0001-0000-0000-0000-000000000011', 9,
+            'reader', '1', 'model', '', 'model:family-x', 'packet-w1-row-1')$$);
+select pg_temp.refused('nor one with no independence domain',
+  $$insert into public.agent_attempts(organization_id, workflow_id, task_id, attempt_no, role_key, role_version,
+      executor_kind, executor_family, independence_domain, packet_fingerprint)
+    values ('aaaaaaaa-0000-0000-0000-000000000001', pg_temp.id('w1'), '0c0e0001-0000-0000-0000-000000000011', 9,
+            'reader', '1', 'model', 'family-x', '', 'packet-w1-row-1')$$);
+select pg_temp.refused('nor one of a kind the kernel has no word for',
+  $$insert into public.agent_attempts(organization_id, workflow_id, task_id, attempt_no, role_key, role_version,
+      executor_kind, executor_family, independence_domain, packet_fingerprint)
+    values ('aaaaaaaa-0000-0000-0000-000000000001', pg_temp.id('w1'), '0c0e0001-0000-0000-0000-000000000011', 9,
+            'reader', '1', 'oracle', 'family-x', 'model:family-x', 'packet-w1-row-1')$$);
+select pg_temp.refused('a stored result without its digest could be replaced with nobody the wiser',
+  $$update public.agent_attempts set raw_result = '{"rows": [1]}'::jsonb where id = '0d0e0000-0000-0000-0000-000000000011'$$);
+select pg_temp.allowed('with its digest it is kept',
+  $$update public.agent_attempts set raw_result = '{"rows": [1]}'::jsonb, raw_result_hash = 'sha256-of-rows-1',
+       provider_request_id = 'req-1', model_reported = 'family-x-2026', usage = '{"input_tokens": 1800, "output_tokens": 240}'::jsonb
+     where id = '0d0e0000-0000-0000-0000-000000000011'$$);
+select pg_temp.refused_because('and from then on the result is not replaced',
+  $$update public.agent_attempts set raw_result = '{"rows": [2]}'::jsonb, raw_result_hash = 'sha256-of-rows-2'
+     where id = '0d0e0000-0000-0000-0000-000000000011'$$,
+  'written once');
+select pg_temp.refused('nor dropped',
+  $$update public.agent_attempts set raw_result = null, raw_result_hash = null where id = '0d0e0000-0000-0000-0000-000000000011'$$);
+select pg_temp.refused('nor its digest changed underneath it',
+  $$update public.agent_attempts set raw_result_hash = 'another' where id = '0d0e0000-0000-0000-0000-000000000011'$$);
+select pg_temp.refused_because('what the request was, at the executor, is not repointed at another call',
+  $$update public.agent_attempts set provider_request_id = 'req-2' where id = '0d0e0000-0000-0000-0000-000000000011'$$,
+  'written once');
+select pg_temp.refused('nor forgotten',
+  $$update public.agent_attempts set provider_request_id = null where id = '0d0e0000-0000-0000-0000-000000000011'$$);
+select pg_temp.refused('nor is the model that answered renamed',
+  $$update public.agent_attempts set model_reported = 'family-x-2025' where id = '0d0e0000-0000-0000-0000-000000000011'$$);
+select pg_temp.refused_because('nor what it cost replaced by a friendlier number',
+  $$update public.agent_attempts set usage = '{"output_tokens": 10}'::jsonb where id = '0d0e0000-0000-0000-0000-000000000011'$$,
+  'cannot be replaced');
+select pg_temp.refused('nor erased',
+  $$update public.agent_attempts set usage = '{}'::jsonb where id = '0d0e0000-0000-0000-0000-000000000011'$$);
+select pg_temp.refused('nor its submission time rewritten',
+  $$update public.agent_attempts set submitted_at = now() - interval '1 hour' where id = '0d0e0000-0000-0000-0000-000000000011'$$);
+select pg_temp.refused('nor the token it was sent under',
+  $$update public.agent_attempts set lease_token = gen_random_uuid() where id = '0d0e0000-0000-0000-0000-000000000011'$$);
+select pg_temp.refused('a submitted attempt is not deleted — it may be on the invoice',
+  $$delete from public.agent_attempts where id = '0d0e0000-0000-0000-0000-000000000011'$$);
+select pg_temp.check('the answer arriving is recorded when it arrived',
+  (select received_at is not null
+     from public.core_v2_attempt_transition('0d0e0000-0000-0000-0000-000000000011', 'response_received')));
+select pg_temp.refused_because('and a received answer does not become unreceived',
+  $$select public.core_v2_attempt_transition('0d0e0000-0000-0000-0000-000000000011', 'submitted')$$,
+  'cannot go from response_received to submitted');
+select public.core_v2_attempt_transition('0d0e0000-0000-0000-0000-000000000011', 'parsed');
+select pg_temp.check('an attempt that succeeded records when it finished',
+  (select finished_at is not null and state = 'succeeded'
+     from public.core_v2_attempt_transition('0d0e0000-0000-0000-0000-000000000011', 'succeeded')));
+select pg_temp.refused_because('and a terminal attempt does not change its story at all',
+  $$update public.agent_attempts set model_configuration = 'temperature=0' where id = '0d0e0000-0000-0000-0000-000000000011'$$,
+  'not rewritten afterwards');
+select pg_temp.refused('not its validation',
+  $$update public.agent_attempts set validation_state = 'valid' where id = '0d0e0000-0000-0000-0000-000000000011'$$);
+select pg_temp.refused('not its problems',
+  $$update public.agent_attempts set validation_problems = '["none"]'::jsonb where id = '0d0e0000-0000-0000-0000-000000000011'$$);
+select pg_temp.refused('not its ending',
+  $$update public.agent_attempts set finished_at = now() + interval '1 hour' where id = '0d0e0000-0000-0000-0000-000000000011'$$);
+select pg_temp.refused('not its state',
+  $$update public.agent_attempts set state = 'failed_known' where id = '0d0e0000-0000-0000-0000-000000000011'$$);
+select pg_temp.refused_because('and it is not deleted',
+  $$delete from public.agent_attempts where id = '0d0e0000-0000-0000-0000-000000000011'$$,
+  'may have been billed');
+insert into public.agent_attempts(id, organization_id, workflow_id, task_id, attempt_no, role_key, role_version,
+  executor_kind, executor_family, independence_domain, packet_fingerprint, raw_result, raw_result_hash)
+values ('0d0e0000-0000-0000-0000-000000000013', 'aaaaaaaa-0000-0000-0000-000000000001', pg_temp.id('w1'),
+  '0c0e0001-0000-0000-0000-000000000011', 3, 'reader', '1', 'model', 'family-x', 'model:family-x', 'packet-w1-row-1',
+  '{"partial": true}'::jsonb, 'sha256-of-partial');
+select pg_temp.refused('an attempt holding a result is not deleted whatever its state',
+  $$delete from public.agent_attempts where id = '0d0e0000-0000-0000-0000-000000000013'$$);
+insert into public.agent_attempts(id, organization_id, workflow_id, task_id, attempt_no, role_key, role_version,
+  executor_kind, executor_family, independence_domain, packet_fingerprint)
+values ('0d0e0000-0000-0000-0000-000000000015', 'aaaaaaaa-0000-0000-0000-000000000001', pg_temp.id('w1'),
+  '0c0e0001-0000-0000-0000-000000000011', 4, 'reader', '1', 'model', 'family-x', 'model:family-x', 'packet-w1-row-1');
+select pg_temp.affects('while an attempt that was prepared and never sent may be withdrawn',
+  $$delete from public.agent_attempts where id = '0d0e0000-0000-0000-0000-000000000015'$$, 1);
+select pg_temp.refused('an answer cut short with nothing stored is a state a transition reaches, not one written on a prepared row',
+  $$update public.agent_attempts set state = 'output_limited' where id = '0d0e0000-0000-0000-0000-000000000013'$$);
+select pg_temp.refused('nor does a prepared attempt jump straight to success',
+  $$update public.agent_attempts set state = 'succeeded' where id = '0d0e0000-0000-0000-0000-000000000013'$$);
+select pg_temp.check('an attempt that failed with reasons keeps them, and its ending',
+  (select error_code = 'schema_invalid' and finished_at is not null
+     from public.core_v2_attempt_transition('0d0e0000-0000-0000-0000-000000000013', 'rejected_before_submission',
+       'schema_invalid', 'the packet did not validate')));
+select pg_temp.refused('and does not change them afterwards',
+  $$update public.agent_attempts set error_message = 'it was fine really' where id = '0d0e0000-0000-0000-0000-000000000013'$$);
+select pg_temp.check('the task completes, and its lease goes with it',
+  (select state = 'completed' and lease_token is null and lease_owner is null and lease_expires_at is null
+     from public.core_v2_task_transition('0c0e0001-0000-0000-0000-000000000011', 'completed', 'result_committed')));
+select pg_temp.check('and a completed task has no lease to extend',
+  public.core_v2_heartbeat_lease('0c0e0001-0000-0000-0000-000000000011', pg_temp.id('lease2'), 120000) = false);
+select pg_temp.refused_because('a task that does not exist cannot be moved',
+  $$select public.core_v2_task_transition('0c0e0001-0000-0000-0000-00000000ffff', 'queued')$$, 'no task');
+select pg_temp.refused_because('nor an attempt',
+  $$select public.core_v2_attempt_transition('0d0e0000-0000-0000-0000-00000000ffff', 'submitted')$$, 'no attempt');
+
+-- ─────────────────────── an outcome nobody knows is not retried by a machine
+insert into public.workflow_tasks(id, organization_id, workflow_id, phase, task_type, role_key, role_version,
+  subject_key, input_fingerprint, contract_version)
+values
+  ('0c0e0001-0000-0000-0000-000000000013', 'aaaaaaaa-0000-0000-0000-000000000001', pg_temp.id('w1'),
+   'analyze', 'read_register', 'reader', '1', 'started/row-3', 'fp-w1-row-3', 'read_register@1'),
+  ('0c0e0001-0000-0000-0000-000000000014', 'aaaaaaaa-0000-0000-0000-000000000001', pg_temp.id('w1'),
+   'analyze', 'read_register', 'reader', '1', 'started/row-4', 'fp-w1-row-4', 'read_register@1');
+select public.core_v2_task_transition('0c0e0001-0000-0000-0000-000000000013', 'queued');
+insert into core_v2_ids(k, v)
+select 'lease3', (public.core_v2_lease_task('0c0e0001-0000-0000-0000-000000000013', 'worker-a', 60000)).lease_token;
+select public.core_v2_task_transition('0c0e0001-0000-0000-0000-000000000013', 'running');
+insert into public.agent_attempts(id, organization_id, workflow_id, task_id, attempt_no, role_key, role_version,
+  executor_kind, executor_family, independence_domain, packet_fingerprint)
+values ('0d0e0000-0000-0000-0000-000000000031', 'aaaaaaaa-0000-0000-0000-000000000001', pg_temp.id('w1'),
+  '0c0e0001-0000-0000-0000-000000000013', 1, 'reader', '1', 'model', 'family-x', 'model:family-x', 'packet-w1-row-3');
+select public.core_v2_submit_attempt('0d0e0000-0000-0000-0000-000000000031', pg_temp.id('lease3'));
+select public.core_v2_attempt_transition('0d0e0000-0000-0000-0000-000000000031', 'outcome_unknown',
+  'connection_lost', 'the connection broke after the request was sent');
+select public.core_v2_task_transition('0c0e0001-0000-0000-0000-000000000013', 'outcome_unknown', 'executor_outcome_unknown');
+select pg_temp.refused_because('a machine cannot run an unknown outcome again',
+  $$select public.core_v2_task_transition('0c0e0001-0000-0000-0000-000000000013', 'queued')$$,
+  'a person must authorise');
+select pg_temp.refused('nor can it by writing the state directly',
+  $$update public.workflow_tasks set state = 'queued' where id = '0c0e0001-0000-0000-0000-000000000013'$$);
+select pg_temp.refused('nor by pretending the task is running again',
+  $$update public.workflow_tasks set state = 'running' where id = '0c0e0001-0000-0000-0000-000000000013'$$);
+select pg_temp.check('nor by leasing it',
+  public.core_v2_lease_task('0c0e0001-0000-0000-0000-000000000013', 'worker-b', 60000) is null);
+select pg_temp.refused('nor by writing the authorisation itself',
+  $$update public.workflow_tasks set state = 'queued', retry_authorized_by = '11111111-1111-1111-1111-111111111111',
+       retry_authorized_at = now() where id = '0c0e0001-0000-0000-0000-000000000013'$$);
+select pg_temp.refused('and the attempt that ended unknown is not edited into something else',
+  $$update public.agent_attempts set error_message = 'it was fine really' where id = '0d0e0000-0000-0000-0000-000000000031'$$);
+
+set local role authenticated;
+set local test.uid = '33333333-3333-3333-3333-333333333333';
+select pg_temp.refused_because('a reviewer cannot authorise sending it again',
+  $$select public.core_v2_authorize_task_retry('0c0e0001-0000-0000-0000-000000000013')$$,
+  'only an owner or an administrator');
+set local test.uid = '22222222-2222-2222-2222-222222222222';
+select pg_temp.refused('nor can a contributor',
+  $$select public.core_v2_authorize_task_retry('0c0e0001-0000-0000-0000-000000000013')$$);
+set local test.uid = '44444444-4444-4444-4444-444444444444';
+select pg_temp.refused('nor the owner of another organisation',
+  $$select public.core_v2_authorize_task_retry('0c0e0001-0000-0000-0000-000000000013')$$);
+set local test.uid = '11111111-1111-1111-1111-111111111111';
+select pg_temp.refused_because('and there is nothing to authorise on a task that did not end badly',
+  $$select public.core_v2_authorize_task_retry('0c0e0001-0000-0000-0000-000000000011')$$,
+  'nothing to authorise');
+select pg_temp.refused_because('nor on a task that does not exist',
+  $$select public.core_v2_authorize_task_retry('0c0e0001-0000-0000-0000-00000000ffff')$$, 'no such task');
+select pg_temp.check('an owner can, and the record says who authorised it and when',
+  (select retry_authorized_by = '11111111-1111-1111-1111-111111111111' and retry_authorized_at is not null and state = 'queued'
+     from public.core_v2_authorize_task_retry('0c0e0001-0000-0000-0000-000000000013',
+       'reconciled with the executor: nothing was billed')));
+select pg_temp.check('and the authorisation is in the trail with what it was authorising',
+  exists (select 1 from public.audit_events
+           where action = 'core_v2.task.retry_authorized' and entity_id = '0c0e0001-0000-0000-0000-000000000013'
+             and actor_id = '11111111-1111-1111-1111-111111111111'
+             and detail ->> 'was' = 'outcome_unknown' and detail ->> 'note' like 'reconciled%'));
+reset role;
+set local test.uid = '';
+insert into core_v2_ids(k, v)
+select 'lease4', (public.core_v2_lease_task('0c0e0001-0000-0000-0000-000000000013', 'worker-b', 60000)).lease_token;
+select pg_temp.check('the authorised retry can be leased — the attempt a person reconciled no longer stands in the way',
+  pg_temp.id('lease4') is not null
+  and (select state from public.workflow_tasks where id = '0c0e0001-0000-0000-0000-000000000013') = 'leased');
+select public.core_v2_task_transition('0c0e0001-0000-0000-0000-000000000013', 'running');
+insert into public.agent_attempts(id, organization_id, workflow_id, task_id, attempt_no, role_key, role_version,
+  executor_kind, executor_family, independence_domain, packet_fingerprint)
+values ('0d0e0000-0000-0000-0000-000000000032', 'aaaaaaaa-0000-0000-0000-000000000001', pg_temp.id('w1'),
+  '0c0e0001-0000-0000-0000-000000000013', 2, 'reader', '1', 'model', 'family-x', 'model:family-x', 'packet-w1-row-3');
+select public.core_v2_submit_attempt('0d0e0000-0000-0000-0000-000000000032', pg_temp.id('lease4'));
+select public.core_v2_attempt_transition('0d0e0000-0000-0000-0000-000000000032', 'outcome_unknown', 'connection_lost');
+select public.core_v2_task_transition('0c0e0001-0000-0000-0000-000000000013', 'outcome_unknown', 'executor_outcome_unknown');
+select pg_temp.refused_because('the authorisation is spent — a second unknown outcome needs a second authorisation',
+  $$update public.workflow_tasks set state = 'queued' where id = '0c0e0001-0000-0000-0000-000000000013'$$,
+  'a person must authorise');
+select pg_temp.check('and nothing leases it meanwhile',
+  public.core_v2_lease_task('0c0e0001-0000-0000-0000-000000000013', 'worker-b', 60000) is null);
+
+-- A known failure is the same door: the machine does not decide to try again.
+select public.core_v2_task_transition('0c0e0001-0000-0000-0000-000000000014', 'queued');
+insert into core_v2_ids(k, v)
+select 'lease5', (public.core_v2_lease_task('0c0e0001-0000-0000-0000-000000000014', 'worker-a', 60000)).lease_token;
+select public.core_v2_task_transition('0c0e0001-0000-0000-0000-000000000014', 'running');
+insert into public.agent_attempts(id, organization_id, workflow_id, task_id, attempt_no, role_key, role_version,
+  executor_kind, executor_family, independence_domain, packet_fingerprint)
+values ('0d0e0000-0000-0000-0000-000000000041', 'aaaaaaaa-0000-0000-0000-000000000001', pg_temp.id('w1'),
+  '0c0e0001-0000-0000-0000-000000000014', 1, 'reader', '1', 'model', 'family-x', 'model:family-x', 'packet-w1-row-4');
+select public.core_v2_submit_attempt('0d0e0000-0000-0000-0000-000000000041', pg_temp.id('lease5'));
+select public.core_v2_attempt_transition('0d0e0000-0000-0000-0000-000000000041', 'failed_known', 'executor_refused');
+select public.core_v2_task_transition('0c0e0001-0000-0000-0000-000000000014', 'failed_known', 'executor_refused');
+select pg_temp.refused_because('a known failure is not requeued by the machine either',
+  $$select public.core_v2_task_transition('0c0e0001-0000-0000-0000-000000000014', 'queued')$$,
+  'a person must authorise');
+set local role authenticated;
+set local test.uid = '11111111-1111-1111-1111-111111111111';
+-- Two statements, not one expression: the trail is asked about only after the
+-- door has been opened, because nothing orders the two halves of an `and`.
+select pg_temp.check('an owner authorises a known failure to run again',
+  (select state from public.core_v2_authorize_task_retry('0c0e0001-0000-0000-0000-000000000014', 'the executor was down')) = 'queued');
+select pg_temp.check('and the trail says it was a known failure that was authorised',
+  exists (select 1 from public.audit_events where action = 'core_v2.task.retry_authorized'
+           and entity_id = '0c0e0001-0000-0000-0000-000000000014'
+           and actor_id = '11111111-1111-1111-1111-111111111111'
+           and detail ->> 'was' = 'failed_known' and detail ->> 'note' = 'the executor was down'));
+reset role;
+set local test.uid = '';
+select pg_temp.check('the authorised retry is not open for a second authorisation',
+  (select state from public.workflow_tasks where id = '0c0e0001-0000-0000-0000-000000000014') = 'queued');
+
+-- ═══════════════════ 6 · WHAT A CLAIM IS, AND WHAT IT STANDS ON ══════════════
+--
+-- A claim says one thing about one subject on one basis. It is accepted only
+-- with a place to open, it is never accepted from an answer that was cut
+-- short, and once accepted or rejected it is corrected by a superseding claim
+-- and never in place.
+insert into public.evidence_claims(id, organization_id, workflow_id, task_id, attempt_id, subject_type, subject_key,
+  predicate, value, unit, observation_basis, scope, machine_confidence, incomplete_source_attempt)
+values
+  ('0e0e0000-0000-0000-0000-000000000002', 'aaaaaaaa-0000-0000-0000-000000000001',
+   '0c0e0000-0000-0000-0000-000000000001', null, null, 'row', 'register-a/row-1', 'quantity',
+   '{"n": 5}'::jsonb, 'each', 'observed', '{"part": "a"}'::jsonb, 0.4, false),
+  ('0e0e0000-0000-0000-0000-000000000003', 'aaaaaaaa-0000-0000-0000-000000000001',
+   '0c0e0000-0000-0000-0000-000000000001', null, null, 'row', 'register-a/row-2', 'quantity',
+   '{"n": 8}'::jsonb, 'each', 'derived', '{}'::jsonb, null, false),
+  ('0e0e0000-0000-0000-0000-000000000004', 'aaaaaaaa-0000-0000-0000-000000000001',
+   '0c0e0000-0000-0000-0000-000000000001', '0c0e0001-0000-0000-0000-000000000001',
+   '0d0e0000-0000-0000-0000-000000000001', 'note', 'register-a/note-1', 'text',
+   '{"text": "see page 2"}'::jsonb, null, 'observed', '{}'::jsonb, 0.9, true),
+  ('0e0e0000-0000-0000-0000-000000000005', 'aaaaaaaa-0000-0000-0000-000000000001',
+   '0c0e0000-0000-0000-0000-000000000001', null, null, 'row', 'register-a/row-5', 'quantity',
+   '{"n": 1}'::jsonb, 'each', 'observed', '{}'::jsonb, null, false),
+  ('0e0e0000-0000-0000-0000-000000000006', 'aaaaaaaa-0000-0000-0000-000000000001',
+   '0c0e0000-0000-0000-0000-000000000001', null, null, 'row', 'register-a/row-6', 'quantity',
+   '{"n": 2}'::jsonb, 'each', 'observed', '{}'::jsonb, null, false),
+  ('0e0e0000-0000-0000-0000-000000000007', 'aaaaaaaa-0000-0000-0000-000000000001',
+   '0c0e0000-0000-0000-0000-000000000001', null, null, 'row', 'register-a/row-7', 'quantity',
+   '{"n": 3}'::jsonb, 'each', 'observed', '{}'::jsonb, null, false),
+  ('0e0e0000-0000-0000-0000-000000000008', 'aaaaaaaa-0000-0000-0000-000000000001',
+   '0c0e0000-0000-0000-0000-000000000001', null, null, 'row', 'register-a/row-7', 'quantity_doubled',
+   '{"n": 6}'::jsonb, 'each', 'derived', '{}'::jsonb, null, false);
+insert into public.evidence_anchors(id, organization_id, workflow_id, claim_id, source_kind, segment_id, locator, anchor_hash)
+values
+  ('0f0e0000-0000-0000-0000-000000000004', 'aaaaaaaa-0000-0000-0000-000000000001',
+   '0c0e0000-0000-0000-0000-000000000001', '0e0e0000-0000-0000-0000-000000000004', 'segment',
+   '0b0e0001-0000-0000-0000-000000000004', '{}'::jsonb, 'anchor-note-1'),
+  ('0f0e0000-0000-0000-0000-000000000005', 'aaaaaaaa-0000-0000-0000-000000000001',
+   '0c0e0000-0000-0000-0000-000000000001', '0e0e0000-0000-0000-0000-000000000005', 'segment_locator',
+   '0b0e0001-0000-0000-0000-000000000002', '{"bbox": [0.60, 0.20, 0.70, 0.25]}'::jsonb, 'anchor-row-5'),
+  ('0f0e0000-0000-0000-0000-000000000006', 'aaaaaaaa-0000-0000-0000-000000000001',
+   '0c0e0000-0000-0000-0000-000000000001', '0e0e0000-0000-0000-0000-000000000006', 'segment_locator',
+   '0b0e0001-0000-0000-0000-000000000002', '{"bbox": [0.60, 0.25, 0.70, 0.30]}'::jsonb, 'anchor-row-6');
+select pg_temp.core_v2_settle();
+
+select pg_temp.refused('a claim with no basis is not a claim',
+  $$insert into public.evidence_claims(organization_id, workflow_id, subject_type, subject_key, predicate, observation_basis)
+    values ('aaaaaaaa-0000-0000-0000-000000000001', '0c0e0000-0000-0000-0000-000000000001', 'row', 'x', 'quantity', null)$$);
+select pg_temp.refused('and a basis the vocabulary has no word for is refused',
+  $$insert into public.evidence_claims(organization_id, workflow_id, subject_type, subject_key, predicate, observation_basis)
+    values ('aaaaaaaa-0000-0000-0000-000000000001', '0c0e0000-0000-0000-0000-000000000001', 'row', 'x', 'quantity', 'about_right')$$);
+select pg_temp.refused('confidence is a number between nothing and certainty',
+  $$insert into public.evidence_claims(organization_id, workflow_id, subject_type, subject_key, predicate, observation_basis, machine_confidence)
+    values ('aaaaaaaa-0000-0000-0000-000000000001', '0c0e0000-0000-0000-0000-000000000001', 'row', 'x', 'quantity', 'observed', 1.5)$$);
+select pg_temp.refused('a claim has eight statuses and this is not one of them',
+  $$insert into public.evidence_claims(organization_id, workflow_id, subject_type, subject_key, predicate, observation_basis, status)
+    values ('aaaaaaaa-0000-0000-0000-000000000001', '0c0e0000-0000-0000-0000-000000000001', 'row', 'x', 'quantity', 'observed', 'final')$$);
+select pg_temp.check('the same subject on two bases is two claims, and stays two',
+  (select count(*) from public.evidence_claims where subject_key = 'register-a/row-7') = 2
+  and (select count(distinct observation_basis) from public.evidence_claims where subject_key = 'register-a/row-7') = 2);
+
+-- ──────────────────────────────── nothing is accepted with no place to open
+select pg_temp.refused_because('a claim accepted with nothing to open does not survive the transaction',
+$sql$
+do $x$ begin
+  update public.evidence_claims set status = 'accepted' where id = '0e0e0000-0000-0000-0000-000000000002';
+  perform pg_temp.core_v2_settle();
+end $x$;
+$sql$, 'nothing to open');
+select pg_temp.check('and the claim is still where it was, unaccepted',
+  (select status from public.evidence_claims where id = '0e0e0000-0000-0000-0000-000000000002') = 'proposed');
+select pg_temp.refused_because('nor is one verified with nothing to open',
+$sql$
+do $x$ begin
+  update public.evidence_claims set status = 'verified' where id = '0e0e0000-0000-0000-0000-000000000002';
+  perform pg_temp.core_v2_settle();
+end $x$;
+$sql$, 'nothing to open');
+select public.core_v2_claim_transition('0e0e0000-0000-0000-0000-000000000001', 'accepted');
+select pg_temp.allowed('a claim with a source anchor survives the end of the transaction',
+  $$select pg_temp.core_v2_settle()$$);
+select pg_temp.refused_because('the anchor cannot be pulled out first and the claim accepted after — the check looks from both sides',
+$sql$
+do $x$ begin
+  delete from public.evidence_anchors where id = '0f0e0000-0000-0000-0000-000000000005';
+  update public.evidence_claims set status = 'accepted' where id = '0e0e0000-0000-0000-0000-000000000005';
+  perform pg_temp.core_v2_settle();
+end $x$;
+$sql$, 'nothing to open');
+select pg_temp.check('and both the anchor and the unaccepted claim are as they were',
+  exists (select 1 from public.evidence_anchors where id = '0f0e0000-0000-0000-0000-000000000005')
+  and (select status from public.evidence_claims where id = '0e0e0000-0000-0000-0000-000000000005') = 'proposed');
+select pg_temp.refused_because('a claim from an answer that was cut short is not accepted on its own, anchor or not',
+$sql$
+do $x$ begin
+  update public.evidence_claims set status = 'accepted' where id = '0e0e0000-0000-0000-0000-000000000004';
+  perform pg_temp.core_v2_settle();
+end $x$;
+$sql$, 'cut short');
+select pg_temp.allowed('though it may be verified, which is how it earns a complete reading',
+$sql$
+do $x$ begin
+  update public.evidence_claims set status = 'verified' where id = '0e0e0000-0000-0000-0000-000000000004';
+  perform pg_temp.core_v2_settle();
+end $x$;
+$sql$);
+select pg_temp.refused_because('an anchor under a verified claim is not deleted',
+  $$delete from public.evidence_anchors where id = '0f0e0000-0000-0000-0000-000000000004'$$,
+  'supports a claim that is verified');
+
+-- ══════════════════ 7 · THE ANCHOR UNDER AN ACCEPTED CLAIM ═══════════════════
+select pg_temp.refused_because('an anchor under an accepted claim is not deleted',
+  $$delete from public.evidence_anchors where id = '0f0e0000-0000-0000-0000-000000000001'$$,
+  'supports a claim that is accepted');
+select pg_temp.refused('nor repointed at another segment',
+  $$update public.evidence_anchors set segment_id = '0b0e0001-0000-0000-0000-000000000004'
+     where id = '0f0e0000-0000-0000-0000-000000000001'$$);
+select pg_temp.refused('nor moved onto another claim',
+  $$update public.evidence_anchors set claim_id = '0e0e0000-0000-0000-0000-000000000002'
+     where id = '0f0e0000-0000-0000-0000-000000000001'$$);
+select pg_temp.refused_because('nor is the segment it points at deleted',
+  $$delete from public.source_segments where id = '0b0e0001-0000-0000-0000-000000000002'$$,
+  'stays in the record');
+
+-- ══════════════ 8 · ACCEPTED MEANS FINISHED, OR SUPERSEDED ═══════════════════
+select pg_temp.refused_because('an accepted claim is not corrected in place',
+  $$update public.evidence_claims set value = '{"n": 9}'::jsonb where id = '0e0e0000-0000-0000-0000-000000000001'$$,
+  'not in place');
+select pg_temp.refused('nor its confidence quietly raised',
+  $$update public.evidence_claims set machine_confidence = 0.99 where id = '0e0e0000-0000-0000-0000-000000000001'$$);
+select pg_temp.refused('nor its scope widened',
+  $$update public.evidence_claims set scope = '{"part": "all"}'::jsonb where id = '0e0e0000-0000-0000-0000-000000000001'$$);
+select pg_temp.refused('nor its unit changed',
+  $$update public.evidence_claims set unit = 'dozen' where id = '0e0e0000-0000-0000-0000-000000000001'$$);
+select pg_temp.refused('nor its basis',
+  $$update public.evidence_claims set observation_basis = 'inferred' where id = '0e0e0000-0000-0000-0000-000000000001'$$);
+select pg_temp.refused('nor the reading it came from swapped',
+  $$update public.evidence_claims set attempt_id = '0d0e0000-0000-0000-0000-000000000001' where id = '0e0e0000-0000-0000-0000-000000000001'$$);
+select pg_temp.refused('nor its cut-short flag changed',
+  $$update public.evidence_claims set incomplete_source_attempt = true where id = '0e0e0000-0000-0000-0000-000000000001'$$);
+select pg_temp.refused('nor moved back to being merely proposed',
+  $$update public.evidence_claims set status = 'proposed' where id = '0e0e0000-0000-0000-0000-000000000001'$$);
+select pg_temp.refused('nor turned into a rejection',
+  $$update public.evidence_claims set status = 'rejected' where id = '0e0e0000-0000-0000-0000-000000000001'$$);
+select pg_temp.refused_because('nor deleted, once it is part of the record',
+  $$delete from public.evidence_claims where id = '0e0e0000-0000-0000-0000-000000000001'$$,
+  'part of the record');
+
+-- ───────────────────────────────── a derivation names its inputs, as keys
+select pg_temp.allowed('a derived claim names the claims it was computed from',
+  $$insert into public.claim_inputs(organization_id, claim_id, input_claim_id)
+    values ('aaaaaaaa-0000-0000-0000-000000000001', '0e0e0000-0000-0000-0000-000000000008',
+            '0e0e0000-0000-0000-0000-000000000007')$$);
+select pg_temp.refused('and is not computed from itself',
+  $$insert into public.claim_inputs(organization_id, claim_id, input_claim_id)
+    values ('aaaaaaaa-0000-0000-0000-000000000001', '0e0e0000-0000-0000-0000-000000000008',
+            '0e0e0000-0000-0000-0000-000000000008')$$);
+select pg_temp.refused('nor from a claim that does not exist',
+  $$insert into public.claim_inputs(organization_id, claim_id, input_claim_id)
+    values ('aaaaaaaa-0000-0000-0000-000000000001', '0e0e0000-0000-0000-0000-000000000008',
+            '0e0e0000-0000-0000-0000-00000000ffff')$$);
+select pg_temp.refused_because('an input somebody derived from is not deleted — the arithmetic would no longer check',
+  $$delete from public.evidence_claims where id = '0e0e0000-0000-0000-0000-000000000007'$$,
+  'part of the record');
+select pg_temp.affects('while the derivation itself, still proposed, may be withdrawn with its inputs',
+  $$delete from public.evidence_claims where id = '0e0e0000-0000-0000-0000-000000000008'$$, 1);
+select pg_temp.check('and the input links went with it',
+  not exists (select 1 from public.claim_inputs where claim_id = '0e0e0000-0000-0000-0000-000000000008'));
+
+-- ─────────────────────────────────── a correction is a superseding claim
+insert into public.evidence_claims(id, organization_id, workflow_id, subject_type, subject_key, predicate, value, unit,
+  observation_basis, supersedes_claim_id)
+values ('0e0e0000-0000-0000-0000-000000000009', 'aaaaaaaa-0000-0000-0000-000000000001',
+  '0c0e0000-0000-0000-0000-000000000001', 'row', 'register-a/row-1', 'quantity', '{"n": 4, "verified": true}'::jsonb,
+  'each', 'observed', '0e0e0000-0000-0000-0000-000000000001');
+select public.core_v2_claim_transition('0e0e0000-0000-0000-0000-000000000001', 'superseded');
+select pg_temp.allowed('a correction supersedes an accepted claim that no decision rests on',
+  $$select pg_temp.core_v2_settle()$$);
+select pg_temp.check('and both readings stay, the new one naming the old',
+  (select status from public.evidence_claims where id = '0e0e0000-0000-0000-0000-000000000001') = 'superseded'
+  and (select supersedes_claim_id from public.evidence_claims where id = '0e0e0000-0000-0000-0000-000000000009')
+      = '0e0e0000-0000-0000-0000-000000000001');
+select pg_temp.check('the supersession is in the trail, saying what the claim was',
+  exists (select 1 from public.audit_events where action = 'core_v2.claim.superseded'
+           and entity_id = '0e0e0000-0000-0000-0000-000000000001' and detail ->> 'was' = 'accepted'));
+select pg_temp.refused('a superseded claim is not brought back',
+  $$update public.evidence_claims set status = 'accepted' where id = '0e0e0000-0000-0000-0000-000000000001'$$);
+select pg_temp.refused('nor deleted',
+  $$delete from public.evidence_claims where id = '0e0e0000-0000-0000-0000-000000000001'$$);
+select pg_temp.refused_because('and its anchors stay where they were',
+  $$delete from public.evidence_anchors where id = '0f0e0000-0000-0000-0000-000000000001'$$,
+  'supports a claim that is superseded');
+
+-- ═══════════════ 9 · A VERDICT IS ONE ROW, WITH EVIDENCE OF ITS OWN ══════════
+insert into public.workflow_tasks(id, organization_id, workflow_id, phase, task_type, role_key, role_version,
+  subject_key, input_fingerprint, contract_version)
+values ('0c0e0001-0000-0000-0000-000000000031', 'aaaaaaaa-0000-0000-0000-000000000001',
+  '0c0e0000-0000-0000-0000-000000000001', 'verify', 'verify_row', 'verifier', '1', 'register-a/row-5',
+  'fp-verify-row-5', 'verify_row@1');
+select pg_temp.allowed('a verification names the claims it is about, as keys',
+  $$insert into public.task_target_claims(organization_id, task_id, claim_id)
+    values ('aaaaaaaa-0000-0000-0000-000000000001', '0c0e0001-0000-0000-0000-000000000031',
+            '0e0e0000-0000-0000-0000-000000000005')$$);
+select pg_temp.refused_because('and a claim under verification is not deleted from under it',
+  $$delete from public.evidence_claims where id = '0e0e0000-0000-0000-0000-000000000005'$$,
+  'part of the record');
+insert into public.agent_attempts(id, organization_id, workflow_id, task_id, attempt_no, role_key, role_version,
+  executor_kind, executor_family, independence_domain, packet_fingerprint)
+values
+  ('0d0e0000-0000-0000-0000-000000000051', 'aaaaaaaa-0000-0000-0000-000000000001',
+   '0c0e0000-0000-0000-0000-000000000001', '0c0e0001-0000-0000-0000-000000000031', 1, 'verifier', '1',
+   'model', 'family-y', 'model:family-y', 'packet-verify-row-5'),
+  ('0d0e0000-0000-0000-0000-000000000052', 'aaaaaaaa-0000-0000-0000-000000000001',
+   '0c0e0000-0000-0000-0000-000000000001', '0c0e0001-0000-0000-0000-000000000031', 2, 'verifier', '1',
+   'model', 'family-z', 'model:family-z', 'packet-verify-row-5');
+insert into public.claim_assessments(id, organization_id, workflow_id, claim_id, attempt_id, task_id, assessment,
+  reason_code, explanation)
+values ('1d0e0000-0000-0000-0000-000000000001', 'aaaaaaaa-0000-0000-0000-000000000001',
+  '0c0e0000-0000-0000-0000-000000000001', '0e0e0000-0000-0000-0000-000000000005',
+  '0d0e0000-0000-0000-0000-000000000051', '0c0e0001-0000-0000-0000-000000000031', 'supports',
+  'value_matches_source', 'Row 5 of the register prints 1.');
+-- What a reviewer read instead is kept beside its verdict, because an arbiter
+-- may correct a disputed claim only to a value that stands here. A verdict
+-- that the source agrees proposes nothing to correct to.
+select pg_temp.refused('a verdict that the source agrees proposes no other value',
+  $$update public.claim_assessments set proposed_value = '{"known": true, "quantity": 9}'::jsonb
+     where id = '1d0e0000-0000-0000-0000-000000000001'$$);
+select pg_temp.refused('one reviewer does not get to say two things about one claim',
+  $$insert into public.claim_assessments(organization_id, workflow_id, claim_id, attempt_id, assessment, reason_code)
+    values ('aaaaaaaa-0000-0000-0000-000000000001', '0c0e0000-0000-0000-0000-000000000001',
+            '0e0e0000-0000-0000-0000-000000000005', '0d0e0000-0000-0000-0000-000000000051', 'contradicts', 'changed_mind')$$);
+select pg_temp.allowed('while a second reviewer may say its own',
+  $$insert into public.claim_assessments(id, organization_id, workflow_id, claim_id, attempt_id, assessment, reason_code)
+    values ('1d0e0000-0000-0000-0000-000000000002', 'aaaaaaaa-0000-0000-0000-000000000001',
+            '0c0e0000-0000-0000-0000-000000000001', '0e0e0000-0000-0000-0000-000000000005',
+            '0d0e0000-0000-0000-0000-000000000052', 'insufficient', 'crop_unreadable')$$);
+select pg_temp.allowed('a verdict that did not agree may say what the source shows instead, so an arbiter has something to correct to',
+  $$update public.claim_assessments
+       set proposed_value = '{"known": true, "quantity": 3, "text": "3 each"}'::jsonb, proposed_unit = 'each'
+     where id = '1d0e0000-0000-0000-0000-000000000002'$$);
+select pg_temp.refused('a verdict is one of seven words',
+  $$insert into public.claim_assessments(organization_id, workflow_id, claim_id, attempt_id, assessment, reason_code)
+    values ('aaaaaaaa-0000-0000-0000-000000000001', '0c0e0000-0000-0000-0000-000000000001',
+            '0e0e0000-0000-0000-0000-000000000006', '0d0e0000-0000-0000-0000-000000000051', 'probably', 'shrug')$$);
+select pg_temp.check('a reviewer''s evidence is a table with foreign keys, not a column of ids',
+  not exists (select 1 from information_schema.columns
+               where table_name = 'claim_assessments' and column_name = 'anchor_ids')
+  and not exists (select 1 from information_schema.columns
+                   where table_name = 'disagreements' and column_name = 'claim_ids'));
+insert into core_v2_counts select 'row5_anchors', count(*) from public.evidence_anchors
+  where claim_id = '0e0e0000-0000-0000-0000-000000000005';
+select pg_temp.allowed('the reviewer names where it looked',
+  $$insert into public.evidence_anchors(id, organization_id, workflow_id, assessment_id, source_kind, segment_id, locator, anchor_hash)
+    values ('0f0e0000-0000-0000-0000-000000000051', 'aaaaaaaa-0000-0000-0000-000000000001',
+            '0c0e0000-0000-0000-0000-000000000001', '1d0e0000-0000-0000-0000-000000000001', 'segment_locator',
+            '0b0e0001-0000-0000-0000-000000000002', '{"bbox": [0.60, 0.20, 0.70, 0.25]}'::jsonb, 'anchor-verify-row-5')$$);
+select pg_temp.check('and its anchor is its own — the claim''s own evidence did not grow by being reviewed',
+  (select count(*) from public.evidence_anchors where claim_id = '0e0e0000-0000-0000-0000-000000000005')
+    = (select n from core_v2_counts where k = 'row5_anchors')
+  and (select claim_id is null from public.evidence_anchors where id = '0f0e0000-0000-0000-0000-000000000051'));
+select pg_temp.refused('an anchor is not owned by a claim and an assessment at once',
+  $$insert into public.evidence_anchors(organization_id, workflow_id, claim_id, assessment_id, source_kind, segment_id, anchor_hash)
+    values ('aaaaaaaa-0000-0000-0000-000000000001', '0c0e0000-0000-0000-0000-000000000001',
+            '0e0e0000-0000-0000-0000-000000000005', '1d0e0000-0000-0000-0000-000000000001', 'segment',
+            '0b0e0001-0000-0000-0000-000000000002', 'two-owners')$$);
+select pg_temp.refused('nor by an assessment that does not exist',
+  $$insert into public.evidence_anchors(organization_id, workflow_id, assessment_id, source_kind, segment_id, anchor_hash)
+    values ('aaaaaaaa-0000-0000-0000-000000000001', '0c0e0000-0000-0000-0000-000000000001',
+            '1d0e0000-0000-0000-0000-00000000ffff', 'segment', '0b0e0001-0000-0000-0000-000000000002', 'nobody')$$);
+select public.core_v2_claim_transition('0e0e0000-0000-0000-0000-000000000005', 'verified');
+select public.core_v2_claim_transition('0e0e0000-0000-0000-0000-000000000005', 'accepted');
+select pg_temp.allowed('a claim verified and then accepted on its anchor survives',
+  $$select pg_temp.core_v2_settle()$$);
+select pg_temp.refused_because('the reviewer''s anchor is under an accepted claim too, and is not deleted',
+  $$delete from public.evidence_anchors where id = '0f0e0000-0000-0000-0000-000000000051'$$,
+  'supports a claim that is accepted');
+select pg_temp.refused_because('a verdict is about a claim of its own workflow',
+  $$insert into public.claim_assessments(organization_id, workflow_id, claim_id, attempt_id, assessment, reason_code)
+    values ('aaaaaaaa-0000-0000-0000-000000000001', '0c0e0000-0000-0000-0000-0000000000a2',
+            '0e0e0000-0000-0000-0000-0000000000a2', '0d0e0000-0000-0000-0000-000000000051', 'supports', 'r')$$,
+  'another workflow');
+
+-- ═══════════════ 10 · THE DECISION, AND WHAT IT RESTS ON ═══════════════════
+--
+-- The nine sub-sections above stop one step short of the answer a person
+-- reads. Everything here is the last step: a decision that is actually decided,
+-- a disagreement that is actually settled, and the ways somebody could take
+-- either of them apart afterwards.
+--
+-- A second synthetic source set, on its own workflow, so that nothing below
+-- disturbs what the earlier sub-sections built. A recording and a register:
+-- the two shapes a document-shaped fixture would never have exercised.
+
+reset role;
+set local test.uid = '';
+
+insert into public.intelligence_workflows(
+  id, organization_id, domain_pack, domain_pack_version, workflow_type, engine_version,
+  source_set_fingerprint, request_fingerprint, budget, state)
+values ('0c0e0000-0000-0000-0000-0000000000d1', 'aaaaaaaa-0000-0000-0000-000000000001',
+  'synthetic-decision', '1', 'synthetic_review', 'core-v2.1',
+  'fixture-decision-source-set', 'fixture-decision-request',
+  '{"maximum_critic_rounds": 1, "maximum_arbiter_rounds": 1}'::jsonb, 'running');
+
+insert into public.workflow_sources(id, organization_id, workflow_id, ordinal, source_kind, label,
+  uri, content_hash, hash_algorithm, media)
+values
+  ('0a0e0004-0000-0000-0000-000000000001', 'aaaaaaaa-0000-0000-0000-000000000001',
+   '0c0e0000-0000-0000-0000-0000000000d1', 0, 'recording', 'synthetic recording D',
+   'fixture://synthetic/recording-d', 'fixture-source-hash-recording-d', 'sha-256',
+   '{"duration_ms": 120000}'::jsonb),
+  ('0a0e0004-0000-0000-0000-000000000002', 'aaaaaaaa-0000-0000-0000-000000000001',
+   '0c0e0000-0000-0000-0000-0000000000d1', 1, 'table', 'synthetic ledger D',
+   'fixture://synthetic/ledger-d', 'fixture-source-hash-ledger-d', 'sha-256',
+   '{"row_count": 50000}'::jsonb);
+
+insert into public.source_segments(id, organization_id, workflow_id, source_id, segment_kind, label,
+  ordinal, locator, content_hash, status, discovered_by)
+values
+  ('0b0e0004-0000-0000-0000-000000000001', 'aaaaaaaa-0000-0000-0000-000000000001',
+   '0c0e0000-0000-0000-0000-0000000000d1', '0a0e0004-0000-0000-0000-000000000001', 'scene', 'scene 1',
+   0, '{"start_ms": 0, "end_ms": 45000}'::jsonb, 'fixture-segment-hash-d-scene-1', 'accepted', 'deterministic'),
+  ('0b0e0004-0000-0000-0000-000000000002', 'aaaaaaaa-0000-0000-0000-000000000001',
+   '0c0e0000-0000-0000-0000-0000000000d1', '0a0e0004-0000-0000-0000-000000000002', 'row_range', 'rows 0-499',
+   0, '{"start_row": 0, "end_row": 499}'::jsonb, 'fixture-segment-hash-d-rows-1', 'accepted', 'deterministic');
+
+insert into public.workflow_tasks(id, organization_id, workflow_id, phase, task_type, role_key, role_version,
+  subject_key, input_fingerprint, contract_version, state)
+values
+  ('0c0e0004-0000-0000-0000-000000000001', 'aaaaaaaa-0000-0000-0000-000000000001',
+   '0c0e0000-0000-0000-0000-0000000000d1', 'analyze', 'read_scene', 'reader', '1',
+   'recording-d/speaker-1', 'fp-d-read', 'read_scene@1', 'running'),
+  ('0c0e0004-0000-0000-0000-000000000002', 'aaaaaaaa-0000-0000-0000-000000000001',
+   '0c0e0000-0000-0000-0000-0000000000d1', 'verify', 'verify_scene', 'critic', '1',
+   'recording-d/speaker-1', 'fp-d-verify', 'verify_scene@1', 'running'),
+  ('0c0e0004-0000-0000-0000-000000000003', 'aaaaaaaa-0000-0000-0000-000000000001',
+   '0c0e0000-0000-0000-0000-0000000000d1', 'analyze', 'read_scene', 'reader', '1',
+   'recording-d/speaker-2', 'fp-d-lost', 'read_scene@1', 'running');
+
+insert into public.agent_attempts(id, organization_id, workflow_id, task_id, attempt_no, role_key, role_version,
+  executor_kind, executor_family, independence_domain, packet_fingerprint, state)
+values
+  ('0d0e0004-0000-0000-0000-000000000001', 'aaaaaaaa-0000-0000-0000-000000000001',
+   '0c0e0000-0000-0000-0000-0000000000d1', '0c0e0004-0000-0000-0000-000000000001', 1, 'reader', '1',
+   'model', 'family-a', 'model:family-a', 'packet-d-read', 'succeeded'),
+  ('0d0e0004-0000-0000-0000-000000000002', 'aaaaaaaa-0000-0000-0000-000000000001',
+   '0c0e0000-0000-0000-0000-0000000000d1', '0c0e0004-0000-0000-0000-000000000002', 1, 'critic', '1',
+   'model', 'family-b', 'model:family-b', 'packet-d-verify-b', 'succeeded'),
+  ('0d0e0004-0000-0000-0000-000000000003', 'aaaaaaaa-0000-0000-0000-000000000001',
+   '0c0e0000-0000-0000-0000-0000000000d1', '0c0e0004-0000-0000-0000-000000000002', 2, 'critic', '1',
+   'model', 'family-a', 'model:family-a', 'packet-d-verify-a', 'succeeded'),
+  ('0d0e0004-0000-0000-0000-000000000004', 'aaaaaaaa-0000-0000-0000-000000000001',
+   '0c0e0000-0000-0000-0000-0000000000d1', '0c0e0004-0000-0000-0000-000000000001', 2, 'reader', '1',
+   'model', 'family-a', 'model:family-a', 'packet-d-cut', 'output_limited'),
+  ('0d0e0004-0000-0000-0000-000000000005', 'aaaaaaaa-0000-0000-0000-000000000001',
+   '0c0e0000-0000-0000-0000-0000000000d1', '0c0e0004-0000-0000-0000-000000000003', 1, 'reader', '1',
+   'model', 'family-a', 'model:family-a', 'packet-d-prepared', 'prepared');
+
+insert into public.evidence_claims(id, organization_id, workflow_id, task_id, attempt_id, independence_domain,
+  subject_type, subject_key, predicate, value, unit, observation_basis, status, incomplete_source_attempt)
+values
+  ('0e0e0004-0000-0000-0000-000000000001', 'aaaaaaaa-0000-0000-0000-000000000001',
+   '0c0e0000-0000-0000-0000-0000000000d1', '0c0e0004-0000-0000-0000-000000000001',
+   '0d0e0004-0000-0000-0000-000000000001', 'model:family-a', 'speaker', 'recording-d/speaker-1',
+   'speaking_time', '{"ms": 31000}'::jsonb, 'ms', 'observed', 'proposed', false),
+  ('0e0e0004-0000-0000-0000-000000000002', 'aaaaaaaa-0000-0000-0000-000000000001',
+   '0c0e0000-0000-0000-0000-0000000000d1', '0c0e0004-0000-0000-0000-000000000001',
+   '0d0e0004-0000-0000-0000-000000000004', null, 'speaker', 'recording-d/speaker-3',
+   'speaking_time', '{"ms": 900}'::jsonb, 'ms', 'observed', 'proposed', false),
+  ('0e0e0004-0000-0000-0000-000000000003', 'aaaaaaaa-0000-0000-0000-000000000001',
+   '0c0e0000-0000-0000-0000-0000000000d1', null, null, null, 'account', 'ledger-d/acct-1',
+   'balance', '{"amount": 100}'::jsonb, 'usd', 'observed', 'proposed', true),
+  ('0e0e0004-0000-0000-0000-000000000004', 'aaaaaaaa-0000-0000-0000-000000000001',
+   '0c0e0000-0000-0000-0000-0000000000d1', null, null, null, 'account', 'ledger-d/acct-2',
+   'balance', '{"amount": 200}'::jsonb, 'usd', 'observed', 'proposed', false),
+  ('0e0e0004-0000-0000-0000-000000000005', 'aaaaaaaa-0000-0000-0000-000000000001',
+   '0c0e0000-0000-0000-0000-0000000000d1', null, null, null, 'account', 'ledger-d/acct-3',
+   'balance', '{"amount": 300}'::jsonb, 'usd', 'observed', 'proposed', false),
+  ('0e0e0004-0000-0000-0000-000000000006', 'aaaaaaaa-0000-0000-0000-000000000001',
+   '0c0e0000-0000-0000-0000-0000000000d1', null, null, null, 'account', 'ledger-d/acct-4',
+   'balance', '{"amount": 400}'::jsonb, 'usd', 'observed', 'proposed', false),
+  ('0e0e0004-0000-0000-0000-000000000007', 'aaaaaaaa-0000-0000-0000-000000000001',
+   '0c0e0000-0000-0000-0000-0000000000d1', '0c0e0004-0000-0000-0000-000000000001',
+   '0d0e0004-0000-0000-0000-000000000001', null, 'account', 'ledger-d/acct-5',
+   'balance', '{"amount": 500}'::jsonb, 'usd', 'observed', 'proposed', false),
+  ('0e0e0004-0000-0000-0000-00000000000a', 'aaaaaaaa-0000-0000-0000-000000000001',
+   '0c0e0000-0000-0000-0000-0000000000d1', null, null, null, 'account', 'ledger-d/acct-9',
+   'balance', '{"amount": 4}'::jsonb, 'usd', 'observed', 'proposed', false),
+  ('0e0e0004-0000-0000-0000-00000000000b', 'aaaaaaaa-0000-0000-0000-000000000001',
+   '0c0e0000-0000-0000-0000-0000000000d1', null, null, null, 'account', 'ledger-d/acct-9',
+   'balance', '{"amount": 7}'::jsonb, 'usd', 'observed', 'proposed', false),
+  ('0e0e0004-0000-0000-0000-00000000000c', 'aaaaaaaa-0000-0000-0000-000000000001',
+   '0c0e0000-0000-0000-0000-0000000000d1', null, null, null, 'account', 'ledger-d/acct-9',
+   'balance', '{"amount": 9}'::jsonb, 'usd', 'observed', 'proposed', false);
+
+insert into public.evidence_anchors(id, organization_id, workflow_id, claim_id, source_kind, segment_id,
+  locator, anchor_hash)
+values
+  ('0f0e0004-0000-0000-0000-000000000001', 'aaaaaaaa-0000-0000-0000-000000000001',
+   '0c0e0000-0000-0000-0000-0000000000d1', '0e0e0004-0000-0000-0000-000000000001', 'segment_locator',
+   '0b0e0004-0000-0000-0000-000000000001', '{"start_ms": 1200, "end_ms": 32200}'::jsonb, 'anchor-d-1'),
+  ('0f0e0004-0000-0000-0000-000000000002', 'aaaaaaaa-0000-0000-0000-000000000001',
+   '0c0e0000-0000-0000-0000-0000000000d1', '0e0e0004-0000-0000-0000-000000000002', 'segment',
+   '0b0e0004-0000-0000-0000-000000000001', '{}'::jsonb, 'anchor-d-2'),
+  ('0f0e0004-0000-0000-0000-000000000003', 'aaaaaaaa-0000-0000-0000-000000000001',
+   '0c0e0000-0000-0000-0000-0000000000d1', '0e0e0004-0000-0000-0000-000000000003', 'segment_locator',
+   '0b0e0004-0000-0000-0000-000000000002', '{"start_row": 10, "end_row": 12}'::jsonb, 'anchor-d-3'),
+  ('0f0e0004-0000-0000-0000-000000000004', 'aaaaaaaa-0000-0000-0000-000000000001',
+   '0c0e0000-0000-0000-0000-0000000000d1', '0e0e0004-0000-0000-0000-000000000004', 'segment_locator',
+   '0b0e0004-0000-0000-0000-000000000002', '{"start_row": 20, "end_row": 22}'::jsonb, 'anchor-d-4'),
+  ('0f0e0004-0000-0000-0000-000000000005', 'aaaaaaaa-0000-0000-0000-000000000001',
+   '0c0e0000-0000-0000-0000-0000000000d1', '0e0e0004-0000-0000-0000-000000000005', 'segment_locator',
+   '0b0e0004-0000-0000-0000-000000000002', '{"start_row": 30, "end_row": 32}'::jsonb, 'anchor-d-5'),
+  ('0f0e0004-0000-0000-0000-000000000006', 'aaaaaaaa-0000-0000-0000-000000000001',
+   '0c0e0000-0000-0000-0000-0000000000d1', '0e0e0004-0000-0000-0000-000000000006', 'segment_locator',
+   '0b0e0004-0000-0000-0000-000000000002', '{"start_row": 40, "end_row": 42}'::jsonb, 'anchor-d-6'),
+  ('0f0e0004-0000-0000-0000-00000000000a', 'aaaaaaaa-0000-0000-0000-000000000001',
+   '0c0e0000-0000-0000-0000-0000000000d1', '0e0e0004-0000-0000-0000-00000000000a', 'segment_locator',
+   '0b0e0004-0000-0000-0000-000000000002', '{"start_row": 90, "end_row": 92}'::jsonb, 'anchor-d-a'),
+  ('0f0e0004-0000-0000-0000-00000000000b', 'aaaaaaaa-0000-0000-0000-000000000001',
+   '0c0e0000-0000-0000-0000-0000000000d1', '0e0e0004-0000-0000-0000-00000000000b', 'segment_locator',
+   '0b0e0004-0000-0000-0000-000000000002', '{"start_row": 90, "end_row": 92}'::jsonb, 'anchor-d-b'),
+  ('0f0e0004-0000-0000-0000-00000000000c', 'aaaaaaaa-0000-0000-0000-000000000001',
+   '0c0e0000-0000-0000-0000-0000000000d1', '0e0e0004-0000-0000-0000-00000000000c', 'segment_locator',
+   '0b0e0004-0000-0000-0000-000000000002', '{"start_row": 90, "end_row": 92}'::jsonb, 'anchor-d-c');
+
+-- The one anchor that points at nothing in the source: a person's own record,
+-- attached here to a machine's reading on purpose.
+insert into public.evidence_anchors(id, organization_id, workflow_id, claim_id, source_kind,
+  quoted_text, anchor_hash)
+values ('0f0e0004-0000-0000-0000-000000000007', 'aaaaaaaa-0000-0000-0000-000000000001',
+  '0c0e0000-0000-0000-0000-0000000000d1', '0e0e0004-0000-0000-0000-000000000007', 'human_record',
+  'the model says it read this', 'anchor-d-7');
+
+insert into public.task_target_claims(organization_id, task_id, claim_id)
+values ('aaaaaaaa-0000-0000-0000-000000000001', '0c0e0004-0000-0000-0000-000000000002',
+        '0e0e0004-0000-0000-0000-000000000001');
+
+-- ───────────────────────────────── a piece of a source lies inside its piece
+select pg_temp.refused_because('a segment found inside a scene lies inside that scene',
+  $$insert into public.source_segments(id, organization_id, workflow_id, source_id, parent_segment_id,
+      segment_kind, locator, content_hash, status, discovered_by)
+    values ('0b0e0004-0000-0000-0000-000000000011', 'aaaaaaaa-0000-0000-0000-000000000001',
+            '0c0e0000-0000-0000-0000-0000000000d1', '0a0e0004-0000-0000-0000-000000000001',
+            '0b0e0004-0000-0000-0000-000000000001', 'utterance',
+            '{"start_ms": 100000, "end_ms": 119000}'::jsonb, 'd-utterance-far', 'accepted', 'deterministic')$$,
+  'lies outside its parent');
+select pg_temp.allowed('and one that really is inside it is admitted',
+  $$insert into public.source_segments(id, organization_id, workflow_id, source_id, parent_segment_id,
+      segment_kind, locator, content_hash, status, discovered_by)
+    values ('0b0e0004-0000-0000-0000-000000000012', 'aaaaaaaa-0000-0000-0000-000000000001',
+            '0c0e0000-0000-0000-0000-0000000000d1', '0a0e0004-0000-0000-0000-000000000001',
+            '0b0e0004-0000-0000-0000-000000000001', 'utterance',
+            '{"start_ms": 1000, "end_ms": 2000}'::jsonb, 'd-utterance-near', 'accepted', 'deterministic')$$);
+
+-- ─────────────────────── a register is a source like any other
+select pg_temp.refused_because('an anchor into rows the reader was never handed is outside its segment',
+  $$insert into public.evidence_anchors(organization_id, workflow_id, claim_id, source_kind, segment_id,
+      locator, anchor_hash)
+    values ('aaaaaaaa-0000-0000-0000-000000000001', '0c0e0000-0000-0000-0000-0000000000d1',
+            '0e0e0004-0000-0000-0000-000000000005', 'segment_locator', '0b0e0004-0000-0000-0000-000000000002',
+            '{"start_row": 49000, "end_row": 49999}'::jsonb, 'anchor-d-far')$$,
+  'outside segment');
+select pg_temp.refused_because('nor is one that names a place the segment has no words for',
+  $$insert into public.evidence_anchors(organization_id, workflow_id, claim_id, source_kind, segment_id,
+      locator, anchor_hash)
+    values ('aaaaaaaa-0000-0000-0000-000000000001', '0c0e0000-0000-0000-0000-0000000000d1',
+            '0e0e0004-0000-0000-0000-000000000005', 'segment_locator', '0b0e0004-0000-0000-0000-000000000002',
+            '{"paragraph": 3}'::jsonb, 'anchor-d-uncomparable')$$,
+  'no box or range to compare');
+select pg_temp.refused('a row range that ends before it starts is not a range',
+  $$insert into public.source_segments(organization_id, workflow_id, source_id, segment_kind,
+      locator, content_hash, discovered_by)
+    values ('aaaaaaaa-0000-0000-0000-000000000001', '0c0e0000-0000-0000-0000-0000000000d1',
+            '0a0e0004-0000-0000-0000-000000000002', 'row_range',
+            '{"start_row": 900, "end_row": 10}'::jsonb, 'd-rows-backwards', 'deterministic')$$);
+select pg_temp.refused('and a recording does not begin before it began',
+  $$insert into public.source_segments(organization_id, workflow_id, source_id, segment_kind,
+      locator, content_hash, discovered_by)
+    values ('aaaaaaaa-0000-0000-0000-000000000001', '0c0e0000-0000-0000-0000-0000000000d1',
+            '0a0e0004-0000-0000-0000-000000000001', 'scene',
+            '{"start_ms": -9000, "end_ms": -1000}'::jsonb, 'd-scene-negative', 'deterministic')$$);
+select pg_temp.allowed('the same word said twice in one recording is two places',
+  $$insert into public.source_segments(id, organization_id, workflow_id, source_id, segment_kind, ordinal,
+      locator, content_hash, status, discovered_by)
+    values ('0b0e0004-0000-0000-0000-000000000021', 'aaaaaaaa-0000-0000-0000-000000000001',
+            '0c0e0000-0000-0000-0000-0000000000d1', '0a0e0004-0000-0000-0000-000000000001', 'utterance', 10,
+            '{"start_ms": 10000, "end_ms": 10500}'::jsonb, 'd-utterance-yes', 'accepted', 'deterministic'),
+           ('0b0e0004-0000-0000-0000-000000000022', 'aaaaaaaa-0000-0000-0000-000000000001',
+            '0c0e0000-0000-0000-0000-0000000000d1', '0a0e0004-0000-0000-0000-000000000001', 'utterance', 11,
+            '{"start_ms": 100000, "end_ms": 100500}'::jsonb, 'd-utterance-yes', 'accepted', 'deterministic')$$);
+select pg_temp.check('and both of them are in the record',
+  (select count(*) from public.source_segments
+    where source_id = '0a0e0004-0000-0000-0000-000000000001' and content_hash = 'd-utterance-yes') = 2);
+select pg_temp.refused('while the same word in the same place is still one segment',
+  $$insert into public.source_segments(organization_id, workflow_id, source_id, segment_kind, ordinal,
+      locator, content_hash, discovered_by)
+    values ('aaaaaaaa-0000-0000-0000-000000000001', '0c0e0000-0000-0000-0000-0000000000d1',
+            '0a0e0004-0000-0000-0000-000000000001', 'utterance', 12,
+            '{"start_ms": 10000, "end_ms": 10500}'::jsonb, 'd-utterance-yes', 'deterministic')$$);
+select pg_temp.allowed('a locator whose path happens to contain the word signature is still a locator',
+  $$insert into public.workflow_sources(organization_id, workflow_id, ordinal, source_kind, uri,
+      content_hash, hash_algorithm)
+    values ('aaaaaaaa-0000-0000-0000-000000000001', '0c0e0000-0000-0000-0000-0000000000d1', 2, 'document',
+            'fixture://synthetic/deeds/signature=witnessed.pdf', 'fixture-deed-hash', 'sha-256')$$);
+
+-- ─────────────────────────────── what an accepted claim actually stands on
+select pg_temp.refused_because('a claim out of an answer the database can see was cut short is not accepted, flag or no flag',
+$sql$
+do $x$ begin
+  update public.evidence_claims set status = 'accepted' where id = '0e0e0004-0000-0000-0000-000000000002';
+  perform pg_temp.core_v2_settle();
+end $x$;
+$sql$, 'cut short');
+select pg_temp.check('and it is still where it was',
+  (select status from public.evidence_claims where id = '0e0e0004-0000-0000-0000-000000000002') = 'proposed');
+select pg_temp.refused_because('a claim that came from a cut-short answer does not stop having come from one',
+  $$update public.evidence_claims set incomplete_source_attempt = false
+     where id = '0e0e0004-0000-0000-0000-000000000003'$$,
+  'does not stop being true');
+select pg_temp.refused_because('a machine reading is not accepted on a sentence the machine wrote about itself',
+$sql$
+do $x$ begin
+  update public.evidence_claims set status = 'accepted' where id = '0e0e0004-0000-0000-0000-000000000007';
+  perform pg_temp.core_v2_settle();
+end $x$;
+$sql$, 'not reported by a person');
+
+-- ────────────────────────────────────── agreement is not proof
+insert into public.claim_assessments(id, organization_id, workflow_id, claim_id, attempt_id, assessment, reason_code)
+values ('1d0e0004-0000-0000-0000-000000000001', 'aaaaaaaa-0000-0000-0000-000000000001',
+  '0c0e0000-0000-0000-0000-0000000000d1', '0e0e0004-0000-0000-0000-000000000001',
+  '0d0e0004-0000-0000-0000-000000000003', 'supports', 'value_matches_source');
+select pg_temp.refused_because('a reading is not accepted on a verdict from its own executor domain',
+$sql$
+do $x$ begin
+  update public.evidence_claims set status = 'accepted' where id = '0e0e0004-0000-0000-0000-000000000001';
+  perform pg_temp.core_v2_settle();
+end $x$;
+$sql$, 'no independent verification');
+insert into public.claim_assessments(id, organization_id, workflow_id, claim_id, attempt_id, task_id,
+  assessment, reason_code)
+values ('1d0e0004-0000-0000-0000-000000000002', 'aaaaaaaa-0000-0000-0000-000000000001',
+  '0c0e0000-0000-0000-0000-0000000000d1', '0e0e0004-0000-0000-0000-000000000001',
+  '0d0e0004-0000-0000-0000-000000000002', '0c0e0004-0000-0000-0000-000000000002',
+  'supports', 'value_matches_source');
+select pg_temp.allowed('and is accepted on one from another domain, which is what independence buys',
+$sql$
+do $x$ begin
+  update public.evidence_claims set status = 'accepted' where id = '0e0e0004-0000-0000-0000-000000000001';
+  perform pg_temp.core_v2_settle();
+end $x$;
+$sql$);
+select pg_temp.check('the claim is accepted, and the verdict that carried it is named',
+  (select status from public.evidence_claims where id = '0e0e0004-0000-0000-0000-000000000001') = 'accepted');
+select pg_temp.refused_because('and the verdict it rests on is not pulled out afterwards',
+$sql$
+do $x$ begin
+  delete from public.claim_assessments where id = '1d0e0004-0000-0000-0000-000000000002';
+  perform pg_temp.core_v2_settle();
+end $x$;
+$sql$, 'no independent verification');
+select pg_temp.refused_because('a verifier answers the claims its task was handed, and no others',
+  $$insert into public.claim_assessments(organization_id, workflow_id, claim_id, attempt_id, task_id,
+      assessment, reason_code)
+    values ('aaaaaaaa-0000-0000-0000-000000000001', '0c0e0000-0000-0000-0000-0000000000d1',
+            '0e0e0004-0000-0000-0000-000000000005', '0d0e0004-0000-0000-0000-000000000002',
+            '0c0e0004-0000-0000-0000-000000000002', 'supports', 'never_asked_to_look')$$,
+  'does not widen the packet');
+
+-- The arbiter's own way through, and the only one it has. When every reader
+-- read wrong, what stands is not the arbiter's opinion but the value a reviewer
+-- read off the reopened source — so the decision that accepts the correction
+-- must cite that reviewer's own anchor. An adjudication resting on nothing but
+-- the readings it is settling accepts nothing.
+insert into public.evidence_claims(id, organization_id, workflow_id, task_id, attempt_id, subject_type, subject_key,
+  predicate, value, unit, observation_basis, independence_domain)
+values ('0e0e0004-0000-0000-0000-00000000c001', 'aaaaaaaa-0000-0000-0000-000000000001',
+  '0c0e0000-0000-0000-0000-0000000000d1', '0c0e0004-0000-0000-0000-000000000002',
+  '0d0e0004-0000-0000-0000-000000000002', 'account', 'ledger-d/acct-9', 'balance',
+  '{"amount": 909}'::jsonb, 'usd', 'inferred', 'domain:arbiter');
+insert into public.evidence_anchors(id, organization_id, workflow_id, claim_id, source_kind, segment_id, anchor_hash)
+values ('0f0e0004-0000-0000-0000-00000000c001', 'aaaaaaaa-0000-0000-0000-000000000001',
+  '0c0e0000-0000-0000-0000-0000000000d1', '0e0e0004-0000-0000-0000-00000000c001', 'segment',
+  (select segment_id from public.evidence_anchors where claim_id = '0e0e0004-0000-0000-0000-000000000001' limit 1),
+  'fx-corrected-anchor');
+insert into public.decisions(id, organization_id, workflow_id, task_id, decision_type, subject_key, title,
+  status, authority, rationale, decided_by_attempt_id)
+values ('100e0004-0000-0000-0000-00000000c001', 'aaaaaaaa-0000-0000-0000-000000000001',
+  '0c0e0000-0000-0000-0000-0000000000d1', '0c0e0004-0000-0000-0000-000000000002', 'accept_claim',
+  'ledger-d/acct-9', 'ledger-d/acct-9: corrected', 'proposed', 'adjudicator',
+  'the reopened source shows a value none of the readers reported',
+  '0d0e0004-0000-0000-0000-000000000002');
+insert into public.decision_evidence(organization_id, decision_id, claim_id, link)
+values ('aaaaaaaa-0000-0000-0000-000000000001', '100e0004-0000-0000-0000-00000000c001',
+  '0e0e0004-0000-0000-0000-00000000c001', 'supports');
+select pg_temp.refused_because('an adjudicator accepting its own correction on nothing but the readings it settled is refused',
+$sql$
+do $x$ begin
+  update public.evidence_claims set status = 'accepted' where id = '0e0e0004-0000-0000-0000-00000000c001';
+  perform pg_temp.core_v2_settle();
+end $x$;
+$sql$, 'no independent verification');
+-- The reviewer's own anchor, cited by the decision as what the source shows.
+insert into public.evidence_anchors(id, organization_id, workflow_id, assessment_id, source_kind, segment_id, anchor_hash)
+values ('0f0e0004-0000-0000-0000-00000000c002', 'aaaaaaaa-0000-0000-0000-000000000001',
+  '0c0e0000-0000-0000-0000-0000000000d1', '1d0e0004-0000-0000-0000-000000000002', 'segment',
+  (select segment_id from public.evidence_anchors where claim_id = '0e0e0004-0000-0000-0000-000000000001' limit 1),
+  'fx-reviewer-anchor');
+insert into public.decision_evidence(organization_id, decision_id, anchor_id, link)
+values ('aaaaaaaa-0000-0000-0000-000000000001', '100e0004-0000-0000-0000-00000000c001',
+  '0f0e0004-0000-0000-0000-00000000c002', 'context');
+select pg_temp.allowed('and stands once it cites the reviewer''s own anchor, from a domain that is not its own',
+$sql$
+do $x$ begin
+  update public.evidence_claims set status = 'accepted' where id = '0e0e0004-0000-0000-0000-00000000c001';
+  perform pg_temp.core_v2_settle();
+end $x$;
+$sql$);
+select pg_temp.check('the correction is accepted, and what it rests on is on the record beside it',
+  (select status from public.evidence_claims where id = '0e0e0004-0000-0000-0000-00000000c001') = 'accepted'
+  and exists (select 1 from public.decision_evidence e join public.evidence_anchors a on a.id = e.anchor_id
+               where e.decision_id = '100e0004-0000-0000-0000-00000000c001' and a.assessment_id is not null));
+
+-- ─────────────────────────── supersession replaces a reading, it does not end one
+select public.core_v2_claim_transition('0e0e0004-0000-0000-0000-000000000006', 'accepted');
+select pg_temp.allowed('an accepted reading with its anchor stands', $$select pg_temp.core_v2_settle()$$);
+select pg_temp.refused_because('a reading superseded by nothing is a deletion wearing a kinder word',
+$sql$
+do $x$ begin
+  update public.evidence_claims set status = 'superseded' where id = '0e0e0004-0000-0000-0000-000000000006';
+  perform pg_temp.core_v2_settle();
+end $x$;
+$sql$, 'superseded by nothing');
+insert into public.evidence_claims(id, organization_id, workflow_id, subject_type, subject_key, predicate,
+  value, unit, observation_basis, supersedes_claim_id)
+values ('0e0e0004-0000-0000-0000-000000000016', 'aaaaaaaa-0000-0000-0000-000000000001',
+  '0c0e0000-0000-0000-0000-0000000000d1', 'account', 'ledger-d/acct-4', 'balance',
+  '{"amount": 404}'::jsonb, 'usd', 'observed', '0e0e0004-0000-0000-0000-000000000006');
+select pg_temp.allowed('the correction that names it may take its place',
+$sql$
+do $x$ begin
+  update public.evidence_claims set status = 'superseded' where id = '0e0e0004-0000-0000-0000-000000000006';
+  perform pg_temp.core_v2_settle();
+end $x$;
+$sql$);
+select pg_temp.check('and both readings stay',
+  (select status from public.evidence_claims where id = '0e0e0004-0000-0000-0000-000000000006') = 'superseded'
+  and exists (select 1 from public.evidence_claims where id = '0e0e0004-0000-0000-0000-000000000016'));
+
+-- ───────────────────────────────────── the decided decision
+select public.core_v2_claim_transition('0e0e0004-0000-0000-0000-000000000004', 'accepted');
+insert into public.decisions(id, organization_id, workflow_id, decision_type, subject_key, title,
+  status, authority, decided_by_attempt_id)
+values ('1b0e0004-0000-0000-0000-000000000001', 'aaaaaaaa-0000-0000-0000-000000000001',
+  '0c0e0000-0000-0000-0000-0000000000d1', 'accept_claim', 'ledger-d/acct-2',
+  'the balance of account 2', 'proposed', 'adjudicator', '0d0e0004-0000-0000-0000-000000000001');
+insert into public.decision_evidence(organization_id, decision_id, claim_id, link, rule)
+values ('aaaaaaaa-0000-0000-0000-000000000001', '1b0e0004-0000-0000-0000-000000000001',
+  '0e0e0004-0000-0000-0000-000000000004', 'supports', 'machine_adjudication');
+select pg_temp.refused_because('a decision does not cite one claim through another claim''s source, in one row',
+  $$insert into public.decision_evidence(organization_id, decision_id, claim_id, anchor_id, link)
+    values ('aaaaaaaa-0000-0000-0000-000000000001', '1b0e0004-0000-0000-0000-000000000001',
+            '0e0e0004-0000-0000-0000-000000000004', '0f0e0004-0000-0000-0000-000000000005', 'supports')$$,
+  'another claim');
+select pg_temp.refused_because('nor in two rows, which is the same citation written twice',
+  $$insert into public.decision_evidence(organization_id, decision_id, anchor_id, link)
+    values ('aaaaaaaa-0000-0000-0000-000000000001', '1b0e0004-0000-0000-0000-000000000001',
+            '0f0e0004-0000-0000-0000-000000000005', 'supports')$$,
+  'another claim');
+select pg_temp.allowed('a decision decided on an accepted claim of its own stands',
+$sql$
+do $x$ begin
+  perform public.core_v2_decision_transition('1b0e0004-0000-0000-0000-000000000001', 'machine_decided');
+  perform pg_temp.core_v2_settle();
+end $x$;
+$sql$);
+select pg_temp.check('and it is decided',
+  (select status from public.decisions where id = '1b0e0004-0000-0000-0000-000000000001') = 'machine_decided');
+select pg_temp.refused_because('a decided decision is superseded, not deleted',
+  $$delete from public.decisions where id = '1b0e0004-0000-0000-0000-000000000001'$$,
+  'part of the record');
+select pg_temp.refused_because('a supersession that names no decision is a decision resting on nothing',
+  $$insert into public.decisions(organization_id, workflow_id, decision_type, title, status, authority,
+      decided_by_attempt_id)
+    values ('aaaaaaaa-0000-0000-0000-000000000001', '0c0e0000-0000-0000-0000-0000000000d1', 'supersede',
+            'decided on nothing at all', 'machine_decided', 'adjudicator',
+            '0d0e0004-0000-0000-0000-000000000001')$$,
+  'supersede_names_predecessor');
+select pg_temp.allowed('one that names the decision it replaces is admitted, and borrows its evidence',
+$sql$
+do $x$ begin
+  insert into public.decisions(id, organization_id, workflow_id, decision_type, title, status, authority,
+    decided_by_attempt_id, supersedes_decision_id)
+  values ('1b0e0004-0000-0000-0000-000000000002', 'aaaaaaaa-0000-0000-0000-000000000001',
+    '0c0e0000-0000-0000-0000-0000000000d1', 'supersede', 'a later reading of account 2',
+    'machine_decided', 'adjudicator', '0d0e0004-0000-0000-0000-000000000001',
+    '1b0e0004-0000-0000-0000-000000000001');
+  perform pg_temp.core_v2_settle();
+end $x$;
+$sql$);
+
+-- ───────────────────────────── a person settles it, between the claims that competed
+insert into public.disagreements(id, organization_id, workflow_id, disagreement_key, kind, state)
+values ('1c0e0004-0000-0000-0000-000000000001', 'aaaaaaaa-0000-0000-0000-000000000001',
+  '0c0e0000-0000-0000-0000-0000000000d1', 'ledger-d/acct-9/balance', 'value', 'open');
+insert into public.disagreement_claims(organization_id, disagreement_id, claim_id, position, role)
+values
+  ('aaaaaaaa-0000-0000-0000-000000000001', '1c0e0004-0000-0000-0000-000000000001',
+   '0e0e0004-0000-0000-0000-00000000000a', 0, 'candidate'),
+  ('aaaaaaaa-0000-0000-0000-000000000001', '1c0e0004-0000-0000-0000-000000000001',
+   '0e0e0004-0000-0000-0000-00000000000b', 1, 'candidate'),
+  ('aaaaaaaa-0000-0000-0000-000000000001', '1c0e0004-0000-0000-0000-000000000001',
+   '0e0e0004-0000-0000-0000-00000000000c', 2, 'context');
+select pg_temp.refused_because('a disagreement does not spend more critic rounds than its workflow was admitted with',
+  $$update public.disagreements set critic_rounds = 4 where id = '1c0e0004-0000-0000-0000-000000000001'$$,
+  'has spent its rounds');
+select pg_temp.refused_because('nor is one born past them',
+  $$insert into public.disagreements(organization_id, workflow_id, disagreement_key, kind, critic_rounds)
+    values ('aaaaaaaa-0000-0000-0000-000000000001', '0c0e0000-0000-0000-0000-0000000000d1',
+            'ledger-d/acct-8/balance', 'value', 9)$$,
+  'has spent its rounds');
+select pg_temp.refused_because('nor is a follow-up admitted for a round nobody paid for',
+  $$insert into public.disagreement_follow_ups(organization_id, disagreement_id, round, fingerprint)
+    values ('aaaaaaaa-0000-0000-0000-000000000001', '1c0e0004-0000-0000-0000-000000000001', 4, 'round-4')$$,
+  'has spent its rounds');
+select pg_temp.allowed('the round the workflow did pay for is admitted',
+  $$insert into public.disagreement_follow_ups(organization_id, disagreement_id, round, fingerprint)
+    values ('aaaaaaaa-0000-0000-0000-000000000001', '1c0e0004-0000-0000-0000-000000000001', 1, 'round-1')$$);
+
+set local role authenticated;
+set local test.uid = '33333333-3333-3333-3333-333333333333';
+select pg_temp.refused_because('a reviewer settles between the readings that disagreed, not one carried for context',
+  $$select public.core_v2_resolve_disagreement('1c0e0004-0000-0000-0000-000000000001',
+      'accept_claim', 'settled', '0e0e0004-0000-0000-0000-00000000000c')$$,
+  'one of the claims that disagreed');
+select pg_temp.allowed('and settling on a reading that did compete is the reviewer''s to make',
+  $$select public.core_v2_resolve_disagreement('1c0e0004-0000-0000-0000-000000000001',
+      'accept_claim', 'settled', '0e0e0004-0000-0000-0000-00000000000a')$$);
+reset role;
+set local test.uid = '';
+select pg_temp.check('the reading that won is accepted, the one that lost is rejected, and the one carried for context is neither',
+  (select status from public.evidence_claims where id = '0e0e0004-0000-0000-0000-00000000000a') = 'accepted'
+  and (select status from public.evidence_claims where id = '0e0e0004-0000-0000-0000-00000000000b') = 'rejected'
+  and (select status from public.evidence_claims where id = '0e0e0004-0000-0000-0000-00000000000c') = 'proposed');
+select pg_temp.refused_because('a resolved disagreement stays in the record',
+  $$delete from public.disagreements where id = '1c0e0004-0000-0000-0000-000000000001'$$,
+  'stays in the record');
+select pg_temp.check('so the claims it was settled between cannot leave through it either',
+  (select count(*) from public.disagreement_claims
+    where disagreement_id = '1c0e0004-0000-0000-0000-000000000001') = 3);
+select pg_temp.refused_because('and the decision it produced is not deleted out from under it',
+  $$delete from public.decisions
+     where id = (select resolution_decision_id from public.disagreements
+                  where id = '1c0e0004-0000-0000-0000-000000000001')$$,
+  'part of the record');
+
+-- ─────────────────────────── what a person's door proves, and a variable does not
+select public.core_v2_task_transition('0c0e0004-0000-0000-0000-000000000003', 'outcome_unknown');
+select pg_temp.refused_because('setting the guard''s own variable is not a person authorising anything',
+$sql$
+do $x$ begin
+  perform set_config('core_v2.authorized_retry', '0c0e0004-0000-0000-0000-000000000003', true);
+  update public.workflow_tasks set state = 'queued', retry_authorized_at = now()
+   where id = '0c0e0004-0000-0000-0000-000000000003';
+end $x$;
+$sql$, 'a person must authorise');
+select pg_temp.check('and the task is still where nobody knew what became of it',
+  (select state from public.workflow_tasks where id = '0c0e0004-0000-0000-0000-000000000003') = 'outcome_unknown');
+select pg_temp.refused_because('a request is not sent by writing the word — the door is what proves the lease',
+  $$update public.agent_attempts set state = 'submitted', submitted_at = now()
+     where id = '0d0e0004-0000-0000-0000-000000000005'$$,
+  'core_v2_submit_attempt');
+
+-- ─────────────────────────────── a move is made from the state the caller saw
+select pg_temp.refused_because('a move made from a stale reading is refused, not applied',
+  $$select public.core_v2_claim_transition('0e0e0004-0000-0000-0000-000000000005', 'accepted', 'verified')$$,
+  'stale reading');
+select pg_temp.check('and the claim did not move',
+  (select status from public.evidence_claims where id = '0e0e0004-0000-0000-0000-000000000005') = 'proposed');
+
+-- ───────────────────────────── what to do next belongs to the domain pack
+select pg_temp.allowed('a pack names the action its own domain calls for',
+  $$insert into public.decision_actions(organization_id, decision_id, action_type, owner_role)
+    values ('aaaaaaaa-0000-0000-0000-000000000001', '1b0e0004-0000-0000-0000-000000000001',
+            'ledger:reconcile_with_bank', 'controller')$$);
+select pg_temp.refused('while a bare word the kernel does not know, and no pack claims, is still refused',
+  $$insert into public.decision_actions(organization_id, decision_id, action_type, owner_role)
+    values ('aaaaaaaa-0000-0000-0000-000000000001', '1b0e0004-0000-0000-0000-000000000001',
+            'wander_off', 'nobody')$$);
+
+-- ───────────────────── two writers at once are one writer's worth of budget
+--
+-- A second workflow, admitted for two tasks. The admission guard serialises on
+-- the workflow before it counts, so two planners cannot each see room for one
+-- more task and both take it. A single session cannot hold two transactions
+-- open at once, so what is asserted here is that the lock is actually taken:
+-- without it the count below is a reading of a past that another planner has
+-- already changed.
+insert into public.intelligence_workflows(
+  id, organization_id, domain_pack, domain_pack_version, workflow_type, engine_version,
+  source_set_fingerprint, request_fingerprint, budget, state)
+values ('0c0e0000-0000-0000-0000-0000000000d2', 'aaaaaaaa-0000-0000-0000-000000000001',
+  'synthetic-decision', '1', 'synthetic_review', 'core-v2.1',
+  'fixture-budget-source-set', 'fixture-budget-request', '{"maximum_tasks": 2}'::jsonb, 'running');
+insert into public.workflow_tasks(id, organization_id, workflow_id, phase, task_type, role_key, role_version,
+  subject_key, input_fingerprint, contract_version, state)
+values ('0c0e0004-0000-0000-0000-000000000021', 'aaaaaaaa-0000-0000-0000-000000000001',
+  '0c0e0000-0000-0000-0000-0000000000d2', 'analyze', 'read_scene', 'reader', '1',
+  'budget/row-1', 'fp-budget-1', 'read_scene@1', 'queued');
+select pg_temp.check('admitting a task holds the workflow, so two planners cannot both count the same room',
+  exists (select 1 from pg_locks
+           where locktype = 'advisory' and objsubid = 1 and pid = pg_backend_pid()
+             and classid::bigint =
+                 ((hashtextextended('0c0e0000-0000-0000-0000-0000000000d2'::uuid::text, 0) >> 32) & 4294967295)
+             and objid::bigint =
+                 (hashtextextended('0c0e0000-0000-0000-0000-0000000000d2'::uuid::text, 0) & 4294967295)));
+select pg_temp.refused_because('and the budget itself still holds against one planner',
+  $$insert into public.workflow_tasks(organization_id, workflow_id, phase, task_type, role_key, role_version,
+      subject_key, input_fingerprint, contract_version, state)
+    select 'aaaaaaaa-0000-0000-0000-000000000001', '0c0e0000-0000-0000-0000-0000000000d2', 'analyze',
+           'read_scene', 'reader', '1', 'budget/row-' || g, 'fp-budget-' || g, 'read_scene@1', 'queued'
+      from generate_series(2, 3) g$$,
+  'its budget allows no more');
+
+-- ───────────────── a guard that judges by a row it does not write, locks it
+--
+-- Findings the suite cannot stage in one session: two ordinary transactions,
+-- each writing a different row, each reading the other's row and seeing it
+-- unchanged, both committing. The fix is that every such guard reads the row
+-- its verdict depends on `for share`, so the two contend and the loser re-reads
+-- what the winner did. A file that holds one connection open cannot show two
+-- transactions passing each other, so what is asserted is the lock itself.
+select pg_temp.check('the anchor guard reads the claim it judges by under a lock',
+  pg_get_functiondef('public.core_v2_guard_anchor'::regproc)
+    ~* 'from public\.evidence_claims c where c\.id = owning_claim for share');
+select pg_temp.check('and so does the check that re-reads a claim when its anchor moves',
+  pg_get_functiondef('public.core_v2_recheck_claim_of_anchor'::regproc) ~* 'for share');
+select pg_temp.check('the evidence guard reads the decision it judges by under a lock',
+  pg_get_functiondef('public.core_v2_guard_decision_evidence'::regproc)
+    ~* 'from public\.decisions d\s+where d\.id = row_link\.decision_id for share');
+select pg_temp.check('so does the check that re-reads a decision when its evidence moves',
+  pg_get_functiondef('public.core_v2_recheck_decision_of_evidence'::regproc) ~* 'where id = target for share');
+select pg_temp.check('the disagreement''s claim guard reads the disagreement under a lock',
+  pg_get_functiondef('public.core_v2_guard_disagreement_claims'::regproc)
+    ~* 'where id = row_link\.disagreement_id for share');
+select pg_temp.check('a decided decision counts its supporting claims under a lock',
+  pg_get_functiondef('public.core_v2_check_decision_evidence'::regproc) ~* 'for share of c');
+select pg_temp.check('and a superseded claim looks at the decisions on it under one',
+  pg_get_functiondef('public.core_v2_check_superseded_claim_decisions'::regproc) ~* 'for share of d');
+
+-- ──────────────────────────────────────────────────────── V1 is where it was
+select pg_temp.check('V1 keeps every row it had — Core V2 stands beside it, not on it',
+  pg_temp.v1_fingerprint() = (select fingerprint from core_v2_before));
+
 rollback;

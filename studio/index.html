@@ -459,20 +459,23 @@ try{var t=localStorage.getItem("mdai-theme");document.documentElement.dataset.th
 
         <section class="metrics" aria-label="Property record summary">
           <article>
-            <span>Rooms</span><strong id="metric-rooms">2</strong
-            ><small>2 documented</small>
+            <span>Rooms</span><strong id="metric-rooms">—</strong
+            ><small id="metric-rooms-copy">No rooms yet</small>
           </article>
           <article>
-            <span>Evidence</span><strong id="metric-evidence">2</strong
-            ><small id="metric-evidence-copy">2 spatial captures</small>
+            <span>Evidence</span><strong id="metric-evidence">—</strong
+            ><small id="metric-evidence-copy">No evidence yet</small>
           </article>
           <article>
-            <span>Human review</span><strong id="metric-review">0/2</strong
-            ><small id="metric-review-copy">2 require verification</small>
+            <span>Human review</span><strong id="metric-review">—</strong
+            ><small id="metric-review-copy">Nothing to verify yet</small>
           </article>
+          <!-- Every number here is written from the record by updateMetrics().
+               A tile that carries a figure the code never sets is the screen
+               asserting something nobody recorded. -->
           <article>
-            <span>Last capture</span><strong>Jul 19</strong
-            ><small>Local intake session</small>
+            <span>Last capture</span><strong id="metric-last-capture">—</strong
+            ><small id="metric-last-capture-copy">No evidence yet</small>
           </article>
         </section>
 
@@ -1304,7 +1307,7 @@ try{var t=localStorage.getItem("mdai-theme");document.documentElement.dataset.th
     <script src="money360.js?v=55e421da52"></script>
     <script src="report.js?v=1281d5516b"></script>
     <script src="ask-project.js?v=1b66cd1e43"></script>
-    <script src="studio.js?v=7b94f15a01"></script>
+    <script src="studio.js?v=4b0f91cbd3"></script>
     <script src="pano360.js?v=12dcb7654f"></script>
     <script src="capture-task-bridge.js?v=715b200611"></script>
   </body>
