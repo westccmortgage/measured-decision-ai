@@ -34,7 +34,21 @@ export const ROLES: AgentRoleDefinition[] = [
   {
     roleKey: "region_discoverer", version: "1.0", kind: "discoverer", phase: "discover", taskTypes: [TASK.discoverRegions],
     description: "Finds the tables and notes on one sheet: geometry and kind only, nothing of what they say.",
-    inputContract: "one sheet segment", outputContract: "region segments inside the sheet",
+    /* WHAT A ROLE TELLS A READER IS WHAT A READER CAN OBEY.
+     *
+     * These contracts used to be a phrase. A real model then answered a real
+     * canary, read the sheet correctly, and was refused by this pack's own
+     * validateClaim for conventions nobody had told it — "subject E-001 is
+     * not an entry", "an entry names its category". The rules were right;
+     * the briefing was not. A rule a reader is judged by belongs in the
+     * contract the reader is handed. */
+    inputContract: "one sheet segment",
+    outputContract: "segments[] — one per region found inside this sheet. Each: segmentKind "
+      + "\"table\" or \"note\"; parentSegmentId = the sheet you were handed; ordinal from 0 in "
+      + "reading order; a label; a contentHash; and a locator written as the JSON object "
+      + "\"{\\\"bbox\\\":[0.05,0.1,0.95,0.6]}\" — four numbers normalised 0..1, left, top, "
+      + "right, bottom of the region inside the sheet. No claims: this role "
+      + "reports where things are, never what they say.",
     maximumSources: 1, maximumClaims: 0, maximumFollowUpDepth: 0, requiresVisualInput: true, requiresIndependentReading: false,
     allowedActions: [], routingProfile: "visual_analysis", executorKind: "model",
     producesAssessments: false, producesAdjudication: false, producesDecisions: false, producesCalculations: false, producesSegments: true,
@@ -42,7 +56,21 @@ export const ROLES: AgentRoleDefinition[] = [
   {
     roleKey: "table_reader", version: "1.0", kind: "analyst", phase: "analyze", taskTypes: [TASK.readTable],
     description: "Reads one table blind: one quantity claim per entry, anchored to its row.",
-    inputContract: "one table segment", outputContract: "entry quantity claims with row anchors",
+    inputContract: "one table segment",
+    outputContract: "claims[] — exactly one per entry row you can read. Each claim: "
+      + "predicate \"quantity\"; subjectType \"entry\"; subjectKey in the form \"entry/E-001\" "
+      + "(the literal prefix \"entry/\" followed by the row's own code, three digits); unit "
+      + "either \"each\" or \"kg\"; value.known true with value.quantity as the number, and "
+      + "the row's category in value.attributes, written as the JSON object "
+      + "\"{\\\"category\\\":\\\"alpha\\\"}\" — in value.attributes, not in scope, because that "
+      + "is where a category is read from. "
+      + "A row you cannot read is value.known false with the reason in limitations[], not a "
+      + "guess. Every claim names an anchor in anchors[] with sourceKind \"segment\", segmentId "
+      + "the table you were handed, locator \"{}\", and quotedText the row copied out "
+      + "character for character. You are given this table as text and not as a picture, so "
+      + "you have no coordinates for a row and must not invent any: sourceKind "
+      + "\"segment_locator\" is for a place you can actually point at, and its box is checked "
+      + "against the region's own.",
     maximumSources: 1, maximumClaims: 64, maximumFollowUpDepth: 1, requiresVisualInput: true, requiresIndependentReading: true,
     allowedActions: ["read_reference_segment", "request_human_review"], routingProfile: "visual_analysis", executorKind: "model",
     producesAssessments: false, producesAdjudication: false, producesDecisions: false, producesCalculations: false, producesSegments: false,
@@ -50,7 +78,14 @@ export const ROLES: AgentRoleDefinition[] = [
   {
     roleKey: "note_reader", version: "1.0", kind: "analyst", phase: "analyze", taskTypes: [TASK.readNote],
     description: "Reads one note blind: what it says about which entry.",
-    inputContract: "one note segment", outputContract: "revision status claims anchored to the note",
+    inputContract: "one note segment",
+    outputContract: "claims[] — one per entry the note speaks about. Each claim: predicate "
+      + "\"revision_status\"; subjectType \"entry\"; subjectKey in the form \"entry/E-001\"; "
+      + "value.known true and value.text the status the note gives that entry. A note that "
+      + "names no entry produces no claims and says so in limitations[]. Every claim names an "
+      + "anchor in anchors[] with sourceKind \"segment\", segmentId the note you were handed, "
+      + "locator \"{}\", and quotedText the sentence it comes from copied out character for "
+      + "character.",
     maximumSources: 1, maximumClaims: 8, maximumFollowUpDepth: 1, requiresVisualInput: false, requiresIndependentReading: true,
     allowedActions: ["request_human_review"], routingProfile: "general_analysis", executorKind: "model",
     producesAssessments: false, producesAdjudication: false, producesDecisions: false, producesCalculations: false, producesSegments: false,

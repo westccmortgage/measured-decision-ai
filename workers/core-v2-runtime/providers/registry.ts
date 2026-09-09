@@ -45,6 +45,38 @@ export function knownProviderIds(): string[] {
   return Object.keys(PROTOCOLS);
 }
 
+/* WHY THIS EXISTS. The first paid canary sent one request and got a 404
+   back. The operator's registry named the address as
+   "https://api.anthropic.com/v1" and the adapter appends "/v1/messages" to
+   it, so what actually left was /v1/v1/messages. A doubled version segment
+   is indistinguishable, from the outside, from a model id the account
+   cannot serve — and the money for finding that out has already been spent
+   by the time the answer comes back.
+
+   So it is refused at assembly, where a person is still reading, and the
+   message says which half is the operator's and which is the adapter's. */
+export function baseUrlProblems(configuration: ProviderConfiguration, protocol: ProviderProtocol): string[] {
+  let url: URL;
+  try {
+    url = new URL(configuration.baseUrl);
+  } catch {
+    return [`${configuration.providerId}: baseUrl "${configuration.baseUrl}" is not a url`];
+  }
+  const path = url.pathname.replace(/\/+$/, "");
+  if (path === "") return [];
+  /* The adapter's path is absolute and complete. Anything the operator adds
+     is appended in front of it, so the only safe base is an origin. */
+  const first = path.split("/").filter(Boolean)[0] ?? "";
+  const appended = protocol.requestPath.split("/").filter(Boolean);
+  if (appended.includes(first)) {
+    return [
+      `${configuration.providerId}: baseUrl ends with "${path}" and this adapter appends "${protocol.requestPath}", `
+      + `so the request would go to "${path}${protocol.requestPath}". Give the origin only, with no path.`,
+    ];
+  }
+  return [`${configuration.providerId}: baseUrl carries a path ("${path}"), and this adapter appends "${protocol.requestPath}" to it. Give the origin only.`];
+}
+
 export function protocolFor(configuration: ProviderConfiguration): ProviderProtocol | null {
   const make = PROTOCOLS[configuration.providerId];
   return make ? make(configuration) : null;
@@ -136,6 +168,8 @@ export function buildProviderRegistry(options: ProviderRegistryOptions): Provide
     if (!protocol) {
       throw new Error(`core-v2-runtime: nothing in this package knows how to speak to ${configuration.providerId}`);
     }
+    const addressProblems = baseUrlProblems(configuration, protocol);
+    if (addressProblems.length > 0) throw new Error(`core-v2-runtime: ${addressProblems.join("; ")}`);
     if (byProvider.has(configuration.providerId)) {
       /* configurationProblems() says the same thing at assembly time; this is
          the guarantee restated where it would actually be broken. */

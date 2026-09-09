@@ -8,7 +8,9 @@
  * The promises:
  *   · one question, freshly asked, with no history and nothing of the last
  *     call or of any other reader in it;
- *   · the strict shape is the only shape asked for;
+ *   · the strict shape is the only shape asked for — and where the provider
+ *     offers to VALIDATE it, that is declared only when the schema is closed
+ *     enough for the provider to accept the offer (see schemaIsClosed);
  *   · the model asked for came from configuration and is on the allowlist;
  *   · the key is in the request and in nothing else that anyone can read;
  *   · the envelope that comes back is well formed;
@@ -26,7 +28,7 @@ import { InMemoryMaterialResolver } from "../material/memory-resolver.ts";
 import { normalizeUsage } from "../providers/usage-dialects.ts";
 import { FixtureTransport, jsonResponse } from "../transport/fixture.ts";
 import { SealedTransport } from "../transport/transport.ts";
-import { failureCode, ProviderExecutor } from "../providers/provider.ts";
+import { failureCode, ProviderExecutor, RESULT_ENVELOPE_SCHEMA, schemaIsClosed } from "../providers/provider.ts";
 import { AnthropicProtocol } from "../providers/anthropic.ts";
 import { OpenAiProtocol } from "../providers/openai.ts";
 import { GoogleProtocol } from "../providers/google.ts";
@@ -57,7 +59,7 @@ const PROVIDERS = [
     partsOf: (body) => body.messages[0].content.map((block) => (block.type === "image"
       ? { kind: "image", mimeType: block.source.media_type, base64: block.source.data }
       : { kind: "text", text: block.text })),
-    strictDeclared: (body) => body.tools?.[0]?.strict === true,
+    strictDeclared: (body) => body.tools?.[0]?.strict === STRICT_IS_ACCEPTABLE || (!STRICT_IS_ACCEPTABLE && body.tools?.[0]?.strict === undefined),
     /* input_tokens excludes both cache figures here, so the three add. */
     inputTotalOf: (u) => u.input_tokens + (u.cache_read_input_tokens ?? 0) + (u.cache_creation_input_tokens ?? 0),
     /* thinking is billed inside output_tokens, so there is nothing to add. */
@@ -88,7 +90,7 @@ const PROVIDERS = [
       const [, mimeType, base64] = part.image_url.match(/^data:([^;]+);base64,(.*)$/);
       return { kind: "image", mimeType, base64 };
     }),
-    strictDeclared: (body) => body.text?.format?.strict === true,
+    strictDeclared: (body) => body.text?.format?.strict === STRICT_IS_ACCEPTABLE,
     /* cached is inside input_tokens and reasoning is inside output_tokens. */
     inputTotalOf: (u) => u.input_tokens,
     outputTotalOf: (u) => u.output_tokens,
@@ -97,7 +99,7 @@ const PROVIDERS = [
     systemText: (body) => body.instructions,
     modelAsked: (body) => body.model,
     strictShape: (body) => body.text?.format?.type === "json_schema"
-      && body.text.format.strict === true
+      && body.text.format.strict === STRICT_IS_ACCEPTABLE
       && body.text.format.name === "result_envelope"
       && Array.isArray(body.text.format.schema?.required)
       && body.text.format.schema.required.includes("outcome"),
@@ -142,6 +144,14 @@ const OUTPUT_CEILING = 4096;
 const environment = Object.fromEntries(PROVIDERS.map((p) => [p.environmentVariable, KEY]));
 
 const MATERIAL_CEILING = 64 * 1024;
+/* Whether the providers that offer schema validation will accept THIS
+   envelope. Two of its objects are open maps on purpose — a claim's scope
+   and an anchor's locator are the domain pack's vocabulary — and strict
+   requires every object closed, so the honest answer is false and the
+   adapters must not claim otherwise. A 400 after the reservation is taken
+   is what claiming otherwise costs. */
+const STRICT_IS_ACCEPTABLE = schemaIsClosed(RESULT_ENVELOPE_SCHEMA);
+
 const CAN_DO_EVERYTHING = { forcedToolChoice: true, strictSchema: true, images: true, thinking: "optional" };
 
 const configurationOf = (p, over = {}) => ({

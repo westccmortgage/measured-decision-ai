@@ -57,10 +57,152 @@ export const systemClock: Clock = {
    in whatever its own strict-output mechanism is called. Only the parts of an
    envelope a model may produce are described: a model does not decide a task
    id, and it is never asked for one. */
+/* WHETHER A SCHEMA CAN BE SENT STRICT, AND WHY IT MATTERS.
+ *
+ * "Strict" is the provider validating the arguments against the schema
+ * rather than being asked nicely, and both providers that offer it require
+ * the SAME thing to do it: every object in the schema closed with
+ * `additionalProperties: false`. An open map — `additionalProperties` set to
+ * a schema rather than to false — cannot be expressed under that rule.
+ *
+ * This envelope has two on purpose. A claim's `scope` and an anchor's
+ * `locator` are domain vocabulary: a page and a row for one pack, a sheet
+ * and a cell for another. Closing them would mean the kernel deciding what
+ * a locator may say, which is the coupling the whole domain-pack split
+ * exists to avoid.
+ *
+ * So the flag follows the schema instead of the schema following the flag.
+ * The first paid canary sent strict over an open map and was rejected with
+ * a 400 — after the reservation was taken. This is checked before the
+ * request is built, and when it comes back false the answer is validated by
+ * the engine's own result validator, which is where a claim's shape is
+ * actually adjudicated anyway. */
+export function schemaIsClosed(schema: unknown): boolean {
+  if (!schema || typeof schema !== "object") return true;
+  const node = schema as Record<string, unknown>;
+  if (node.type === "object" && node.additionalProperties !== false) return false;
+  for (const value of Object.values(node)) {
+    if (value && typeof value === "object" && !schemaIsClosed(value)) return false;
+  }
+  return true;
+}
+
+/* AN OPEN MAP, SAID IN A CLOSED WAY.
+ *
+ * A claim's scope and an anchor's locator are the domain pack's vocabulary:
+ * a page and a row for one pack, a sheet and a cell for another. The kernel
+ * takes them as string maps and must keep doing so.
+ *
+ * But "strict" — the providers validating the answer against the schema
+ * rather than asking nicely — requires every object closed, and an open map
+ * cannot be closed. Sending the schema unstrict instead makes `required`
+ * advisory, and a canary generation found out what that costs: the model
+ * returned an envelope with no `outcome` at all, which is a whole paid
+ * attempt thrown away over a field the provider would have insisted on.
+ *
+ * So the WIRE says the same thing in a shape that can be closed, and the
+ * adapter turns it back into a map before anybody downstream sees it. The
+ * kernel's contract does not change; only how it is spelled to a provider
+ * does, which is what an adapter is for.
+ *
+ * THE SHAPE IS ONE STRING OF JSON, AND THE REASON IS A MEASURED LIMIT.
+ *
+ * It was a list of {key, value} pairs first, which is closed and reads well.
+ * Adding a fourth of them — attributes, so that a domain could require a
+ * field a provider could actually write — got this back from Anthropic in
+ * 481 ms, on req_011CetcvK1sHAcZCEv8T2WkP:
+ *
+ *   "The compiled grammar is too large, which would cause performance
+ *    issues. Simplify your tool schemas or reduce the number of strict
+ *    tools."
+ *
+ * Strict is constrained decoding: the schema is compiled into a grammar, and
+ * an array of objects is an expensive node in one. Four of them, inside an
+ * envelope that already carries claims, anchors, segments, assessments,
+ * disagreements, decisions and calculations, is over the line.
+ *
+ * A string is the cheapest node there is, and this is not a loss of meaning:
+ * the pair form already required a value that was not plain text to be
+ * written as JSON, so JSON was already the language of the leaves. Now the
+ * whole map is written in it. The reader stays tolerant of the pair form, so
+ * a provider that sends pairs anyway is understood rather than refused. */
+const OPEN_MAP = {
+  type: "string",
+  description: "an open map written as one JSON object, e.g. "
+    + "\"{\\\"bbox\\\":[0.05,0.1,0.95,0.6],\\\"page\\\":\\\"1\\\"}\". "
+    + "Numbers and lists are written as numbers and lists; text is quoted. An empty map is \"{}\".",
+};
+
+/* A pair's value is a string on the wire, because a union of types cannot
+   be closed and strict needs closure. But a locator's box is a list of four
+   numbers, not the text of one: a canary generation returned
+   bbox "0.05,0.1,0.95,0.6" and the kernel refused it, correctly, as a box
+   that is not normalised 0..1. So a value that is written as JSON is read as
+   JSON. Only a leading [ or { counts — otherwise "1" would stop being a
+   label and become a number, and "true" would stop being a word. */
+function valueOf(raw: unknown): unknown {
+  if (typeof raw !== "string") return raw ?? "";
+  const trimmedValue = raw.trim();
+  if (trimmedValue.startsWith("[") || trimmedValue.startsWith("{")) {
+    try { return JSON.parse(trimmedValue); } catch { return raw; }
+  }
+  return raw;
+}
+
+/* The other half: whatever the provider wrote, back into the map the kernel
+   reads. Deliberately tolerant of all three shapes it could arrive in — the
+   JSON text the schema asks for, the pair list an earlier schema asked for,
+   and a plain object from a provider that ignored both. A reading is not
+   worth throwing away over which of those it chose. */
+function openMapOf(value: unknown): unknown {
+  if (Array.isArray(value)) {
+    const out: Record<string, unknown> = {};
+    for (const pair of value) {
+      if (pair && typeof pair === "object" && typeof (pair as { key?: unknown }).key === "string") {
+        out[(pair as { key: string }).key] = valueOf((pair as { value?: unknown }).value);
+      }
+    }
+    return out;
+  }
+  if (typeof value === "string") {
+    const parsed = valueOf(value);
+    return parsed && typeof parsed === "object" && !Array.isArray(parsed) ? parsed : {};
+  }
+  return value ?? {};
+}
+
+/* What the rest of the runtime is handed: the envelope as text, with every
+   open map spelled the way the kernel reads it. Accepts either a parsed
+   object (a tool call's input) or the text a provider wrote. */
+export function envelopeText(value: unknown): string | null {
+  let envelope: unknown = value;
+  if (typeof value === "string") {
+    if (value.trim() === "") return null;
+    try { envelope = JSON.parse(value); } catch { return value; }
+  }
+  if (!envelope || typeof envelope !== "object") return value === undefined ? null : JSON.stringify(envelope ?? null);
+  const e = envelope as Record<string, unknown>;
+  for (const claim of Array.isArray(e.claims) ? e.claims : []) {
+    if (!claim || typeof claim !== "object") continue;
+    const c = claim as Record<string, unknown>;
+    c.scope = openMapOf(c.scope);
+    if (c.value && typeof c.value === "object") {
+      const v = c.value as Record<string, unknown>;
+      v.attributes = openMapOf(v.attributes);
+    }
+  }
+  for (const field of ["anchors", "segments"] as const) {
+    for (const item of Array.isArray(e[field]) ? e[field] as unknown[] : []) {
+      if (item && typeof item === "object") (item as Record<string, unknown>).locator = openMapOf((item as Record<string, unknown>).locator);
+    }
+  }
+  return JSON.stringify(envelope);
+}
+
 export const RESULT_ENVELOPE_SCHEMA: Record<string, unknown> = {
   type: "object",
   additionalProperties: false,
-  required: ["outcome", "claims", "anchors", "assessments", "limitations"],
+  required: ["outcome", "claims", "segments", "anchors", "assessments", "limitations"],
   properties: {
     outcome: { type: "string", enum: ["completed", "needs_follow_up", "insufficient_evidence", "failed_known", "outcome_unknown"] },
     claims: {
@@ -77,19 +219,88 @@ export const RESULT_ENVELOPE_SCHEMA: Record<string, unknown> = {
           value: {
             type: "object",
             additionalProperties: false,
-            required: ["known", "quantity", "text"],
+            /* ATTRIBUTES WERE DECLARED EVERYWHERE EXCEPT WHERE A MODEL COULD
+               WRITE THEM.
+               ClaimValue has carried `attributes` since the kernel was
+               written — "two readings that agree on quantity and differ on an
+               attribute differ" — and a domain pack may require one. This
+               object was closed around three fields, so no provider could
+               ever produce it. Offline that never showed: the local stand-in
+               returns a JavaScript object and never passes through this
+               schema at all. The first paid reader that got the whole table
+               right was failed for it: three correct rows, each rejected for
+               not naming a category it had no field to name, so it put the
+               category in `scope`, which is exactly what a reasonable reader
+               does when the only open map in sight is that one. */
+            required: ["known", "quantity", "text", "attributes"],
             properties: {
               known: { type: "boolean" },
               quantity: { type: ["number", "null"] },
               text: { type: ["string", "null"] },
+              attributes: OPEN_MAP,
             },
           },
           unit: { type: ["string", "null"] },
           observationBasis: { type: "string", enum: ["observed", "inferred"] },
-          scope: { type: "object", additionalProperties: { type: "string" } },
+          scope: OPEN_MAP,
           anchorKeys: { type: "array", items: { type: "string" } },
         },
       },
+    },
+    /* WHAT A DISCOVERER IS FOR, AND WHAT WAS MISSING FROM THIS ENVELOPE.
+
+     *
+
+     * A discoverer's whole job is to say which regions a sheet contains, and
+
+     * until now this schema had nowhere to put them. Offline that never
+
+     * showed, because the local stand-in returns a JavaScript object and
+
+     * never passes through the schema at all. The first canary whose reader
+
+     * actually answered found it in one move: Claude read the sheet
+
+     * correctly, described both regions — a table and a note, with their
+
+     * boxes, labels and ordinals — and had to put them in `anchors`,
+
+     * because `segments` did not exist. Nothing could then expand on them,
+
+     * and a workflow that should have gone on to two blind readers, a
+
+     * comparison and a decision completed after two units.
+
+     *
+
+     * The field is the kernel's ProposedSegment, which is a
+
+     * SegmentDescriptor plus the key the rest of the envelope refers to it
+
+     * by. Required, like claims and anchors: a role that discovers nothing
+
+     * returns an empty array and says so, rather than leaving the question
+
+     * open. */
+
+    segments: {
+      type: "array",
+      items: {
+        type: "object",
+        additionalProperties: false,
+        required: ["segmentKey", "sourceId", "parentSegmentId", "segmentKind", "label", "ordinal", "locator", "contentHash"],
+        properties: {
+          segmentKey: { type: "string" },
+          sourceId: { type: "string" },
+          parentSegmentId: { type: ["string", "null"] },
+          segmentKind: { type: "string" },
+          label: { type: ["string", "null"] },
+          ordinal: { type: "integer" },
+          locator: OPEN_MAP,
+          contentHash: { type: "string" },
+        },
+      },
+
     },
     anchors: {
       type: "array",
@@ -102,7 +313,7 @@ export const RESULT_ENVELOPE_SCHEMA: Record<string, unknown> = {
           sourceKind: { type: "string", enum: ["segment_locator", "segment", "source"] },
           sourceId: { type: ["string", "null"] },
           segmentId: { type: ["string", "null"] },
-          locator: { type: "object" },
+          locator: OPEN_MAP,
           quotedText: { type: ["string", "null"] },
         },
       },
@@ -177,6 +388,11 @@ export type ParsedAnswer = {
 
 export interface ProviderProtocol {
   readonly providerId: string;
+  /* The path this protocol appends to the operator's baseUrl. Declared
+     rather than hidden inside buildRequest, because an operator who writes
+     the version segment into their baseUrl as well gets it twice — and a
+     doubled path is a 404 that looks exactly like a wrong model id. */
+  readonly requestPath: string;
   buildRequest(plan: ProviderRequestPlan): HttpRequest;
   parse(response: HttpResponse): ParsedAnswer;
   /* What this provider cannot be asked for in this configuration — a model

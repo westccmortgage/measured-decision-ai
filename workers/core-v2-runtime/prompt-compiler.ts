@@ -121,20 +121,70 @@ function systemText(packet: WorkPacket, role: AgentRoleDefinition): string {
   lines.push("");
   lines.push("── what your result may carry ──");
   for (const line of mayReturn(packet, role)) lines.push(`  · ${line}`);
-  lines.push("Every other part of the result must be empty.");
+  const empty = mustBeEmpty(packet, role);
+  if (empty.length > 0) {
+    lines.push(`Every other part of the result must be empty, and these in particular are not yours to fill: ${empty.join(", ")}.`);
+  } else {
+    lines.push("Every other part of the result must be empty.");
+  }
   lines.push("");
   lines.push("── the rules ──");
   for (const rule of RULES) lines.push(`  · ${rule}`);
   return lines.join("\n");
 }
 
+/* THE COMPLEMENT OF WHAT MAY BE RETURNED, NAMED.
+ *
+ * "Every other part of the result must be empty" is true, sits right under
+ * the list, and is still a sentence about a set the reader has to work out
+ * for itself. A composer that had just produced six correct decisions with
+ * their evidence added three assessments beside them — helpful, forbidden,
+ * and the whole answer refused for it. Naming the forbidden parts costs one
+ * line and leaves nothing to work out. */
+function mustBeEmpty(packet: WorkPacket, role: AgentRoleDefinition): string[] {
+  const out: string[] = [];
+  if (packet.limits.maximumClaims === 0) out.push("claims");
+  if (!role.producesSegments) out.push("segments");
+  if (!role.producesAssessments) out.push("assessments");
+  if (!role.producesCalculations) out.push("calculations");
+  if (packet.allowedActions.length === 0) out.push("requestedActions");
+  /* The two parts a role that reaches no conclusion is never told the names
+     of. A blind reader is not shown the vocabulary of adjudication or of
+     disagreement — not even to be told it may not use it, because a word in
+     an instruction is a word in the reader's head. They stay covered by the
+     sentence about every other part, and the compiler suite holds this. */
+  return out;
+}
+
 function mayReturn(packet: WorkPacket, role: AgentRoleDefinition): string[] {
   const out: string[] = [];
   if (packet.limits.maximumClaims > 0) out.push("claims — each one anchored to the material you were given");
   if (role.producesSegments) out.push("segments — the bounded parts you found, with their geometry inside what you were given");
-  if (role.producesAssessments) out.push("one assessment for each claim you were shown, anchored where you read it");
+  /* A CLAIM IS NAMED BY THE REF IT WAS SHOWN UNDER, AND BY NOTHING ELSE.
+     Every claim in the packet is rendered as "claim <ref>", and the kernel
+     matches an assessment or an adjudication to a claim by that ref alone. A
+     critic that returns "claim A" has done its work and lost it: the first
+     critic a paid canary ever got an answer out of read all three entries
+     correctly, assessed each with the anchor it read them at, and was
+     refused three times for naming them A, B and C — a convention it had
+     from somewhere other than the packet. Say which name to use, once, here,
+     for every role that refers to a claim it was given. */
+  if (role.producesAssessments) {
+    out.push("one assessment for each claim you were shown — its claimRef is that claim's ref exactly as it appears after the word \"claim\", copied character for character, never a label of your own");
+    /* AN ANCHOR YOU CITE IS AN ANCHOR YOU DECLARE.
+       anchorKeys point INTO this envelope's own anchors[], and the kernel
+       checks that each one lands at the same segment or source the assessed
+       claim points at. The packet is full of anchor ids belonging to the
+       readings under review, and copying one of those back is the natural
+       mistake: it reads like a citation and is not one — it is the other
+       reader's word for where they looked, not yours. A canary critic did
+       exactly that, three times, after reading all three entries correctly. */
+    out.push("anchors — one of your own for every assessment, each with an anchorKey you invent, pointing at the segment or source the claim you are assessing points at, with the text you read quoted in quotedText; anchorKeys on an assessment name YOUR anchors here, never an anchor id the packet showed you");
+  }
   if (role.kind === "comparator") out.push("the differences you found between the readings you were shown");
-  if (role.producesAdjudication) out.push("one adjudication for the contested subject you were given");
+  if (role.producesAdjudication) {
+    out.push("one adjudication for the contested subject you were given, naming any claim by the ref it was shown under, copied character for character");
+  }
   if (role.producesDecisions) out.push("what the accepted evidence supports, in the fields the schema names");
   if (role.producesCalculations) out.push("the calculations you performed, naming every input");
   if (packet.allowedActions.length > 0) out.push("requests for further bounded work, from the list of permitted asks");

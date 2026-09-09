@@ -280,6 +280,41 @@ await withThrowawayDatabase(async ({ client, organizationId, databaseName }) => 
       () => led.reserve(a.attemptId, fullCeiling), "output tokens");
   }
   {
+    /* THE TOKEN CEILINGS ARE HELD TOTALS, NOT PER-REQUEST CEILINGS — and the
+       difference is not academic. An operator that hands this one provider's
+       per-request ceiling has authorised exactly one model attempt in flight
+       whatever its concurrency says, and will spend every pass dribbling one
+       reader at a time wondering where the clock went. That is a real
+       afternoon of this canary's life; it is written down here so nobody
+       spends another one. */
+    const wf = await build.workflow("limit-input-is-a-total");
+    await led.authorizeWorkflow({
+      workflowId: wf, organizationId, authorizedMaximum: 5, maximumPerAttempt: 5,
+      maximumConcurrentAttempts: 4, maximumInputTokens: READER_IN, maximumOutputTokens: READER_OUT * 4,
+    });
+    const first = await build.attempt(wf, "one-at-a-time-1");
+    const second = await build.attempt(wf, "one-at-a-time-2");
+    await led.reserve(first.attemptId, fullCeiling);
+    await refusedBecause("a ceiling of one request's worth of input allows one request at a time, whatever the concurrency says",
+      () => led.reserve(second.attemptId, fullCeiling), "input tokens");
+  }
+  {
+    const wf = await build.workflow("limit-input-sized-for-the-wave");
+    await led.authorizeWorkflow({
+      workflowId: wf, organizationId, authorizedMaximum: 5, maximumPerAttempt: 5,
+      maximumConcurrentAttempts: 4, maximumInputTokens: READER_IN * 4, maximumOutputTokens: READER_OUT * 4,
+    });
+    const held = [];
+    for (let i = 1; i <= 4; i++) held.push(await build.attempt(wf, `wave-${i}`));
+    let refused = null;
+    try { for (const a of held) await led.reserve(a.attemptId, fullCeiling); } catch (error) { refused = error; }
+    t.check("a ceiling sized for the wave lets the whole wave start together",
+      refused === null, refused ? String(refused.message).slice(0, 110) : "");
+    const fifth = await build.attempt(wf, "wave-5");
+    await refusedBecause("and the fifth still waits, because a held total is still a total",
+      () => led.reserve(fifth.attemptId, fullCeiling), "tokens");
+  }
+  {
     const wf = await build.workflow("limit-count");
     await led.authorizeWorkflow({ workflowId: wf, organizationId, authorizedMaximum: 5, maximumPerAttempt: 5, maximumAttempts: 1 });
     const first = await build.attempt(wf, "limit-count-1");

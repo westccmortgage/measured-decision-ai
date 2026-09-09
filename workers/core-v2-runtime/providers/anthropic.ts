@@ -48,7 +48,7 @@ import type { ResolvedMaterial } from "../material/material.ts";
 import { bytesOf, isTextual } from "../material/material.ts";
 import type { ModelCapabilities, ProviderConfiguration } from "../runtime-config.ts";
 import type { ParsedAnswer, ProviderProtocol, ProviderRequestPlan } from "./provider.ts";
-import {
+import { envelopeText, schemaIsClosed,
   RESULT_ENVELOPE_SCHEMA, RESULT_ENVELOPE_SCHEMA_DESCRIPTION, RESULT_ENVELOPE_SCHEMA_NAME,
   headerRequestId, jsonBody, materialHeading, parseJsonBody, rawUsageOf,
 } from "./provider.ts";
@@ -67,6 +67,7 @@ type Block = Record<string, unknown>;
 
 export class AnthropicProtocol implements ProviderProtocol {
   readonly providerId = ANTHROPIC_PROVIDER_ID;
+  readonly requestPath = MESSAGES_PATH;
 
   /* What this adapter is going to put in the request, checked against what
      the operator says the model can do. Every one of these would otherwise
@@ -121,8 +122,9 @@ export class AnthropicProtocol implements ProviderProtocol {
           description: `${RESULT_ENVELOPE_SCHEMA_DESCRIPTION} ${plan.expectedOutputContract}`,
           input_schema: RESULT_ENVELOPE_SCHEMA,
           /* Top-level on the tool, not on tool_choice: the provider validates
-             the arguments against the schema. */
-          strict: true,
+             the arguments against the schema — but only where the schema is
+             closed enough for it to. See schemaIsClosed. */
+          ...(schemaIsClosed(RESULT_ENVELOPE_SCHEMA) ? { strict: true } : {}),
         },
       ],
       /* Not "you may use this tool": the answer is this tool. */
@@ -156,7 +158,7 @@ export class AnthropicProtocol implements ProviderProtocol {
 
     /* A tool call is the answer. Text beside it is the partial answer of an
        attempt that ran out of room before it could make the call. */
-    const text = toolUse ? JSON.stringify(toolUse.input ?? null) : (spoken.length ? spoken : null);
+    const text = toolUse ? envelopeText(toolUse.input ?? null) : (spoken.length ? spoken : null);
 
     return {
       text,

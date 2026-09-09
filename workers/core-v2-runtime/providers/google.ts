@@ -50,7 +50,7 @@ import type { ResolvedMaterial } from "../material/material.ts";
 import { bytesOf, isTextual } from "../material/material.ts";
 import type { ModelCapabilities, ProviderConfiguration } from "../runtime-config.ts";
 import type { ParsedAnswer, ProviderProtocol, ProviderRequestPlan } from "./provider.ts";
-import {
+import { envelopeText,
   RESULT_ENVELOPE_SCHEMA, RESULT_ENVELOPE_SCHEMA_DESCRIPTION,
   headerRequestId, jsonBody, materialHeading, parseJsonBody, rawUsageOf,
 } from "./provider.ts";
@@ -66,6 +66,7 @@ const FINISHED = new Set(["STOP"]);
 
 export class GoogleProtocol implements ProviderProtocol {
   readonly providerId = GOOGLE_PROVIDER_ID;
+  readonly requestPath = MODELS_PATH;
 
   configurationProblems(configuration: ProviderConfiguration, model: string, material: ResolvedMaterial[]): string[] {
     const can: ModelCapabilities | undefined = configuration.capabilities[model];
@@ -142,7 +143,7 @@ export class GoogleProtocol implements ProviderProtocol {
       ?? (finishReason && finishReason !== CEILING && !FINISHED.has(finishReason) ? finishReason : null);
 
     return {
-      text: spoken.length ? spoken : null,
+      text: spoken.length ? envelopeText(spoken) : null,
       requestId: (typeof body.responseId === "string" ? body.responseId : null) ?? headerRequestId(response),
       modelReported: typeof body.modelVersion === "string" ? body.modelVersion : null,
       rawUsage: rawUsageOf(body.usageMetadata),
@@ -161,12 +162,47 @@ function trimmed(baseUrl: string): string {
    translation, not a relaxation: the fields required are still required, and
    the strictness that is lost is enforced again by the kernel's validator,
    which never trusted the shape anyway. */
+/* THE SHARED SCHEMA, SPOKEN IN THIS PROVIDER'S DIALECT.
+ *
+ * `responseSchema` here is not JSON Schema: it is a protobuf message, and the
+ * translation from one to the other is this adapter's job — which is the
+ * whole reason an adapter exists. Two differences, both of which this
+ * provider states plainly rather than ignoring.
+ *
+ *   · `additionalProperties` is not a field of that message. Dropped.
+ *   · `type` is a single enum, not a list, so a JSON Schema union like
+ *     `["number", "null"]` is rejected with, verbatim:
+ *
+ *       Invalid JSON payload received. Unknown name "type" at
+ *       'generation_config.response_schema.properties[1].value.items
+ *        .properties[4].value.properties[1].value':
+ *       Proto field is not repeating, cannot start list.
+ *
+ *     — 400 in 83 ms, which is what both of this canary's Google calls got.
+ *     The message says nullable with a flag beside the type, so that is what
+ *     it is given: `{type:"number", nullable:true}`. Nothing about what the
+ *     kernel asked for changes; only how it is spelled.
+ *
+ * A union of two real types with no null in it is not a nullable field and is
+ * not translatable, so it is passed through unchanged and this provider
+ * refuses it — better a 400 that names the field than a schema that quietly
+ * means something else. */
 function forResponseSchema(schema: unknown): unknown {
   if (Array.isArray(schema)) return schema.map(forResponseSchema);
   if (typeof schema !== "object" || schema === null) return schema;
   const out: Record<string, unknown> = {};
   for (const [key, value] of Object.entries(schema as Record<string, unknown>)) {
     if (key === "additionalProperties") continue;
+    if (key === "type" && Array.isArray(value)) {
+      const named = value.filter((t): t is string => typeof t === "string");
+      const real = named.filter((t) => t !== "null");
+      if (real.length === 1 && named.length !== real.length) {
+        out.type = real[0];
+        out.nullable = true;
+        continue;
+      }
+      if (real.length === 1) { out.type = real[0]; continue; }
+    }
     out[key] = forResponseSchema(value);
   }
   return out;
