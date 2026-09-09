@@ -90,7 +90,7 @@ export function schemaIsClosed(schema: unknown): boolean {
 export const RESULT_ENVELOPE_SCHEMA: Record<string, unknown> = {
   type: "object",
   additionalProperties: false,
-  required: ["outcome", "claims", "anchors", "assessments", "limitations"],
+  required: ["outcome", "claims", "segments", "anchors", "assessments", "limitations"],
   properties: {
     outcome: { type: "string", enum: ["completed", "needs_follow_up", "insufficient_evidence", "failed_known", "outcome_unknown"] },
     claims: {
@@ -120,6 +120,61 @@ export const RESULT_ENVELOPE_SCHEMA: Record<string, unknown> = {
           anchorKeys: { type: "array", items: { type: "string" } },
         },
       },
+    },
+    /* WHAT A DISCOVERER IS FOR, AND WHAT WAS MISSING FROM THIS ENVELOPE.
+
+     *
+
+     * A discoverer's whole job is to say which regions a sheet contains, and
+
+     * until now this schema had nowhere to put them. Offline that never
+
+     * showed, because the local stand-in returns a JavaScript object and
+
+     * never passes through the schema at all. The first canary whose reader
+
+     * actually answered found it in one move: Claude read the sheet
+
+     * correctly, described both regions — a table and a note, with their
+
+     * boxes, labels and ordinals — and had to put them in `anchors`,
+
+     * because `segments` did not exist. Nothing could then expand on them,
+
+     * and a workflow that should have gone on to two blind readers, a
+
+     * comparison and a decision completed after two units.
+
+     *
+
+     * The field is the kernel's ProposedSegment, which is a
+
+     * SegmentDescriptor plus the key the rest of the envelope refers to it
+
+     * by. Required, like claims and anchors: a role that discovers nothing
+
+     * returns an empty array and says so, rather than leaving the question
+
+     * open. */
+
+    segments: {
+      type: "array",
+      items: {
+        type: "object",
+        additionalProperties: false,
+        required: ["segmentKey", "sourceId", "parentSegmentId", "segmentKind", "label", "ordinal", "locator", "contentHash"],
+        properties: {
+          segmentKey: { type: "string" },
+          sourceId: { type: "string" },
+          parentSegmentId: { type: ["string", "null"] },
+          segmentKind: { type: "string" },
+          label: { type: ["string", "null"] },
+          ordinal: { type: "integer" },
+          locator: { type: "object" },
+          contentHash: { type: "string" },
+        },
+      },
+
     },
     anchors: {
       type: "array",
