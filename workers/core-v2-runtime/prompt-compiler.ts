@@ -132,9 +132,22 @@ function mayReturn(packet: WorkPacket, role: AgentRoleDefinition): string[] {
   const out: string[] = [];
   if (packet.limits.maximumClaims > 0) out.push("claims — each one anchored to the material you were given");
   if (role.producesSegments) out.push("segments — the bounded parts you found, with their geometry inside what you were given");
-  if (role.producesAssessments) out.push("one assessment for each claim you were shown, anchored where you read it");
+  /* A CLAIM IS NAMED BY THE REF IT WAS SHOWN UNDER, AND BY NOTHING ELSE.
+     Every claim in the packet is rendered as "claim <ref>", and the kernel
+     matches an assessment or an adjudication to a claim by that ref alone. A
+     critic that returns "claim A" has done its work and lost it: the first
+     critic a paid canary ever got an answer out of read all three entries
+     correctly, assessed each with the anchor it read them at, and was
+     refused three times for naming them A, B and C — a convention it had
+     from somewhere other than the packet. Say which name to use, once, here,
+     for every role that refers to a claim it was given. */
+  if (role.producesAssessments) {
+    out.push("one assessment for each claim you were shown, anchored where you read it — its claimRef is that claim's ref exactly as it appears after the word \"claim\", copied character for character, never a label of your own like \"claim A\"");
+  }
   if (role.kind === "comparator") out.push("the differences you found between the readings you were shown");
-  if (role.producesAdjudication) out.push("one adjudication for the contested subject you were given");
+  if (role.producesAdjudication) {
+    out.push("one adjudication for the contested subject you were given, naming any claim by the ref it was shown under, copied character for character");
+  }
   if (role.producesDecisions) out.push("what the accepted evidence supports, in the fields the schema names");
   if (role.producesCalculations) out.push("the calculations you performed, naming every input");
   if (packet.allowedActions.length > 0) out.push("requests for further bounded work, from the list of permitted asks");
