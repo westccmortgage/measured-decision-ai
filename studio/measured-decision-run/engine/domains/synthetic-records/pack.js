@@ -1,0 +1,194 @@
+import { KERNEL_TASK_TYPES } from "../../kernel/contracts.js";
+import { DEFAULT_NORMALISERS } from "../../kernel/comparison.js";
+import { emptyEnvelope } from "../../kernel/deterministic.js";
+import { INDEPENDENCE_GROUPS } from "../../kernel/domain.js";
+import { DEFAULT_CATEGORIES } from "./fixture.js";
+export const PACK_ID = "synthetic-records";
+export const PACK_VERSION = "1.0";
+export const TASK = {
+    discoverRegions: `${PACK_ID}:discover_regions`,
+    readTable: `${PACK_ID}:read_table`,
+    readNote: `${PACK_ID}:read_note`,
+    totalByCategory: `${PACK_ID}:total_by_category`,
+};
+const UNIT_ALIASES = { pcs: "each", piece: "each", pieces: "each", ea: "each", each: "each", kilogram: "kg", kilograms: "kg", kgs: "kg", kg: "kg" };
+export const KNOWN_UNITS = new Set(["each", "kg"]);
+export const ROLES = [
+    {
+        roleKey: "region_discoverer", version: "1.0", kind: "discoverer", phase: "discover", taskTypes: [TASK.discoverRegions],
+        description: "Finds the tables and notes on one sheet: geometry and kind only, nothing of what they say.",
+        inputContract: "one sheet segment", outputContract: "region segments inside the sheet",
+        maximumSources: 1, maximumClaims: 0, maximumFollowUpDepth: 0, requiresVisualInput: true, requiresIndependentReading: false,
+        allowedActions: [], routingProfile: "visual_analysis", executorKind: "model",
+        producesAssessments: false, producesAdjudication: false, producesDecisions: false, producesCalculations: false, producesSegments: true,
+    },
+    {
+        roleKey: "table_reader", version: "1.0", kind: "analyst", phase: "analyze", taskTypes: [TASK.readTable],
+        description: "Reads one table blind: one quantity claim per entry, anchored to its row.",
+        inputContract: "one table segment", outputContract: "entry quantity claims with row anchors",
+        maximumSources: 1, maximumClaims: 64, maximumFollowUpDepth: 1, requiresVisualInput: true, requiresIndependentReading: true,
+        allowedActions: ["read_reference_segment", "request_human_review"], routingProfile: "visual_analysis", executorKind: "model",
+        producesAssessments: false, producesAdjudication: false, producesDecisions: false, producesCalculations: false, producesSegments: false,
+    },
+    {
+        roleKey: "note_reader", version: "1.0", kind: "analyst", phase: "analyze", taskTypes: [TASK.readNote],
+        description: "Reads one note blind: what it says about which entry.",
+        inputContract: "one note segment", outputContract: "revision status claims anchored to the note",
+        maximumSources: 1, maximumClaims: 8, maximumFollowUpDepth: 1, requiresVisualInput: false, requiresIndependentReading: true,
+        allowedActions: ["request_human_review"], routingProfile: "general_analysis", executorKind: "model",
+        producesAssessments: false, producesAdjudication: false, producesDecisions: false, producesCalculations: false, producesSegments: false,
+    },
+    {
+        roleKey: "category_totaliser", version: "1.0", kind: "deriver", phase: "derive", taskTypes: [TASK.totalByCategory],
+        description: "Adds the accepted quantities of one category. Code; names every input.",
+        inputContract: "accepted entry claims", outputContract: "one derived total naming its inputs",
+        maximumSources: 0, maximumClaims: 2, maximumFollowUpDepth: 0, requiresVisualInput: false, requiresIndependentReading: false,
+        allowedActions: [], routingProfile: "deterministic", executorKind: "deterministic",
+        producesAssessments: false, producesAdjudication: false, producesDecisions: false, producesCalculations: true, producesSegments: false,
+    },
+];
+export const OBJECTIVES = {
+    [TASK.discoverRegions]: "Find every table and note on this sheet. Return each as a segment with a normalised box inside the sheet. Extract nothing.",
+    [TASK.readTable]: "Read this table. Report one quantity claim per entry with its id, category, quantity and unit, anchored to the row. Report an unreadable cell as unknown, never as zero.",
+    [TASK.readNote]: "Read this note. Report what it says about which entry, anchored to the note.",
+    [TASK.totalByCategory]: "Add the accepted quantities of this category. Name every input claim.",
+};
+export class SyntheticRecordsPack {
+    id = PACK_ID;
+    version = PACK_VERSION;
+    roles = ROLES;
+    objectives = OBJECTIVES;
+    categories;
+    constructor(options = {}) {
+        this.categories = options.categories ?? DEFAULT_CATEGORIES;
+    }
+    /* Sheets are declared; nothing is discovered at the source level. */
+    discovererFor(_source) { return null; }
+    expand(input) {
+        const specs = [];
+        const sheets = input.segments.filter((s) => s.segmentKind === "sheet" && s.parentSegmentId === null && s.status === "accepted");
+        const regions = input.segments.filter((s) => s.parentSegmentId !== null && s.status === "accepted" && (s.segmentKind === "table" || s.segmentKind === "note"));
+        const sourceOrdinal = (sourceId) => input.manifest.sources.find((x) => x.sourceId === sourceId)?.ordinal ?? 0;
+        const sheetKey = (sheet) => `sheet/${sourceOrdinal(sheet.sourceId)}/${sheet.ordinal}`;
+        for (const sheet of sheets) {
+            specs.push({ key: `discover:${sheet.segmentId}`, phase: "discover", taskType: TASK.discoverRegions, roleKey: "region_discoverer", subjectKey: sheetKey(sheet), sources: [{ sourceId: null, segmentId: sheet.segmentId }], independenceGroup: null, priority: 30, dependsOn: [], dependsOnTaskIds: [] });
+        }
+        const readerKeys = [];
+        const compareKeys = [];
+        for (const region of regions) {
+            const sheet = input.segments.find((s) => s.segmentId === region.parentSegmentId);
+            if (!sheet)
+                continue;
+            const subject = `${sheetKey(sheet)}/region/${region.ordinal}`;
+            const taskType = region.segmentKind === "table" ? TASK.readTable : TASK.readNote;
+            const roleKey = region.segmentKind === "table" ? "table_reader" : "note_reader";
+            const groups = INDEPENDENCE_GROUPS.slice(0, Math.min(2, input.policy.maximumIndependentReadersPerSubject));
+            const keys = groups.map((g) => `read:${region.segmentId}:${g}`);
+            for (const [i, g] of groups.entries()) {
+                specs.push({ key: keys[i], phase: "analyze", taskType, roleKey, subjectKey: subject, sources: [{ sourceId: null, segmentId: region.segmentId }], independenceGroup: g, priority: 100, dependsOn: [], dependsOnTaskIds: [] });
+            }
+            const compareKey = `compare:${region.segmentId}`;
+            specs.push({ key: compareKey, phase: "compare", taskType: KERNEL_TASK_TYPES.compare, roleKey: "claim_comparator", subjectKey: subject, sources: [], independenceGroup: null, priority: 200, dependsOn: keys.map((k) => ({ key: k, kind: "requires_claims" })), dependsOnTaskIds: [] });
+            if (region.segmentKind === "table") {
+                readerKeys.push(...keys);
+                compareKeys.push(compareKey);
+            }
+        }
+        /* Totals wait until every sheet has been discovered: a total over the
+           tables found so far is not a total. */
+        const discoveryDone = sheets.length > 0 && sheets.every((sheet) => input.tasks.some((t) => t.taskType === TASK.discoverRegions && t.state === "completed" && t.sources.some((s) => s.segmentId === sheet.segmentId)));
+        if (discoveryDone && readerKeys.length) {
+            for (const category of this.categories) {
+                specs.push({
+                    key: `total:${category}`, phase: "derive", taskType: TASK.totalByCategory, roleKey: "category_totaliser", subjectKey: `category/${category}`, sources: [],
+                    independenceGroup: null, priority: 500,
+                    dependsOn: [...readerKeys.map((k) => ({ key: k, kind: "requires_claims" })), ...compareKeys.map((k) => ({ key: k, kind: "requires_completion" }))],
+                    dependsOnTaskIds: [],
+                });
+            }
+        }
+        return specs;
+    }
+    decisionSubjects(claims) {
+        return [...new Set(claims.filter((c) => c.status === "accepted" && c.subjectType === "category").map((c) => c.subjectKey))].sort();
+    }
+    validateClaim(packet, claim, _envelope) {
+        const p = [];
+        switch (packet.taskType) {
+            case TASK.readTable:
+                if (claim.predicate !== "quantity")
+                    p.push(`claim ${claim.claimKey}: a table reader reports quantity, not ${claim.predicate}`);
+                if (claim.subjectType !== "entry" || !/^entry\/E-\d{3}$/.test(claim.subjectKey))
+                    p.push(`claim ${claim.claimKey}: subject ${claim.subjectKey} is not an entry`);
+                if (claim.value.known && !KNOWN_UNITS.has(this.normaliseUnit(claim.unit) ?? ""))
+                    p.push(`claim ${claim.claimKey}: unit ${claim.unit} is not one this pack knows`);
+                if (claim.value.known && typeof claim.value.attributes?.category !== "string")
+                    p.push(`claim ${claim.claimKey}: an entry names its category`);
+                break;
+            case TASK.readNote:
+                if (claim.predicate !== "revision_status")
+                    p.push(`claim ${claim.claimKey}: a note reader reports revision_status, not ${claim.predicate}`);
+                if (claim.subjectType !== "entry")
+                    p.push(`claim ${claim.claimKey}: a note is about an entry`);
+                break;
+            case TASK.totalByCategory:
+                if (claim.predicate !== "total_quantity" || claim.subjectType !== "category")
+                    p.push(`claim ${claim.claimKey}: a total is total_quantity of a category`);
+                break;
+            default:
+                if (packet.taskType.startsWith(`${PACK_ID}:`))
+                    p.push(`claim ${claim.claimKey}: ${packet.taskType} produces no claims`);
+        }
+        return p;
+    }
+    normaliseUnit(unit) {
+        if (unit === null || unit === undefined)
+            return null;
+        const u = unit.trim().toLowerCase();
+        return UNIT_ALIASES[u] ?? u;
+    }
+    normaliseKey(key) { return DEFAULT_NORMALISERS.key(key); }
+    isRelated(target, task, segments) {
+        const own = task.sources.map((s) => segments.find((x) => x.segmentId === s.segmentId)).filter(Boolean);
+        return own.some((o) => o.segmentId === target.parentSegmentId || o.parentSegmentId === target.segmentId || (o.parentSegmentId !== null && o.parentSegmentId === target.parentSegmentId));
+    }
+    isReference(segment) { return segment.segmentKind === "note"; }
+    linkedSegments(segment, segments) {
+        if (segment.segmentKind !== "table")
+            return [];
+        return segments.filter((s) => s.segmentKind === "note" && s.parentSegmentId === segment.parentSegmentId);
+    }
+    /* The total: code, over accepted inputs, naming each. A category whose
+       accepted entries carry two units is not totalled — it is reported
+       unknown, with the reason. */
+    async derive(packet) {
+        const env = emptyEnvelope(packet);
+        const category = packet.subjectKey.replace(/^category\//, "");
+        const inputs = packet.context.claims.filter((c) => c.status === "accepted" && c.predicate === "quantity" && c.value.known && String(c.value.attributes?.category ?? "").toLowerCase() === category);
+        if (inputs.length === 0) {
+            env.outcome = "insufficient_evidence";
+            env.limitations.push(`no accepted quantity of category ${category}`);
+            return env;
+        }
+        const places = [...new Set(inputs.flatMap((c) => c.anchors.map((a) => a.segmentId)).filter(Boolean))];
+        for (const [i, segmentId] of places.entries()) {
+            const anchor = inputs.flatMap((c) => c.anchors).find((a) => a.segmentId === segmentId);
+            env.anchors.push({ anchorKey: `in-${i}`, sourceKind: "segment", sourceId: anchor.sourceId, segmentId, locator: {}, quotedText: null });
+        }
+        const units = [...new Set(inputs.map((c) => this.normaliseUnit(c.unit)))];
+        const anchorKeys = env.anchors.map((a) => a.anchorKey);
+        if (units.length !== 1) {
+            env.claims.push({ claimKey: "total", subjectType: "category", subjectKey: packet.subjectKey, predicate: "total_quantity", value: { known: false, quantity: null, text: null, attributes: { entries_counted: inputs.length } }, unit: null, observationBasis: "derived", scope: {}, anchorKeys, machineConfidence: null, inputClaimIds: inputs.map((c) => c.ref) });
+            env.limitations.push(`category ${category} mixes units ${units.join(", ")}; no total is given`);
+            return env;
+        }
+        const total = inputs.reduce((n, c) => n + (c.value.quantity ?? 0), 0);
+        env.claims.push({
+            claimKey: "total", subjectType: "category", subjectKey: packet.subjectKey, predicate: "total_quantity",
+            value: { known: true, quantity: total, text: `${total} ${units[0]}`, attributes: { entries_counted: inputs.length } }, unit: units[0],
+            observationBasis: "derived", scope: {}, anchorKeys, machineConfidence: null, inputClaimIds: inputs.map((c) => c.ref),
+        });
+        env.calculations.push({ calculationKey: `sum-${category}`, formula: inputs.map((c) => c.value.quantity).join(" + "), inputClaimIds: inputs.map((c) => c.ref), unit: units[0], wasteAssumption: null, rounding: "none", result: total });
+        return env;
+    }
+}

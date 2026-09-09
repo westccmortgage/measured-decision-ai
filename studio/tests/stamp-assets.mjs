@@ -19,6 +19,7 @@ export const PAGES = [
   "studio/plans/index.html",
   "studio/owner-view/index.html",
   "studio/operations/index.html",
+  "studio/measured-decision-run/index.html",
   "field/index.html",
   "capture/index.html",
   "index.html",

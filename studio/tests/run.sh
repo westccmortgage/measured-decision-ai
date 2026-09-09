@@ -40,6 +40,7 @@ run "the two doors are told apart"    studio/tests/two-doors.mjs
 run "one way through"                 studio/tests/one-way-through.mjs
 run "signing in from a phone"         studio/tests/mobile-sign-in.mjs
 run "every screen, pressed"           studio/tests/screen-audit.mjs
+run "the decision run, watched"       studio/tests/measured-decision-run.mjs
 run "no reading is paid for twice"    studio/tests/ai-cost-guard.mjs
 run "asking this project"             studio/tests/ask-this-project.mjs
 run "the last three dead ends"        studio/tests/dead-ends.mjs
