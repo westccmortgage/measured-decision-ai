@@ -60,9 +60,13 @@ export const ROLES: AgentRoleDefinition[] = [
       + "predicate \"quantity\"; subjectType \"entry\"; subjectKey in the form \"entry/E-001\" "
       + "(the literal prefix \"entry/\" followed by the row's own code, three digits); unit "
       + "either \"each\" or \"kg\"; value.known true with value.quantity as the number, and "
-      + "value.attributes.category naming the row's category. A row you cannot read is "
-      + "value.known false with the reason in limitations[], not a guess. Every claim names an "
-      + "anchor in anchors[] pointing at that row.",
+      + "the row's category in value.attributes as the pair {key:\"category\", value:\"alpha\"} "
+      + "— in value.attributes, not in scope, because that is where a category is read from. "
+      + "A row you cannot read is value.known false with the reason in limitations[], not a "
+      + "guess. Every claim names an anchor in anchors[] pointing at that row, and that "
+      + "anchor's locator carries the pair {key:\"bbox\", value:\"[0.1,0.2,0.9,0.3]\"} — four "
+      + "numbers 0..1 written as JSON, left, top, right, bottom of the row inside the sheet. "
+      + "A locator naming the row and nothing else is refused: a row number is not a place.",
     maximumSources: 1, maximumClaims: 64, maximumFollowUpDepth: 1, requiresVisualInput: true, requiresIndependentReading: true,
     allowedActions: ["read_reference_segment", "request_human_review"], routingProfile: "visual_analysis", executorKind: "model",
     producesAssessments: false, producesAdjudication: false, producesDecisions: false, producesCalculations: false, producesSegments: false,
@@ -73,9 +77,11 @@ export const ROLES: AgentRoleDefinition[] = [
     inputContract: "one note segment",
     outputContract: "claims[] — one per entry the note speaks about. Each claim: predicate "
       + "\"revision_status\"; subjectType \"entry\"; subjectKey in the form \"entry/E-001\"; "
-      + "value.text the status the note gives that entry. A note that names no entry produces "
-      + "no claims and says so in limitations[]. Every claim names an anchor in anchors[] "
-      + "pointing at the note.",
+      + "value.known true and value.text the status the note gives that entry. A note that "
+      + "names no entry produces no claims and says so in limitations[]. Every claim names an "
+      + "anchor in anchors[] pointing at the note, and that anchor's locator carries the pair "
+      + "{key:\"bbox\", value:\"[0.1,0.7,0.9,0.8]\"} — four numbers 0..1 written as JSON, the "
+      + "note's place inside the sheet.",
     maximumSources: 1, maximumClaims: 8, maximumFollowUpDepth: 1, requiresVisualInput: false, requiresIndependentReading: true,
     allowedActions: ["request_human_review"], routingProfile: "general_analysis", executorKind: "model",
     producesAssessments: false, producesAdjudication: false, producesDecisions: false, producesCalculations: false, producesSegments: false,

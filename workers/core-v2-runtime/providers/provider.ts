@@ -159,7 +159,13 @@ export function envelopeText(value: unknown): string | null {
   if (!envelope || typeof envelope !== "object") return value === undefined ? null : JSON.stringify(envelope ?? null);
   const e = envelope as Record<string, unknown>;
   for (const claim of Array.isArray(e.claims) ? e.claims : []) {
-    if (claim && typeof claim === "object") (claim as Record<string, unknown>).scope = pairsToMap((claim as Record<string, unknown>).scope);
+    if (!claim || typeof claim !== "object") continue;
+    const c = claim as Record<string, unknown>;
+    c.scope = pairsToMap(c.scope);
+    if (c.value && typeof c.value === "object") {
+      const v = c.value as Record<string, unknown>;
+      v.attributes = pairsToMap(v.attributes);
+    }
   }
   for (const field of ["anchors", "segments"] as const) {
     for (const item of Array.isArray(e[field]) ? e[field] as unknown[] : []) {
@@ -189,11 +195,25 @@ export const RESULT_ENVELOPE_SCHEMA: Record<string, unknown> = {
           value: {
             type: "object",
             additionalProperties: false,
-            required: ["known", "quantity", "text"],
+            /* ATTRIBUTES WERE DECLARED EVERYWHERE EXCEPT WHERE A MODEL COULD
+               WRITE THEM.
+               ClaimValue has carried `attributes` since the kernel was
+               written — "two readings that agree on quantity and differ on an
+               attribute differ" — and a domain pack may require one. This
+               object was closed around three fields, so no provider could
+               ever produce it. Offline that never showed: the local stand-in
+               returns a JavaScript object and never passes through this
+               schema at all. The first paid reader that got the whole table
+               right was failed for it: three correct rows, each rejected for
+               not naming a category it had no field to name, so it put the
+               category in `scope`, which is exactly what a reasonable reader
+               does when the only open map in sight is that one. */
+            required: ["known", "quantity", "text", "attributes"],
             properties: {
               known: { type: "boolean" },
               quantity: { type: ["number", "null"] },
               text: { type: ["string", "null"] },
+              attributes: KEY_VALUE_PAIRS,
             },
           },
           unit: { type: ["string", "null"] },

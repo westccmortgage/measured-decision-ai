@@ -185,5 +185,39 @@ t.section("strict follows the schema, because two of its objects are open on pur
     envelopeText("I will not answer that") === "I will not answer that");
 }
 
+t.section("a field a domain requires is a field a provider can write");
+{
+  /* The kernel's ClaimValue has always carried `attributes`, and a pack may
+     refuse a claim that has none. The wire schema closed `value` around
+     three fields, so no provider could produce one — invisible offline,
+     where the stand-in returns an object and never meets this schema. A
+     paid reader read a whole table correctly and was failed three times for
+     not naming a category it had no field to name. */
+  const claimValue = RESULT_ENVELOPE_SCHEMA.properties.claims.items.properties.value;
+  t.check("value declares attributes", claimValue.properties.attributes !== undefined);
+  t.check("and requires it, because strict admits no optional field",
+    claimValue.required.includes("attributes"), claimValue.required.join(","));
+  t.check("and it is the pairs shape, so the object it sits in can stay closed",
+    claimValue.properties.attributes.type === "array"
+    && claimValue.properties.attributes.items.additionalProperties === false);
+  t.check("the whole envelope is still closed enough for strict",
+    schemaIsClosed(RESULT_ENVELOPE_SCHEMA) === true);
+
+  const read = JSON.parse(envelopeText({
+    claims: [{
+      claimKey: "E-001", subjectKey: "entry/E-001", predicate: "quantity",
+      value: { known: true, quantity: 25, text: null, attributes: [{ key: "category", value: "alpha" }] },
+      scope: [{ key: "sheet", value: "0" }],
+    }],
+  })).claims[0];
+  t.check("attributes come back as the map the kernel reads",
+    read.value.attributes.category === "alpha", JSON.stringify(read.value.attributes));
+  t.check("and the value's own fields are untouched beside it",
+    read.value.known === true && read.value.quantity === 25 && read.value.text === null);
+  t.check("a claim whose value carries no attributes is still a claim",
+    JSON.parse(envelopeText({ claims: [{ value: { known: false, quantity: null, text: null } }] }))
+      .claims[0].value.attributes.category === undefined);
+}
+
 t.check("nothing in this suite tried to open a socket", tripped() === 0, `guard tripped ${tripped()} times`);
 t.finish();
