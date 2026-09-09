@@ -106,7 +106,9 @@ export function schemaIsClosed(schema: unknown): boolean {
  * spelled to a provider does, which is what an adapter is for. */
 const KEY_VALUE_PAIRS = {
   type: "array",
-  description: "an open map, as pairs: [{key, value}, ...]",
+  description: "an open map written as pairs: [{key, value}, ...]. A value that is not "
+    + "plain text is written as JSON — a list of numbers as \"[0.05,0.1,0.95,0.6]\", an object as "
+    + "\"{\\\"row\\\":7}\". Plain text is written as itself, unquoted.",
   items: {
     type: "object",
     additionalProperties: false,
@@ -115,15 +117,31 @@ const KEY_VALUE_PAIRS = {
   },
 };
 
+/* A pair's value is a string on the wire, because a union of types cannot
+   be closed and strict needs closure. But a locator's box is a list of four
+   numbers, not the text of one: a canary generation returned
+   bbox "0.05,0.1,0.95,0.6" and the kernel refused it, correctly, as a box
+   that is not normalised 0..1. So a value that is written as JSON is read as
+   JSON. Only a leading [ or { counts — otherwise "1" would stop being a
+   label and become a number, and "true" would stop being a word. */
+function valueOf(raw: unknown): unknown {
+  if (typeof raw !== "string") return raw ?? "";
+  const trimmedValue = raw.trim();
+  if (trimmedValue.startsWith("[") || trimmedValue.startsWith("{")) {
+    try { return JSON.parse(trimmedValue); } catch { return raw; }
+  }
+  return raw;
+}
+
 /* The other half: pairs back into the map the kernel reads. Tolerant on
    purpose — a provider that sent an object anyway is not an error, and text
    that is not an envelope at all (a spoken refusal) is passed through. */
 function pairsToMap(value: unknown): unknown {
   if (!Array.isArray(value)) return value ?? {};
-  const out: Record<string, string> = {};
+  const out: Record<string, unknown> = {};
   for (const pair of value) {
     if (pair && typeof pair === "object" && typeof (pair as { key?: unknown }).key === "string") {
-      out[(pair as { key: string }).key] = String((pair as { value?: unknown }).value ?? "");
+      out[(pair as { key: string }).key] = valueOf((pair as { value?: unknown }).value);
     }
   }
   return out;

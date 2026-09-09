@@ -156,6 +156,29 @@ t.section("strict follows the schema, because two of its objects are open on pur
     JSON.stringify(roundTripped));
   t.check("an empty list is an empty map, not a missing one",
     JSON.stringify(roundTripped.segments[0].locator) === "{}");
+
+  /* A locator's box is four numbers, not the text of four numbers. A canary
+     generation returned "0.05,0.1,0.95,0.6" and the kernel refused it as a
+     box that is not normalised 0..1 — correctly. A value written as JSON is
+     read as JSON; anything else stays the text it is. */
+  const typed = JSON.parse(envelopeText({
+    segments: [{ locator: [
+      { key: "bbox", value: "[0.05,0.1,0.95,0.6]" },
+      { key: "cell", value: "{\"row\":7}" },
+      { key: "label", value: "table 1" },
+      { key: "page", value: "1" },
+      { key: "flag", value: "true" },
+    ] }],
+  })).segments[0].locator;
+  t.check("a list written as JSON comes back as a list of numbers",
+    Array.isArray(typed.bbox) && typed.bbox.length === 4 && typed.bbox[0] === 0.05, JSON.stringify(typed.bbox));
+  t.check("an object written as JSON comes back as an object",
+    typed.cell && typed.cell.row === 7, JSON.stringify(typed.cell));
+  t.check("but a label stays a label, and \"1\" and \"true\" stay text",
+    typed.label === "table 1" && typed.page === "1" && typed.flag === "true",
+    JSON.stringify({ label: typed.label, page: typed.page, flag: typed.flag }));
+  t.check("and text that only looks like the start of JSON is not lost",
+    JSON.parse(envelopeText({ claims: [{ scope: [{ key: "note", value: "[unclosed" }] }] })).claims[0].scope.note === "[unclosed");
   t.check("a provider that sent a map anyway is not an error",
     JSON.parse(envelopeText({ claims: [{ scope: { a: "b" } }] })).claims[0].scope.a === "b");
   t.check("and text that is not an envelope is passed through untouched",
