@@ -17,7 +17,7 @@ import { AnthropicProtocol } from "../providers/anthropic.ts";
 import { OpenAiProtocol } from "../providers/openai.ts";
 import { GoogleProtocol } from "../providers/google.ts";
 import { baseUrlProblems, buildProviderRegistry } from "../providers/registry.ts";
-import { RESULT_ENVELOPE_SCHEMA, schemaIsClosed } from "../providers/provider.ts";
+import { envelopeText, RESULT_ENVELOPE_SCHEMA, schemaIsClosed } from "../providers/provider.ts";
 
 const tripped = closeNetwork();
 const t = harness("what the providers rejected, and why: the 404 and the 400");
@@ -130,19 +130,36 @@ t.section("strict follows the schema, because two of its objects are open on pur
       properties: { deep: { type: "array", items: { type: "object", additionalProperties: { type: "string" } } } },
     }) === false);
 
-  /* The envelope itself: a claim's scope and an anchor's locator are domain
-     vocabulary and are deliberately open, so the flag must come out false. */
-  t.check("this repository's result envelope is NOT closed, by design",
-    schemaIsClosed(RESULT_ENVELOPE_SCHEMA) === false);
+  /* And the envelope this repository ships IS closed — because the two open
+     maps are spelled to a provider as key/value pairs, which can be closed,
+     and turned back into maps by the adapter. That is what lets strict come
+     back on, and strict is what makes `required` binding rather than
+     advisory. A canary generation paid to learn the difference: with the
+     schema unstrict the model returned an envelope with no `outcome`. */
+  t.check("this repository's result envelope is closed, so strict is available",
+    schemaIsClosed(RESULT_ENVELOPE_SCHEMA) === true);
+  t.check("and every field the engine needs is required, not merely offered",
+    ["outcome", "claims", "segments", "anchors", "assessments", "limitations"]
+      .every((field) => RESULT_ENVELOPE_SCHEMA.required.includes(field)),
+    JSON.stringify(RESULT_ENVELOPE_SCHEMA.required));
 
-  const anthropic = new AnthropicProtocol();
-  const openai = new OpenAiProtocol();
-  t.check("so the Anthropic adapter would not send strict over it",
-    (schemaIsClosed(RESULT_ENVELOPE_SCHEMA) ? { strict: true } : {}).strict === undefined);
-  t.check("and the OpenAI adapter sends strict:false rather than a rejected true",
-    schemaIsClosed(RESULT_ENVELOPE_SCHEMA) === false);
-  t.check("both adapters read the same rule, from one place",
-    typeof anthropic.requestPath === "string" && typeof openai.requestPath === "string");
+  /* The round trip: pairs on the wire, a map in the engine. */
+  const roundTripped = JSON.parse(envelopeText({
+    outcome: "completed",
+    claims: [{ scope: [{ key: "sheet", value: "1" }, { key: "row", value: "7" }] }],
+    anchors: [{ locator: [{ key: "bbox", value: "0,0,1,1" }] }],
+    segments: [{ locator: [] }],
+  }));
+  t.check("pairs on the wire come back as the map the kernel reads",
+    roundTripped.claims[0].scope.sheet === "1" && roundTripped.claims[0].scope.row === "7"
+    && roundTripped.anchors[0].locator.bbox === "0,0,1,1",
+    JSON.stringify(roundTripped));
+  t.check("an empty list is an empty map, not a missing one",
+    JSON.stringify(roundTripped.segments[0].locator) === "{}");
+  t.check("a provider that sent a map anyway is not an error",
+    JSON.parse(envelopeText({ claims: [{ scope: { a: "b" } }] })).claims[0].scope.a === "b");
+  t.check("and text that is not an envelope is passed through untouched",
+    envelopeText("I will not answer that") === "I will not answer that");
 }
 
 t.check("nothing in this suite tried to open a socket", tripped() === 0, `guard tripped ${tripped()} times`);

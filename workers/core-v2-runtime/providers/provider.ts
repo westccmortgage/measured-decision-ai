@@ -87,6 +87,70 @@ export function schemaIsClosed(schema: unknown): boolean {
   return true;
 }
 
+/* AN OPEN MAP, SAID IN A CLOSED WAY.
+ *
+ * A claim's scope and an anchor's locator are the domain pack's vocabulary:
+ * a page and a row for one pack, a sheet and a cell for another. The kernel
+ * takes them as string maps and must keep doing so.
+ *
+ * But "strict" — the providers validating the answer against the schema
+ * rather than asking nicely — requires every object closed, and an open map
+ * cannot be closed. Sending the schema unstrict instead makes `required`
+ * advisory, and a canary generation found out what that costs: the model
+ * returned an envelope with no `outcome` at all, which is a whole paid
+ * attempt thrown away over a field the provider would have insisted on.
+ *
+ * So the WIRE says the same thing in a shape that can be closed — a list of
+ * key/value pairs — and the adapter turns it back into a map before anybody
+ * downstream sees it. The kernel's contract does not change; only how it is
+ * spelled to a provider does, which is what an adapter is for. */
+const KEY_VALUE_PAIRS = {
+  type: "array",
+  description: "an open map, as pairs: [{key, value}, ...]",
+  items: {
+    type: "object",
+    additionalProperties: false,
+    required: ["key", "value"],
+    properties: { key: { type: "string" }, value: { type: "string" } },
+  },
+};
+
+/* The other half: pairs back into the map the kernel reads. Tolerant on
+   purpose — a provider that sent an object anyway is not an error, and text
+   that is not an envelope at all (a spoken refusal) is passed through. */
+function pairsToMap(value: unknown): unknown {
+  if (!Array.isArray(value)) return value ?? {};
+  const out: Record<string, string> = {};
+  for (const pair of value) {
+    if (pair && typeof pair === "object" && typeof (pair as { key?: unknown }).key === "string") {
+      out[(pair as { key: string }).key] = String((pair as { value?: unknown }).value ?? "");
+    }
+  }
+  return out;
+}
+
+/* What the rest of the runtime is handed: the envelope as text, with every
+   open map spelled the way the kernel reads it. Accepts either a parsed
+   object (a tool call's input) or the text a provider wrote. */
+export function envelopeText(value: unknown): string | null {
+  let envelope: unknown = value;
+  if (typeof value === "string") {
+    if (value.trim() === "") return null;
+    try { envelope = JSON.parse(value); } catch { return value; }
+  }
+  if (!envelope || typeof envelope !== "object") return value === undefined ? null : JSON.stringify(envelope ?? null);
+  const e = envelope as Record<string, unknown>;
+  for (const claim of Array.isArray(e.claims) ? e.claims : []) {
+    if (claim && typeof claim === "object") (claim as Record<string, unknown>).scope = pairsToMap((claim as Record<string, unknown>).scope);
+  }
+  for (const field of ["anchors", "segments"] as const) {
+    for (const item of Array.isArray(e[field]) ? e[field] as unknown[] : []) {
+      if (item && typeof item === "object") (item as Record<string, unknown>).locator = pairsToMap((item as Record<string, unknown>).locator);
+    }
+  }
+  return JSON.stringify(envelope);
+}
+
 export const RESULT_ENVELOPE_SCHEMA: Record<string, unknown> = {
   type: "object",
   additionalProperties: false,
@@ -116,7 +180,7 @@ export const RESULT_ENVELOPE_SCHEMA: Record<string, unknown> = {
           },
           unit: { type: ["string", "null"] },
           observationBasis: { type: "string", enum: ["observed", "inferred"] },
-          scope: { type: "object", additionalProperties: { type: "string" } },
+          scope: KEY_VALUE_PAIRS,
           anchorKeys: { type: "array", items: { type: "string" } },
         },
       },
@@ -170,7 +234,7 @@ export const RESULT_ENVELOPE_SCHEMA: Record<string, unknown> = {
           segmentKind: { type: "string" },
           label: { type: ["string", "null"] },
           ordinal: { type: "integer" },
-          locator: { type: "object" },
+          locator: KEY_VALUE_PAIRS,
           contentHash: { type: "string" },
         },
       },
@@ -187,7 +251,7 @@ export const RESULT_ENVELOPE_SCHEMA: Record<string, unknown> = {
           sourceKind: { type: "string", enum: ["segment_locator", "segment", "source"] },
           sourceId: { type: ["string", "null"] },
           segmentId: { type: ["string", "null"] },
-          locator: { type: "object" },
+          locator: KEY_VALUE_PAIRS,
           quotedText: { type: ["string", "null"] },
         },
       },

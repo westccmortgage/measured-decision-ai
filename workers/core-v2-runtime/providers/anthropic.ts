@@ -48,7 +48,7 @@ import type { ResolvedMaterial } from "../material/material.ts";
 import { bytesOf, isTextual } from "../material/material.ts";
 import type { ModelCapabilities, ProviderConfiguration } from "../runtime-config.ts";
 import type { ParsedAnswer, ProviderProtocol, ProviderRequestPlan } from "./provider.ts";
-import { schemaIsClosed,
+import { envelopeText, schemaIsClosed,
   RESULT_ENVELOPE_SCHEMA, RESULT_ENVELOPE_SCHEMA_DESCRIPTION, RESULT_ENVELOPE_SCHEMA_NAME,
   headerRequestId, jsonBody, materialHeading, parseJsonBody, rawUsageOf,
 } from "./provider.ts";
@@ -158,7 +158,7 @@ export class AnthropicProtocol implements ProviderProtocol {
 
     /* A tool call is the answer. Text beside it is the partial answer of an
        attempt that ran out of room before it could make the call. */
-    const text = toolUse ? JSON.stringify(toolUse.input ?? null) : (spoken.length ? spoken : null);
+    const text = toolUse ? envelopeText(toolUse.input ?? null) : (spoken.length ? spoken : null);
 
     return {
       text,

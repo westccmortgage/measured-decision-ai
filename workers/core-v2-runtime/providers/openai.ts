@@ -55,7 +55,7 @@ import type { ResolvedMaterial } from "../material/material.ts";
 import { bytesOf, isTextual } from "../material/material.ts";
 import type { ModelCapabilities, ProviderConfiguration } from "../runtime-config.ts";
 import type { ParsedAnswer, ProviderProtocol, ProviderRequestPlan } from "./provider.ts";
-import { schemaIsClosed,
+import { envelopeText, schemaIsClosed,
   RESULT_ENVELOPE_SCHEMA, RESULT_ENVELOPE_SCHEMA_DESCRIPTION, RESULT_ENVELOPE_SCHEMA_NAME,
   headerRequestId, jsonBody, materialHeading, parseJsonBody, rawUsageOf,
 } from "./provider.ts";
@@ -157,7 +157,7 @@ export class OpenAiProtocol implements ProviderProtocol {
       .join(" ");
 
     return {
-      text: spoken.length ? spoken : null,
+      text: spoken.length ? envelopeText(spoken) : null,
       requestId: headerRequestId(response) ?? (typeof body.id === "string" ? body.id : null),
       modelReported: typeof body.model === "string" ? body.model : null,
       rawUsage: rawUsageOf(body.usage),

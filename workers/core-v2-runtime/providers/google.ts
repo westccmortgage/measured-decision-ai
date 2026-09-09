@@ -50,7 +50,7 @@ import type { ResolvedMaterial } from "../material/material.ts";
 import { bytesOf, isTextual } from "../material/material.ts";
 import type { ModelCapabilities, ProviderConfiguration } from "../runtime-config.ts";
 import type { ParsedAnswer, ProviderProtocol, ProviderRequestPlan } from "./provider.ts";
-import {
+import { envelopeText,
   RESULT_ENVELOPE_SCHEMA, RESULT_ENVELOPE_SCHEMA_DESCRIPTION,
   headerRequestId, jsonBody, materialHeading, parseJsonBody, rawUsageOf,
 } from "./provider.ts";
@@ -143,7 +143,7 @@ export class GoogleProtocol implements ProviderProtocol {
       ?? (finishReason && finishReason !== CEILING && !FINISHED.has(finishReason) ? finishReason : null);
 
     return {
-      text: spoken.length ? spoken : null,
+      text: spoken.length ? envelopeText(spoken) : null,
       requestId: (typeof body.responseId === "string" ? body.responseId : null) ?? headerRequestId(response),
       modelReported: typeof body.modelVersion === "string" ? body.modelVersion : null,
       rawUsage: rawUsageOf(body.usageMetadata),

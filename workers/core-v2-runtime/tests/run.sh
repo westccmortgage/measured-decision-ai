@@ -24,6 +24,7 @@ run "the one door that can be opened, and every lock on it"             https-tr
 run "what the counts mean, and why adding them up is wrong"             billing.mjs
 run "one prompt compiler, and what it may never say"                    prompt-compiler.mjs
 run "three adapters, one contract"                                      adapters.mjs
+run "what the providers rejected, and why: the 404 and the 400"         base-url.mjs
 run "every way an answer can go wrong"                                  adapter-failures.mjs
 run "the durable budget: reserved before, settled after, never twice"   budget.mjs
 run "the durable dispatcher, against a real database"                   dispatcher.mjs
