@@ -57,6 +57,36 @@ export const systemClock: Clock = {
    in whatever its own strict-output mechanism is called. Only the parts of an
    envelope a model may produce are described: a model does not decide a task
    id, and it is never asked for one. */
+/* WHETHER A SCHEMA CAN BE SENT STRICT, AND WHY IT MATTERS.
+ *
+ * "Strict" is the provider validating the arguments against the schema
+ * rather than being asked nicely, and both providers that offer it require
+ * the SAME thing to do it: every object in the schema closed with
+ * `additionalProperties: false`. An open map — `additionalProperties` set to
+ * a schema rather than to false — cannot be expressed under that rule.
+ *
+ * This envelope has two on purpose. A claim's `scope` and an anchor's
+ * `locator` are domain vocabulary: a page and a row for one pack, a sheet
+ * and a cell for another. Closing them would mean the kernel deciding what
+ * a locator may say, which is the coupling the whole domain-pack split
+ * exists to avoid.
+ *
+ * So the flag follows the schema instead of the schema following the flag.
+ * The first paid canary sent strict over an open map and was rejected with
+ * a 400 — after the reservation was taken. This is checked before the
+ * request is built, and when it comes back false the answer is validated by
+ * the engine's own result validator, which is where a claim's shape is
+ * actually adjudicated anyway. */
+export function schemaIsClosed(schema: unknown): boolean {
+  if (!schema || typeof schema !== "object") return true;
+  const node = schema as Record<string, unknown>;
+  if (node.type === "object" && node.additionalProperties !== false) return false;
+  for (const value of Object.values(node)) {
+    if (value && typeof value === "object" && !schemaIsClosed(value)) return false;
+  }
+  return true;
+}
+
 export const RESULT_ENVELOPE_SCHEMA: Record<string, unknown> = {
   type: "object",
   additionalProperties: false,

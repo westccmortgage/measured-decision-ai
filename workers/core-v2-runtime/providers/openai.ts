@@ -55,7 +55,7 @@ import type { ResolvedMaterial } from "../material/material.ts";
 import { bytesOf, isTextual } from "../material/material.ts";
 import type { ModelCapabilities, ProviderConfiguration } from "../runtime-config.ts";
 import type { ParsedAnswer, ProviderProtocol, ProviderRequestPlan } from "./provider.ts";
-import {
+import { schemaIsClosed,
   RESULT_ENVELOPE_SCHEMA, RESULT_ENVELOPE_SCHEMA_DESCRIPTION, RESULT_ENVELOPE_SCHEMA_NAME,
   headerRequestId, jsonBody, materialHeading, parseJsonBody, rawUsageOf,
 } from "./provider.ts";
@@ -112,7 +112,9 @@ export class OpenAiProtocol implements ProviderProtocol {
         format: {
           type: "json_schema",
           name: RESULT_ENVELOPE_SCHEMA_NAME,
-          strict: true,
+          /* Same rule, same reason: strict needs every object closed, and
+             two of this envelope's are open on purpose. See schemaIsClosed. */
+          strict: schemaIsClosed(RESULT_ENVELOPE_SCHEMA),
           schema: RESULT_ENVELOPE_SCHEMA,
         },
       },

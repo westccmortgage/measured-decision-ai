@@ -48,7 +48,7 @@ import type { ResolvedMaterial } from "../material/material.ts";
 import { bytesOf, isTextual } from "../material/material.ts";
 import type { ModelCapabilities, ProviderConfiguration } from "../runtime-config.ts";
 import type { ParsedAnswer, ProviderProtocol, ProviderRequestPlan } from "./provider.ts";
-import {
+import { schemaIsClosed,
   RESULT_ENVELOPE_SCHEMA, RESULT_ENVELOPE_SCHEMA_DESCRIPTION, RESULT_ENVELOPE_SCHEMA_NAME,
   headerRequestId, jsonBody, materialHeading, parseJsonBody, rawUsageOf,
 } from "./provider.ts";
@@ -122,8 +122,9 @@ export class AnthropicProtocol implements ProviderProtocol {
           description: `${RESULT_ENVELOPE_SCHEMA_DESCRIPTION} ${plan.expectedOutputContract}`,
           input_schema: RESULT_ENVELOPE_SCHEMA,
           /* Top-level on the tool, not on tool_choice: the provider validates
-             the arguments against the schema. */
-          strict: true,
+             the arguments against the schema — but only where the schema is
+             closed enough for it to. See schemaIsClosed. */
+          ...(schemaIsClosed(RESULT_ENVELOPE_SCHEMA) ? { strict: true } : {}),
         },
       ],
       /* Not "you may use this tool": the answer is this tool. */

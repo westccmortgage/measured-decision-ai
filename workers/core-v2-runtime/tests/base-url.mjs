@@ -17,9 +17,10 @@ import { AnthropicProtocol } from "../providers/anthropic.ts";
 import { OpenAiProtocol } from "../providers/openai.ts";
 import { GoogleProtocol } from "../providers/google.ts";
 import { baseUrlProblems, buildProviderRegistry } from "../providers/registry.ts";
+import { RESULT_ENVELOPE_SCHEMA, schemaIsClosed } from "../providers/provider.ts";
 
 const tripped = closeNetwork();
-const t = harness("the 404 that cost a canary: one version segment, not two");
+const t = harness("what the providers rejected, and why: the 404 and the 400");
 
 const PROTOCOLS = [new AnthropicProtocol(), new OpenAiProtocol(), new GoogleProtocol()];
 const configFor = (providerId, baseUrl) => ({
@@ -112,6 +113,36 @@ t.section("the registry this repository ships");
     t.check(`${configuration.providerId}: ${configuration.baseUrl} would not double its path`,
       found.length === 0, found.join("; "));
   }
+}
+
+/* ─────────────────────────────────────────────── the 400 that cost the next one */
+t.section("strict follows the schema, because two of its objects are open on purpose");
+{
+  t.check("a fully closed schema may be sent strict",
+    schemaIsClosed({ type: "object", additionalProperties: false, properties: { a: { type: "string" } } }));
+  t.check("an object with no additionalProperties may not",
+    schemaIsClosed({ type: "object", properties: { a: { type: "string" } } }) === false);
+  t.check("nor may an OPEN MAP — additionalProperties as a schema is not false",
+    schemaIsClosed({ type: "object", additionalProperties: { type: "string" } }) === false);
+  t.check("and one open object anywhere below closes the whole question",
+    schemaIsClosed({
+      type: "object", additionalProperties: false,
+      properties: { deep: { type: "array", items: { type: "object", additionalProperties: { type: "string" } } } },
+    }) === false);
+
+  /* The envelope itself: a claim's scope and an anchor's locator are domain
+     vocabulary and are deliberately open, so the flag must come out false. */
+  t.check("this repository's result envelope is NOT closed, by design",
+    schemaIsClosed(RESULT_ENVELOPE_SCHEMA) === false);
+
+  const anthropic = new AnthropicProtocol();
+  const openai = new OpenAiProtocol();
+  t.check("so the Anthropic adapter would not send strict over it",
+    (schemaIsClosed(RESULT_ENVELOPE_SCHEMA) ? { strict: true } : {}).strict === undefined);
+  t.check("and the OpenAI adapter sends strict:false rather than a rejected true",
+    schemaIsClosed(RESULT_ENVELOPE_SCHEMA) === false);
+  t.check("both adapters read the same rule, from one place",
+    typeof anthropic.requestPath === "string" && typeof openai.requestPath === "string");
 }
 
 t.check("nothing in this suite tried to open a socket", tripped() === 0, `guard tripped ${tripped()} times`);
