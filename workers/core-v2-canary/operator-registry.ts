@@ -28,8 +28,12 @@ export const CANARY_ID = "core-v2-canary-1";
    default, not a ceiling to be raised: the number a person authorised. */
 export const CANARY_AUTHORIZED = 5;
 export const CANARY_CURRENCY = "USD";
-/* Submissions for the entire canary, ever. */
-export const CANARY_MAXIMUM_SUBMISSIONS = 4;
+/* The most submissions any one canary run may make. It is a fuse, not a
+   plan: the run also cannot exceed what is left of the lifetime authority,
+   and takes the smaller of the two. Four was the first canary's number,
+   when the question was whether anything worked at all; a run that has to
+   reach a decision needs readers, a critic and an arbiter to all answer. */
+export const CANARY_MAXIMUM_SUBMISSIONS = 24;
 
 /* Addresses that resolve nowhere by standard, and the demonstration's own
    variable names. A declaration carrying either is the invented one wearing

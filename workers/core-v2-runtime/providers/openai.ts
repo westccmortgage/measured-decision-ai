@@ -69,6 +69,7 @@ const CEILING = "max_output_tokens";
 
 export class OpenAiProtocol implements ProviderProtocol {
   readonly providerId = OPENAI_PROVIDER_ID;
+  readonly requestPath = RESPONSES_PATH;
 
   configurationProblems(configuration: ProviderConfiguration, model: string, material: ResolvedMaterial[]): string[] {
     const can: ModelCapabilities | undefined = configuration.capabilities[model];

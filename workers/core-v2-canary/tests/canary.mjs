@@ -249,7 +249,21 @@ t.section("the door out is built outside the sealed package, and only when every
 }
 
 t.check("the canary's identity and its authority are constants, not flags",
-  CANARY_ID === "core-v2-canary-1" && CANARY_AUTHORIZED === 5 && CANARY_MAXIMUM_SUBMISSIONS === 4);
+  CANARY_ID === "core-v2-canary-1" && CANARY_AUTHORIZED === 5);
+/* Two fuses, and a run takes whichever is smaller: a count, and what is
+   left of the money. Both must be real — a cap of zero would stop every run
+   and a cap whose worst case exceeds the authority would leave the money as
+   the only thing standing between a bug and the bill. */
+{
+  const dearest = 0.18432;
+  const worstWholeRun = CANARY_MAXIMUM_SUBMISSIONS * dearest;
+  t.check("the submission cap is a real number of attempts",
+    Number.isInteger(CANARY_MAXIMUM_SUBMISSIONS) && CANARY_MAXIMUM_SUBMISSIONS >= 1,
+    `${CANARY_MAXIMUM_SUBMISSIONS} attempts`);
+  t.check("and every one of them, at the dearest declared rate, still fits inside the authority",
+    worstWholeRun <= CANARY_AUTHORIZED,
+    `${CANARY_MAXIMUM_SUBMISSIONS} x $${dearest} = $${worstWholeRun.toFixed(5)} vs $${CANARY_AUTHORIZED.toFixed(2)}`);
+}
 
 t.check("nothing in this suite tried to open a socket", tripped() === 0, `guard tripped ${tripped()} times`);
 

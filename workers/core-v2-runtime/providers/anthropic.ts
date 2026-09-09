@@ -67,6 +67,7 @@ type Block = Record<string, unknown>;
 
 export class AnthropicProtocol implements ProviderProtocol {
   readonly providerId = ANTHROPIC_PROVIDER_ID;
+  readonly requestPath = MESSAGES_PATH;
 
   /* What this adapter is going to put in the request, checked against what
      the operator says the model can do. Every one of these would otherwise

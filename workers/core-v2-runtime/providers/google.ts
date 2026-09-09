@@ -66,6 +66,7 @@ const FINISHED = new Set(["STOP"]);
 
 export class GoogleProtocol implements ProviderProtocol {
   readonly providerId = GOOGLE_PROVIDER_ID;
+  readonly requestPath = MODELS_PATH;
 
   configurationProblems(configuration: ProviderConfiguration, model: string, material: ResolvedMaterial[]): string[] {
     const can: ModelCapabilities | undefined = configuration.capabilities[model];

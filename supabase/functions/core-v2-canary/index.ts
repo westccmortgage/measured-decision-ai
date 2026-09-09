@@ -69,7 +69,20 @@ const MAY_HAVE_BEEN_BILLED = [
 /* The whole function must finish inside the platform's own wall clock. The
    drain is stopped before that, so an attempt in flight is recorded as an
    outcome nobody knows rather than lost with the container. */
-const DRAIN_DEADLINE_MS = 110_000;
+const DRAIN_DEADLINE_MS = 140_000;
+
+/* WHICH RUN THIS IS. The canary id is immutable per run; a run whose
+   workflow already reached a terminal state cannot be continued, so a
+   corrected attempt gets the next generation and its own workflow. The
+   synthetic tenancy is deliberately NOT per generation: one organisation
+   holds every canary, which is what makes the lifetime ceiling below a
+   single question with a single answer. */
+const GENERATION = Deno.env.get("CORE_V2_CANARY_GENERATION") ?? "2";
+const RUN_ID = `${CANARY_ID}-g${GENERATION}`;
+
+/* Workflow states that are still going. Anything else is finished, and a
+   finished workflow is not resumed — it is superseded by a new generation. */
+const UNFINISHED = ["queued", "planning", "running", "cancelling"];
 
 /* THE RECORD IS REACHED THROUGH THE POOLER, AND THE PASSWORD STAYS PUT.
  *
@@ -138,8 +151,8 @@ function routeToRecord(): Route | { problem: string } {
   };
 }
 
-const ORGANIZATION_ID = entityId("core-v2-canary-organization", CANARY_ID);
-const WORKFLOW_ID = entityId("core-v2-canary-workflow", CANARY_ID);
+const ORGANIZATION_ID = entityId("core-v2-canary-organization", "core-v2-canary");
+const WORKFLOW_ID = entityId("core-v2-canary-workflow", RUN_ID);
 
 async function sha256Hex(text: string): Promise<string> {
   const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(text));
@@ -220,10 +233,13 @@ Deno.serve(async (request: Request): Promise<Response> => {
   if (!gateFromEnvironment && !gateFromInvocation) {
     return json(412, { refused: `neither ${PAID_CALLS_VARIABLE} nor the invocation opened the paid-calls gate` });
   }
-  const config = authorizedConfig(registry, {
+  const assembled = authorizedConfig(registry, {
     networkFlag,
     environment: gateFromEnvironment ? environment : { [PAID_CALLS_VARIABLE]: "true" },
   });
+  /* The dispatcher names this generation, so the outbox and every event say
+     which run they belong to. */
+  const config = { ...assembled, dispatcherName: RUN_ID };
 
   /* ── 5 · the arithmetic, before anything is opened ─────────────────── */
   const worst = worstCase(config);
@@ -251,15 +267,43 @@ Deno.serve(async (request: Request): Promise<Response> => {
       [ORGANIZATION_ID, `synthetic — ${CANARY_ID}`],
     );
 
-    /* ── 7 · a canary runs once ──────────────────────────────────────── */
-    const already = await db.query(
+    /* ── 7 · this generation runs once, and the $5 is a LIFETIME ceiling ─
+       Every canary generation shares one synthetic organisation, so what
+       previous generations committed is one query. The authority for this
+       run is what is left of the five dollars, not five dollars again. */
+    const finished = await db.query(
+      `select state from public.intelligence_workflows where id = $1`, [WORKFLOW_ID],
+    );
+    const state = finished.rows[0]?.state ?? null;
+    if (state !== null && !UNFINISHED.includes(state)) {
+      return json(409, {
+        refused: `${RUN_ID} already finished as "${state}"; a workflow that has ended is not re-run`,
+        hint: "set CORE_V2_CANARY_GENERATION to the next number for a fresh workflow",
+        workflowId: WORKFLOW_ID,
+      });
+    }
+    const priorSubmissions = Number((await db.query(
       `select count(*)::text as n from public.agent_attempts where workflow_id = $1 and state = any($2::text[])`,
       [WORKFLOW_ID, `{${MAY_HAVE_BEEN_BILLED.join(",")}}`],
+    )).rows[0]?.n ?? "0");
+
+    const spentBefore = await db.query(
+      `select coalesce(sum(coalesce(b.reserved, 0) + coalesce(b.settled, 0)), 0)::text as committed
+         from public.workflow_cost_budgets b
+        where b.organization_id = $1 and b.workflow_id <> $2`,
+      [ORGANIZATION_ID, WORKFLOW_ID],
     );
-    const priorSubmissions = Number(already.rows[0]?.n ?? "0");
-    if (priorSubmissions > 0) {
-      return json(409, { refused: `${CANARY_ID} has already submitted ${priorSubmissions} attempt(s); a canary runs once`, workflowId: WORKFLOW_ID });
+    const committedBefore = Number(spentBefore.rows[0]?.committed ?? "0");
+    const lifetimeRemaining = Math.max(0, Math.round((CANARY_AUTHORIZED - committedBefore) * 1e6) / 1e6);
+    if (lifetimeRemaining < worst.perAttempt) {
+      return json(409, {
+        refused: "the lifetime authority is spent",
+        authorized: CANARY_AUTHORIZED, committedBefore, lifetimeRemaining, perAttempt: worst.perAttempt,
+      });
     }
+    /* The fuse, in attempts: as many as fit inside what is left, and never
+       more than a bounded number however much is left. */
+    const maximumAttempts = Math.max(1, Math.min(CANARY_MAXIMUM_SUBMISSIONS, Math.floor(lifetimeRemaining / worst.perAttempt)));
 
     /* ── 8 · the invented material, and nobody's document ────────────── */
     const truth = syntheticRecordSet({
@@ -279,9 +323,9 @@ Deno.serve(async (request: Request): Promise<Response> => {
     await enqueueWorkflow(new PostgresOrchestrationRepository(db as never, { organizationId: ORGANIZATION_ID }), truth.manifest, pack);
     await ledger.authorizeWorkflow({
       workflowId: WORKFLOW_ID, organizationId: ORGANIZATION_ID, currency: CANARY_CURRENCY,
-      authorizedMaximum: CANARY_AUTHORIZED,
+      authorizedMaximum: lifetimeRemaining,
       maximumPerAttempt: worst.perAttempt,
-      maximumAttempts: CANARY_MAXIMUM_SUBMISSIONS,
+      maximumAttempts,
       maximumConcurrentAttempts: 1,
       maximumInputTokens: Math.max(...config.providers.map((p) => p.maximumInputTokens)),
       maximumOutputTokens: Math.max(...config.providers.map((p) => p.maximumOutputTokens)),
@@ -320,8 +364,8 @@ Deno.serve(async (request: Request): Promise<Response> => {
 
     /* ── 11 · close the authority, whatever happened ─────────────────── */
     await ledger.stop(WORKFLOW_ID, deadlineReached
-      ? "canary stopped at its deadline — unused authority closed"
-      : "canary complete — unused authority closed").catch(() => undefined);
+      ? `${RUN_ID} stopped at its deadline — unused authority closed`
+      : `${RUN_ID} complete — unused authority closed`).catch(() => undefined);
 
     return json(200, await report(db, ledger, {
       transport: transport.name,
@@ -329,6 +373,13 @@ Deno.serve(async (request: Request): Promise<Response> => {
       unresolvedHosts: transport.unresolvedHosts,
       gate: gateFromEnvironment ? PAID_CALLS_VARIABLE : "invocation",
       installedGlobals,
+      generation: GENERATION,
+      runId: RUN_ID,
+      lifetimeAuthorized: CANARY_AUTHORIZED,
+      committedByEarlierGenerations: committedBefore,
+      lifetimeRemaining,
+      maximumAttempts,
+      priorSubmissionsThisWorkflow: priorSubmissions,
       worstAttempt: worst.perAttempt,
       worstCanary: worst.wholeCanary,
       deadlineReached,
@@ -484,12 +535,12 @@ async function report(db: CanaryDatabase, ledger: BudgetLedger, extra: Record<st
   const rows = async (sql: string, params: (string | number)[] = []) => (await db.query(sql, params)).rows;
   const standing = await ledger.standing(WORKFLOW_ID).catch(() => null);
   return {
-    canaryId: CANARY_ID,
+    canaryId: RUN_ID,
     workflowId: WORKFLOW_ID,
     organizationId: ORGANIZATION_ID,
     authorized: CANARY_AUTHORIZED,
     currency: CANARY_CURRENCY,
-    maximumSubmissions: CANARY_MAXIMUM_SUBMISSIONS,
+    maximumSubmissionsCeiling: CANARY_MAXIMUM_SUBMISSIONS,
     ...extra,
     workflow: (await rows(`select state, cancel_requested_at, started_at, finished_at from public.intelligence_workflows where id = $1`, [WORKFLOW_ID]))[0] ?? null,
     attempts: await rows(

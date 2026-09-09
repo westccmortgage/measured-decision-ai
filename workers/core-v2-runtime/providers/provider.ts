@@ -177,6 +177,11 @@ export type ParsedAnswer = {
 
 export interface ProviderProtocol {
   readonly providerId: string;
+  /* The path this protocol appends to the operator's baseUrl. Declared
+     rather than hidden inside buildRequest, because an operator who writes
+     the version segment into their baseUrl as well gets it twice — and a
+     doubled path is a 404 that looks exactly like a wrong model id. */
+  readonly requestPath: string;
   buildRequest(plan: ProviderRequestPlan): HttpRequest;
   parse(response: HttpResponse): ParsedAnswer;
   /* What this provider cannot be asked for in this configuration — a model
