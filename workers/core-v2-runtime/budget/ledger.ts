@@ -10,11 +10,14 @@
  *
  * Three rules it exists to keep:
  *
- *   1. A reservation is taken BEFORE anything is sent, for the MOST the
- *      attempt could cost — the ceilings the request will actually carry,
- *      priced at the operator's full rates. Never an expectation. An engine
- *      that reserves what it expects and learns the truth afterwards has
- *      already spent the difference.
+ *   1. A reservation is taken IN THE SAME UNIT OF WORK as the submission it
+ *      pays for, for the MOST the attempt could cost — the ceilings the
+ *      request will actually carry, each priced at the highest rate any
+ *      billable component of its category could be charged at. Never an
+ *      expectation, and never the ordinary rate where a cache write or a
+ *      reasoning token could cost more: an engine that reserves what it
+ *      expects and learns the truth afterwards has already spent the
+ *      difference.
  *   2. A price is operator-supplied. An unpriced model has no ceiling, and
  *      something with no ceiling cannot be reserved for, and therefore cannot
  *      be sent. There is no default rate anywhere in this package.
@@ -133,6 +136,16 @@ export type PriceBasis = {
   reasoning_per_million_tokens: number | null;
   maximum_input_tokens: number;
   maximum_output_tokens: number;
+  /* HOW THE HOLD WAS ARRIVED AT, not only what it was. The rates above settle
+     the attempt; these three reproduce the reservation — the highest rate any
+     billable component of each category could have been charged at, the rule
+     that chose them, and the number they produced. Without them a reader can
+     check what an attempt cost and cannot check that the hold was a real
+     ceiling; with them both directions are arithmetic anyone can repeat. */
+  ceiling_rule: string;
+  ceiling_input_per_million_tokens: number;
+  ceiling_output_per_million_tokens: number;
+  maximum_cost: number;
 };
 
 export type BudgetState = {
@@ -269,10 +282,12 @@ function asRefusal(operation: BudgetOperation, subject: string, error: unknown):
 /* ──────────────────────────────────────────────────────────── the ceiling */
 
 /* The most an attempt could cost, priced from the ceilings the request will
-   carry: the provider configuration's own input and output ceilings at the
-   operator's full rates. Null when the operator prices nothing for this
-   model, which is the whole of the answer — no price, no ceiling; no
-   ceiling, no reservation; no reservation, nothing sent. */
+   carry: the provider configuration's own input and output token ceilings,
+   each at the highest rate any billable component of that category could be
+   charged at. Null when the operator prices nothing for this model, or prices
+   it in a way that establishes no upper bound — which is the whole of the
+   answer either way: no ceiling, no reservation; no reservation, nothing
+   sent. */
 export function ceilingFor(config: RuntimeConfig, providerId: string, model: string, at?: Date): CostCeiling | null {
   const provider = config.providers.find((p) => p.providerId === providerId);
   if (!provider) return null;
@@ -293,6 +308,10 @@ function basisOf(ceiling: CostCeiling): PriceBasis {
     reasoning_per_million_tokens: price.reasoningPerMillionTokens ?? null,
     maximum_input_tokens: ceiling.maximumInputTokens,
     maximum_output_tokens: ceiling.maximumOutputTokens,
+    ceiling_rule: ceiling.rule,
+    ceiling_input_per_million_tokens: ceiling.ceilingInputPerMillionTokens,
+    ceiling_output_per_million_tokens: ceiling.ceilingOutputPerMillionTokens,
+    maximum_cost: ceiling.maximumCost,
   };
 }
 
@@ -308,6 +327,16 @@ export class BudgetLedger {
   constructor(db: Queryable, config: RuntimeConfig) {
     this.db = db;
     this.config = config;
+  }
+
+  /* THE SAME LEDGER, WRITING ON SOMEBODY ELSE'S UNIT OF WORK. Used when a
+     hold has to stand or fall with a move the record is making — a
+     reservation and the submission it pays for are one thing, and a
+     reservation written through a second connection would survive the
+     rollback of the first. Same configuration, same rules, different
+     handle. */
+  on(db: Queryable): BudgetLedger {
+    return new BudgetLedger(db, this.config);
   }
 
   /* WHAT A RUN IS ALLOWED TO SPEND. Operator configuration, written once.

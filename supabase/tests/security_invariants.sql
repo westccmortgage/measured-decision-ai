@@ -5152,6 +5152,53 @@ select pg_temp.check('money waiting for somebody is money still held — the two
 select pg_temp.check('the provider facts on an attempt are written once and never rewritten',
   pg_get_functiondef('public.core_v2_guard_attempt_provider_facts'::regproc) ~* 'is distinct from');
 
+-- A HOLD HAS TO SHOW THAT IT IS A CEILING.
+-- A reservation carries the rates it was worked out at and the number they
+-- produced, so a reader can repeat the arithmetic instead of taking the
+-- caller's word for it. These are behavioural, not source-text: the door is
+-- actually called, with a basis that lies in each of the four ways it can.
+select public.core_v2_authorize_workflow_spending(
+  '0c0e0000-0000-0000-0000-000000000001', 1::numeric, 1::numeric, 'USD', null, null, null, null, null);
+
+select pg_temp.refused('a price basis that names a ceiling rule and does not carry the rates it used is refused',
+  $$select public.core_v2_reserve_attempt_cost('0d0e0000-0000-0000-0000-000000000001', 0.0045,
+      1000, 100, '{"currency":"USD","ceiling_rule":"core-v2.ceiling.1"}'::jsonb)$$);
+select pg_temp.refused('a price basis whose rates do not work out to the number it claims is refused',
+  $$select public.core_v2_reserve_attempt_cost('0d0e0000-0000-0000-0000-000000000001', 0.0045,
+      1000, 100, '{"currency":"USD","ceiling_rule":"core-v2.ceiling.1",
+        "ceiling_input_per_million_tokens":3,"ceiling_output_per_million_tokens":15,
+        "maximum_cost":0.0001}'::jsonb)$$);
+select pg_temp.refused('a hold that is not the ceiling its own basis works out to is refused',
+  $$select public.core_v2_reserve_attempt_cost('0d0e0000-0000-0000-0000-000000000001', 0.0001,
+      1000, 100, '{"currency":"USD","ceiling_rule":"core-v2.ceiling.1",
+        "ceiling_input_per_million_tokens":3,"ceiling_output_per_million_tokens":15,
+        "maximum_cost":0.0045}'::jsonb)$$);
+select pg_temp.refused('an input ceiling rate below the cache-write rate the attempt could be settled at is refused',
+  $$select public.core_v2_reserve_attempt_cost('0d0e0000-0000-0000-0000-000000000001', 0.0045,
+      1000, 100, '{"currency":"USD","ceiling_rule":"core-v2.ceiling.1",
+        "input_per_million_tokens":3,"cache_write_per_million_tokens":30,
+        "ceiling_input_per_million_tokens":3,"ceiling_output_per_million_tokens":15,
+        "maximum_cost":0.0045}'::jsonb)$$);
+select pg_temp.refused('an output ceiling rate below the reasoning rate the attempt could be settled at is refused',
+  $$select public.core_v2_reserve_attempt_cost('0d0e0000-0000-0000-0000-000000000001', 0.0045,
+      1000, 100, '{"currency":"USD","ceiling_rule":"core-v2.ceiling.1",
+        "output_per_million_tokens":15,"reasoning_per_million_tokens":60,
+        "ceiling_input_per_million_tokens":3,"ceiling_output_per_million_tokens":15,
+        "maximum_cost":0.0045}'::jsonb)$$);
+-- Two statements, not one: the door's own update to the budget row is not
+-- visible to a sibling subquery inside the statement that made it.
+select pg_temp.check('a basis whose arithmetic holds is taken, for exactly the number it works out to',
+  (select reserved_cost from public.core_v2_reserve_attempt_cost(
+     '0d0e0000-0000-0000-0000-000000000001', 0.0045, 1000, 100,
+     '{"currency":"USD","ceiling_rule":"core-v2.ceiling.1",
+       "input_per_million_tokens":3,"output_per_million_tokens":15,
+       "cache_write_per_million_tokens":3,"reasoning_per_million_tokens":15,
+       "ceiling_input_per_million_tokens":3,"ceiling_output_per_million_tokens":15,
+       "maximum_cost":0.0045}'::jsonb)) = 0.0045);
+select pg_temp.check('and the workflow is then holding exactly that',
+  (select reserved from public.workflow_cost_budgets
+    where workflow_id = '0c0e0000-0000-0000-0000-000000000001') = 0.0045);
+
 -- ──────────────────────────────────────────────────────── V1 is where it was
 select pg_temp.check('V1 keeps every row it had — Core V2 stands beside it, not on it',
   pg_temp.v1_fingerprint() = (select fingerprint from core_v2_before));

@@ -188,9 +188,18 @@ const RUNTIME_CONFIG = {
 };
 
 /* What one attempt holds, and what one attempt settles at, worked out here
-   from the numbers above rather than read back from the thing under test. */
+   from the numbers above rather than read back from the thing under test.
+
+   The hold is the token ceilings at the HIGHEST rate any billable component
+   of each category could be charged at — which for this operator's price
+   means the cache-write rate on the input side, because it is above the
+   ordinary input rate. Pricing the input ceiling at the ordinary rate would
+   be a hold below the worst case: a request that wrote its whole input to a
+   cache would settle above its own reservation. */
 const round6 = (n) => Math.round(n * 1e6) / 1e6;
-const HOLD_PER_ATTEMPT = round6((INPUT_CEILING / 1e6) * INPUT_RATE + (OUTPUT_CEILING / 1e6) * OUTPUT_RATE);
+const CEILING_INPUT_RATE = Math.max(INPUT_RATE, 0.3, 3.75);
+const CEILING_OUTPUT_RATE = OUTPUT_RATE;
+const HOLD_PER_ATTEMPT = round6((INPUT_CEILING / 1e6) * CEILING_INPUT_RATE + (OUTPUT_CEILING / 1e6) * CEILING_OUTPUT_RATE);
 const COST_PER_ATTEMPT = round6((LOCAL_USAGE.inputTokens / 1e6) * INPUT_RATE + (LOCAL_USAGE.outputTokens / 1e6) * OUTPUT_RATE);
 
 /* ═══════════════════════════════════════════════ the worlds and the wire */
@@ -587,7 +596,7 @@ await withThrowawayDatabase(async ({ client, organizationId, databaseName }) => 
 
   const budget = (await client.query(`select reserved, settled from public.workflow_cost_budgets where workflow_id = $1`, [wf])).rows[0];
   const reservations = (await client.query(
-    `select attempt_id, state, reserved_cost, settled_cost, usage, normalized_usage, normalization_version, price_basis, attention_reason
+    `select attempt_id, state, reserved_cost, reserved_input_tokens, reserved_output_tokens, settled_cost, usage, normalized_usage, normalization_version, price_basis, attention_reason
        from public.attempt_cost_reservations where workflow_id = $1`, [wf])).rows;
   t.check("every model attempt took a durable hold before it was sent, and code took none",
     reservations.length === model.length && rows.filter((a) => a.executor_kind === "deterministic").every((a) => !reservations.some((r) => r.attempt_id === a.id)),
@@ -613,6 +622,16 @@ await withThrowawayDatabase(async ({ client, organizationId, databaseName }) => 
   t.check("each hold was the most that attempt could have cost at the operator's price, not what it was expected to cost",
     reservations.every((r) => Number(r.reserved_cost) === HOLD_PER_ATTEMPT),
     `${reservations[0] ? Number(reservations[0].reserved_cost) : "none"} against ${HOLD_PER_ATTEMPT}`);
+  t.check("and the hold used the cache-write rate, which is above the ordinary input rate — a ceiling priced at the ordinary rate would not have been one",
+    HOLD_PER_ATTEMPT > round6((INPUT_CEILING / 1e6) * INPUT_RATE + (OUTPUT_CEILING / 1e6) * OUTPUT_RATE),
+    `${HOLD_PER_ATTEMPT} against ${round6((INPUT_CEILING / 1e6) * INPUT_RATE + (OUTPUT_CEILING / 1e6) * OUTPUT_RATE)} at the ordinary rates`);
+  t.check("every hold can be reproduced from the rates written down beside it",
+    reservations.every((r) => {
+      const basis = js(r.price_basis);
+      return basis.ceiling_rule === "core-v2.ceiling.1"
+        && round6((Number(r.reserved_input_tokens) / 1e6) * basis.ceiling_input_per_million_tokens
+                + (Number(r.reserved_output_tokens) / 1e6) * basis.ceiling_output_per_million_tokens) === Number(r.reserved_cost);
+    }), `${reservations.length} reservations`);
   t.check("each settled at what the answering system reported, which is a great deal less than what was held",
     reservations.every((r) => r.state === "settled" && Number(r.settled_cost) === COST_PER_ATTEMPT),
     `${reservations.filter((r) => r.state === "settled").length} of ${reservations.length} at ${COST_PER_ATTEMPT}`);

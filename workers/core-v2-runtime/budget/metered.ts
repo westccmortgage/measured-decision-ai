@@ -14,9 +14,12 @@
  * money lives in a decorator over the record:
  *
  *   · submitAttempt is the last thing that happens before anything is sent.
- *     A hold for the most this attempt could cost is taken there, atomically,
- *     in the database; if the hold is refused, the submission is refused and
- *     nothing leaves the process;
+ *     A hold for the most this attempt could cost is taken INSIDE it, on the
+ *     record's own unit of work, so the hold and the move from prepared to
+ *     submitted are one thing: after it returns, either the attempt is
+ *     submitted and holds a reservation, or it is not submitted and holds
+ *     nothing. There is no order of events in which one exists without the
+ *     other, and therefore nothing for a crash to land between;
  *   · an attempt that is cancelled or rejected before submission gives its
  *     hold back, because nothing was sent and nothing can have been charged;
  *   · commitValidatedResult is where the answer is written down, so it is
@@ -31,12 +34,13 @@
  * three methods and inherits the rest, so a method nobody thought about here
  * cannot silently behave differently because of it.
  */
-import type { OrchestrationRepository, ResultCommit, SubmitOutcome } from "../../core-v2/kernel/repository.ts";
+import type { OrchestrationRepository, ResultCommit, RiderOutcome, SubmissionRider, SubmitOutcome } from "../../core-v2/kernel/repository.ts";
 import type { AttemptRecord, AttemptState, ProviderFacts } from "../../core-v2/kernel/contracts.ts";
 import type { CommitOutcome } from "../../core-v2/kernel/repository.ts";
 import type { RuntimeConfig } from "../runtime-config.ts";
-import type { BudgetLedger } from "./ledger.ts";
+import type { BudgetLedger, BudgetRefused } from "./ledger.ts";
 import { ceilingFor, isBudgetRefused } from "./ledger.ts";
+import type { Queryable } from "../../core-v2/postgres/wire.ts";
 
 export type MeterEvent = {
   event: "budget.reserved" | "budget.settled" | "budget.released" | "budget.refused"
@@ -147,26 +151,76 @@ export function meteredRepository(inner: OrchestrationRepository, options: Meter
      and cannot drift from it. */
   const metered: OrchestrationRepository = Object.create(inner) as OrchestrationRepository;
 
-  metered.submitAttempt = async (attemptId: string, leaseToken: string, at: number): Promise<SubmitOutcome> => {
+  /* THE HOLD IS TAKEN INSIDE THE SUBMISSION, NOT BEFORE IT.
+     It used to be taken first and the submission attempted afterwards, which
+     is two units of work with a window between them — and every refusal the
+     submission itself makes lands in that window, as does a crash. What came
+     out of that window was a reservation for an attempt that was never sent:
+     money a run cannot spend, held against work that never happened.
+
+     Now the reservation is a rider on the submission. The record runs it
+     inside its own unit of work, after every submission rule has passed and
+     while the attempt is still `prepared`, and rolls it back with everything
+     else if the submission does not happen. After this returns, exactly one
+     of two things is true: the attempt is submitted and holds a reservation,
+     or the attempt is not submitted and holds nothing. */
+  metered.submitAttempt = async (attemptId: string, leaseToken: string, at: number, alongside?: SubmissionRider): Promise<SubmitOutcome> => {
     const attempt: AttemptRecord | null = await inner.getAttempt(attemptId);
     /* Code is free. It reserves nothing, holds nothing, and settles nothing. */
-    if (attempt && attempt.executorKind === "model") {
-      const providerId = options.providerOfFamily(attempt.executorFamily);
-      const model = providerId ? modelFor(providerId) : null;
-      if (!providerId || !model) {
-        return { ok: false, reason: `no configured provider serves ${attempt.executorFamily}, so nothing can be reserved for this attempt and nothing is sent` };
-      }
+    if (!attempt || attempt.executorKind !== "model") return inner.submitAttempt(attemptId, leaseToken, at, alongside);
+
+    const providerId = options.providerOfFamily(attempt.executorFamily);
+    const model = providerId ? modelFor(providerId) : null;
+    if (!providerId || !model) {
+      return { ok: false, reason: `no configured provider serves ${attempt.executorFamily}, so nothing can be reserved for this attempt and nothing is sent` };
+    }
+    /* No ceiling, no reservation; no reservation, nothing sent — and the
+       refusal happens here, before the submission is even attempted, because
+       a price that establishes no upper bound is a configuration fault rather
+       than something the database can be asked about. */
+    const ceiling = ceilingFor(config, providerId, model);
+    if (!ceiling) {
+      return { ok: false, reason: `budget refused: the operator's configuration establishes no upper bound on what ${providerId}/${model} could cost, so no reservation can be taken and nothing is sent` };
+    }
+
+    let refusal: BudgetRefused | null = null;
+    let reservedCost: number | null = null;
+    const holdTheMoney: SubmissionRider = async (unitOfWork: unknown): Promise<RiderOutcome> => {
+      /* On the record's OWN unit of work when it has one, so the hold is
+         undone by the same rollback that undoes the submission. A record
+         with none is handed the ledger's own connection, and its atomicity
+         is the record's to keep. */
+      const book = isQueryable(unitOfWork) ? ledger.on(unitOfWork) : ledger;
       try {
-        const held = await ledger.reserve(attemptId, ceilingFor(config, providerId, model));
-        emit({ event: "budget.reserved", attempt: attemptId, workflow: attempt.workflowId, provider: providerId, model, amount: held.reservedCost });
+        const held = await book.reserve(attemptId, ceiling);
+        reservedCost = held.reservedCost;
+        return { ok: true };
       } catch (error) {
         if (!isBudgetRefused(error)) throw error;
-        emit({ event: "budget.refused", attempt: attemptId, workflow: attempt.workflowId, provider: providerId, model, reason: error.reason });
-        await stopIfSpent(attempt.workflowId, error.reason);
+        refusal = error;
         return { ok: false, reason: `budget refused: ${error.reason}` };
       }
+    };
+
+    const outcome = await inner.submitAttempt(attemptId, leaseToken, at, both(alongside, holdTheMoney));
+    if (outcome.ok) {
+      emit({ event: "budget.reserved", attempt: attemptId, workflow: attempt.workflowId, provider: providerId, model, amount: reservedCost ?? 0 });
+      return outcome;
     }
-    return inner.submitAttempt(attemptId, leaseToken, at);
+    /* A refusal from the ledger is a fact about the run and may need the
+       spending stopped — and that write has to happen on the ledger's own
+       connection, AFTER the submission's transaction has gone, or it would be
+       rolled back along with the hold it is about. */
+    if (refusal !== null) {
+      const refused: BudgetRefused = refusal;
+      emit({ event: "budget.refused", attempt: attemptId, workflow: attempt.workflowId, provider: providerId, model, reason: refused.reason });
+      await stopIfSpent(attempt.workflowId, refused.reason);
+      return outcome;
+    }
+    /* The submission refused for its own reasons — an expired lease, a
+       cancellation, a stale state. The hold went with it. Nothing to emit and
+       nothing to give back, because nothing durable was ever taken. */
+    return outcome;
   };
 
   metered.transitionAttempt = async (attemptId: string, from: AttemptState, to: AttemptState, patch?: { errorCode?: string | null; errorMessage?: string | null; usage?: Record<string, unknown> }): Promise<AttemptRecord> => {
@@ -200,4 +254,21 @@ export function meteredRepository(inner: OrchestrationRepository, options: Meter
 
 function messageOf(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
+}
+
+/* Whether the record handed over a unit of work this ledger can write on. */
+function isQueryable(value: unknown): value is Queryable {
+  return typeof value === "object" && value !== null && typeof (value as { query?: unknown }).query === "function";
+}
+
+/* Two riders, in order, as one. The record's caller may already have asked
+   for something to happen with the submission; the hold is added to it rather
+   than put in its place. */
+function both(first: SubmissionRider | undefined, second: SubmissionRider): SubmissionRider {
+  if (!first) return second;
+  return async (unitOfWork: unknown): Promise<RiderOutcome> => {
+    const one = await first(unitOfWork);
+    if (!one.ok) return one;
+    return second(unitOfWork);
+  };
 }

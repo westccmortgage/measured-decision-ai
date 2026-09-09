@@ -27,6 +27,8 @@ import { withThrowawayDatabase, ensureCluster, HARNESS_LOCATION } from "../../co
 import { WireClient } from "../../core-v2/postgres/wire.ts";
 import { entityId, sha256 } from "../../core-v2/kernel/ids.ts";
 import { BudgetLedger, BudgetRefused, ceilingFor, isBudgetRefused } from "../budget/ledger.ts";
+import { meteredRepository } from "../budget/metered.ts";
+import { PostgresOrchestrationRepository } from "../../core-v2/postgres/repository.ts";
 import { NO_PAID_CALLS, costCeiling, priceFor } from "../runtime-config.ts";
 import { priceUsage } from "../budget/usage.ts";
 import { normalizeUsage } from "../providers/usage-dialects.ts";
@@ -585,6 +587,180 @@ await withThrowawayDatabase(async ({ client, organizationId, databaseName }) => 
 
     await refusedBecause("an attempt that reserved nothing has nothing to release",
       () => led.release(entityId("attempt", "budget", "no-hold"), "tidying up"), "reserved nothing");
+  }
+
+  /* ═══════════════════════════════════════════════════════════════════
+     THE HOLD AND THE SUBMISSION ARE ONE THING, OR NEITHER HAPPENED.
+
+     The reservation used to be taken first and the submission attempted
+     afterwards: two units of work with a window between them. Every refusal
+     the submission itself makes lands in that window — an expired lease, a
+     cancellation, an attempt somebody else already sent — and so does a
+     process dying. What came out of the window was a durable hold against an
+     attempt that was never sent: money the run cannot use and nobody can
+     account for.
+
+     Now the reservation rides inside the submission's own transaction. What
+     follows walks every way a submission can be refused and, after each one,
+     asks the two questions that matter: is there a new reservation, and has
+     the workflow's held total moved. The answer to both must be no. */
+
+  t.section("a hold and a submission are one thing, or neither of them happened");
+
+  {
+    const events = [];
+    const recordOn = (connection) => meteredRepository(
+      new PostgresOrchestrationRepository(connection, { organizationId }),
+      {
+        ledger: new BudgetLedger(connection, CONFIG),
+        config: CONFIG,
+        providerOfFamily: (family) => (family === "family-one" ? "anthropic" : null),
+        events: (event) => events.push(event),
+      },
+    );
+    const record = recordOn(client);
+
+    /* Queue, lease and run a task without submitting its attempt, which is
+       exactly the state the engine is in at the moment money would move. */
+    async function readyToSend(workflowIdValue, key, ttlMs = 60_000) {
+      const handle = await build.attempt(workflowIdValue, key);
+      await client.query(`select * from public.core_v2_task_transition($1, 'queued', null, 'created')`, [handle.taskId]);
+      const leased = await client.query(`select lease_token from public.core_v2_lease_task($1, $2, $3::int)`,
+        [handle.taskId, "atomic-boundary", ttlMs]);
+      await client.query(`select * from public.core_v2_task_transition($1, 'running', null, 'leased')`, [handle.taskId]);
+      return { ...handle, token: leased.rows[0].lease_token };
+    }
+
+    const reservationsFor = async (workflowIdValue) =>
+      Number((await client.query(`select count(*) as n from public.attempt_cost_reservations where workflow_id = $1`, [workflowIdValue])).rows[0].n);
+    const stateOf = async (attemptId) =>
+      (await client.query(`select state from public.agent_attempts where id = $1`, [attemptId])).rows[0].state;
+
+    /* ── the one case where money does move ── */
+    {
+      const wf = await build.workflow("atomic-ok");
+      await generous(wf);
+      const ready = await readyToSend(wf, "atomic-ok-1");
+      const outcome = await record.submitAttempt(ready.attemptId, ready.token, Date.now());
+      t.check("a submission that is allowed is allowed, and the attempt is sent",
+        outcome.ok === true && (await stateOf(ready.attemptId)) === "submitted", JSON.stringify(outcome).slice(0, 90));
+      t.check("and it left EXACTLY ONE reservation behind — not none, and not two",
+        (await reservationsFor(wf)) === 1, `${await reservationsFor(wf)} reservations`);
+      t.check("holding the ceiling the request will carry",
+        (await led.held(wf)) === CEILING_COST, `held ${await led.held(wf)}`);
+      t.check("and the run said so, once", events.filter((e) => e.event === "budget.reserved").length === 1);
+    }
+
+    /* ── every way it is refused, and the same two questions after each ── */
+    const refusals = [
+      ["the lease token is somebody else's", async (wf) => {
+        const ready = await readyToSend(wf, "atomic-wrong-token");
+        return { ready, call: () => record.submitAttempt(ready.attemptId, entityId("lease", wf, "not-mine"), Date.now()) };
+      }, /lease/],
+      ["the lease has run out", async (wf) => {
+        const ready = await readyToSend(wf, "atomic-expired", 1);
+        await sleep(30);
+        return { ready, call: () => record.submitAttempt(ready.attemptId, ready.token, Date.now()) };
+      }, /lease/],
+      ["somebody asked for the run to be cancelled", async (wf) => {
+        const ready = await readyToSend(wf, "atomic-cancelled");
+        await client.query(`update public.intelligence_workflows set cancel_requested_at = now() where id = $1`, [wf]);
+        return { ready, call: () => record.submitAttempt(ready.attemptId, ready.token, Date.now()) };
+      }, /cancel/i],
+      ["the attempt is not prepared any more", async (wf) => {
+        const ready = await readyToSend(wf, "atomic-stale");
+        /* Sent already, through the door, by somebody else. */
+        await client.query(`select * from public.core_v2_submit_attempt($1, $2)`, [ready.attemptId, ready.token]);
+        return { ready, call: () => record.submitAttempt(ready.attemptId, ready.token, Date.now()), expectReservations: 0 };
+      }, /attempt is/],
+      ["the task is no longer running", async (wf) => {
+        const ready = await readyToSend(wf, "atomic-not-running");
+        await client.query(`select * from public.core_v2_task_transition($1, 'cancelled', 'a person stopped it', 'running')`, [ready.taskId]);
+        return { ready, call: () => record.submitAttempt(ready.attemptId, ready.token, Date.now()) };
+      }, /task is/],
+    ];
+
+    for (const [what, arrange, reason] of refusals) {
+      const wf = await build.workflow(`atomic-${what.replace(/[^a-z]+/gi, "-")}`);
+      await generous(wf);
+      const before = await led.held(wf);
+      const { ready, call, expectReservations = 0 } = await arrange(wf);
+      const outcome = await call();
+      t.check(`${what}: the submission is refused, and says why`,
+        outcome.ok === false && reason.test(outcome.reason), outcome.ok ? "IT WAS SENT" : outcome.reason.slice(0, 70));
+      t.check(`${what}: NO reservation was left behind`,
+        (await reservationsFor(wf)) === expectReservations, `${await reservationsFor(wf)} reservations`);
+      t.check(`${what}: and the workflow is holding exactly what it held before`,
+        (await led.held(wf)) === before, `held ${await led.held(wf)}, was ${before}`);
+      t.check(`${what}: the attempt itself did not move`,
+        (await stateOf(ready.attemptId)) === (expectReservations === 0 && what.includes("not prepared") ? "submitted" : "prepared"),
+        await stateOf(ready.attemptId));
+    }
+
+    /* ── the budget itself refusing ── */
+    {
+      const wf = await build.workflow("atomic-broke");
+      /* Authorised for less than one attempt could cost. */
+      await led.authorizeWorkflow({ workflowId: wf, organizationId, currency: "USD", authorizedMaximum: 0.000001, maximumPerAttempt: 0.000001 });
+      const ready = await readyToSend(wf, "atomic-broke-1");
+      const outcome = await record.submitAttempt(ready.attemptId, ready.token, Date.now());
+      t.check("a budget that refuses refuses the submission, not just the hold",
+        outcome.ok === false && /budget refused/.test(outcome.reason), outcome.ok ? "IT WAS SENT" : outcome.reason.slice(0, 90));
+      t.check("nothing was sent — the attempt is still prepared",
+        (await stateOf(ready.attemptId)) === "prepared", await stateOf(ready.attemptId));
+      t.check("and no hold was left behind by the refusal",
+        (await reservationsFor(wf)) === 0 && (await led.held(wf)) === 0);
+      t.check("the refusal was reported with the reason the database gave",
+        events.some((e) => e.event === "budget.refused" && /more than the/.test(e.reason ?? "")),
+        JSON.stringify(events.filter((e) => e.event === "budget.refused").slice(-1)).slice(0, 120));
+    }
+
+    /* ── the crash, which is the whole reason this is one transaction ── */
+    {
+      const wf = await build.workflow("atomic-crash");
+      await generous(wf);
+      const ready = await readyToSend(wf, "atomic-crash-1");
+      const plain = new PostgresOrchestrationRepository(client, { organizationId });
+      let died = null;
+      try {
+        await plain.submitAttempt(ready.attemptId, ready.token, Date.now(), async (unitOfWork) => {
+          /* A real, durable hold — written on the submission's own unit of
+             work, exactly as the metered record writes it. */
+          await new BudgetLedger(unitOfWork, CONFIG).reserve(ready.attemptId, fullCeiling);
+          throw new Error("the dispatcher died between the hold and the move");
+        });
+      } catch (error) { died = error; }
+      t.check("a process that dies between the hold and the move takes the exception with it",
+        died instanceof Error && /died between/.test(died.message), died?.message?.slice(0, 60));
+      t.check("and the hold it had already written is gone, because it was never a hold on its own",
+        (await reservationsFor(wf)) === 0 && (await led.held(wf)) === 0, `${await reservationsFor(wf)} reservations`);
+      t.check("the attempt is still prepared, so the work can be tried again from a clean state",
+        (await stateOf(ready.attemptId)) === "prepared", await stateOf(ready.attemptId));
+    }
+
+    /* ── two dispatchers, one attempt, at the same moment ── */
+    {
+      const wf = await build.workflow("atomic-race");
+      await generous(wf);
+      const ready = await readyToSend(wf, "atomic-race-1");
+      const { socketPath } = await ensureCluster();
+      const second = await WireClient.connect({ socketPath, user: HARNESS_LOCATION.user, database: databaseName, applicationName: "atomic-boundary-b" });
+      try {
+        const both = await Promise.all([
+          record.submitAttempt(ready.attemptId, ready.token, Date.now()),
+          recordOn(second).submitAttempt(ready.attemptId, ready.token, Date.now()),
+        ]);
+        const sent = both.filter((outcome) => outcome.ok).length;
+        t.check("two dispatchers submitting one attempt at the same moment: exactly one of them sends it",
+          sent === 1, `${sent} of 2 sent — ${JSON.stringify(both.map((o) => (o.ok ? "sent" : o.reason.slice(0, 40))))}`);
+        t.check("and there is exactly one reservation, not two",
+          (await reservationsFor(wf)) === 1, `${await reservationsFor(wf)} reservations`);
+        t.check("so the workflow holds one ceiling, not two",
+          (await led.held(wf)) === CEILING_COST, `held ${await led.held(wf)}`);
+      } finally {
+        await second.end();
+      }
+    }
   }
 
   /* ─────────────────────────────────────────────────────────────────── */

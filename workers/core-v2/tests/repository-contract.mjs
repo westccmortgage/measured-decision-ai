@@ -346,6 +346,76 @@ async function suite(h, repo, organizationId) {
     check("independenceDomainsForSubject ignores ungrouped readers", (await repo.independenceDomainsForSubject(f.wfId(6), "subject:submit")).length === 0);
   }
 
+  /* SOMETHING THAT MUST HAPPEN WITH THE SUBMISSION, OR NOT AT ALL.
+     A submission may carry a rider — work outside the kernel that has to be
+     in the same unit of work as the move, so that a crash or a refusal cannot
+     leave one without the other. What the rider does is not the kernel's
+     business; that it is atomic with the move is, and both records have to
+     answer the same way about it. */
+  section("submitAttempt: a rider is part of the move, not something beside it");
+  {
+    await repo.createWorkflow(f.workflow(9), f.sources(9));
+
+    const ready = async (key) => {
+      const task = await admitted(9, key);
+      const token = await bringToRunning(repo, task);
+      const attempt = await repo.createAttempt(f.attempt(task, 1));
+      return { task, token, attempt };
+    };
+
+    /* A rider that agrees. */
+    {
+      const r = await ready("rider-ok");
+      const seen = [];
+      const outcome = await repo.submitAttempt(r.attempt.attemptId, r.token, Date.now(), async (unitOfWork) => {
+        seen.push(unitOfWork);
+        return { ok: true };
+      });
+      check("a rider that agrees lets the submission happen", outcome.ok === true && outcome.attempt.state === "submitted");
+      check("and it was run exactly once", seen.length === 1);
+      check("and it was handed the record's own unit of work, or nothing when the record has none",
+        seen[0] === null || typeof seen[0]?.query === "function");
+    }
+
+    /* A rider that refuses. */
+    {
+      const r = await ready("rider-no");
+      const outcome = await repo.submitAttempt(r.attempt.attemptId, r.token, Date.now(),
+        async () => ({ ok: false, reason: "the rider said no" }));
+      check("a rider that refuses refuses the submission, in its own words",
+        outcome.ok === false && outcome.reason === "the rider said no");
+      check("and the attempt did not move", (await repo.getAttempt(r.attempt.attemptId)).state === "prepared");
+      const after = await repo.submitAttempt(r.attempt.attemptId, r.token, Date.now());
+      check("so the same attempt can still be submitted afterwards", after.ok === true);
+    }
+
+    /* A rider that throws — the crash, as far as a record can see one. */
+    {
+      const r = await ready("rider-throws");
+      let died = null;
+      try {
+        await repo.submitAttempt(r.attempt.attemptId, r.token, Date.now(), async () => { throw new Error("the rider died"); });
+      } catch (error) { died = error; }
+      check("a rider that dies takes the exception with it", died instanceof Error && /the rider died/.test(died.message));
+      check("and the attempt did not move", (await repo.getAttempt(r.attempt.attemptId)).state === "prepared");
+    }
+
+    /* The rider runs only when the submission itself would go ahead: it is
+       run after every rule has passed, so a refusal the record makes on its
+       own never costs anything. */
+    {
+      const r = await ready("rider-not-reached");
+      let ran = 0;
+      const wrongToken = await repo.submitAttempt(r.attempt.attemptId, entityId("token", "not-mine"), Date.now(),
+        async () => { ran += 1; return { ok: true }; });
+      check("a submission refused for the record's own reasons never runs the rider",
+        wrongToken.ok === false && ran === 0, `${ran} runs — ${wrongToken.ok ? "sent" : wrongToken.reason}`);
+      const sent = await repo.submitAttempt(r.attempt.attemptId, r.token, Date.now(),
+        async () => { ran += 1; return { ok: true }; });
+      check("and the same attempt with the right token runs it once and sends", sent.ok === true && ran === 1, `${ran} runs`);
+    }
+  }
+
   section("attempts: made once, moved by the table, facts written once");
   {
     await repo.createWorkflow(f.workflow(9), f.sources(9));

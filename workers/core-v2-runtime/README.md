@@ -26,8 +26,11 @@ process.
     transport/          the HTTP seam. `SealedTransport` is the default and
                         refuses everything; `FixtureTransport` answers from a
                         file; `https.ts` is a real HTTPS client that cannot be
-                        constructed until every gate has passed; credentials
-                        are redacted wherever a request is rendered.
+                        constructed until this run is authorised for a priced
+                        provider, goes only to that provider's own origin, and
+                        connects only to addresses it has already checked;
+                        credentials are redacted wherever a request is
+                        rendered.
     material/           the provider-neutral material boundary: what a
                         resolver may return, and the verification every item
                         passes before a request is built. `memory-resolver.ts`
@@ -272,16 +275,38 @@ There is no flag, no environment variable and no test seam that skips this;
 `tests/https-transport.mjs` drives it through an injected request seam that
 never opens a socket.
 
+**Authorised is a smaller set than configured, and it is the set that
+decides.** A provider is somewhere this transport may go only when it is
+configured, named in `providerAllowlist`, has at least one of its models named
+in `modelAllowlist`, is priced for that pair, priced in the currency the
+authorisation is written in, and priced in a way that establishes an upper
+bound. Everything else is unauthorised however thoroughly it is configured.
+And an entry on either list that matches nothing, or matches something
+unpriced, **refuses construction** rather than being quietly skipped: a list
+that silently drops what it cannot use is a list nobody can read.
+
 Once constructed, it refuses:
 
 * any scheme that is not `https:`;
-* any host that is not the host of a configured provider's base URL;
+* any endpoint that is not one of the authorised providers' — matched on a
+  normalised origin, **scheme, host and effective port**, because a host is not
+  an endpoint and the same host on another port is another socket;
 * any URL carrying a username or password;
-* loopback, private, link-local, unique-local and unspecified addresses —
-  checked on the literal in the URL **and on every address DNS returns**, so a
-  name that resolves inward is refused as firmly as `127.0.0.1`;
+* loopback, this-network, private, carrier-grade NAT, link-local,
+  unique-local, benchmarking, multicast, reserved and broadcast addresses —
+  decided by **parsing the address**, not by looking at the front of a string,
+  so a bracketed URL hostname like `[::1]`, `[fe80::1]` or `[fd00::1]` is
+  refused as firmly as `127.0.0.1`, as is every IPv4 address wearing an IPv6
+  costume. Checked on the literal in the URL **and on every address DNS
+  returns**; one forbidden answer in a set of good ones refuses the whole set;
 * a request body over its ceiling, and a response over its ceiling;
 * a redirect — the response is returned unfollowed, never chased.
+
+**The addresses that passed the checks are the addresses it connects to.**
+There is no second lookup for a rebinding attack to poison: the lookup handed
+to the socket answers only from the set that was validated, and cannot be made
+to change its mind. The hostname is still what the certificate is verified
+against and what the handshake asks for.
 
 It applies the attempt's timeout and honours an `AbortSignal`. It never logs a
 request body, a response body, source material or a key; credential headers
@@ -352,9 +377,14 @@ ceiling and a wall-clock deadline. Then, on the path the work takes:
 
 * `submitAttempt` — the last thing before anything is sent — takes a hold for
   **the most this attempt could cost**, priced from the ceilings the request
-  will carry, atomically in the database. A refused hold refuses the
-  submission, and nothing leaves the process. The hold stores the prices it
-  was taken under as an immutable `price_basis`.
+  will carry, **inside the record's own unit of work**. The hold and the move
+  from `prepared` to `submitted` are one thing: after `submitAttempt` returns,
+  either the attempt is submitted and holds a reservation, or it is not
+  submitted and holds nothing. There is no order of events in which one exists
+  without the other, so there is nothing for a refused submission, an expired
+  lease, a cancellation or a dying process to land between. A refused hold
+  refuses the submission, and nothing leaves the process. The hold stores the
+  prices it was taken under as an immutable `price_basis`.
 * the commit that writes the answer settles the hold at what the provider
   actually reported, priced **from that stored basis** — never from the
   configuration the process happens to be holding. Changing a price, or
@@ -400,6 +430,34 @@ priced at the full input rate — an upper bound, deliberately, and recorded as
 such. A cache-*write* component with no cache-write rate is refused rather
 than guessed at, because guessing low is guessing in the wrong direction.
 Reasoning output with no separate rate is priced as output.
+
+### What "the most it could cost" means
+
+A token ceiling bounds a **category**, not a rate. The configured input
+ceiling bounds every billable input component added together — uncached input,
+cache reads, cache writes — and the output ceiling bounds visible output and
+reasoning added together. So pricing the input ceiling at the ordinary input
+rate is not a maximum: a cache write can cost more than ordinary input, and a
+reasoning token more than visible output, and the same number of tokens would
+then settle above the hold taken for them.
+
+The reservation therefore prices each category's ceiling at the **highest rate
+any component of that category could be charged at** —
+`max(input, cache read, cache write)` and `max(output, reasoning)` — with the
+three missing-rate rules taken from what settlement actually does: a missing
+cache-read rate is charged at the input rate, a missing reasoning rate is
+charged as output, and a missing cache-write rate cannot be charged at all
+because the settlement is refused outright. A price that establishes no upper
+bound at all is refused at assembly, before a reservation and before a
+submission. `tests/billing.mjs` proves the bound by exhausting the component
+mixtures inside the two ceilings rather than by assertion.
+
+The stored `price_basis` carries both directions: the ordinary rates that
+**settle** the attempt, and the ceiling rates, the rule that chose them and the
+number they produced, which **reproduce the reservation**. The reserve door
+refuses a basis that names a ceiling rule and then fails to reproduce its own
+number, or whose ceiling rate is below a rate the same attempt could be settled
+at.
 
 **Unknown is not zero.** If the provider reports no usable billing counts — no
 usage object, unparseable counts, or components the stored basis cannot price
@@ -453,14 +511,20 @@ are three levels, and they are not interchangeable.
 
 **Proved locally.** Provable in this repository with no network at all, and
 proved: the material boundary and every refusal it makes; the HTTPS
-transport's gates, host restriction, address rules, redirect refusal, size
-ceilings and before/after-submission classification, through an injected
-request seam; the order in which a key is read; usage normalization for the
-three dialects and the absence of double counting; settlement from the stored
-price basis under a changed configuration; a missing usage report becoming an
-open reservation rather than $0; currency refusal; the whole workflow offline
-through three adapters, a real record and a durable budget; crash and restart;
-an attempt whose outcome nobody ever learns.
+transport's gates, the exactness of what it is authorised to reach, its origin
+restriction, its address parsing, its pinning of the connection to the
+addresses it checked, its redirect refusal, size ceilings and
+before/after-submission classification, all through an injected request seam;
+the order in which a key is read; that a hold and a submission are one thing
+under every way a submission can be refused, including a process dying between
+them and two dispatchers racing for one attempt; that a reservation is never
+below the worst case any component mixture inside its token ceilings could
+cost; usage normalization for the three dialects and the absence of double
+counting; settlement from the stored price basis under a changed
+configuration; a missing usage report becoming an open reservation rather than
+$0; currency refusal; the whole workflow offline through three adapters, a real
+record and a durable budget; crash and restart; an attempt whose outcome nobody
+ever learns.
 
 **Checked against documentation, not against a provider.** The shape of each
 request — required fields, header names, where structured output goes, where
@@ -504,13 +568,19 @@ this code does with an answer of that shape.
                            nothing here can even construct the open one
     material.mjs           what a resolver may return, and every way material
                            is refused before a request is built
-    https-transport.mjs    the gates, the host allowlist, credentials in a
-                           URL, private addresses, redirects, size ceilings,
+    https-transport.mjs    the gates, exactly which endpoints this run is
+                           authorised to reach, credentials in a URL, every
+                           address nothing outside may be reached at
+                           (bracketed IPv6 included), a name that resolves
+                           inward, a lookup that changes its mind between the
+                           check and the connection, redirects, size ceilings,
                            timeouts, redaction, and what counts as
                            "possibly submitted"
-    billing.mjs            three usage dialects, no token counted twice,
-                           settlement from the stored basis, and a missing
-                           usage report that never becomes $0
+    billing.mjs            three usage dialects, no token counted twice, a
+                           reservation no component mixture inside its
+                           ceilings can exceed, settlement from the stored
+                           basis, and a missing usage report that never
+                           becomes $0
     prompt-compiler.mjs    what a packet becomes, and what it may never say
     adapters.mjs           three adapters, one contract: what goes on the
                            wire, which header carries the key, that strict is
@@ -519,8 +589,13 @@ this code does with an answer of that shape.
                            becomes — never a successful empty result; plus
                            capability refusals and the order a key is read in
     budget.mjs             reservations, settlement, release, the attention
-                           condition, a frozen price basis, currency, and two
-                           dispatchers racing for one budget
+                           condition, a frozen price basis, currency, two
+                           dispatchers racing for one budget — and the whole
+                           of the hold-and-submission boundary: every way a
+                           submission is refused leaves no hold behind, a
+                           process dying between them leaves neither, and two
+                           dispatchers racing for one attempt produce one
+                           reservation
     dispatcher.mjs         claiming, ownership, restart, cancellation and
                            shutdown, against a real database
     e2e.mjs                one whole workflow offline through all three

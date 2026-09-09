@@ -150,6 +150,98 @@ export function paidCallRefusals(config: RuntimeConfig, providerId?: string, mod
   return refusals;
 }
 
+/* ─────────────────── WHAT THE AUTHORIZATION ACTUALLY COVERS, EXACTLY
+
+   The four gates say a paid call is permitted at all. They do NOT say where
+   one may go, and reading them as if they did is how a run that authorised
+   one provider reaches a different one that merely happens to be configured.
+   Being on an allowlist is not enough either: a name on a list that matches
+   nothing, or matches something with no price, authorises nothing and must be
+   refused rather than quietly skipped, because a list that silently drops its
+   unusable entries is a list nobody can read.
+
+   An endpoint is authorised only when every one of these is true at once:
+
+     · the provider is configured;
+     · the provider is named in providerAllowlist;
+     · at least one of its configured models is named in modelAllowlist;
+     · that provider/model pair is priced;
+     · the price is in the currency the authorisation is written in;
+     · the price establishes an upper bound, so a reservation can be taken;
+     · the authorised amount is above zero.
+
+   Everything else is unauthorised, however thoroughly it is configured. */
+
+export type AuthorizedProvider = { providerId: string; models: string[] };
+
+/* The providers this authorisation actually covers, and the models of each
+   that it covers. Empty when nothing is authorised — which is the ordinary
+   case and the one every command in this package runs in. */
+export function authorizedProviders(config: RuntimeConfig): AuthorizedProvider[] {
+  const a = config.authorization;
+  if (!a.providerNetworkFlag || !a.environmentGate || !(a.maximumAuthorizedCost > 0)) return [];
+  const covered: AuthorizedProvider[] = [];
+  for (const provider of config.providers) {
+    if (!a.providerAllowlist.includes(provider.providerId)) continue;
+    const models = provider.models.filter((model) => a.modelAllowlist.includes(model))
+      .filter((model) => {
+        const price = priceFor(config, provider.providerId, model);
+        if (!price) return false;
+        if (price.currency.toUpperCase() !== a.currency.toUpperCase()) return false;
+        return costCeiling(config, provider.providerId, model, provider.maximumInputTokens, provider.maximumOutputTokens) !== null;
+      });
+    if (models.length > 0) covered.push({ providerId: provider.providerId, models });
+  }
+  return covered;
+}
+
+/* Every reason this run may not open a door to anybody, at once. The four
+   gates first, then every way an allowlist can name something it cannot
+   authorise. An empty list means at least one endpoint is genuinely
+   authorised AND no entry on either list is unusable. */
+export function networkAuthorizationProblems(config: RuntimeConfig): string[] {
+  const a = config.authorization;
+  const problems = paidCallRefusals(config);
+  /* A name on a list that matches nothing is a refusal, not a no-op. */
+  for (const providerId of a.providerAllowlist) {
+    const provider = config.providers.find((p) => p.providerId === providerId);
+    if (!provider) {
+      problems.push(`${providerId} is on the authorised list of providers and is not configured at all`);
+      continue;
+    }
+    const named = provider.models.filter((model) => a.modelAllowlist.includes(model));
+    if (named.length === 0) {
+      problems.push(`${providerId} is authorised and not one of the models it is configured for is on the authorised list`);
+      continue;
+    }
+    for (const model of named) {
+      const price = priceFor(config, providerId, model);
+      if (!price) {
+        problems.push(`${providerId}/${model} is authorised and has no price, so nothing could be reserved for it`);
+        continue;
+      }
+      if (price.currency.toUpperCase() !== a.currency.toUpperCase()) {
+        problems.push(`${providerId}/${model} is priced in ${price.currency} and this run is authorised in ${a.currency}`);
+        continue;
+      }
+      const rates = ceilingRates(price);
+      if (rates.problems.length > 0) problems.push(...rates.problems);
+      else if (costCeiling(config, providerId, model, provider.maximumInputTokens, provider.maximumOutputTokens) === null) {
+        problems.push(`${providerId}/${model} is authorised and the most it could cost cannot be worked out, so nothing could be reserved for it`);
+      }
+    }
+  }
+  /* And a model nobody authorised a provider for. */
+  for (const model of a.modelAllowlist) {
+    const served = config.providers.some((p) => a.providerAllowlist.includes(p.providerId) && p.models.includes(model));
+    if (!served) problems.push(`${model} is on the authorised list of models and no authorised provider is configured to be asked for it`);
+  }
+  if (problems.length === 0 && authorizedProviders(config).length === 0) {
+    problems.push("this authorisation covers no configured provider at all");
+  }
+  return problems;
+}
+
 export function isPaidCallAuthorized(config: RuntimeConfig, providerId?: string, model?: string): boolean {
   return paidCallRefusals(config, providerId, model).length === 0;
 }
@@ -165,12 +257,50 @@ export function priceFor(config: RuntimeConfig, providerId: string, model: strin
   return candidates[candidates.length - 1] ?? null;
 }
 
+/* WHAT "THE MOST IT COULD COST" ACTUALLY MEANS.
+ *
+ * A token ceiling is a ceiling on a CATEGORY, not on one rate. The configured
+ * input ceiling bounds every billable input component added together —
+ * uncached input, tokens read from a cache, tokens written to one — and the
+ * output ceiling bounds visible output and reasoning output added together.
+ * Which is why pricing the input ceiling at the ordinary input rate is not a
+ * maximum: a cache write can cost more than ordinary input, and reasoning can
+ * cost more than visible output, so the same number of tokens can cost more
+ * than the reservation held for them.
+ *
+ * The upper bound is therefore the ceiling of each category priced at the
+ * HIGHEST rate any component of that category could be charged at:
+ *
+ *   input  → max(input, cache read, cache write)
+ *   output → max(visible output, reasoning)
+ *
+ * with two rules for a rate the operator did not record, both taken from what
+ * priceUsage() actually does with it:
+ *
+ *   · a missing cache-read rate is charged at the full input rate, so it adds
+ *     nothing to the maximum;
+ *   · a missing reasoning rate is charged as output, so it adds nothing;
+ *   · a missing cache-write rate cannot be charged AT ALL — priceUsage
+ *     refuses the settlement outright — so it cannot exceed the bound either.
+ *
+ * Every component mixture that fits inside the two token ceilings therefore
+ * costs at most this number. tests/billing.mjs proves that by exhausting the
+ * mixtures rather than by assertion.
+ */
+export const CEILING_RULE = "core-v2.ceiling.1";
+
 export type CostCeiling = {
   providerId: string;
   model: string;
   currency: string;
   maximumInputTokens: number;
   maximumOutputTokens: number;
+  /* The rates the ceiling was worked out at: the highest any billable
+     component of that category could be charged at under this price. Stored,
+     so the reservation can be reproduced without re-deriving it. */
+  ceilingInputPerMillionTokens: number;
+  ceilingOutputPerMillionTokens: number;
+  rule: string;
   /* The most this attempt could possibly cost, priced from the ceilings it
      will be sent with. Never an expectation: the difference between the two
      is the money an optimistic engine spends without meaning to. */
@@ -178,16 +308,62 @@ export type CostCeiling = {
   basis: ModelPrice;
 };
 
-/* The number the durable reservation is taken for. Both ceilings are priced
-   at full rate; a cached or reasoning rate can only make the real cost lower,
-   and a reservation that assumes the cheaper case is not a ceiling. */
+/* The highest rate each category could be charged at, or the reasons this
+   price establishes no upper bound at all. A price with no upper bound is not
+   a cheap price: it is a price nothing can be reserved under, and nothing
+   that cannot be reserved for is sent. */
+export function ceilingRates(price: ModelPrice): { input: number; output: number; problems: string[] } {
+  const problems: string[] = [];
+  const rate = (value: number | null | undefined, what: string, required: boolean): number | null => {
+    if (value === undefined || value === null) {
+      if (required) problems.push(`${price.providerId}/${price.model} records no ${what}`);
+      return null;
+    }
+    if (typeof value !== "number" || !Number.isFinite(value) || value < 0) {
+      problems.push(`the ${what} recorded for ${price.providerId}/${price.model} is not a rate a ceiling can be worked out from`);
+      return null;
+    }
+    return value;
+  };
+  const input = rate(price.inputPerMillionTokens, "input rate", true);
+  const output = rate(price.outputPerMillionTokens, "output rate", true);
+  const cachedRead = rate(price.cachedInputPerMillionTokens, "cached-input rate", false);
+  /* Absent, this rate is not a discount to assume — it is a settlement that
+     will be refused, so it can never be charged and never exceeds the bound. */
+  const cacheWrite = rate(price.cacheWritePerMillionTokens, "cache-write rate", false);
+  const reasoning = rate(price.reasoningPerMillionTokens, "reasoning rate", false);
+  if (input === null || output === null) return { input: 0, output: 0, problems };
+  return {
+    /* A missing cache-read rate is charged at the input rate, so it folds in
+       as the input rate rather than as an unknown. */
+    input: Math.max(input, cachedRead ?? input, cacheWrite ?? input),
+    output: Math.max(output, reasoning ?? output),
+    problems,
+  };
+}
+
+/* The number the durable reservation is taken for: each token ceiling at the
+   highest rate any component of its category could be charged at. Null when
+   the operator prices nothing for this model, or prices it in a way that
+   establishes no upper bound — no ceiling, no reservation; no reservation,
+   nothing sent. */
 export function costCeiling(config: RuntimeConfig, providerId: string, model: string, inputTokens: number, outputTokens: number, at?: Date): CostCeiling | null {
   const price = priceFor(config, providerId, model, at);
   if (!price) return null;
+  if (!countable(inputTokens) || !countable(outputTokens)) return null;
+  const rates = ceilingRates(price);
+  if (rates.problems.length > 0) return null;
   const perMillion = (tokens: number, rate: number) => (tokens / 1_000_000) * rate;
-  const maximumCost = round6(perMillion(inputTokens, price.inputPerMillionTokens) + perMillion(outputTokens, price.outputPerMillionTokens));
-  return { providerId, model, currency: price.currency, maximumInputTokens: inputTokens, maximumOutputTokens: outputTokens, maximumCost, basis: price };
+  const maximumCost = round6(perMillion(inputTokens, rates.input) + perMillion(outputTokens, rates.output));
+  return {
+    providerId, model, currency: price.currency,
+    maximumInputTokens: inputTokens, maximumOutputTokens: outputTokens,
+    ceilingInputPerMillionTokens: rates.input, ceilingOutputPerMillionTokens: rates.output,
+    rule: CEILING_RULE, maximumCost, basis: price,
+  };
 }
+
+const countable = (n: number): boolean => Number.isFinite(n) && n >= 0 && Math.trunc(n) === n;
 
 /* WHAT AN ATTEMPT REALLY COST IS NOT COMPUTED HERE ANY MORE.
    It used to be, by adding input, cached input, output and reasoning
@@ -229,7 +405,15 @@ export function configurationProblems(config: RuntimeConfig): string[] {
       if (!p.capabilities[model]) problems.push(`${p.providerId} does not say what ${model} can be asked to do`);
     }
     for (const model of p.models) {
-      if (!priceFor(config, p.providerId, model)) problems.push(`${p.providerId}/${model} has no price, so nothing can be reserved for it`);
+      const price = priceFor(config, p.providerId, model);
+      if (!price) { problems.push(`${p.providerId}/${model} has no price, so nothing can be reserved for it`); continue; }
+      /* A price that establishes no upper bound is refused here, where a
+         person is still reading, rather than at the moment of a reservation
+         that would otherwise be taken below the worst case. */
+      problems.push(...ceilingRates(price).problems);
+      if (costCeiling(config, p.providerId, model, p.maximumInputTokens, p.maximumOutputTokens) === null) {
+        problems.push(`the most ${p.providerId}/${model} could cost cannot be worked out from its price and its ceilings, so nothing can be reserved for it`);
+      }
     }
   }
   if (!config.dispatcherName) problems.push("the dispatcher has no name to claim work under");

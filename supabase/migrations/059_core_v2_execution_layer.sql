@@ -206,6 +206,47 @@ begin
   if p_maximum_cost is null or p_maximum_cost < 0 then
     raise exception 'core_v2: reservation refused: a maximum cost is a number that is not negative';
   end if;
+  -- THE HOLD HAS TO SHOW THAT IT IS A CEILING.
+  -- A reservation carries the rates it was worked out at and the number they
+  -- produced, so that a reader can repeat the arithmetic rather than take the
+  -- caller's word for it. A basis that names a ceiling rule and then does not
+  -- reproduce its own number is refused here, where the money is, rather than
+  -- discovered later by whoever is reconciling an invoice. Six decimal places
+  -- is the whole of the precision this column has, so that is the tolerance.
+  if p_price_basis ? 'ceiling_rule' then
+    if (p_price_basis->>'ceiling_input_per_million_tokens') is null
+       or (p_price_basis->>'ceiling_output_per_million_tokens') is null
+       or (p_price_basis->>'maximum_cost') is null then
+      raise exception 'core_v2: reservation refused: a price basis that names a ceiling rule must carry the rates it used and the number they produced';
+    end if;
+    if round(
+         (p_input_tokens::numeric / 1000000) * (p_price_basis->>'ceiling_input_per_million_tokens')::numeric
+       + (p_output_tokens::numeric / 1000000) * (p_price_basis->>'ceiling_output_per_million_tokens')::numeric, 6)
+       <> round((p_price_basis->>'maximum_cost')::numeric, 6) then
+      raise exception 'core_v2: reservation refused: the price basis does not reproduce the ceiling it claims';
+    end if;
+    if round((p_price_basis->>'maximum_cost')::numeric, 6) <> round(p_maximum_cost, 6) then
+      raise exception 'core_v2: reservation refused: the hold asked for is not the ceiling its price basis works out to';
+    end if;
+    -- A ceiling rate below the rate a component of the same category will be
+    -- settled at is a hold taken below its own worst case.
+    if (p_price_basis->>'input_per_million_tokens') is not null
+       and (p_price_basis->>'ceiling_input_per_million_tokens')::numeric < (p_price_basis->>'input_per_million_tokens')::numeric then
+      raise exception 'core_v2: reservation refused: the input ceiling rate is below the input rate this attempt will be settled at';
+    end if;
+    if (p_price_basis->>'cache_write_per_million_tokens') is not null
+       and (p_price_basis->>'ceiling_input_per_million_tokens')::numeric < (p_price_basis->>'cache_write_per_million_tokens')::numeric then
+      raise exception 'core_v2: reservation refused: the input ceiling rate is below the cache-write rate this attempt could be settled at';
+    end if;
+    if (p_price_basis->>'output_per_million_tokens') is not null
+       and (p_price_basis->>'ceiling_output_per_million_tokens')::numeric < (p_price_basis->>'output_per_million_tokens')::numeric then
+      raise exception 'core_v2: reservation refused: the output ceiling rate is below the output rate this attempt will be settled at';
+    end if;
+    if (p_price_basis->>'reasoning_per_million_tokens') is not null
+       and (p_price_basis->>'ceiling_output_per_million_tokens')::numeric < (p_price_basis->>'reasoning_per_million_tokens')::numeric then
+      raise exception 'core_v2: reservation refused: the output ceiling rate is below the reasoning rate this attempt could be settled at';
+    end if;
+  end if;
   select * into attempt from public.agent_attempts where id = p_attempt_id;
   if not found then
     raise exception 'core_v2: reservation refused: no attempt %', p_attempt_id;

@@ -20,7 +20,7 @@ import { canonical, sha256 } from "./ids.ts";
 import { locatorInside, locatorProblem } from "./locators.ts";
 import type {
   Admission, AdmissionLimits, ClaimFilter, CommitOutcome, DecisionApplication, DisagreementTransition, NewAnchor,
-  HoldOutcome, NewClaim, NewSegment, NewTask, OrchestrationRepository, ResultCommit, SubjectHold, SubmitOutcome,
+  HoldOutcome, NewClaim, NewSegment, NewTask, OrchestrationRepository, ResultCommit, SubjectHold, SubmissionRider, SubmitOutcome,
 } from "./repository.ts";
 import { taskPayload } from "./repository.ts";
 import {
@@ -41,6 +41,10 @@ export class InMemoryOrchestrationRepository implements OrchestrationRepository 
   tasks = new Map<string, TaskRecord>();
   dependencies: DependencyRecord[] = [];
   attempts = new Map<string, AttemptRecord>();
+  /* Attempts whose submission is waiting for a rider. This record has no
+     transaction, so this set is what keeps two submissions of one attempt
+     from both running one. */
+  private submitting = new Set<string>();
   claims = new Map<string, ClaimRecord>();
   anchors = new Map<string, AnchorRecord>();
   assessments = new Map<string, AssessmentRecord>();
@@ -344,7 +348,7 @@ export class InMemoryOrchestrationRepository implements OrchestrationRepository 
     this.attempts.set(record.attemptId, { ...record, workflowId: task.workflowId });
     return this.attempts.get(record.attemptId)!;
   }
-  async submitAttempt(attemptId: string, leaseToken: string, now: number): Promise<SubmitOutcome> {
+  async submitAttempt(attemptId: string, leaseToken: string, now: number, alongside?: SubmissionRider): Promise<SubmitOutcome> {
     const attempt = this.attempts.get(attemptId);
     if (!attempt) return { ok: false, reason: "no such attempt" };
     const task = this.tasks.get(attempt.taskId);
@@ -362,6 +366,31 @@ export class InMemoryOrchestrationRepository implements OrchestrationRepository 
       const peers = new Set([...this.tasks.values()].filter((t) => t.workflowId === task.workflowId && t.subjectKey === task.subjectKey && t.independenceGroup !== null && t.independenceGroup !== task.independenceGroup).map((t) => t.taskId));
       const clash = [...this.attempts.values()].find((a) => peers.has(a.taskId) && SUBMITTED_ATTEMPT_STATES.includes(a.state) && a.independenceDomain === attempt.independenceDomain);
       if (clash) return { ok: false, reason: `independence: domain ${attempt.independenceDomain} already read ${task.subjectKey} as another group` };
+    }
+    /* THE RIDER AND THE MOVE ARE ONE THING HERE TOO — differently, because
+       this record has no transaction to roll back. So it does the only other
+       thing that gives the same observable answer: it runs the rider LAST,
+       after every rule has passed, and moves the attempt only if the rider
+       agreed. A refusal leaves nothing behind because nothing was written
+       yet; a success writes the move immediately after.
+
+       The two guards below are what an awaited rider costs. While one
+       submission of an attempt is waiting for its rider, a second is refused
+       rather than allowed to run a second rider for the same attempt; and
+       when the rider comes back, the state it was run against is checked
+       again, so a rider cannot be paired with an attempt that moved
+       underneath it. */
+    if (alongside) {
+      if (this.submitting.has(attemptId)) return { ok: false, reason: "the attempt is already being submitted" };
+      this.submitting.add(attemptId);
+      try {
+        const rode = await alongside(null);
+        if (!rode.ok) return { ok: false, reason: rode.reason };
+      } finally {
+        this.submitting.delete(attemptId);
+      }
+      const still = this.attempts.get(attemptId);
+      if (!still || still.state !== "prepared") return { ok: false, reason: `attempt is ${still ? still.state : "gone"}` };
     }
     const next = { ...attempt, state: "submitted" as AttemptState, leaseToken };
     this.attempts.set(attemptId, next);

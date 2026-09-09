@@ -79,7 +79,7 @@ import { locatorInside, locatorProblem } from "../kernel/locators.ts";
 import type {
   Admission, AdmissionLimits, ClaimFilter, CommitOutcome, DecisionApplication, DisagreementTransition, HoldOutcome,
   NewAnchor, NewAssessment, NewClaim, NewDisagreement, NewSegment, NewTask, OrchestrationRepository, ResultCommit,
-  SubjectHold, SubmitOutcome,
+  SubjectHold, SubmissionRider, SubmitOutcome,
 } from "../kernel/repository.ts";
 import { taskPayload } from "../kernel/repository.ts";
 import {
@@ -908,7 +908,7 @@ export class PostgresOrchestrationRepository implements OrchestrationRepository 
   /* The one moment money may leave. The double's checks in the double's
      order on the locked rows, then the independence check, then
      core_v2_submit_attempt as the move itself under the same locks. */
-  submitAttempt(attemptId: string, leaseToken: string, _now: number): Promise<SubmitOutcome> {
+  submitAttempt(attemptId: string, leaseToken: string, _now: number, alongside?: SubmissionRider): Promise<SubmitOutcome> {
     return this.client.transaction(async (tx): Promise<SubmitOutcome> => {
       const attempt = await this.attemptIn(tx, attemptId, true);
       if (!attempt) return { ok: false, reason: "no such attempt" };
@@ -940,8 +940,27 @@ export class PostgresOrchestrationRepository implements OrchestrationRepository 
           [task.workflowId, task.subjectKey, task.independenceGroup, attempt.independenceDomain]);
         if (clash.rows.length) return { ok: false, reason: `independence: domain ${attempt.independenceDomain} already read ${task.subjectKey} as another group` };
       }
+      /* THE RIDER AND THE MOVE ARE ONE THING.
+         Both happen inside this transaction, behind one savepoint, in this
+         order: whatever else must be true of a submission is made true first
+         — while the attempt is still `prepared`, which is what a hold on it
+         is a hold for — and the move itself follows. Either the savepoint is
+         released with both written, or it is rolled back with neither. There
+         is no window between them for a crash, a refusal or a lease to
+         expire in, because there is no "between": one transaction, one
+         outcome. The rider is run on this transaction, not beside it, so a
+         rider that writes through its own connection would be writing outside
+         the rollback — which is why it is handed `tx` rather than trusted to
+         find its own way here. */
       await tx.query("savepoint core_v2_submit");
       try {
+        if (alongside) {
+          const rode = await alongside(tx);
+          if (!rode.ok) {
+            await tx.query("rollback to savepoint core_v2_submit");
+            return { ok: false, reason: rode.reason };
+          }
+        }
         await tx.query(`select (public.core_v2_submit_attempt($1, $2)).id as id`, [attemptId, leaseToken]);
         await tx.query("release savepoint core_v2_submit");
       } catch (error) {
