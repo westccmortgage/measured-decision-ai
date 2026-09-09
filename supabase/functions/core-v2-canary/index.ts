@@ -125,6 +125,14 @@ const STOP_STARTING_MS = DRAIN_DEADLINE_MS - ANSWER_WITHIN_MS - SETTLEMENT_ROOM_
  * whole point. */
 const LEASE_TTL_MS = ANSWER_WITHIN_MS + SETTLEMENT_ROOM_MS + 40_000;
 
+/* HOW MANY ATTEMPTS MAY BE IN FLIGHT AT ONCE. Wide enough that every blind
+   reader of a sheet starts in the same wave: readers that start one at a
+   time cost a tick each, and a tick against this record is twenty to thirty
+   seconds of round trips. The money is bounded by the authority and the
+   attempt cap, which are the fuses that matter — this is only how many of
+   them may be open together. */
+const CONCURRENT_ATTEMPTS = 6;
+
 /* WHICH RUN THIS IS. The canary id is immutable per run; a run whose
    workflow already reached a terminal state cannot be continued, so a
    corrected attempt gets the next generation and its own workflow. The
@@ -481,18 +489,23 @@ Deno.serve(async (request: Request): Promise<Response> => {
         authorizedMaximum: lifetimeRemaining,
         maximumPerAttempt: worst.perAttempt,
         maximumAttempts,
-        /* Wide enough that every blind reader of a sheet starts in the same
-           wave. Two generations died the same way: readers started one or
-           three at a time, the container ended before the last of them came
-           back, their leases expired and the engine — correctly — refused to
-           settle a region on one opinion and escalated it to a person. That
-           escalation was about the wall clock, not about the readings.
-           Starting them together and stopping early enough to collect them
-           is what makes the difference. The money is still bounded by the
-           authority and the attempt cap, which are the fuses that matter. */
-        maximumConcurrentAttempts: 6,
-        maximumInputTokens: Math.max(...config.providers.map((p) => p.maximumInputTokens)),
-        maximumOutputTokens: Math.max(...config.providers.map((p) => p.maximumOutputTokens)),
+        maximumConcurrentAttempts: CONCURRENT_ATTEMPTS,
+        /* THESE TWO ARE HELD TOTALS, NOT PER-REQUEST CEILINGS.
+         *
+         * The ledger checks them as `reserved_input_tokens + this attempt >
+         * maximum_input_tokens`, so they bound what may be HELD AT ONCE
+         * across the workflow. Handing it one provider's per-request ceiling
+         * therefore authorised exactly one model attempt in flight, whatever
+         * maximumConcurrentAttempts said — and that is what every generation
+         * of this canary has actually been doing: one reader at a time, each
+         * costing a tick, the container gone before the fourth.
+         *
+         * The number that belongs here is what six attempts at that ceiling
+         * would hold. Nothing about a single request is loosened by it: each
+         * attempt is still capped at its own provider's ceiling where that
+         * ceiling belongs, in the packet and in the request. */
+        maximumInputTokens: CONCURRENT_ATTEMPTS * Math.max(...config.providers.map((p) => p.maximumInputTokens)),
+        maximumOutputTokens: CONCURRENT_ATTEMPTS * Math.max(...config.providers.map((p) => p.maximumOutputTokens)),
       });
     }
 
