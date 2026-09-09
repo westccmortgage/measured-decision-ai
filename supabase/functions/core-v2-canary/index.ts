@@ -84,7 +84,7 @@ const DRAIN_DEADLINE_MS = 140_000;
  * deadline. It stops STARTING work then, and stop() waits for what is
  * already in flight, which leaves an attempt either finished or never begun
  * — never abandoned halfway. */
-const STOP_STARTING_MS = 70_000;
+const STOP_STARTING_MS = 45_000;
 
 /* WHICH RUN THIS IS. The canary id is immutable per run; a run whose
    workflow already reached a terminal state cannot be continued, so a
@@ -431,11 +431,16 @@ Deno.serve(async (request: Request): Promise<Response> => {
         authorizedMaximum: lifetimeRemaining,
         maximumPerAttempt: worst.perAttempt,
         maximumAttempts,
-        /* Three at a time. A real reader takes twenty seconds and an Edge
-           Function has about two and a half minutes; at one at a time the
-           wall clock, not the work, decides how far a pass gets. The money
-           is still bounded by the authority and the attempt cap. */
-        maximumConcurrentAttempts: 3,
+        /* Wide enough that every blind reader of a sheet starts in the same
+           wave. Two generations died the same way: readers started one or
+           three at a time, the container ended before the last of them came
+           back, their leases expired and the engine — correctly — refused to
+           settle a region on one opinion and escalated it to a person. That
+           escalation was about the wall clock, not about the readings.
+           Starting them together and stopping early enough to collect them
+           is what makes the difference. The money is still bounded by the
+           authority and the attempt cap, which are the fuses that matter. */
+        maximumConcurrentAttempts: 6,
         maximumInputTokens: Math.max(...config.providers.map((p) => p.maximumInputTokens)),
         maximumOutputTokens: Math.max(...config.providers.map((p) => p.maximumOutputTokens)),
       });
