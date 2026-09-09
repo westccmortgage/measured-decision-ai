@@ -1,0 +1,121 @@
+{
+  "declaredBy": "",
+  "declaredAt": "",
+  "providers": [
+    {
+      "providerId": "",
+      "baseUrl": "",
+      "apiKeyEnvironmentVariable": "",
+      "models": [
+        ""
+      ],
+      "defaultModel": "",
+      "maximumInputTokens": 0,
+      "maximumOutputTokens": 0,
+      "requestTimeoutMs": 0,
+      "maximumMaterialBytes": 0,
+      "maximumMaterialBytesPerItem": 0,
+      "supportedMediaTypes": [
+        "text/plain; charset=utf-8"
+      ],
+      "capabilities": {
+        "": {
+          "forcedToolChoice": false,
+          "strictSchema": false,
+          "images": false,
+          "thinking": "none"
+        }
+      }
+    },
+    {
+      "providerId": "",
+      "baseUrl": "",
+      "apiKeyEnvironmentVariable": "",
+      "models": [
+        ""
+      ],
+      "defaultModel": "",
+      "maximumInputTokens": 0,
+      "maximumOutputTokens": 0,
+      "requestTimeoutMs": 0,
+      "maximumMaterialBytes": 0,
+      "maximumMaterialBytesPerItem": 0,
+      "supportedMediaTypes": [
+        "text/plain; charset=utf-8"
+      ],
+      "capabilities": {
+        "": {
+          "forcedToolChoice": false,
+          "strictSchema": false,
+          "images": false,
+          "thinking": "none"
+        }
+      }
+    },
+    {
+      "providerId": "",
+      "baseUrl": "",
+      "apiKeyEnvironmentVariable": "",
+      "models": [
+        ""
+      ],
+      "defaultModel": "",
+      "maximumInputTokens": 0,
+      "maximumOutputTokens": 0,
+      "requestTimeoutMs": 0,
+      "maximumMaterialBytes": 0,
+      "maximumMaterialBytesPerItem": 0,
+      "supportedMediaTypes": [
+        "text/plain; charset=utf-8"
+      ],
+      "capabilities": {
+        "": {
+          "forcedToolChoice": false,
+          "strictSchema": false,
+          "images": false,
+          "thinking": "none"
+        }
+      }
+    }
+  ],
+  "pricing": [
+    {
+      "providerId": "",
+      "model": "",
+      "effectiveFrom": "",
+      "currency": "USD",
+      "inputPerMillionTokens": 0,
+      "outputPerMillionTokens": 0,
+      "cacheWritePerMillionTokens": 0
+    },
+    {
+      "providerId": "",
+      "model": "",
+      "effectiveFrom": "",
+      "currency": "USD",
+      "inputPerMillionTokens": 0,
+      "outputPerMillionTokens": 0,
+      "cacheWritePerMillionTokens": 0
+    },
+    {
+      "providerId": "",
+      "model": "",
+      "effectiveFrom": "",
+      "currency": "USD",
+      "inputPerMillionTokens": 0,
+      "outputPerMillionTokens": 0,
+      "cacheWritePerMillionTokens": 0
+    }
+  ],
+  "roles": {
+    "readerA": "",
+    "readerB": "",
+    "critic": ""
+  },
+  "routing": {
+    "reader-family-one": "",
+    "reader-family-two": "",
+    "critic-family-one": "",
+    "arbiter-family-one": ""
+  }
+}
