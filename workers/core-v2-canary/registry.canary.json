@@ -1,5 +1,5 @@
 {
-  "declaredBy": "Codex \u2014 Chief Engineer",
+  "declaredBy": "Codex — Chief Engineer",
   "declaredAt": "2026-09-09",
   "operatorNotes": {
     "anthropic": "The $10.00 cache-write ceiling covers the more expensive published one-hour cache-write rate, not the five-minute one.",
@@ -11,7 +11,8 @@
       "https://ai.google.dev/gemini-api/docs/pricing",
       "https://ai.google.dev/gemini-api/docs/gemini-3"
     ],
-    "addresses": "Origins only. Each adapter appends its own complete path \u2014 /v1/messages, /v1/responses, /v1beta/models \u2014 so a baseUrl that also carries /v1 sends the request to /v1/v1/... That is what the first paid canary's 404 was."
+    "addresses": "Origins only. Each adapter appends its own complete path — /v1/messages, /v1/responses, /v1beta/models — so a baseUrl that also carries /v1 sends the request to /v1/v1/... That is what the first paid canary's 404 was.",
+    "google_output_ceiling": "8192, not the 4096 the other two carry, and it is a measured number. This model's thinking is billed inside its output, so an output ceiling is a ceiling on thinking AND answer together: the first critic call this canary ever got past a 400 spent 27.8 s and stopped at 4096 with the envelope unfinished — output_ceiling_reached, a whole paid attempt for no reading. It stays inside the per-attempt worst case the authority is sized from: 8192 in at $2.00 plus 8192 out at $12.00 is $0.114, under the $0.18432 an attempt may hold, so nothing about the authority changes."
   },
   "providers": [
     {
@@ -75,7 +76,7 @@
       ],
       "defaultModel": "gemini-3.1-pro-preview",
       "maximumInputTokens": 8192,
-      "maximumOutputTokens": 4096,
+      "maximumOutputTokens": 8192,
       "requestTimeoutMs": 120000,
       "maximumMaterialBytes": 524288,
       "maximumMaterialBytesPerItem": 262144,
