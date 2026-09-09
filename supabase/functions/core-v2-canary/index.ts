@@ -71,10 +71,72 @@ const MAY_HAVE_BEEN_BILLED = [
    outcome nobody knows rather than lost with the container. */
 const DRAIN_DEADLINE_MS = 110_000;
 
-/* The record is reached through the pooler, at a url the operator builds and
-   hands in. Not SUPABASE_DB_URL: a direct connection is a different route
-   with different reachability, and this canary states which one it used. */
+/* THE RECORD IS REACHED THROUGH THE POOLER, AND THE PASSWORD STAYS PUT.
+ *
+ * Two ways to be told where, and the second exists because of a measured
+ * failure. Run 34380529340 built the url in the Action from
+ * secrets.SUPABASE_DB_PASSWORD, which came through EMPTY, and the driver
+ * said so in 56ms: "Attempting SASL auth with unset password". Nothing was
+ * wrong with Supavisor; there was simply no password in it.
+ *
+ *   1. CORE_V2_CANARY_DB_URL — a complete url the operator built and handed
+ *      in. Used when it is set.
+ *   2. the pooler's HOST, PORT, USER and NAME as separate non-secret facts,
+ *      read from the Management API by the Action, combined here with the
+ *      password out of the platform's own SUPABASE_DB_URL.
+ *
+ * The second is the better of the two on its own merits: the password never
+ * leaves the platform, never enters a runner, never enters a log and never
+ * enters a GitHub secret listing. Only the route is assembled; the
+ * credential is where it already was. */
 const DATABASE_VARIABLE = "CORE_V2_CANARY_DB_URL";
+const POOLER_HOST_VARIABLE = "CORE_V2_CANARY_DB_HOST";
+const POOLER_PORT_VARIABLE = "CORE_V2_CANARY_DB_PORT";
+const POOLER_USER_VARIABLE = "CORE_V2_CANARY_DB_USER";
+const POOLER_NAME_VARIABLE = "CORE_V2_CANARY_DB_NAME";
+
+type Route = { url: string; describe: string; passwordFrom: string };
+
+/* Never returns the url in anything that gets printed: `describe` is host,
+   port and database only. */
+function routeToRecord(): Route | { problem: string } {
+  const complete = Deno.env.get(DATABASE_VARIABLE);
+  if (complete) {
+    let describe = "unparseable";
+    try {
+      const parsed = new URL(complete);
+      if (!parsed.password) return { problem: `${DATABASE_VARIABLE} carries no password` };
+      describe = `${parsed.hostname}:${parsed.port || "5432"}${parsed.pathname}`;
+    } catch {
+      return { problem: `${DATABASE_VARIABLE} is not a url` };
+    }
+    return { url: complete, describe, passwordFrom: DATABASE_VARIABLE };
+  }
+
+  const host = Deno.env.get(POOLER_HOST_VARIABLE);
+  const user = Deno.env.get(POOLER_USER_VARIABLE);
+  if (!host || !user) {
+    return { problem: `neither ${DATABASE_VARIABLE} nor ${POOLER_HOST_VARIABLE}/${POOLER_USER_VARIABLE} is set; there is no record to write to` };
+  }
+  const port = Deno.env.get(POOLER_PORT_VARIABLE) || "5432";
+  const name = Deno.env.get(POOLER_NAME_VARIABLE) || "postgres";
+
+  const platform = Deno.env.get("SUPABASE_DB_URL");
+  if (!platform) return { problem: "SUPABASE_DB_URL is not set, so there is no password to reach the pooler with" };
+  let password = "";
+  try {
+    password = new URL(platform).password;
+  } catch {
+    return { problem: "SUPABASE_DB_URL is not a url" };
+  }
+  if (!password) return { problem: "SUPABASE_DB_URL carries no password" };
+
+  return {
+    url: `postgresql://${encodeURIComponent(user)}:${encodeURIComponent(decodeURIComponent(password))}@${host}:${port}/${name}`,
+    describe: `${host}:${port}/${name}`,
+    passwordFrom: "SUPABASE_DB_URL (the platform's own, never copied out)",
+  };
+}
 
 const ORGANIZATION_ID = entityId("core-v2-canary-organization", CANARY_ID);
 const WORKFLOW_ID = entityId("core-v2-canary-workflow", CANARY_ID);
@@ -172,8 +234,9 @@ Deno.serve(async (request: Request): Promise<Response> => {
     });
   }
 
-  const databaseUrl = Deno.env.get(DATABASE_VARIABLE);
-  if (!databaseUrl) return json(412, { refused: `${DATABASE_VARIABLE} is not set; there is no record to write to` });
+  const route = routeToRecord();
+  if ("problem" in route) return json(412, { refused: route.problem });
+  const databaseUrl = route.url;
 
   const events: unknown[] = [];
   let db: CanaryDatabase | null = null;
@@ -319,17 +382,13 @@ async function probeDatabase(): Promise<Response> {
     }
   };
 
-  const databaseUrl = Deno.env.get(DATABASE_VARIABLE);
-  if (!databaseUrl) {
-    return json(412, { probe: true, ok: false, refused: `${DATABASE_VARIABLE} is not set`, phases });
+  const chosen = routeToRecord();
+  if ("problem" in chosen) {
+    return json(412, { probe: true, ok: false, refused: chosen.problem, installedGlobals, phases });
   }
-  /* The host is worth stating; the credential in the url is not, and is not
-     read out of it. */
-  let route = "unparseable";
-  try {
-    const parsed = new URL(databaseUrl);
-    route = `${parsed.hostname}:${parsed.port || "5432"}${parsed.pathname}`;
-  } catch { /* connect() will refuse it and say so */ }
+  const databaseUrl = chosen.url;
+  const route = chosen.describe;
+  const passwordFrom = chosen.passwordFrom;
 
   let db: CanaryDatabase | null = null;
   try {
@@ -337,7 +396,7 @@ async function probeDatabase(): Promise<Response> {
     const at = Date.now();
     try {
       db = await CanaryDatabase.connect(databaseUrl, `${CANARY_ID}-probe`, CONNECT_TIMEOUT_MS);
-      phases.push({ phase: "connect", ms: Date.now() - at, detail: { route, tls: "required", connectTimeoutMs: CONNECT_TIMEOUT_MS } });
+      phases.push({ phase: "connect", ms: Date.now() - at, detail: { route, passwordFrom, tls: "required", connectTimeoutMs: CONNECT_TIMEOUT_MS } });
     } catch (error) {
       phases.push({ phase: "connect", ms: Date.now() - at, detail: `FAILED: ${String((error as Error).message ?? error).slice(0, 300)}` });
       throw error;
@@ -386,6 +445,7 @@ async function probeDatabase(): Promise<Response> {
       probe: true,
       ok,
       route,
+      passwordFrom,
       installedGlobals,
       checks: {
         selectOne: one === "1",
@@ -408,6 +468,7 @@ async function probeDatabase(): Promise<Response> {
       probe: true,
       ok: false,
       route,
+      passwordFrom,
       installedGlobals,
       why: String((error as Error).message ?? error).slice(0, 400),
       unreachablePhase: error instanceof DatabaseUnreachable ? error.phase : null,
