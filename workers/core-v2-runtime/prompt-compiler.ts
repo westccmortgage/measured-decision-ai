@@ -121,11 +121,39 @@ function systemText(packet: WorkPacket, role: AgentRoleDefinition): string {
   lines.push("");
   lines.push("── what your result may carry ──");
   for (const line of mayReturn(packet, role)) lines.push(`  · ${line}`);
-  lines.push("Every other part of the result must be empty.");
+  const empty = mustBeEmpty(packet, role);
+  if (empty.length > 0) {
+    lines.push(`Every other part of the result must be empty, and these in particular are not yours to fill: ${empty.join(", ")}.`);
+  } else {
+    lines.push("Every other part of the result must be empty.");
+  }
   lines.push("");
   lines.push("── the rules ──");
   for (const rule of RULES) lines.push(`  · ${rule}`);
   return lines.join("\n");
+}
+
+/* THE COMPLEMENT OF WHAT MAY BE RETURNED, NAMED.
+ *
+ * "Every other part of the result must be empty" is true, sits right under
+ * the list, and is still a sentence about a set the reader has to work out
+ * for itself. A composer that had just produced six correct decisions with
+ * their evidence added three assessments beside them — helpful, forbidden,
+ * and the whole answer refused for it. Naming the forbidden parts costs one
+ * line and leaves nothing to work out. */
+function mustBeEmpty(packet: WorkPacket, role: AgentRoleDefinition): string[] {
+  const out: string[] = [];
+  if (packet.limits.maximumClaims === 0) out.push("claims");
+  if (!role.producesSegments) out.push("segments");
+  if (!role.producesAssessments) out.push("assessments");
+  if (!role.producesCalculations) out.push("calculations");
+  if (packet.allowedActions.length === 0) out.push("requestedActions");
+  /* The two parts a role that reaches no conclusion is never told the names
+     of. A blind reader is not shown the vocabulary of adjudication or of
+     disagreement — not even to be told it may not use it, because a word in
+     an instruction is a word in the reader's head. They stay covered by the
+     sentence about every other part, and the compiler suite holds this. */
+  return out;
 }
 
 function mayReturn(packet: WorkPacket, role: AgentRoleDefinition): string[] {
