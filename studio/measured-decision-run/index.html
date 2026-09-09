@@ -1,0 +1,102 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta name="robots" content="noindex,nofollow,noarchive">
+    <meta name="theme-color" content="#fbfaf7">
+    <title>Measured Decision Run</title>
+    <link rel="stylesheet" href="run.css?v=ab516aad11">
+  </head>
+  <body>
+    <header class="masthead">
+      <a class="brand" href="../index.html">
+        <span class="mark" aria-hidden="true"><i></i><i></i><i></i></span>
+        <span>Measured Decision <strong>Studio</strong></span>
+      </a>
+      <span class="masthead-here">Measured Decision Run</span>
+    </header>
+
+    <main>
+      <section class="opening">
+        <h1>Measured Decision Run</h1>
+        <p class="lede" id="explainer">
+          Independent AI workers examine the same evidence separately. The system compares
+          their findings, tests disagreements and produces a traceable decision.
+        </p>
+        <div class="opening-actions">
+          <button type="button" class="button primary" id="start">Start demonstration</button>
+          <button type="button" class="button quiet" id="stop" hidden>Stop this run</button>
+          <button type="button" class="button quiet" id="again" hidden>Run again</button>
+        </div>
+        <p class="opening-note" id="opening-note">
+          A self-contained demonstration on invented records. Nothing is sent anywhere.
+        </p>
+      </section>
+
+      <section class="story" aria-label="What happens in a run">
+        <ol class="story-arc">
+          <li><span>Evidence</span></li>
+          <li><span>Independent readings</span></li>
+          <li><span>Comparison</span></li>
+          <li><span>Challenge</span></li>
+          <li><span>Decision</span></li>
+        </ol>
+      </section>
+
+      <section class="panel" id="progress-panel" hidden aria-live="polite">
+        <h2 class="panel-title">Run timeline</h2>
+        <ol class="timeline" id="timeline"></ol>
+      </section>
+
+      <section class="panel" id="workers-panel" hidden>
+        <h2 class="panel-title">Who is working</h2>
+        <p class="panel-note">Each reader is given only the evidence its assignment allows. No reader is shown another reader's answer.</p>
+        <ul class="workers" id="workers"></ul>
+      </section>
+
+      <section class="results" id="results" hidden>
+        <article class="panel result verified">
+          <h2 class="panel-title">Verified <span class="count" id="count-verified">0</span></h2>
+          <p class="panel-note">Findings accepted after evidence verification.</p>
+          <ul class="findings" id="list-verified"></ul>
+        </article>
+
+        <article class="panel result disputed">
+          <h2 class="panel-title">Disagreement <span class="count" id="count-disagreement">0</span></h2>
+          <p class="panel-note">Conflicting findings, with each side and its evidence.</p>
+          <ul class="findings" id="list-disagreement"></ul>
+        </article>
+
+        <article class="panel result needs-proof">
+          <h2 class="panel-title">Needs more proof <span class="count" id="count-needs-proof">0</span></h2>
+          <p class="panel-note">Findings the evidence does not yet establish. Nothing here has been accepted.</p>
+          <ul class="findings" id="list-needs-proof"></ul>
+        </article>
+
+        <article class="panel result decision">
+          <h2 class="panel-title">Decision <span class="count" id="count-decision">0</span></h2>
+          <p class="panel-note">Accepted, rejected, corrected, or held for a person.</p>
+          <ul class="findings" id="list-decision"></ul>
+        </article>
+      </section>
+
+      <section class="panel facts" id="facts-panel" hidden>
+        <h2 class="panel-title">This run</h2>
+        <dl class="facts-grid" id="facts"></dl>
+        <details class="technical">
+          <summary>Show technical detail</summary>
+          <dl class="facts-grid" id="technical"></dl>
+        </details>
+      </section>
+    </main>
+
+    <dialog class="evidence" id="evidence">
+      <form method="dialog" class="evidence-close"><button class="button quiet" value="close">Close</button></form>
+      <div id="evidence-body"></div>
+    </dialog>
+
+    <noscript><p class="opening-note">This demonstration runs the decision engine in your browser, so it needs JavaScript.</p></noscript>
+    <script type="module" src="run.js?v=410156ad3b"></script>
+  </body>
+</html>
