@@ -19,7 +19,9 @@
  *     submitted are one thing: after it returns, either the attempt is
  *     submitted and holds a reservation, or it is not submitted and holds
  *     nothing. There is no order of events in which one exists without the
- *     other, and therefore nothing for a crash to land between;
+ *     other, and therefore nothing for a crash to land between. A record that
+ *     cannot offer such a unit of work is REFUSED a paid model attempt
+ *     outright rather than served a weaker promise — see NOT_ATOMIC;
  *   · an attempt that is cancelled or rejected before submission gives its
  *     hold back, because nothing was sent and nothing can have been charged;
  *   · commitValidatedResult is where the answer is written down, so it is
@@ -72,6 +74,12 @@ export type MeterOptions = {
    settled at zero, because "it cost nothing" and "it was never sent" are
    different facts and the record should say which. */
 const UNSENT: AttemptState[] = ["cancelled_before_submission", "rejected_before_submission"];
+
+/* Said in one place because it is a refusal an operator will meet and have to
+   understand: the record they assembled cannot make a hold and a submission
+   one thing, so it may not be used to spend money. */
+export const NOT_ATOMIC =
+  "budget refused: this record cannot take a hold in the same unit of work as the submission it pays for, so a paid attempt may not be sent through it";
 
 export function meteredRepository(inner: OrchestrationRepository, options: MeterOptions): OrchestrationRepository {
   const { ledger, config } = options;
@@ -184,13 +192,28 @@ export function meteredRepository(inner: OrchestrationRepository, options: Meter
     }
 
     let refusal: BudgetRefused | null = null;
+    let notAtomic = false;
     let reservedCost: number | null = null;
     const holdTheMoney: SubmissionRider = async (unitOfWork: unknown): Promise<RiderOutcome> => {
-      /* On the record's OWN unit of work when it has one, so the hold is
-         undone by the same rollback that undoes the submission. A record
-         with none is handed the ledger's own connection, and its atomicity
-         is the record's to keep. */
-      const book = isQueryable(unitOfWork) ? ledger.on(unitOfWork) : ledger;
+      /* FAIL CLOSED WHEN THERE IS NOTHING TO ROLL BACK.
+         The hold has to be written on the record's OWN unit of work, so that
+         the same rollback undoes both. A record that has none cannot give
+         that guarantee — and the answer is not to write the hold somewhere
+         else and hope, because a hold written through another connection
+         survives the refusal of the submission it was taken for. Whatever
+         guard such a record keeps around an awaited rider, it cannot roll
+         back what the rider already made durable elsewhere.
+
+         So this refuses, here, before anything is written: no reservation, no
+         submission, and — because the scheduler never reaches the executor
+         for a refused submission — no key read and no request. A record with
+         no transaction stays perfectly usable for work that costs nothing;
+         it simply may not authorise spending. */
+      if (!isQueryable(unitOfWork)) {
+        notAtomic = true;
+        return { ok: false, reason: NOT_ATOMIC };
+      }
+      const book = ledger.on(unitOfWork);
       try {
         const held = await book.reserve(attemptId, ceiling);
         reservedCost = held.reservedCost;
@@ -215,6 +238,10 @@ export function meteredRepository(inner: OrchestrationRepository, options: Meter
       const refused: BudgetRefused = refusal;
       emit({ event: "budget.refused", attempt: attemptId, workflow: attempt.workflowId, provider: providerId, model, reason: refused.reason });
       await stopIfSpent(attempt.workflowId, refused.reason);
+      return outcome;
+    }
+    if (notAtomic) {
+      emit({ event: "budget.refused", attempt: attemptId, workflow: attempt.workflowId, provider: providerId, model, reason: NOT_ATOMIC });
       return outcome;
     }
     /* The submission refused for its own reasons — an expired lease, a

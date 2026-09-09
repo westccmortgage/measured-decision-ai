@@ -162,7 +162,7 @@ const configurationOf = (p, over = {}) => ({
 
 const pricingOf = (p) => ({
   providerId: p.providerId, model: p.fixtures.askedModel, effectiveFrom: "2026-01-01", currency: "USD",
-  inputPerMillionTokens: 3, outputPerMillionTokens: 15, cachedInputPerMillionTokens: 0.3, reasoningPerMillionTokens: 15,
+  inputPerMillionTokens: 3, outputPerMillionTokens: 15, cachedInputPerMillionTokens: 0.3, cacheWritePerMillionTokens: 3.75, reasoningPerMillionTokens: 15,
 });
 
 /* All four gates open, which is the only state in which anything is sent —

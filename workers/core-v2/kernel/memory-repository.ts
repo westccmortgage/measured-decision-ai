@@ -367,19 +367,21 @@ export class InMemoryOrchestrationRepository implements OrchestrationRepository 
       const clash = [...this.attempts.values()].find((a) => peers.has(a.taskId) && SUBMITTED_ATTEMPT_STATES.includes(a.state) && a.independenceDomain === attempt.independenceDomain);
       if (clash) return { ok: false, reason: `independence: domain ${attempt.independenceDomain} already read ${task.subjectKey} as another group` };
     }
-    /* THE RIDER AND THE MOVE ARE ONE THING HERE TOO — differently, because
-       this record has no transaction to roll back. So it does the only other
-       thing that gives the same observable answer: it runs the rider LAST,
-       after every rule has passed, and moves the attempt only if the rider
-       agreed. A refusal leaves nothing behind because nothing was written
-       yet; a success writes the move immediately after.
+    /* THIS RECORD HAS NO UNIT OF WORK, AND DOES NOT PRETEND OTHERWISE.
+       It runs the rider last, after every rule has passed, and moves the
+       attempt only if the rider agreed — which is enough when the rider only
+       reads, or writes somewhere that dies with this process.
 
-       The two guards below are what an awaited rider costs. While one
-       submission of an attempt is waiting for its rider, a second is refused
-       rather than allowed to run a second rider for the same attempt; and
-       when the rider comes back, the state it was run against is checked
-       again, so a rider cannot be paired with an attempt that moved
-       underneath it. */
+       It is NOT enough when the rider writes something durable elsewhere. The
+       guards below reduce the window and do not close it: `submitting` stops a
+       second submission of the same attempt from running a second rider, and
+       the recheck stops a rider being paired with an attempt that moved — but
+       neither can roll back what the rider already made durable somewhere this
+       record cannot reach, and nothing here stops transitionAttempt from
+       moving the attempt while the rider is awaited. So `null` is passed
+       deliberately: it is this record telling the rider, truthfully, that
+       there is no unit of work to join. A rider that needs one must refuse on
+       seeing it, and the runtime's own rider does exactly that. */
     if (alongside) {
       if (this.submitting.has(attemptId)) return { ok: false, reason: "the attempt is already being submitted" };
       this.submitting.add(attemptId);

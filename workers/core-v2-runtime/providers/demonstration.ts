@@ -45,7 +45,10 @@ const CEILINGS = {
 /* What each invented model can be asked to do. An operator writes this; this
    package infers nothing from a model's name. */
 const CAN_DO_EVERYTHING = { forcedToolChoice: true, strictSchema: true, images: true, thinking: "optional" as const };
-const RATES = { effectiveFrom: "2026-01-01", currency: "USD", inputPerMillionTokens: 3, outputPerMillionTokens: 15 };
+/* A cache-write rate is not optional: a provider that creates a cache entry
+   has billed for it whether or not this runtime can price it. Without one
+   there is no ceiling, so nothing may be reserved for and nothing sent. */
+const RATES = { effectiveFrom: "2026-01-01", currency: "USD", inputPerMillionTokens: 3, outputPerMillionTokens: 15, cacheWritePerMillionTokens: 3.75 };
 
 export const DEMONSTRATION_CONFIG: RuntimeConfig = {
   providers: [

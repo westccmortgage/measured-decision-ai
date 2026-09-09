@@ -20,7 +20,7 @@ import { readFileSync } from "node:fs";
 import { harness, closeNetwork } from "../../core-v2/tests/harness.mjs";
 import { NORMALIZATION_VERSION, billableRecord, priceUsage } from "../budget/usage.ts";
 import { knownBillingDialects, normalizeUsage } from "../providers/usage-dialects.ts";
-import { CEILING_RULE, ceilingRates, costCeiling, NO_PAID_CALLS } from "../runtime-config.ts";
+import { CEILING_RULE, authorizedProviders, ceilingRates, configurationProblems, costCeiling, networkAuthorizationProblems, NO_PAID_CALLS } from "../runtime-config.ts";
 import { ceilingFor } from "../budget/ledger.ts";
 
 const tripped = closeNetwork();
@@ -210,7 +210,7 @@ const configPriced = (over = {}) => ({
   }],
   pricing: [{
     providerId: "anthropic", model: "reader", effectiveFrom: "2026-01-01", currency: "USD",
-    inputPerMillionTokens: 3, outputPerMillionTokens: 15, ...over,
+    inputPerMillionTokens: 3, outputPerMillionTokens: 15, cacheWritePerMillionTokens: 3, ...over,
   }],
   authorization: NO_PAID_CALLS,
   dispatcherName: "billing-tests",
@@ -259,7 +259,7 @@ t.section("the hold is the worst case, not the ordinary case");
     ["both of them at once", { cacheWritePerMillionTokens: 30, reasoningPerMillionTokens: 60 }, 30, 60],
     ["a cached-read rate below the input rate, which changes nothing", { cachedInputPerMillionTokens: 0.3 }, 3, 15],
     ["a cached-read rate ABOVE the input rate, which does", { cachedInputPerMillionTokens: 9 }, 9, 15],
-    ["no optional rate at all", {}, 3, 15],
+    ["only the rates that are required", {}, 3, 15],
     ["every optional rate below the ordinary ones", { cachedInputPerMillionTokens: 0.3, cacheWritePerMillionTokens: 1, reasoningPerMillionTokens: 2 }, 3, 15],
   ];
   for (const [what, over, expectIn, expectOut] of cases) {
@@ -276,15 +276,24 @@ t.section("the hold is the worst case, not the ordinary case");
 
     /* THE PROOF, exhaustively rather than by assertion: no mixture of
        components that fits inside the two token ceilings costs more than the
-       hold taken for them. A cache write with no rate is excluded here
-       because priceUsage refuses to settle it at all, which is the other way
-       of never exceeding the hold and is checked separately below. */
+       hold taken for them.
+
+       NOTHING IS SKIPPED. An earlier version of this loop passed over every
+       mixture priceUsage would not price — which is exactly the set of
+       mixtures a provider can bill and this runtime could not bound, so the
+       loop was strongest precisely where the reservation was weakest. A
+       mixture that cannot be priced is now a FAILURE of this test, not a
+       continue: if a component can appear in a real answer, it has a rate, or
+       nothing may be submitted at all. */
     let worst = 0;
     let overspend = null;
+    let unpriceable = null;
     let counted = 0;
+    let offered = 0;
     for (const usage of mixtures(TOKENS_IN, TOKENS_OUT)) {
+      offered += 1;
       const priced = priceUsage(ratesOf(config), usage);
-      if (!priced.ok) continue;
+      if (!priced.ok) { unpriceable = unpriceable ?? { usage, problems: priced.problems }; continue; }
       counted += 1;
       if (priced.cost > worst) worst = priced.cost;
       if (priced.cost > ceiling.maximumCost + 1e-9) {
@@ -292,10 +301,13 @@ t.section("the hold is the worst case, not the ordinary case");
         break;
       }
     }
-    t.check(`${what}: no mixture inside the ceilings costs more than the hold`,
+    t.check(`${what}: EVERY mixture inside the ceilings can be priced — none is skipped`,
+      unpriceable === null && counted === offered && offered > 0,
+      unpriceable ? `a mixture nobody can price: ${unpriceable.problems.join("; ").slice(0, 90)}` : `${counted} of ${offered} priced`);
+    t.check(`${what}: and no mixture inside the ceilings costs more than the hold`,
       overspend === null && counted > 0, overspend ? `${overspend.cost} > ${ceiling.maximumCost}` : `${counted} mixtures, worst ${worst} of ${ceiling.maximumCost}`);
-    t.check(`${what}: and the worst of them reaches the hold, so it is not padding either`,
-      Math.abs(worst - ceiling.maximumCost) < 1e-6 || worst > 0, `worst ${worst}, hold ${ceiling.maximumCost}`);
+    t.check(`${what}: the worst of them reaches the hold exactly, so it is not padding either`,
+      Math.abs(worst - ceiling.maximumCost) < 1e-6, `worst ${worst}, hold ${ceiling.maximumCost}`);
   }
 }
 
@@ -316,20 +328,63 @@ t.section("a price that establishes no upper bound reserves nothing");
     ceilingFor(configPriced(), "anthropic", "a-model-nobody-priced") === null);
 }
 
-t.section("a cache write with no rate can never be charged, so it can never exceed the hold");
+/* WHAT USED TO BE HERE WAS WRONG, AND THE WAY IT WAS WRONG IS THE POINT.
+   A test called "a cache write with no rate can never be charged" asserted
+   that priceUsage refuses such a settlement — true — and concluded that the
+   charge therefore could not exceed the hold. It cannot: our refusal to work
+   out what something cost does not reach the provider, which has already
+   created the cache entry and already billed for it. The refusal protected
+   the ledger's arithmetic and nothing about the money.
+
+   So the rule is now the other one: a rate that settlement will never apply
+   is not a bound, and an attempt whose request could produce that component
+   is not submitted at all. */
+t.section("a cache-write rate is required, because a charge nobody can price is still a charge");
 {
-  const config = configPriced();
-  const ceiling = costCeiling(config, "anthropic", "reader", TOKENS_IN, TOKENS_OUT);
+  const unpriceable = { ...configPriced(), pricing: [{
+    providerId: "anthropic", model: "reader", effectiveFrom: "2026-01-01", currency: "USD",
+    inputPerMillionTokens: 3, outputPerMillionTokens: 15,
+  }] };
+  t.check("without one there is no ceiling at all",
+    costCeiling(unpriceable, "anthropic", "reader", TOKENS_IN, TOKENS_OUT) === null
+    && ceilingFor(unpriceable, "anthropic", "reader") === null);
+  t.check("and the reason names the missing rate, in words, where a person will read it",
+    ceilingRates(unpriceable.pricing[0]).problems.some((p) => /records no cache-write rate/.test(p)),
+    ceilingRates(unpriceable.pricing[0]).problems.join("; ").slice(0, 110));
+  t.check("assembling a runtime on it is refused before anything is built from it",
+    configurationProblems(unpriceable).some((p) => /cache-write rate/.test(p)),
+    configurationProblems(unpriceable).filter((p) => /cache-write/.test(p))[0] ?? "nothing was said");
+
+  /* The component is real: a provider that reports it, under a price that
+     does not name its rate, cannot be settled — which is why it may not be
+     submitted for in the first place. */
   const wrote = {
     version: NORMALIZATION_VERSION, providerId: "anthropic",
-    uncachedInputTokens: 0, cachedInputReadTokens: 0, cachedInputWriteTokens: TOKENS_IN,
-    visibleOutputTokens: TOKENS_OUT, reasoningOutputTokens: 0, unpriced: {}, complete: true, problems: [],
+    uncachedInputTokens: 0, cachedInputReadTokens: 0, cachedInputWriteTokens: 1000,
+    visibleOutputTokens: 10, reasoningOutputTokens: 0, unpriced: {}, complete: true, problems: [],
   };
-  const priced = priceUsage(ratesOf(config), wrote);
-  t.check("it is refused rather than priced at a rate nobody recorded",
-    priced.ok === false && /cache-write rate/.test(priced.problems.join(" ")), JSON.stringify(priced).slice(0, 120));
-  t.check("so the hold stands at the ceiling and nothing is settled above it",
-    ceiling !== null && ceiling.ceilingInputPerMillionTokens === 3, String(ceiling?.ceilingInputPerMillionTokens));
+  const priced = priceUsage({ ...ratesOf(unpriceable), cacheWritePerMillionTokens: null }, wrote);
+  t.check("a settlement of it is refused, which is the ledger's arithmetic and NOT a protection against the charge",
+    priced.ok === false && /cache-write rate/.test(priced.problems.join(" ")), JSON.stringify(priced).slice(0, 110));
+}
+
+t.section("no ceiling, no key, no request: the refusal happens before any of them");
+{
+  const unpriceable = { ...configPriced(), pricing: [{
+    providerId: "anthropic", model: "reader", effectiveFrom: "2026-01-01", currency: "USD",
+    inputPerMillionTokens: 3, outputPerMillionTokens: 15,
+  }] };
+  /* Every gate open, and it still cannot be built: an authorisation that
+     covers a model nothing can be reserved for authorises nothing. */
+  const authorised = { ...unpriceable, authorization: {
+    providerNetworkFlag: true, environmentGate: true, maximumAuthorizedCost: 5, currency: "USD",
+    providerAllowlist: ["anthropic"], modelAllowlist: ["reader"],
+  } };
+  t.check("the authorisation covers no provider, because the only one it names cannot be bounded",
+    authorizedProviders(authorised).length === 0);
+  t.check("and the network authorisation refuses, naming the rate",
+    networkAuthorizationProblems(authorised).some((p) => /cache-write rate/.test(p)),
+    networkAuthorizationProblems(authorised).join("; ").slice(0, 110));
 }
 
 t.section("the hold can be reproduced from what was written down beside it");
@@ -347,6 +402,80 @@ t.section("the hold can be reproduced from what was written down beside it");
   t.check("while the rates a settlement uses are still the ordinary ones, kept separately",
     ceiling.basis.inputPerMillionTokens === 3 && ceiling.basis.outputPerMillionTokens === 15
     && ceiling.ceilingInputPerMillionTokens === 30 && ceiling.ceilingOutputPerMillionTokens === 60);
+}
+
+/* ══════════════ 6 · a record that cannot make the two one thing may not spend
+   — proved through the REAL scheduler, so "before the key is read" is a fact
+   about what ran rather than a claim about what would have.
+
+   The in-memory record has no unit of work. It used to be handed the ledger's
+   own connection, which would have written a hold it could not roll back —
+   a hold outliving the refused submission it was taken for. It now refuses,
+   and because the scheduler asks an executor only for an attempt whose
+   submission succeeded, the executor is never reached: no key is read, no
+   request is built, nothing is opened. */
+
+t.section("a record with no unit of work refuses to spend, and the executor is never asked");
+{
+  const { syntheticRecordSet } = await import("../../core-v2/domains/synthetic-records/fixture.ts");
+  const { SyntheticRecordsPack } = await import("../../core-v2/domains/synthetic-records/pack.ts");
+  const { mockExecutors } = await import("../../core-v2/domains/synthetic-records/mocks.ts");
+  const { assemble, manualClock } = await import("../../core-v2/domains/simulate.ts");
+  const { InMemoryOrchestrationRepository } = await import("../../core-v2/kernel/memory-repository.ts");
+  const { meteredRepository, NOT_ATOMIC } = await import("../budget/metered.ts");
+
+  const truth = syntheticRecordSet({ seed: "no-transaction", sources: 1, sheetsPerSource: 1, entriesPerTable: 2 });
+  const { registry } = mockExecutors(truth);
+
+  /* A ledger that cannot be used without being noticed. If the refusal ever
+     stops happening first, this throws rather than quietly writing a hold. */
+  const reached = [];
+  const ledgerThatMustNotBeReached = {
+    reserve: async () => { reached.push("reserve"); throw new Error("the ledger was reached, which is the thing this section says cannot happen"); },
+    budget: async () => null,
+    reservationOf: async () => null,
+    on() { return this; },
+  };
+
+  const repo = new InMemoryOrchestrationRepository();
+  const money = [];
+  const metered = meteredRepository(repo, {
+    ledger: ledgerThatMustNotBeReached,
+    config: configPriced({ cacheWritePerMillionTokens: 3 }),
+    providerOfFamily: () => "anthropic",
+    events: (event) => money.push(event),
+  });
+
+  const world = assemble({
+    repo: metered, manifest: truth.manifest, pack: new SyntheticRecordsPack(),
+    executors: registry, clock: manualClock(),
+  });
+  await world.scheduler.plan();
+  for (let i = 0; i < 20; i += 1) {
+    const report = await world.scheduler.tick();
+    if (["needs_attention", "partial", "failed", "settled"].includes(report.workflowState)) break;
+  }
+
+  const attempts = [...repo.attempts.values()];
+  const model = attempts.filter((a) => a.executorKind === "model");
+  const modelTasks = new Set(model.map((a) => a.taskId));
+  const askedOfModel = registry.packetsSeen.filter((p) => modelTasks.has(p.taskId));
+
+  t.check("the run really did get as far as preparing model attempts, so this is not a test of nothing",
+    model.length > 0, `${model.length} model attempts, ${attempts.length} attempts in all`);
+  t.check("and not one of them was ever handed to an executor — the refusal came first",
+    askedOfModel.length === 0, `${askedOfModel.length} packets reached a model executor`);
+  t.check("so nothing that reads a key or opens a socket ever ran for them",
+    askedOfModel.length === 0 && model.every((a) => a.state !== "submitted"),
+    model.map((a) => a.state).join(", "));
+  t.check("the ledger was never reached either: the refusal is decided before a hold is attempted",
+    reached.length === 0 && money.every((e) => e.event !== "budget.reserved"), reached.join(", ") || "never reached");
+  t.check("and every refusal says the same thing, in words an operator can act on",
+    money.some((e) => e.event === "budget.refused")
+    && money.filter((e) => e.event === "budget.refused").every((e) => e.reason === NOT_ATOMIC),
+    JSON.stringify(money.filter((e) => e.event === "budget.refused").slice(0, 1)).slice(0, 130));
+  t.check("work that costs nothing was unaffected — a record with no transaction is still a record",
+    registry.packetsSeen.length > 0, `${registry.packetsSeen.length} packets ran in all`);
 }
 
 t.section("every door stayed closed");

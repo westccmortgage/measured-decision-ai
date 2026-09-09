@@ -27,7 +27,7 @@ import { withThrowawayDatabase, ensureCluster, HARNESS_LOCATION } from "../../co
 import { WireClient } from "../../core-v2/postgres/wire.ts";
 import { entityId, sha256 } from "../../core-v2/kernel/ids.ts";
 import { BudgetLedger, BudgetRefused, ceilingFor, isBudgetRefused } from "../budget/ledger.ts";
-import { meteredRepository } from "../budget/metered.ts";
+import { NOT_ATOMIC, meteredRepository } from "../budget/metered.ts";
 import { PostgresOrchestrationRepository } from "../../core-v2/postgres/repository.ts";
 import { NO_PAID_CALLS, costCeiling, priceFor } from "../runtime-config.ts";
 import { priceUsage } from "../budget/usage.ts";
@@ -67,8 +67,8 @@ const CONFIG = {
     },
   ],
   pricing: [
-    { providerId: "anthropic", model: "reader-major", effectiveFrom: "2026-01-01", currency: "USD", inputPerMillionTokens: 3, outputPerMillionTokens: 15 },
-    { providerId: "anthropic", model: "reader-minor", effectiveFrom: "2026-01-01", currency: "USD", inputPerMillionTokens: 5, outputPerMillionTokens: 25 },
+    { providerId: "anthropic", model: "reader-major", effectiveFrom: "2026-01-01", currency: "USD", inputPerMillionTokens: 3, outputPerMillionTokens: 15, cacheWritePerMillionTokens: 3 },
+    { providerId: "anthropic", model: "reader-minor", effectiveFrom: "2026-01-01", currency: "USD", inputPerMillionTokens: 5, outputPerMillionTokens: 25, cacheWritePerMillionTokens: 5 },
   ],
   authorization: NO_PAID_CALLS,
   dispatcherName: "budget-ledger-contract",
@@ -509,7 +509,7 @@ await withThrowawayDatabase(async ({ client, organizationId, databaseName }) => 
        the model removed from the configuration altogether. */
     const dearer = {
       ...CONFIG,
-      pricing: [{ providerId: "anthropic", model: "reader-major", effectiveFrom: "2026-01-01", currency: "USD", inputPerMillionTokens: 300, outputPerMillionTokens: 1500 }],
+      pricing: [{ providerId: "anthropic", model: "reader-major", effectiveFrom: "2026-01-01", currency: "USD", inputPerMillionTokens: 300, outputPerMillionTokens: 1500, cacheWritePerMillionTokens: 300 }],
     };
     const settledDearer = await new BudgetLedger(client, dearer).settle(a.attemptId, { input_tokens: 1200, output_tokens: 300 });
     t.check("a price that changed after the hold was taken does not change what that attempt cost",
@@ -535,7 +535,7 @@ await withThrowawayDatabase(async ({ client, organizationId, databaseName }) => 
     const a = await build.attempt(wf, "currency-1");
     const elsewhere = {
       ...CONFIG,
-      pricing: [{ providerId: "anthropic", model: "reader-major", effectiveFrom: "2026-01-01", currency: "EUR", inputPerMillionTokens: 3, outputPerMillionTokens: 15 }],
+      pricing: [{ providerId: "anthropic", model: "reader-major", effectiveFrom: "2026-01-01", currency: "EUR", inputPerMillionTokens: 3, outputPerMillionTokens: 15, cacheWritePerMillionTokens: 3 }],
     };
     const ceiling = ceilingFor(elsewhere, "anthropic", "reader-major");
     t.check("the ceiling carries the currency the operator priced it in", ceiling.currency === "EUR");
@@ -736,6 +736,83 @@ await withThrowawayDatabase(async ({ client, organizationId, databaseName }) => 
         (await reservationsFor(wf)) === 0 && (await led.held(wf)) === 0, `${await reservationsFor(wf)} reservations`);
       t.check("the attempt is still prepared, so the work can be tried again from a clean state",
         (await stateOf(ready.attemptId)) === "prepared", await stateOf(ready.attemptId));
+    }
+
+    /* ── the hold is written, and THEN the attempt becomes ineligible ── */
+    {
+      /* The crash test above proves an exception takes the hold with it. This
+         is the other half, and the one that has no exception in it at all: a
+         rider that really reserves, an attempt that stops being submittable
+         before the move completes, and a submission that is refused in the
+         ordinary way. The hold must not survive that either. */
+      const wf = await build.workflow("atomic-ineligible");
+      await generous(wf);
+      const ready = await readyToSend(wf, "atomic-ineligible-1");
+      const plain = new PostgresOrchestrationRepository(client, { organizationId });
+      let sawHold = null;
+      const outcome = await plain.submitAttempt(ready.attemptId, ready.token, Date.now(), async (unitOfWork) => {
+        const held = await new BudgetLedger(unitOfWork, CONFIG).reserve(ready.attemptId, fullCeiling);
+        sawHold = held.reservedCost;
+        /* And now the attempt stops being one that may be submitted — on the
+           same unit of work, so this is a real state change and not a fake. */
+        await unitOfWork.query(
+          `update public.agent_attempts set state = 'cancelled_before_submission' where id = $1`, [ready.attemptId]);
+        return { ok: true };
+      });
+      t.check("the rider really did take a hold, inside the submission",
+        sawHold === CEILING_COST, `held ${sawHold}`);
+      t.check("and the submission is refused because the attempt is no longer one that may be sent",
+        outcome.ok === false && /attempt is/.test(outcome.reason), outcome.ok ? "IT WAS SENT" : outcome.reason.slice(0, 70));
+      t.check("ZERO hold survives it — the reservation went back with the refusal",
+        (await reservationsFor(wf)) === 0 && (await led.held(wf)) === 0, `${await reservationsFor(wf)} reservations`);
+      t.check("and the attempt state the rider wrote went back too, so nothing of that transaction is left",
+        (await stateOf(ready.attemptId)) === "prepared", await stateOf(ready.attemptId));
+    }
+
+    /* ── a record that cannot make the two one thing may not spend ── */
+    {
+      /* The in-memory record has no unit of work. It used to be handed the
+         ledger's own connection, which would have written a durable hold that
+         the record could not roll back — a hold surviving a refused
+         submission, which is the very thing this whole boundary exists to
+         prevent. It now refuses instead. */
+      const wf = await build.workflow("atomic-no-transaction");
+      await generous(wf);
+      const ready = await readyToSend(wf, "atomic-no-transaction-1");
+
+      /* A record with the right shape and no transaction: it answers about
+         the real attempt, and hands the rider nothing to join. */
+      const withoutTransaction = {
+        getAttempt: (id) => new PostgresOrchestrationRepository(client, { organizationId }).getAttempt(id),
+        submitAttempt: async (attemptId, leaseToken, at, alongside) => {
+          const rode = alongside ? await alongside(null) : { ok: true };
+          if (!rode.ok) return { ok: false, reason: rode.reason };
+          return { ok: true, attempt: await new PostgresOrchestrationRepository(client, { organizationId }).getAttempt(attemptId) };
+        },
+      };
+      const events = [];
+      const metered = meteredRepository(withoutTransaction, {
+        ledger: new BudgetLedger(client, CONFIG), config: CONFIG,
+        providerOfFamily: (family) => (family === "family-one" ? "anthropic" : null),
+        events: (event) => events.push(event),
+      });
+      const outcome = await metered.submitAttempt(ready.attemptId, ready.token, Date.now());
+      t.check("a paid attempt through a record with no unit of work is refused, and says exactly why",
+        outcome.ok === false && outcome.reason === NOT_ATOMIC, outcome.ok ? "IT WAS SENT" : outcome.reason.slice(0, 110));
+      t.check("no hold was written — the refusal happens before the ledger is touched at all",
+        (await reservationsFor(wf)) === 0 && (await led.held(wf)) === 0, `${await reservationsFor(wf)} reservations`);
+      t.check("the attempt was not sent either, so no key is read and no request is built: the scheduler never reaches the executor for a refused submission",
+        (await stateOf(ready.attemptId)) === "prepared", await stateOf(ready.attemptId));
+      t.check("and the refusal is on the record where an operator will find it",
+        events.some((e) => e.event === "budget.refused" && e.reason === NOT_ATOMIC));
+
+      /* Work that costs nothing is unaffected: the decorator only builds a
+         rider for a model attempt. */
+      const free = await build.attempt(wf, "atomic-no-transaction-free");
+      await client.query(`update public.agent_attempts set executor_kind = 'deterministic' where id = $1`, [free.attemptId]);
+      const freeOutcome = await metered.submitAttempt(free.attemptId, ready.token, Date.now());
+      t.check("but a deterministic attempt goes through untouched — a record with no transaction is still a record",
+        freeOutcome.ok === true && (await reservationsFor(wf)) === 0);
     }
 
     /* ── two dispatchers, one attempt, at the same moment ── */

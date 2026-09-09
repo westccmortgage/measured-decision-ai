@@ -94,10 +94,16 @@ export type SubmitOutcome = { ok: true; attempt: AttemptRecord } | { ok: false; 
  * does every refusal the submission itself makes.
  *
  * So the move takes a rider. It is handed the record's own unit of work —
- * whatever that is; null for a record that has none — and it is run after
- * every submission rule has passed and before the attempt moves. Its refusal
- * is the submission's refusal, and whatever it wrote goes with the rest of
- * the unit of work when the submission does not happen.
+ * whatever that is — and it is run after every submission rule has passed and
+ * before the attempt moves. Its refusal is the submission's refusal, and
+ * whatever it wrote goes with the rest of the unit of work when the
+ * submission does not happen.
+ *
+ * A record with NO unit of work passes `null`, and that is a statement, not a
+ * placeholder: it means "there is nothing here to roll back". A rider whose
+ * writes are durable elsewhere must refuse when it sees it, because such a
+ * record cannot undo them. Riders that only read, or that write nothing
+ * outside this process, may carry on.
  *
  * What is in it is not the kernel's business. That it is atomic with the
  * submission is. */

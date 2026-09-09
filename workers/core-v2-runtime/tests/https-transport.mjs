@@ -35,7 +35,7 @@ const providerAt = (baseUrl, providerId = "one", model = "reader") => ({
 });
 
 const priced = (providerId, model, over = {}) =>
-  ({ providerId, model, effectiveFrom: "2026-01-01", currency: "USD", inputPerMillionTokens: 3, outputPerMillionTokens: 15, ...over });
+  ({ providerId, model, effectiveFrom: "2026-01-01", currency: "USD", inputPerMillionTokens: 3, outputPerMillionTokens: 15, cacheWritePerMillionTokens: 3.75, ...over });
 
 const configWith = (authorization, baseUrl = "https://alpha.provider.invalid") => ({
   providers: [providerAt(baseUrl)],

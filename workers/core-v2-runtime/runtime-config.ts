@@ -80,10 +80,12 @@ export type ModelPrice = {
   /* What a token served from a cache costs. Optional: without one, a cache
      read is priced at the full input rate, which is an upper bound. */
   cachedInputPerMillionTokens?: number;
-  /* What WRITING a token into a cache costs. Optional, and its absence is
-     not an upper bound — a cache write can cost more than ordinary input —
-     so an attempt that wrote to a cache under a price that does not name
-     this rate cannot be settled at all. */
+  /* What WRITING a token into a cache costs. REQUIRED, and the one optional
+     rate that was ever anything else. A cache write can cost more than
+     ordinary input, and a price that does not name this rate leaves a charge
+     the provider can make and this runtime cannot bound — refusing to settle
+     it protects the arithmetic and not the money. Without it there is no
+     ceiling, so there is no reservation, so nothing is sent. */
   cacheWritePerMillionTokens?: number;
   /* What a reasoning token costs when a provider reports it separately from
      its visible output. Without one, reasoning is priced as output. */
@@ -274,18 +276,43 @@ export function priceFor(config: RuntimeConfig, providerId: string, model: strin
  *   input  → max(input, cache read, cache write)
  *   output → max(visible output, reasoning)
  *
- * with two rules for a rate the operator did not record, both taken from what
- * priceUsage() actually does with it:
+ * THE RULE FOR A RATE THE OPERATOR DID NOT RECORD is not "what would be
+ * convenient". It is: EVERY COMPONENT THE PROVIDER REQUEST CAN PRODUCE MUST
+ * HAVE A RATE THAT SETTLEMENT WILL ACTUALLY APPLY. Two of the optional rates
+ * pass that test and one does not:
  *
- *   · a missing cache-read rate is charged at the full input rate, so it adds
- *     nothing to the maximum;
- *   · a missing reasoning rate is charged as output, so it adds nothing;
- *   · a missing cache-write rate cannot be charged AT ALL — priceUsage
- *     refuses the settlement outright — so it cannot exceed the bound either.
+ *   · a missing cache-read rate is charged at the full input rate — a rate
+ *     settlement really applies, and one already inside the input ceiling;
+ *   · a missing reasoning rate is charged as output — likewise;
+ *   · a missing CACHE-WRITE rate is charged at nothing at all, because
+ *     priceUsage refuses the settlement outright. That is not a bound.
+ *
+ * The last one was wrong here until this revision, and the reasoning behind it
+ * was invalid in a way worth writing down: OUR REFUSAL TO PRICE A CHARGE DOES
+ * NOT PREVENT THE CHARGE. A provider that creates a cache entry has already
+ * billed the account by the time our database declines to work out what the
+ * returned usage cost. A settlement that refuses protects the ledger's
+ * arithmetic; it protects nothing about the money. So a component we cannot
+ * price is not a component that cannot cost anything — it is precisely the
+ * component we must refuse to submit for.
+ *
+ * A cache-write rate is therefore MANDATORY. Nothing in this runtime can
+ * mechanically prove that a given provider request cannot produce cache-write
+ * usage: no adapter asks for caching, but implicit and automatic caching is a
+ * provider-side behaviour, and what a provider does when nobody asks is
+ * exactly the class of fact this package refuses to assert without a canary.
+ * Without the rate: no ceiling, no reservation, no submission, no key read.
+ *
+ * (The narrower alternative — permitting the rate to be absent when the built
+ * request mechanically cannot create a cache entry — is deliberately NOT
+ * taken. It would have to rest on a claim about provider behaviour that only
+ * an authorised paid canary can establish, and an unproved claim is how the
+ * first version of this comment came to be wrong.)
  *
  * Every component mixture that fits inside the two token ceilings therefore
- * costs at most this number. tests/billing.mjs proves that by exhausting the
- * mixtures rather than by assertion.
+ * has a rate, is priced, and costs at most this number. tests/billing.mjs
+ * proves that by exhausting the mixtures — and by asserting that it skipped
+ * none of them.
  */
 export const CEILING_RULE = "core-v2.ceiling.1";
 
@@ -328,15 +355,19 @@ export function ceilingRates(price: ModelPrice): { input: number; output: number
   const input = rate(price.inputPerMillionTokens, "input rate", true);
   const output = rate(price.outputPerMillionTokens, "output rate", true);
   const cachedRead = rate(price.cachedInputPerMillionTokens, "cached-input rate", false);
-  /* Absent, this rate is not a discount to assume — it is a settlement that
-     will be refused, so it can never be charged and never exceeds the bound. */
-  const cacheWrite = rate(price.cacheWritePerMillionTokens, "cache-write rate", false);
+  /* REQUIRED. Absent, a cache write is charged by the provider and priced by
+     nobody: priceUsage refuses the settlement, which bounds our arithmetic and
+     not the account. There is no upper bound to fall back on, so there is no
+     reservation to take and nothing may be sent. */
+  const cacheWrite = rate(price.cacheWritePerMillionTokens, "cache-write rate", true);
   const reasoning = rate(price.reasoningPerMillionTokens, "reasoning rate", false);
   if (input === null || output === null) return { input: 0, output: 0, problems };
+  if (cacheWrite === null) return { input: 0, output: 0, problems };
   return {
     /* A missing cache-read rate is charged at the input rate, so it folds in
-       as the input rate rather than as an unknown. */
-    input: Math.max(input, cachedRead ?? input, cacheWrite ?? input),
+       as the input rate rather than as an unknown. A cache-write rate is never
+       missing by the line above. */
+    input: Math.max(input, cachedRead ?? input, cacheWrite),
     output: Math.max(output, reasoning ?? output),
     problems,
   };
