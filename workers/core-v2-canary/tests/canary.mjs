@@ -214,7 +214,7 @@ t.section("the door out is built outside the sealed package, and only when every
   const open = { CORE_V2_ALLOW_PAID_CALLS: "true", CORE_V2_CANARY_ORGANIZATION: "an-organisation" };
   const withFlag = parseArgs(["--execute", "--allow-provider-network"]);
 
-  const authorized = authorizedConfig(registry, withFlag, open);
+  const authorized = authorizedConfig(registry, { networkFlag: withFlag.networkFlag, environment: open });
   t.check("the authority the canary assembles is the constant, never the declaration's own number",
     authorized.authorization.maximumAuthorizedCost === CANARY_AUTHORIZED && authorized.authorization.currency === "USD");
   t.check("and its allowlists are exactly what was declared, never a wildcard",
@@ -241,7 +241,7 @@ t.section("the door out is built outside the sealed package, and only when every
   ]) {
     let refused = null;
     try {
-      createHttpsTransport({ config: authorizedConfig(registry, args_, env), openRequest: () => { throw new Error("no"); }, lookup: async () => { throw new Error("no"); } });
+      createHttpsTransport({ config: authorizedConfig(registry, { networkFlag: args_.networkFlag, environment: env }), openRequest: () => { throw new Error("no"); }, lookup: async () => { throw new Error("no"); } });
     } catch (error) { refused = error; }
     t.check(`a transport ${what} refuses to exist at all`, refused instanceof NetworkNotAuthorized,
       refused ? String(refused.message).slice(0, 70) : "it was built");

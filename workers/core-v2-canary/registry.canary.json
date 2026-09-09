@@ -1,0 +1,106 @@
+{
+  "declaredBy": "Codex — Chief Engineer",
+  "declaredAt": "2026-09-09",
+
+  "operatorNotes": {
+    "anthropic": "The $10.00 cache-write ceiling covers the more expensive published one-hour cache-write rate, not the five-minute one.",
+    "openai": "Cache write is a separately published rate.",
+    "google": "Google does not publish a separate implicit-cache creation charge. The $2.00 figure here is deliberately the full uncached-input rate, so that a cache miss cannot exceed the reserved input cost. It is NOT a separately published cache-write tariff.",
+    "sources": [
+      "https://platform.claude.com/docs/en/build-with-claude/prompt-caching",
+      "https://developers.openai.com/api/docs/models/gpt-5.6-sol",
+      "https://ai.google.dev/gemini-api/docs/pricing",
+      "https://ai.google.dev/gemini-api/docs/gemini-3"
+    ]
+  },
+
+  "providers": [
+    {
+      "providerId": "anthropic",
+      "baseUrl": "https://api.anthropic.com/v1",
+      "apiKeyEnvironmentVariable": "ANTHROPIC_API_KEY",
+      "models": ["claude-opus-5"],
+      "defaultModel": "claude-opus-5",
+      "maximumInputTokens": 8192,
+      "maximumOutputTokens": 4096,
+      "requestTimeoutMs": 120000,
+      "maximumMaterialBytes": 524288,
+      "maximumMaterialBytesPerItem": 262144,
+      "supportedMediaTypes": ["text/plain; charset=utf-8", "image/png"],
+      "capabilities": {
+        "claude-opus-5": { "forcedToolChoice": true, "strictSchema": true, "images": true, "thinking": "optional" }
+      }
+    },
+    {
+      "providerId": "openai",
+      "baseUrl": "https://api.openai.com/v1",
+      "apiKeyEnvironmentVariable": "OPENAI_API_KEY",
+      "models": ["gpt-5.6-sol"],
+      "defaultModel": "gpt-5.6-sol",
+      "maximumInputTokens": 8192,
+      "maximumOutputTokens": 4096,
+      "requestTimeoutMs": 120000,
+      "maximumMaterialBytes": 524288,
+      "maximumMaterialBytesPerItem": 262144,
+      "supportedMediaTypes": ["text/plain; charset=utf-8", "image/png"],
+      "capabilities": {
+        "gpt-5.6-sol": { "forcedToolChoice": false, "strictSchema": true, "images": true, "thinking": "optional" }
+      }
+    },
+    {
+      "providerId": "google",
+      "baseUrl": "https://generativelanguage.googleapis.com",
+      "apiKeyEnvironmentVariable": "GEMINI_API_KEY",
+      "models": ["gemini-3.1-pro-preview"],
+      "defaultModel": "gemini-3.1-pro-preview",
+      "maximumInputTokens": 8192,
+      "maximumOutputTokens": 4096,
+      "requestTimeoutMs": 120000,
+      "maximumMaterialBytes": 524288,
+      "maximumMaterialBytesPerItem": 262144,
+      "supportedMediaTypes": ["text/plain; charset=utf-8", "image/png"],
+      "capabilities": {
+        "gemini-3.1-pro-preview": { "forcedToolChoice": false, "strictSchema": true, "images": true, "thinking": "optional" }
+      }
+    }
+  ],
+
+  "pricing": [
+    {
+      "providerId": "anthropic", "model": "claude-opus-5",
+      "effectiveFrom": "2026-09-09", "currency": "USD",
+      "inputPerMillionTokens": 5.0,
+      "cachedInputPerMillionTokens": 0.5,
+      "cacheWritePerMillionTokens": 10.0,
+      "outputPerMillionTokens": 25.0,
+      "reasoningPerMillionTokens": 25.0
+    },
+    {
+      "providerId": "openai", "model": "gpt-5.6-sol",
+      "effectiveFrom": "2026-09-09", "currency": "USD",
+      "inputPerMillionTokens": 4.0,
+      "cachedInputPerMillionTokens": 0.4,
+      "cacheWritePerMillionTokens": 5.0,
+      "outputPerMillionTokens": 20.0,
+      "reasoningPerMillionTokens": 20.0
+    },
+    {
+      "providerId": "google", "model": "gemini-3.1-pro-preview",
+      "effectiveFrom": "2026-09-09", "currency": "USD",
+      "inputPerMillionTokens": 2.0,
+      "cachedInputPerMillionTokens": 0.2,
+      "cacheWritePerMillionTokens": 2.0,
+      "outputPerMillionTokens": 12.0,
+      "reasoningPerMillionTokens": 12.0
+    }
+  ],
+
+  "roles": { "readerA": "anthropic", "readerB": "openai", "critic": "google" },
+
+  "routing": {
+    "reader-family-one": "anthropic",
+    "reader-family-two": "openai",
+    "critic-family-one": "google",
+    "arbiter-family-one": "google"
+  }
+}

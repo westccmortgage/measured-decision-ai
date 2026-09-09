@@ -16,6 +16,7 @@ run() {
 }
 
 run "the canary that has not run, and every lock on its door" canary.mjs
+run "the canary's door, checked without opening it"            deno-transport.mjs
 
 printf "\n\033[1m%s\033[0m\n" "── preflight, as the program an operator would run"
 if node --experimental-strip-types --no-warnings ../canary.ts --preflight > /tmp/core-v2-canary-preflight.out 2>&1; then

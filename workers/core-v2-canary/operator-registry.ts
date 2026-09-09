@@ -18,7 +18,7 @@
  * reads an environment.
  */
 import type { ModelCapabilities, ModelPrice, ProviderConfiguration, RuntimeConfig } from "../core-v2-runtime/runtime-config.ts";
-import { ceilingRates, configurationProblems, NO_PAID_CALLS } from "../core-v2-runtime/runtime-config.ts";
+import { ceilingRates, configurationProblems, costCeiling, NO_PAID_CALLS } from "../core-v2-runtime/runtime-config.ts";
 import { knownProviderIds } from "../core-v2-runtime/providers/registry.ts";
 
 /* The canary's immutable identity. Every row it writes hangs off this, and a
@@ -226,3 +226,70 @@ export function loadOperatorRegistry(text: string, source: string): LoadResult {
     problems: [],
   };
 }
+
+/* The names of the two gates. Their NAMES live here; nothing in this module
+   ever reads a provider key. */
+export const PAID_CALLS_VARIABLE = "CORE_V2_ALLOW_PAID_CALLS";
+export const ORGANIZATION_VARIABLE = "CORE_V2_CANARY_ORGANIZATION";
+
+/* What a person did, whatever program is asking: a flag they typed, and an
+   environment somebody set. */
+export type CanaryGates = { networkFlag: boolean; environment: Record<string, string | undefined> };
+
+/* ───────────────────────────────────────────────── what a canary could cost */
+
+export type WorstCase = {
+  perAttempt: number;
+  wholeCanary: number;
+  fits: boolean;
+  detail: { providerId: string; model: string; maximumCost: number }[];
+  problems: string[];
+};
+
+/* The most a whole canary could cost: the dearest attempt any authorised
+   provider and model could produce, taken as often as submissions are
+   permitted. Not an expectation — the expectation is what an optimistic
+   engine spends by accident. */
+export function worstCase(config: RuntimeConfig, at: Date = new Date()): WorstCase {
+  const detail: { providerId: string; model: string; maximumCost: number }[] = [];
+  const problems: string[] = [];
+  for (const provider of config.providers) {
+    for (const model of provider.models) {
+      const ceiling = costCeiling(config, provider.providerId, model, provider.maximumInputTokens, provider.maximumOutputTokens, at);
+      if (!ceiling) {
+        problems.push(`${provider.providerId}/${model}: no ceiling can be established, so no reservation can be taken and nothing may be sent`);
+        continue;
+      }
+      if (ceiling.currency !== CANARY_CURRENCY) {
+        problems.push(`${provider.providerId}/${model}: priced in ${ceiling.currency}, and the authority is stated in ${CANARY_CURRENCY}`);
+      }
+      detail.push({ providerId: provider.providerId, model, maximumCost: ceiling.maximumCost });
+    }
+  }
+  const perAttempt = detail.reduce((most, one) => Math.max(most, one.maximumCost), 0);
+  const wholeCanary = perAttempt * CANARY_MAXIMUM_SUBMISSIONS;
+  return { perAttempt, wholeCanary, fits: problems.length === 0 && detail.length > 0 && wholeCanary <= CANARY_AUTHORIZED, detail, problems };
+}
+
+/* THE AUTHORIZATION, ASSEMBLED FROM THE FOUR THINGS A PERSON DID.
+ *
+ * The operator's declaration carries none of these: it says which models
+ * exist and what they cost, and nothing about whether anybody may be paid.
+ * The flag is on the command line, the gate is in the environment, the
+ * amount is a constant nobody here can raise, and the two allowlists are
+ * exactly what was declared — not a wildcard, and never wider than the
+ * declaration. Exported because it is the thing worth checking. */
+export function authorizedConfig(registry: OperatorRegistry, gates: CanaryGates): RuntimeConfig {
+  return {
+    ...registry.config,
+    authorization: {
+      providerNetworkFlag: gates.networkFlag === true,
+      environmentGate: gates.environment[PAID_CALLS_VARIABLE] === "true",
+      maximumAuthorizedCost: CANARY_AUTHORIZED,
+      currency: CANARY_CURRENCY,
+      providerAllowlist: registry.config.providers.map((p) => p.providerId),
+      modelAllowlist: registry.config.providers.flatMap((p) => p.models),
+    },
+  };
+}
+
