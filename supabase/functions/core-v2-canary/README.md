@@ -7,6 +7,53 @@ taken away.
 Everything in this directory is finished and tested. It has **not** been
 deployed and has **not** been invoked.
 
+## The run that happened, and what it measured
+
+Run 34340500490, 2026-09-09, dispatched once against this branch.
+
+It got further than any previous attempt and it spent **nothing**:
+
+* the gating held — `deploy-database` and `deploy-functions` were both
+  **skipped**, so no migration ran and no other function was deployed;
+* all three provider secret names were confirmed present, by name only;
+* the CLI bundled the 45-file, 705 KB import graph into a **525 kB** script
+  and deployed it — so reaching out of `supabase/` into `workers/` is
+  something the Supabase CLI does without complaint;
+* the single invocation returned **HTTP 504** after ~160 seconds;
+* the record is **completely empty**: no workflow, no task, no attempt, no
+  reservation, no budget row, no synthetic organisation, no `core_v2.*`
+  audit row.
+
+The last point is the one that matters. The transport that can reach a
+provider is constructed *after* the record and the budget are in place, so
+an empty record proves no provider was contacted: **0 of 4 submissions,
+$0.00 reserved, $0.00 settled, $0.00 spent.**
+
+Where it stopped: the very first database write is the synthetic
+organisation, and it never happened, so execution hung inside
+`CanaryDatabase.connect` — the direct `SUPABASE_DB_URL` connection from the
+Edge Runtime — or in loading `jsr:@db/postgres`. It did not refuse; it hung
+until the gateway gave up, which is the signature of a connection that is
+routable in name only. The likely cause is that a direct Postgres connection
+from an Edge Function is not reachable the way this adapter opens it, and
+that the pooler is what an Edge Function is expected to use. That is a
+diagnosis to confirm, not a conclusion, and confirming it costs nothing:
+the failure is entirely on this side of the paid boundary.
+
+Cleanup ran through the EXIT trap and was then independently verified twice
+— once by the job's own assertion step and once from outside afterwards:
+
+* `core-v2-canary` deleted; 13 functions remain, none of them it;
+* `CORE_V2_ALLOW_PAID_CALLS` unset, `CORE_V2_CANARY_TRIGGER` unset;
+* `ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, `GEMINI_API_KEY` untouched;
+* every other function's `ezbr_sha256` unchanged. Their *version* counters
+  moved, because project-level secrets are baked into every function's
+  environment and setting or unsetting one re-stamps them all. No other
+  function's code was deployed.
+
+The temporary workflow job has been removed from this branch, so the paid
+path cannot be launched again by accident.
+
 ## Why it was not deployed from the agent session
 
 Three separate things, only the first of which is a judgement call:
