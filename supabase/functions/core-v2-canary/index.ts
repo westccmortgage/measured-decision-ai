@@ -88,15 +88,17 @@ const DRAIN_DEADLINE_MS = 140_000;
  * whose outcome nobody will ever know. The engine never retries one of
  * those, so every one of them costs a subject its coverage.
  *
- * Forty-five seconds, and the number has been measured twice. Most answers
- * come back between six and thirteen; at thirty, one table reader was cut
- * off at 30004 ms with the whole region behind it — a reading lost to the
- * clock rather than to anything the reader said, which is the exact failure
- * this canary keeps having to stop causing. Forty-five is three times the
- * slowest answer that has actually arrived, and a provider that does not
- * answer inside it still becomes a KNOWN failure, on this pass, with a
- * reason the engine can act on. */
-const ANSWER_WITHIN_MS = 45_000;
+ * Sixty seconds, and the number has been measured three times. Most answers
+ * come back between six and twenty. At thirty, one table reader was cut off
+ * at 30004 ms; at forty-five, two readers of the same wave were cut off
+ * together at 45002 and 45004 ms — the same provider that had answered in
+ * eleven seconds one generation earlier, slower because four requests went
+ * out at once. Every one of those is a reading lost to the clock rather
+ * than to anything the reader said, which is the exact failure this canary
+ * keeps having to stop causing. A provider that does not answer inside
+ * sixty still becomes a KNOWN failure, on this pass, with a reason the
+ * engine can act on. */
+const ANSWER_WITHIN_MS = 60_000;
 
 /* The room a finished answer needs after it arrives: parsed, validated,
    priced, settled, its claims and anchors written, its task closed. */

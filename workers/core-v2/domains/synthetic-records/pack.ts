@@ -65,10 +65,12 @@ export const ROLES: AgentRoleDefinition[] = [
       + "\"{\\\"category\\\":\\\"alpha\\\"}\" — in value.attributes, not in scope, because that "
       + "is where a category is read from. "
       + "A row you cannot read is value.known false with the reason in limitations[], not a "
-      + "guess. Every claim names an anchor in anchors[] pointing at that row, and that "
-      + "anchor's locator is the JSON object \"{\\\"bbox\\\":[0.1,0.2,0.9,0.3]}\" — four numbers "
-      + "0..1, left, top, right, bottom of the row inside the sheet. "
-      + "A locator naming the row and nothing else is refused: a row number is not a place.",
+      + "guess. Every claim names an anchor in anchors[] with sourceKind \"segment\", segmentId "
+      + "the table you were handed, locator \"{}\", and quotedText the row copied out "
+      + "character for character. You are given this table as text and not as a picture, so "
+      + "you have no coordinates for a row and must not invent any: sourceKind "
+      + "\"segment_locator\" is for a place you can actually point at, and its box is checked "
+      + "against the region's own.",
     maximumSources: 1, maximumClaims: 64, maximumFollowUpDepth: 1, requiresVisualInput: true, requiresIndependentReading: true,
     allowedActions: ["read_reference_segment", "request_human_review"], routingProfile: "visual_analysis", executorKind: "model",
     producesAssessments: false, producesAdjudication: false, producesDecisions: false, producesCalculations: false, producesSegments: false,
@@ -81,9 +83,9 @@ export const ROLES: AgentRoleDefinition[] = [
       + "\"revision_status\"; subjectType \"entry\"; subjectKey in the form \"entry/E-001\"; "
       + "value.known true and value.text the status the note gives that entry. A note that "
       + "names no entry produces no claims and says so in limitations[]. Every claim names an "
-      + "anchor in anchors[] pointing at the note, and that anchor's locator is the JSON object "
-      + "\"{\\\"bbox\\\":[0.1,0.7,0.9,0.8]}\" — four numbers 0..1, the note's place inside "
-      + "the sheet.",
+      + "anchor in anchors[] with sourceKind \"segment\", segmentId the note you were handed, "
+      + "locator \"{}\", and quotedText the sentence it comes from copied out character for "
+      + "character.",
     maximumSources: 1, maximumClaims: 8, maximumFollowUpDepth: 1, requiresVisualInput: false, requiresIndependentReading: true,
     allowedActions: ["request_human_review"], routingProfile: "general_analysis", executorKind: "model",
     producesAssessments: false, producesAdjudication: false, producesDecisions: false, producesCalculations: false, producesSegments: false,
