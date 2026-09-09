@@ -383,24 +383,30 @@ Deno.serve(async (request: Request): Promise<Response> => {
 
     /* ── 9 · the record and the durable budget ───────────────────────── */
     const ledger = new BudgetLedger(db as never, config);
-    /* A resumed workflow is already in the record with its budget; enqueuing
-       it again would be a second start command for work already underway. */
+    /* A RESUMED WORKFLOW IS ALREADY IN THE RECORD, AND SO IS ITS BUDGET.
+     *
+     * Enqueuing it again would be a second start command for work already
+     * underway, and re-authorizing it is worse: the ledger compares an
+     * existing authorization against the one offered and refuses when they
+     * differ, which is exactly right and is what a resumed pass ran into
+     * when it offered a different concurrency. The authority a workflow was
+     * started under is the authority it finishes under. */
     if (!resuming) {
       await enqueueWorkflow(new PostgresOrchestrationRepository(db as never, { organizationId: ORGANIZATION_ID }), truth.manifest, pack);
+      await ledger.authorizeWorkflow({
+        workflowId: WORKFLOW_ID, organizationId: ORGANIZATION_ID, currency: CANARY_CURRENCY,
+        authorizedMaximum: lifetimeRemaining,
+        maximumPerAttempt: worst.perAttempt,
+        maximumAttempts,
+        /* Three at a time. A real reader takes twenty seconds and an Edge
+           Function has about two and a half minutes; at one at a time the
+           wall clock, not the work, decides how far a pass gets. The money
+           is still bounded by the authority and the attempt cap. */
+        maximumConcurrentAttempts: 3,
+        maximumInputTokens: Math.max(...config.providers.map((p) => p.maximumInputTokens)),
+        maximumOutputTokens: Math.max(...config.providers.map((p) => p.maximumOutputTokens)),
+      });
     }
-    await ledger.authorizeWorkflow({
-      workflowId: WORKFLOW_ID, organizationId: ORGANIZATION_ID, currency: CANARY_CURRENCY,
-      authorizedMaximum: lifetimeRemaining,
-      maximumPerAttempt: worst.perAttempt,
-      maximumAttempts,
-      /* Three at a time. A real reader takes twenty seconds and an Edge
-         Function has about two and a half minutes; at one at a time the
-         wall clock, not the work, decides how far a pass gets. The money is
-         still bounded by the authority and the attempt cap. */
-      maximumConcurrentAttempts: 3,
-      maximumInputTokens: Math.max(...config.providers.map((p) => p.maximumInputTokens)),
-      maximumOutputTokens: Math.max(...config.providers.map((p) => p.maximumOutputTokens)),
-    });
 
     /* ── 10 · the door, built last ───────────────────────────────────── */
     const transport = new DenoFetchTransport({ config });
@@ -436,7 +442,14 @@ Deno.serve(async (request: Request): Promise<Response> => {
     await dispatcher.stop();
 
     /* ── 11 · close the authority, whatever happened ─────────────────── */
-    await ledger.stop(WORKFLOW_ID, deadlineReached
+    /* Only when there is nothing left to do. Closing the authority on a
+       pass that merely ran out of clock would strand the rest of the work. */
+    const left = Number((await db.query(
+      `select count(*)::text as n from public.workflow_tasks
+        where workflow_id = $1 and state <> all($2::text[])`,
+      [WORKFLOW_ID, `{${TASK_IS_DONE.join(",")}}`],
+    )).rows[0]?.n ?? "0");
+    if (left === 0) await ledger.stop(WORKFLOW_ID, deadlineReached
       ? `${RUN_ID} stopped at its deadline — unused authority closed`
       : `${RUN_ID} complete — unused authority closed`).catch(() => undefined);
 
@@ -457,6 +470,7 @@ Deno.serve(async (request: Request): Promise<Response> => {
       worstAttempt: worst.perAttempt,
       worstCanary: worst.wholeCanary,
       deadlineReached,
+      tasksLeft: left,
       events,
       elapsedMs: Date.now() - started,
     }));
