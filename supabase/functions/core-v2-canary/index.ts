@@ -82,9 +82,20 @@ const MAXIMUM_GENERATIONS = 50;
 const runIdFor = (generation: number) => `${CANARY_ID}-g${generation}`;
 const workflowIdFor = (generation: number) => entityId("core-v2-canary-workflow", runIdFor(generation));
 
-/* Workflow states that are still going. Anything else is finished, and a
-   finished workflow is not resumed — it is superseded by a new generation. */
-const UNFINISHED = ["queued", "planning", "running", "cancelling"];
+/* A WORKFLOW IS FINISHED WHEN ITS WORK IS, NOT WHEN ONE PASS RAN OUT OF TIME.
+ *
+ * An Edge Function has a wall clock of about two and a half minutes and a
+ * real reader takes twenty seconds, so an eleven-task workflow does not fit
+ * in one invocation — and it was never meant to. The outbox, the leases and
+ * the durable record exist precisely so a dispatcher can stop and another
+ * can pick the work up.
+ *
+ * So the question a fresh dispatch asks is not "what state is the workflow
+ * in" but "are there tasks still to do". A generation-6 run stopped with
+ * two completed, four readers leased or running and five comparisons and
+ * totals blocked behind them; that is a workflow to continue, not one to
+ * abandon and start again beside. */
+const TASK_IS_DONE = ["completed", "failed_known", "outcome_unknown", "cancelled", "superseded"];
 
 /* THE RECORD IS REACHED THROUGH THE POOLER, AND THE PASSWORD STAYS PUT.
  *
@@ -172,15 +183,18 @@ async function chooseGeneration(db: CanaryDatabase): Promise<{ generation: numbe
   const candidates: string[] = [];
   for (let g = 1; g <= MAXIMUM_GENERATIONS; g++) candidates.push(workflowIdFor(g));
   const seen = await db.query(
-    `select id::text as id, state from public.intelligence_workflows where id = any($1::uuid[])`,
-    [`{${candidates.join(",")}}`],
+    `select w.id::text as id,
+            (select count(*) from public.workflow_tasks k
+              where k.workflow_id = w.id and k.state <> all($2::text[]))::text as unfinished
+       from public.intelligence_workflows w where w.id = any($1::uuid[])`,
+    [`{${candidates.join(",")}}`, `{${TASK_IS_DONE.join(",")}}`],
   );
-  const stateOf = new Map(seen.rows.map((row) => [String(row.id), String(row.state)]));
+  const unfinishedOf = new Map(seen.rows.map((row) => [String(row.id), Number(row.unfinished ?? "0")]));
   for (let g = 1; g <= MAXIMUM_GENERATIONS; g++) {
     const id = workflowIdFor(g);
-    const state = stateOf.get(id);
-    if (state === undefined) return { generation: g, runId: runIdFor(g), workflowId: id, resuming: false };
-    if (UNFINISHED.includes(state)) return { generation: g, runId: runIdFor(g), workflowId: id, resuming: true };
+    const unfinished = unfinishedOf.get(id);
+    if (unfinished === undefined) return { generation: g, runId: runIdFor(g), workflowId: id, resuming: false };
+    if (unfinished > 0) return { generation: g, runId: runIdFor(g), workflowId: id, resuming: true };
   }
   throw new Error(`core-v2-canary: ${MAXIMUM_GENERATIONS} generations have all finished; nothing further runs without a decision`);
 }
@@ -309,13 +323,18 @@ Deno.serve(async (request: Request): Promise<Response> => {
        Every canary generation shares one synthetic organisation, so what
        previous generations committed is one query. The authority for this
        run is what is left of the five dollars, not five dollars again. */
-    const finished = await db.query(
-      `select state from public.intelligence_workflows where id = $1`, [WORKFLOW_ID],
+    const standing = await db.query(
+      `select w.state,
+              (select count(*) from public.workflow_tasks k
+                where k.workflow_id = w.id and k.state <> all($2::text[]))::text as unfinished
+         from public.intelligence_workflows w where w.id = $1`,
+      [WORKFLOW_ID, `{${TASK_IS_DONE.join(",")}}`],
     );
-    const state = finished.rows[0]?.state ?? null;
-    if (state !== null && !UNFINISHED.includes(state)) {
+    const state = standing.rows[0]?.state ?? null;
+    const unfinishedTasks = Number(standing.rows[0]?.unfinished ?? "0");
+    if (state !== null && unfinishedTasks === 0) {
       return json(409, {
-        refused: `${RUN_ID} already finished as "${state}"; a workflow that has ended is not re-run`,
+        refused: `${RUN_ID} has no work left (state "${state}"); a finished workflow is not re-run`,
         hint: "set CORE_V2_CANARY_GENERATION to the next number for a fresh workflow",
         workflowId: WORKFLOW_ID,
       });
@@ -349,6 +368,7 @@ Deno.serve(async (request: Request): Promise<Response> => {
        second generation seeded with the first one's name collides on
        workflow_sources_pkey before a single task is planned. Generation 2
        found that; the seed is the generation's. */
+    const resuming = chosen.resuming;
     const truth = syntheticRecordSet({
       seed: RUN_ID, sources: 1, sheetsPerSource: 1, entriesPerTable: 3,
       organizationId: ORGANIZATION_ID, workflowId: WORKFLOW_ID,
@@ -363,13 +383,21 @@ Deno.serve(async (request: Request): Promise<Response> => {
 
     /* ── 9 · the record and the durable budget ───────────────────────── */
     const ledger = new BudgetLedger(db as never, config);
-    await enqueueWorkflow(new PostgresOrchestrationRepository(db as never, { organizationId: ORGANIZATION_ID }), truth.manifest, pack);
+    /* A resumed workflow is already in the record with its budget; enqueuing
+       it again would be a second start command for work already underway. */
+    if (!resuming) {
+      await enqueueWorkflow(new PostgresOrchestrationRepository(db as never, { organizationId: ORGANIZATION_ID }), truth.manifest, pack);
+    }
     await ledger.authorizeWorkflow({
       workflowId: WORKFLOW_ID, organizationId: ORGANIZATION_ID, currency: CANARY_CURRENCY,
       authorizedMaximum: lifetimeRemaining,
       maximumPerAttempt: worst.perAttempt,
       maximumAttempts,
-      maximumConcurrentAttempts: 1,
+      /* Three at a time. A real reader takes twenty seconds and an Edge
+         Function has about two and a half minutes; at one at a time the
+         wall clock, not the work, decides how far a pass gets. The money is
+         still bounded by the authority and the attempt cap. */
+      maximumConcurrentAttempts: 3,
       maximumInputTokens: Math.max(...config.providers.map((p) => p.maximumInputTokens)),
       maximumOutputTokens: Math.max(...config.providers.map((p) => p.maximumOutputTokens)),
     });
