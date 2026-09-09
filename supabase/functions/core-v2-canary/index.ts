@@ -241,10 +241,10 @@ const ORGANIZATION_ID = entityId("core-v2-canary-organization", "core-v2-canary"
  * query, and the first that either does not exist or has not finished is
  * this run's. An operator can still pin one with
  * CORE_V2_CANARY_GENERATION when they want a specific workflow. */
-async function chooseGeneration(db: CanaryDatabase, startFresh = false): Promise<{ generation: number; runId: string; workflowId: string; resuming: boolean }> {
+async function chooseGeneration(db: CanaryDatabase, startFresh = false): Promise<{ generation: number; runId: string; workflowId: string; resuming: boolean; generationsInTheRecord: number[] }> {
   if (PINNED_GENERATION) {
     const pinned = Number(PINNED_GENERATION);
-    return { generation: pinned, runId: runIdFor(pinned), workflowId: workflowIdFor(pinned), resuming: false };
+    return { generation: pinned, runId: runIdFor(pinned), workflowId: workflowIdFor(pinned), resuming: false, generationsInTheRecord: [] };
   }
   const candidates: string[] = [];
   for (let g = 1; g <= MAXIMUM_GENERATIONS; g++) candidates.push(workflowIdFor(g));
@@ -277,14 +277,24 @@ async function chooseGeneration(db: CanaryDatabase, startFresh = false): Promise
     unfinished: Number(row.unfinished ?? "0"),
     awaitingPerson: Number(row.awaiting_person ?? "0"),
   }]));
+  /* THE NEWEST RESUMABLE ONE, NOT THE OLDEST.
+     Scanning upwards finds the earliest generation with anything open, which
+     is the oldest zombie — a run some earlier defect left half-done — and a
+     pass spent there is a pass not spent on the work that is actually
+     advancing. The generation that has got furthest is the last one. */
+  let firstUnused = 0;
+  let newestResumable = 0;
+  const generationsInTheRecord: number[] = [];
   for (let g = 1; g <= MAXIMUM_GENERATIONS; g++) {
-    const id = workflowIdFor(g);
-    const found = standingOf.get(id);
-    if (found === undefined) return { generation: g, runId: runIdFor(g), workflowId: id, resuming: false };
-    if (!startFresh && found.unfinished > 0 && found.awaitingPerson === 0) {
-      return { generation: g, runId: runIdFor(g), workflowId: id, resuming: true };
-    }
+    const found = standingOf.get(workflowIdFor(g));
+    if (found === undefined) { if (firstUnused === 0) firstUnused = g; continue; }
+    generationsInTheRecord.push(g);
+    if (found.unfinished > 0 && found.awaitingPerson === 0) newestResumable = g;
   }
+  if (!startFresh && newestResumable > 0) {
+    return { generation: newestResumable, runId: runIdFor(newestResumable), workflowId: workflowIdFor(newestResumable), resuming: true, generationsInTheRecord };
+  }
+  if (firstUnused > 0) return { generation: firstUnused, runId: runIdFor(firstUnused), workflowId: workflowIdFor(firstUnused), resuming: false, generationsInTheRecord };
   throw new Error(`core-v2-canary: ${MAXIMUM_GENERATIONS} generations have all finished; nothing further runs without a decision`);
 }
 
@@ -473,8 +483,35 @@ Deno.serve(async (request: Request): Promise<Response> => {
     }
     const pack = new SyntheticRecordsPack();
     const roles = new RoleRegistry(pack);
+    /* EVERY GENERATION'S MATERIAL, NOT JUST THIS ONE'S.
+     *
+     * A pass chooses one generation and builds that generation's fixture —
+     * and then hands the dispatcher a resolver, which serves whatever
+     * workflow the dispatcher goes on to touch. It touches more than one:
+     * the order it works through is what it claimed, plus what the record
+     * offers as resumable, plus what is left unreconciled. Each of those is
+     * a different generation with a different seed, and material is looked
+     * up by content hash — so every workflow but the chosen one was being
+     * asked for hashes this map had never heard of, and every task in it
+     * failed with "no material came back". A critic in generation twelve
+     * died of being handed generation nine's fixture.
+     *
+     * The hashes of two generations never collide — different seed, different
+     * bytes — so the union is unambiguous, and it is what a resolver serving
+     * more than one workflow has to hold. It costs a few kilobytes per
+     * generation, computed once, in memory. */
     const stored = new Map<string, StoredMaterial>();
-    for (const [hash, item] of truth.material) stored.set(hash, { mediaKind: item.mediaKind, mimeType: item.mimeType, bytes: item.bytes });
+    const fixtureInto = (seed: string, workflowId: string) => {
+      const set = syntheticRecordSet({
+        seed, sources: 1, sheetsPerSource: 1, entriesPerTable: 3,
+        organizationId: ORGANIZATION_ID, workflowId,
+      });
+      for (const [hash, item] of set.material) {
+        if (!stored.has(hash)) stored.set(hash, { mediaKind: item.mediaKind, mimeType: item.mimeType, bytes: item.bytes });
+      }
+    };
+    for (const g of chosen.generationsInTheRecord) fixtureInto(runIdFor(g), workflowIdFor(g));
+    fixtureInto(RUN_ID, WORKFLOW_ID);
 
     /* ── 9 · the record and the durable budget ───────────────────────── */
     const ledger = new BudgetLedger(db as never, config);
@@ -538,6 +575,10 @@ Deno.serve(async (request: Request): Promise<Response> => {
       ),
       pack,
       leaseTtlMs: LEASE_TTL_MS,
+      /* One workflow gets this pass. The container lives long enough for one
+         workflow's phases and not for four's, and spreading a short clock
+         over several leaves all of them half-done. */
+      workflowsPerPass: 1,
       executors: () => executors.registry,
       events: (event: unknown) => { events.push(event); },
       now: () => Date.now(),
