@@ -71,6 +71,21 @@ const MAY_HAVE_BEEN_BILLED = [
    outcome nobody knows rather than lost with the container. */
 const DRAIN_DEADLINE_MS = 140_000;
 
+/* WHEN TO STOP STARTING, AS OPPOSED TO WHEN TO STOP.
+ *
+ * A pass that is killed mid-flight orphans whatever it had submitted, and
+ * the next pass finds those leases expired. The engine then does the right
+ * thing and the wrong thing at once: it refuses to settle a subject whose
+ * blind reader was lost, raises a coverage disagreement and escalates it to
+ * a person — correct, and entirely caused by the wall clock rather than by
+ * anything either reader said.
+ *
+ * So the dispatcher is given a signal that fires well before the hard
+ * deadline. It stops STARTING work then, and stop() waits for what is
+ * already in flight, which leaves an attempt either finished or never begun
+ * — never abandoned halfway. */
+const STOP_STARTING_MS = 70_000;
+
 /* WHICH RUN THIS IS. The canary id is immutable per run; a run whose
    workflow already reached a terminal state cannot be continued, so a
    corrected attempt gets the next generation and its own workflow. The
@@ -417,10 +432,12 @@ Deno.serve(async (request: Request): Promise<Response> => {
       environment,
     });
 
+    const winding = new AbortController();
     const dispatcher = new Dispatcher({
       /* Names this generation, so the outbox and every event say which run
          they belong to. */
       name: RUN_ID,
+      signal: winding.signal,
       connect: async () => dispatcherDb as never,
       repository: () => meteredRepository(
         new PostgresOrchestrationRepository(dispatcherDb as never, { organizationId: ORGANIZATION_ID }),
@@ -438,8 +455,11 @@ Deno.serve(async (request: Request): Promise<Response> => {
 
     let deadlineReached = false;
     const deadline = new Promise<void>((resolve) => setTimeout(() => { deadlineReached = true; resolve(); }, DRAIN_DEADLINE_MS));
+    const stopStarting = setTimeout(() => { deadlineReached = true; winding.abort(); }, STOP_STARTING_MS);
     await Promise.race([dispatcher.drain(), deadline]);
+    /* Waits for what is already in flight rather than dropping it. */
     await dispatcher.stop();
+    clearTimeout(stopStarting);
 
     /* ── 11 · close the authority, whatever happened ─────────────────── */
     /* Only when there is nothing left to do. Closing the authority on a
