@@ -142,7 +142,16 @@ function mayReturn(packet: WorkPacket, role: AgentRoleDefinition): string[] {
      from somewhere other than the packet. Say which name to use, once, here,
      for every role that refers to a claim it was given. */
   if (role.producesAssessments) {
-    out.push("one assessment for each claim you were shown, anchored where you read it — its claimRef is that claim's ref exactly as it appears after the word \"claim\", copied character for character, never a label of your own like \"claim A\"");
+    out.push("one assessment for each claim you were shown — its claimRef is that claim's ref exactly as it appears after the word \"claim\", copied character for character, never a label of your own");
+    /* AN ANCHOR YOU CITE IS AN ANCHOR YOU DECLARE.
+       anchorKeys point INTO this envelope's own anchors[], and the kernel
+       checks that each one lands at the same segment or source the assessed
+       claim points at. The packet is full of anchor ids belonging to the
+       readings under review, and copying one of those back is the natural
+       mistake: it reads like a citation and is not one — it is the other
+       reader's word for where they looked, not yours. A canary critic did
+       exactly that, three times, after reading all three entries correctly. */
+    out.push("anchors — one of your own for every assessment, each with an anchorKey you invent, pointing at the segment or source the claim you are assessing points at, with the text you read quoted in quotedText; anchorKeys on an assessment name YOUR anchors here, never an anchor id the packet showed you");
   }
   if (role.kind === "comparator") out.push("the differences you found between the readings you were shown");
   if (role.producesAdjudication) {
