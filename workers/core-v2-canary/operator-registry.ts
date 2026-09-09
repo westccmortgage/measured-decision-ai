@@ -238,7 +238,19 @@ export const ORGANIZATION_VARIABLE = "CORE_V2_CANARY_ORGANIZATION";
 
 /* What a person did, whatever program is asking: a flag they typed, and an
    environment somebody set. */
-export type CanaryGates = { networkFlag: boolean; environment: Record<string, string | undefined> };
+/* `answerWithinMs` is the operator's own window, not the provider's: how long
+   the process running this canary will still be alive to receive an answer.
+   A declaration may say a provider is allowed two minutes; an operator that
+   is killed after one must not authorise the second, because a request still
+   outstanding when the process dies is not a slow call — it is an attempt
+   whose outcome nobody will ever know, and this engine never retries one of
+   those. Omitting it keeps the declared timeout, which is right for an
+   operator that outlives any request it makes. */
+export type CanaryGates = {
+  networkFlag: boolean;
+  environment: Record<string, string | undefined>;
+  answerWithinMs?: number;
+};
 
 /* ───────────────────────────────────────────────── what a canary could cost */
 
@@ -284,8 +296,13 @@ export function worstCase(config: RuntimeConfig, at: Date = new Date()): WorstCa
  * exactly what was declared — not a wildcard, and never wider than the
  * declaration. Exported because it is the thing worth checking. */
 export function authorizedConfig(registry: OperatorRegistry, gates: CanaryGates): RuntimeConfig {
+  const window = typeof gates.answerWithinMs === "number" && gates.answerWithinMs > 0 ? Math.trunc(gates.answerWithinMs) : null;
+  const providers = window === null
+    ? registry.config.providers
+    : registry.config.providers.map((p) => (p.requestTimeoutMs <= window ? p : { ...p, requestTimeoutMs: window }));
   return {
     ...registry.config,
+    providers,
     authorization: {
       providerNetworkFlag: gates.networkFlag === true,
       environmentGate: gates.environment[PAID_CALLS_VARIABLE] === "true",

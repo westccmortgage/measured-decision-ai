@@ -126,6 +126,54 @@ t.section("what it does with an answer");
     transport.unresolvedHosts.join(",") === "api.openai.com", transport.unresolvedHosts.join(","));
 }
 
+t.section("nothing it does is allowed to outlive the operator");
+/* The whole point of a deadline here is the operator's life, not the
+   provider's patience: a wait that outlives the process becomes an attempt
+   whose outcome nobody knows, and this engine never retries one of those.
+   So the clock has to cover everything that can block — the name lookup
+   included, which happens before fetch is ever called and before the
+   caller's own abort signal is being listened to. */
+{
+  const started = Date.now();
+  const transport = make({ resolve: () => new Promise(() => {}), fetch: never });
+  let error = null;
+  try { await sending(transport, { timeoutMs: 120 }); } catch (caught) { error = caught; }
+  const waited = Date.now() - started;
+  t.check("a name lookup that never answers is given up on, not waited out",
+    error instanceof TransportFault && error.beforeSubmission === true && /was not resolved within 120ms/.test(String(error.message)),
+    error ? String(error.message).slice(0, 90) : "it returned");
+  t.check("and it gave up on the operator's clock, not the provider's", waited < 2000, `${waited}ms`);
+}
+{
+  const started = Date.now();
+  const transport = make({ resolve: publicOnly, fetch: (_url, init) => new Promise((_ok, no) => {
+    init.signal.addEventListener("abort", () => no(new DOMException("aborted", "AbortError")), { once: true });
+  }) });
+  let error = null;
+  try { await sending(transport, { timeoutMs: 120 }); } catch (caught) { error = caught; }
+  const waited = Date.now() - started;
+  t.check("a provider that never answers is given up on too, as an unknown outcome",
+    error instanceof TransportFault && error.beforeSubmission === false && /no answer within 120ms/.test(String(error.message)),
+    error ? String(error.message).slice(0, 90) : "it returned");
+  t.check("on the same clock", waited < 2000, `${waited}ms`);
+}
+{
+  /* And the operator's window is what actually reaches the adapters: a
+     declaration may allow two minutes, an operator that lives ninety seconds
+     authorises ninety seconds. */
+  const declaredMs = registry.config.providers.map((p) => p.requestTimeoutMs);
+  const clamped = authorizedConfig(registry, { networkFlag: true, environment: { CORE_V2_ALLOW_PAID_CALLS: "true" }, answerWithinMs: 60_000 });
+  t.check("an operator that says how long it lives shortens every declared timeout to it",
+    clamped.config === undefined && clamped.providers.every((p) => p.requestTimeoutMs === 60_000) && declaredMs.every((ms) => ms > 60_000),
+    clamped.providers.map((p) => `${p.providerId}=${p.requestTimeoutMs}`).join(" "));
+  t.check("and one that does not say leaves the declaration alone",
+    open.providers.every((p, i) => p.requestTimeoutMs === declaredMs[i]),
+    open.providers.map((p) => p.requestTimeoutMs).join(","));
+  t.check("a declaration already inside the window is not lengthened to it",
+    authorizedConfig(registry, { networkFlag: true, environment: { CORE_V2_ALLOW_PAID_CALLS: "true" }, answerWithinMs: 600_000 })
+      .providers.every((p, i) => p.requestTimeoutMs === declaredMs[i]));
+}
+
 t.section("what it never says out loud");
 {
   let seen = null;

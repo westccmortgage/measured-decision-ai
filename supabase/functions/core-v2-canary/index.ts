@@ -86,6 +86,22 @@ const DRAIN_DEADLINE_MS = 140_000;
  * — never abandoned halfway. */
 const STOP_STARTING_MS = 45_000;
 
+/* HOW LONG A PROVIDER MAY TAKE, AS OPPOSED TO HOW LONG IT SAYS IT MAY TAKE.
+ *
+ * The declaration allows each provider two minutes. This operator does not
+ * live two minutes past the last request it starts, so authorising two
+ * minutes would authorise a wait it cannot sit through — and a request still
+ * outstanding when the container goes is not a slow answer, it is an attempt
+ * whose outcome nobody will ever know. The engine never retries one of
+ * those, so every one of them costs a subject its coverage.
+ *
+ * The window is what is left after the last request may be started, minus
+ * the room a finished answer needs to be parsed, priced, settled and
+ * written. Inside it a provider that does not answer becomes a KNOWN
+ * failure, on this pass, with a reason — which the engine can act on. */
+const SETTLEMENT_ROOM_MS = 35_000;
+const ANSWER_WITHIN_MS = DRAIN_DEADLINE_MS - STOP_STARTING_MS - SETTLEMENT_ROOM_MS;
+
 /* WHICH RUN THIS IS. The canary id is immutable per run; a run whose
    workflow already reached a terminal state cannot be continued, so a
    corrected attempt gets the next generation and its own workflow. The
@@ -309,6 +325,7 @@ Deno.serve(async (request: Request): Promise<Response> => {
   const assembled = authorizedConfig(registry, {
     networkFlag,
     environment: gateFromEnvironment ? environment : { [PAID_CALLS_VARIABLE]: "true" },
+    answerWithinMs: ANSWER_WITHIN_MS,
   });
   const config = assembled;
 

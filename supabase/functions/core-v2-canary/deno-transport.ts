@@ -77,6 +77,13 @@ async function denoResolve(hostname: string): Promise<string[] | null> {
   return answers;
 }
 
+/* Settles when the signal aborts, and never rejects: it is one half of a
+   race, not an error path of its own. */
+function until(signal: AbortSignal): Promise<void> {
+  if (signal.aborted) return Promise.resolve();
+  return new Promise<void>((resolve) => signal.addEventListener("abort", () => resolve(), { once: true }));
+}
+
 const byteLength = (text: string): number => new TextEncoder().encode(text).length;
 
 export class DenoFetchTransport implements HttpTransport {
@@ -140,33 +147,59 @@ export class DenoFetchTransport implements HttpTransport {
     }
     if (request.signal?.aborted) throw new TransportFault("core-v2-canary: the request was cancelled before it was sent", true);
 
+    /* ── the deadline, started here rather than at the fetch ──
+       Everything from this line on can block: a resolver that never answers
+       blocks exactly as completely as a provider that never answers, and it
+       blocks BEFORE any byte has left, where the caller's own abort signal is
+       not yet listened to. A deadline that only covers the fetch leaves that
+       stretch unbounded, and an unbounded stretch inside a request-scoped
+       runtime is not a slow call — it is an attempt the operator is killed in
+       the middle of, recorded forever as an outcome nobody knows. One clock,
+       from the first thing that can wait to the last. */
+    const deadline = new AbortController();
+    const timer = setTimeout(() => deadline.abort(new Error("timeout")), request.timeoutMs);
+    const onCancel = () => deadline.abort(new Error("cancelled"));
+    request.signal?.addEventListener("abort", onCancel, { once: true });
+    const givenUp = () => deadline.signal.aborted;
+    const release = () => {
+      clearTimeout(timer);
+      request.signal?.removeEventListener("abort", onCancel);
+    };
+
     const hostname = url.hostname.toLowerCase();
     const literal = parseAddress(hostname);
     if (literal) {
       if (!isPublicAddress(hostname)) {
+        release();
         throw new TransportFault(`core-v2-canary: ${hostname} is an address inside this network, and this transport does not go there — nothing was sent`, true);
       }
     } else {
-      const answered = await this.resolve(hostname).catch(() => null);
+      /* The resolver gets the deadline too. Whichever settles first wins, and
+         a resolver still running when the clock stops is left behind rather
+         than waited on. */
+      const answered = await Promise.race([
+        this.resolve(hostname).catch(() => null),
+        until(deadline.signal).then(() => null as string[] | null),
+      ]);
+      if (givenUp()) {
+        release();
+        throw new TransportFault(`core-v2-canary: ${hostname} was not resolved within ${request.timeoutMs}ms, so nothing was sent`, true);
+      }
       if (answered === null) {
         if (!this.unresolvedHosts.includes(hostname)) this.unresolvedHosts.push(hostname);
       } else {
-        if (answered.length === 0) throw new TransportFault(`core-v2-canary: ${hostname} resolves to nothing, so nothing was sent`, true);
+        if (answered.length === 0) { release(); throw new TransportFault(`core-v2-canary: ${hostname} resolves to nothing, so nothing was sent`, true); }
         for (const address of answered) {
-          if (!parseAddress(address)) throw new TransportFault(`core-v2-canary: ${hostname} resolved to something that is not an address, so nothing was sent`, true);
+          if (!parseAddress(address)) { release(); throw new TransportFault(`core-v2-canary: ${hostname} resolved to something that is not an address, so nothing was sent`, true); }
         }
         if (answered.some((address) => !isPublicAddress(address))) {
+          release();
           throw new TransportFault(`core-v2-canary: ${hostname} resolves to an address inside this network, and this transport does not go there — nothing was sent`, true);
         }
       }
     }
 
     /* ── the exchange, after which nothing is provably unsent ── */
-    const deadline = new AbortController();
-    const timer = setTimeout(() => deadline.abort(new Error("timeout")), request.timeoutMs);
-    const onCancel = () => deadline.abort(new Error("cancelled"));
-    request.signal?.addEventListener("abort", onCancel, { once: true });
-
     let response: Response;
     try {
       response = await this.send_(request.url, {
@@ -178,8 +211,7 @@ export class DenoFetchTransport implements HttpTransport {
         signal: deadline.signal,
       });
     } catch (error) {
-      clearTimeout(timer);
-      request.signal?.removeEventListener("abort", onCancel);
+      release();
       const why = deadline.signal.aborted ? `no answer within ${request.timeoutMs}ms` : describe(error);
       /* Deliberately not "nothing was sent": fetch does not say, and the
          expensive assumption is the safe one. */
@@ -192,8 +224,7 @@ export class DenoFetchTransport implements HttpTransport {
       const body = await this.readCapped(response);
       return { status: response.status, headers, body };
     } finally {
-      clearTimeout(timer);
-      request.signal?.removeEventListener("abort", onCancel);
+      release();
     }
   }
 
