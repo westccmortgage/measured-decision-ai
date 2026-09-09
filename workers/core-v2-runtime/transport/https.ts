@@ -30,8 +30,11 @@
  *   · and the addresses that passed those checks are the addresses the socket
  *     connects to. The lookup handed to node answers only from that set, so a
  *     name that resolved outside once cannot resolve inside a moment later:
- *     there is no second lookup to poison. The hostname is still what the
- *     certificate is verified against and what the handshake asks for;
+ *     there is no second lookup to poison. There is no connection pool
+ *     either, because a pooled socket is handed back without any lookup at
+ *     all and would carry a request over a connection a different request
+ *     validated. The hostname is still what the certificate is verified
+ *     against and what the handshake asks for;
  *   · redirects are NOT followed. A 3xx is handed back exactly as it
  *     arrived, and the caller treats it as the provider declining to take the
  *     request. Following one is how a request ends up somewhere nobody
@@ -78,6 +81,9 @@ export type NodeRequestOptions = {
   timeout: number;
   /* The addresses this request may connect to, and no others. */
   lookup: NodeLookup;
+  /* Deliberately false: no connection pool, so no request is ever carried by
+     a socket some earlier request opened. */
+  agent: false;
 };
 
 export type NodeResponse = {
@@ -420,6 +426,17 @@ export class HttpsTransport implements HttpTransport {
         headers: { ...request.headers, "content-length": String(Buffer.byteLength(request.body ?? "", "utf8")) },
         timeout: request.timeoutMs,
         lookup: this.pinnedLookup(hostname, addresses),
+        /* NO CONNECTION POOL. node's default agent keeps sockets alive and
+           hands a pooled one straight back — WITHOUT calling lookup at all,
+           because there is nothing left to resolve. A request carried that
+           way travels over a connection some earlier request established,
+           which is not the same thing as a connection established through
+           the address set THIS request validated. The rule is that the
+           addresses that were checked are the addresses connected to, so
+           every request opens its own socket through its own pinned lookup
+           and closes it again. A paid call per attempt is not a workload
+           that needs a pool. */
+        agent: false,
       };
 
       let outgoing: NodeRequest;

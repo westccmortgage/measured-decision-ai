@@ -366,6 +366,11 @@ t.section("the addresses that were checked are the addresses it connects to");
   t.check("the certificate is still checked against the name, not against the address",
     doubled.seen[0].options.servername === "alpha.provider.invalid" && doubled.seen[0].options.hostname === "alpha.provider.invalid",
     JSON.stringify({ servername: doubled.seen[0].options.servername, hostname: doubled.seen[0].options.hostname }));
+  /* A pooled socket is handed back with no lookup at all, so a second request
+     would travel over a connection the FIRST request validated. There is no
+     pool: every request opens its own, through its own pinned lookup. */
+  t.check("and no request is carried by a socket some earlier request opened — there is no connection pool",
+    doubled.seen[0].options.agent === false, String(doubled.seen[0].options.agent));
 
   /* An address literal has no name to ask for, so it gets no server name. */
   const literalDouble = nodeDouble();

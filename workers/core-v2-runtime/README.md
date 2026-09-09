@@ -305,8 +305,11 @@ Once constructed, it refuses:
 **The addresses that passed the checks are the addresses it connects to.**
 There is no second lookup for a rebinding attack to poison: the lookup handed
 to the socket answers only from the set that was validated, and cannot be made
-to change its mind. The hostname is still what the certificate is verified
-against and what the handshake asks for.
+to change its mind. There is no connection pool either — a pooled socket is
+handed back with no lookup at all, so a request carried that way would travel
+over a connection a *different* request validated; every request opens its own
+socket through its own pinned lookup. The hostname is still what the
+certificate is verified against and what the handshake asks for.
 
 It applies the attempt's timeout and honours an `AbortSignal`. It never logs a
 request body, a response body, source material or a key; credential headers
