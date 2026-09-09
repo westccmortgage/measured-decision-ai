@@ -36,6 +36,21 @@ export type Row = Record<string, string | null>;
 export type QueryResult = { command: string; rowCount: number; rows: Row[]; fields: string[] };
 export type Queryable = { query(sql: string, params?: Param[]): Promise<QueryResult> };
 
+/* Ten seconds. Long enough for a pooler on another continent, short enough
+   that a run which cannot connect says so while somebody is still reading. */
+export const CONNECT_TIMEOUT_MS = 10_000;
+
+/* A connection that was never made, and which phase it died in. Distinct
+   from every later failure because nothing has been asked of the database
+   yet, so nothing can have been half-done. */
+export class DatabaseUnreachable extends Error {
+  readonly phase: string;
+  constructor(message: string, phase: string) {
+    super(`core-v2-canary: the record could not be reached (${phase}): ${message}`);
+    this.phase = phase;
+  }
+}
+
 export class CanaryDatabase {
   private client: Client;
   private tail: Promise<unknown> = Promise.resolve();
@@ -45,10 +60,20 @@ export class CanaryDatabase {
     this.client = client;
   }
 
-  /* One connection, from the url the platform provides. The password is in
-     that url and is never read out of it, logged, or put anywhere else. */
-  static async connect(databaseUrl: string, applicationName: string): Promise<CanaryDatabase> {
-    const url = new URL(databaseUrl);
+  /* One connection, from the url the operator handed in. The password is in
+     that url and is never read out of it, logged, or put anywhere else.
+     
+     A DEADLINE, because the first attempt at this had none: run
+     34340500490 sat until the gateway gave up at 160 seconds with nothing to
+     show for it. A connection that cannot be made must fail as a named
+     diagnostic in ten seconds, not as silence in three minutes. */
+  static async connect(databaseUrl: string, applicationName: string, connectTimeoutMs = CONNECT_TIMEOUT_MS): Promise<CanaryDatabase> {
+    let url: URL;
+    try {
+      url = new URL(databaseUrl);
+    } catch {
+      throw new DatabaseUnreachable("the database url is not a url", "parse");
+    }
     const client = new Client({
       user: decodeURIComponent(url.username),
       password: decodeURIComponent(url.password),
@@ -56,14 +81,34 @@ export class CanaryDatabase {
       port: url.port ? Number(url.port) : 5432,
       database: url.pathname.replace(/^\//, "") || "postgres",
       applicationName,
-      tls: { enabled: true, enforce: false },
+      /* Required, not merely offered. */
+      tls: { enabled: true, enforce: true },
       /* Text for everything: the repository parses text. */
       controls: { decodeStrategy: "string" },
       /* One attempt. A driver that reconnects on its own would silently move
          a transaction to a session that never began one. */
       connection: { attempts: 1 },
     });
-    await client.connect();
+
+    let timer: number | undefined;
+    const deadline = new Promise<never>((_resolve, reject) => {
+      timer = setTimeout(
+        () => reject(new DatabaseUnreachable(`no connection within ${connectTimeoutMs}ms`, "connect")),
+        connectTimeoutMs,
+      );
+    });
+    try {
+      await Promise.race([client.connect(), deadline]);
+    } catch (error) {
+      try { await client.end(); } catch { /* it never opened */ }
+      if (error instanceof DatabaseUnreachable) throw error;
+      /* The driver's own message says which phase failed — a TLS refusal, a
+         password rejection and a name that does not resolve read differently
+         — so it is passed through rather than flattened. */
+      throw new DatabaseUnreachable(String((error as Error).message ?? error).slice(0, 300), "connect");
+    } finally {
+      if (timer !== undefined) clearTimeout(timer);
+    }
     return new CanaryDatabase(client);
   }
 

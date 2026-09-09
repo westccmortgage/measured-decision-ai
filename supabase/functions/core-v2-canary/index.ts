@@ -26,6 +26,10 @@
  * printed, returned, logged or compared. Presence is checked with
  * Deno.env.has, which does not retrieve a value.
  */
+/* FIRST, AND ON PURPOSE. Everything below reaches the kernel's import graph,
+   which calls Buffer at module scope. See install-node-globals.ts. */
+import { installedGlobals } from "./install-node-globals.ts";
+
 import declaration from "../../../workers/core-v2-canary/registry.canary.json" with { type: "json" };
 import {
   authorizedConfig, CANARY_AUTHORIZED, CANARY_CURRENCY, CANARY_ID, CANARY_MAXIMUM_SUBMISSIONS,
@@ -44,7 +48,7 @@ import { compilePrompt } from "../../../workers/core-v2-runtime/prompt-compiler.
 import { buildProviderRegistry } from "../../../workers/core-v2-runtime/providers/registry.ts";
 import { InMemoryMaterialResolver } from "../../../workers/core-v2-runtime/material/memory-resolver.ts";
 import type { StoredMaterial } from "../../../workers/core-v2-runtime/material/memory-resolver.ts";
-import { CanaryDatabase } from "./deno-postgres.ts";
+import { CanaryDatabase, CONNECT_TIMEOUT_MS, DatabaseUnreachable } from "./deno-postgres.ts";
 import { DenoFetchTransport } from "./deno-transport.ts";
 
 /* The digest of the one-time trigger. The token itself was generated on the
@@ -66,6 +70,11 @@ const MAY_HAVE_BEEN_BILLED = [
    drain is stopped before that, so an attempt in flight is recorded as an
    outcome nobody knows rather than lost with the container. */
 const DRAIN_DEADLINE_MS = 110_000;
+
+/* The record is reached through the pooler, at a url the operator builds and
+   hands in. Not SUPABASE_DB_URL: a direct connection is a different route
+   with different reachability, and this canary states which one it used. */
+const DATABASE_VARIABLE = "CORE_V2_CANARY_DB_URL";
 
 const ORGANIZATION_ID = entityId("core-v2-canary-organization", CANARY_ID);
 const WORKFLOW_ID = entityId("core-v2-canary-workflow", CANARY_ID);
@@ -122,6 +131,11 @@ Deno.serve(async (request: Request): Promise<Response> => {
   let body: Record<string, unknown> = {};
   try { body = await request.json() as Record<string, unknown>; } catch { body = {}; }
 
+  /* ── 1a · the probe, which cannot spend ────────────────────────────────
+     Before the registry, before any provider secret is even asked about,
+     before a gate can be opened. It reaches the record and nothing else. */
+  if (body.probeDatabaseOnly === true) return await probeDatabase();
+
   /* ── 2 · the operator's registry ───────────────────────────────────── */
   const loaded = loadOperatorRegistry(JSON.stringify(declaration), "registry.canary.json");
   if (!loaded.registry) return json(412, { refused: "the operator registry does not pass every check", problems: loaded.problems });
@@ -158,8 +172,8 @@ Deno.serve(async (request: Request): Promise<Response> => {
     });
   }
 
-  const databaseUrl = Deno.env.get("SUPABASE_DB_URL");
-  if (!databaseUrl) return json(412, { refused: "SUPABASE_DB_URL is not set; there is no record to write to" });
+  const databaseUrl = Deno.env.get(DATABASE_VARIABLE);
+  if (!databaseUrl) return json(412, { refused: `${DATABASE_VARIABLE} is not set; there is no record to write to` });
 
   const events: unknown[] = [];
   let db: CanaryDatabase | null = null;
@@ -251,6 +265,7 @@ Deno.serve(async (request: Request): Promise<Response> => {
       allowedOrigins: transport.allowedOrigins,
       unresolvedHosts: transport.unresolvedHosts,
       gate: gateFromEnvironment ? PAID_CALLS_VARIABLE : "invocation",
+      installedGlobals,
       worstAttempt: worst.perAttempt,
       worstCanary: worst.wholeCanary,
       deadlineReached,
@@ -270,6 +285,138 @@ Deno.serve(async (request: Request): Promise<Response> => {
     await db?.end().catch(() => undefined);
   }
 });
+
+
+/* ══════════════════════════════════════════════════════════════════════════
+   THE PROBE. IT CANNOT SPEND.
+ 
+   It reads no provider key, opens no gate, builds no transport, plans no
+   workflow and writes no row. What it proves is the one thing the paid path
+   depends on and the first run never got to test: that this connection can
+   hold a multi-statement transaction with a savepoint inside it, on ONE
+   backend, and that the objects migrations 058 and 059 create are visible
+   from here.
+ 
+   The savepoint proof is deliberately side-effect free. set_config(..., true)
+   is transaction-local, so writing a marker, taking a savepoint, overwriting
+   the marker and rolling back to the savepoint proves the rollback discarded
+   the later write on the same session — without creating a table, a row or a
+   sequence. pg_backend_pid() is read at every stage: a pooler that moved the
+   session between statements would show a different number, and transaction
+   mode would fail here rather than in the middle of a paid submission.
+   ══════════════════════════════════════════════════════════════════════════ */
+async function probeDatabase(): Promise<Response> {
+  const phases: { phase: string; ms: number; detail?: unknown }[] = [];
+  const timed = async <T>(phase: string, fn: () => Promise<T>): Promise<T> => {
+    const at = Date.now();
+    try {
+      const out = await fn();
+      phases.push({ phase, ms: Date.now() - at, detail: out });
+      return out;
+    } catch (error) {
+      phases.push({ phase, ms: Date.now() - at, detail: `FAILED: ${String((error as Error).message ?? error).slice(0, 300)}` });
+      throw error;
+    }
+  };
+
+  const databaseUrl = Deno.env.get(DATABASE_VARIABLE);
+  if (!databaseUrl) {
+    return json(412, { probe: true, ok: false, refused: `${DATABASE_VARIABLE} is not set`, phases });
+  }
+  /* The host is worth stating; the credential in the url is not, and is not
+     read out of it. */
+  let route = "unparseable";
+  try {
+    const parsed = new URL(databaseUrl);
+    route = `${parsed.hostname}:${parsed.port || "5432"}${parsed.pathname}`;
+  } catch { /* connect() will refuse it and say so */ }
+
+  let db: CanaryDatabase | null = null;
+  try {
+    /* One connection, opened once, with the deadline the first run lacked. */
+    const at = Date.now();
+    try {
+      db = await CanaryDatabase.connect(databaseUrl, `${CANARY_ID}-probe`, CONNECT_TIMEOUT_MS);
+      phases.push({ phase: "connect", ms: Date.now() - at, detail: { route, tls: "required", connectTimeoutMs: CONNECT_TIMEOUT_MS } });
+    } catch (error) {
+      phases.push({ phase: "connect", ms: Date.now() - at, detail: `FAILED: ${String((error as Error).message ?? error).slice(0, 300)}` });
+      throw error;
+    }
+
+    const one = await timed("select 1", async () => (await db!.query("select 1 as one")).rows[0]?.one);
+    const pidBefore = await timed("backend pid, before", async () => (await db!.query("select pg_backend_pid()::text as pid")).rows[0]?.pid);
+
+    const inTransaction = await timed("begin, savepoint, rollback to savepoint, commit", async () => {
+      return await db!.transaction(async (tx) => {
+        const pidInside = (await tx.query("select pg_backend_pid()::text as pid")).rows[0]?.pid;
+        await tx.query("select set_config('core_v2.probe', 'before-savepoint', true)");
+        await tx.query("savepoint core_v2_probe");
+        await tx.query("select set_config('core_v2.probe', 'after-savepoint', true)");
+        const afterWrite = (await tx.query("select current_setting('core_v2.probe', true) as marker")).rows[0]?.marker;
+        await tx.query("rollback to savepoint core_v2_probe");
+        const afterRollback = (await tx.query("select current_setting('core_v2.probe', true) as marker")).rows[0]?.marker;
+        const pidAfterRollback = (await tx.query("select pg_backend_pid()::text as pid")).rows[0]?.pid;
+        return { pidInside, afterWrite, afterRollback, pidAfterRollback };
+      });
+    });
+    const pidAfter = await timed("backend pid, after commit", async () => (await db!.query("select pg_backend_pid()::text as pid")).rows[0]?.pid);
+
+    const objects = await timed("migrations 058 and 059 are visible", async () => (await db!.query(`
+      select
+        to_regclass('public.intelligence_workflows')::text     as workflows,
+        to_regclass('public.agent_attempts')::text             as attempts,
+        to_regclass('public.workflow_cost_budgets')::text      as budgets,
+        to_regclass('public.attempt_cost_reservations')::text  as reservations,
+        to_regprocedure('public.core_v2_submit_attempt(uuid,uuid)')::text as submit_door,
+        (select count(*)::text from pg_proc p join pg_namespace n on n.oid = p.pronamespace
+          where n.nspname = 'public' and p.proname = 'core_v2_reserve_attempt_cost') as reserve_door
+    `)).rows[0]);
+
+    /* Every one of these must hold, or the paid path does not run. */
+    const oneBackend = pidBefore === inTransaction.pidInside
+      && inTransaction.pidInside === inTransaction.pidAfterRollback
+      && inTransaction.pidAfterRollback === pidAfter;
+    const savepointHeld = inTransaction.afterWrite === "after-savepoint"
+      && inTransaction.afterRollback === "before-savepoint";
+    const schemaVisible = Boolean(objects?.workflows && objects?.attempts && objects?.budgets
+      && objects?.reservations && objects?.submit_door && objects?.reserve_door !== "0");
+    const ok = one === "1" && oneBackend && savepointHeld && schemaVisible;
+
+    return json(ok ? 200 : 409, {
+      probe: true,
+      ok,
+      route,
+      installedGlobals,
+      checks: {
+        selectOne: one === "1",
+        oneBackend,
+        savepointHeld,
+        schemaVisible,
+      },
+      backendPids: {
+        before: pidBefore,
+        insideTransaction: inTransaction.pidInside,
+        afterRollbackToSavepoint: inTransaction.pidAfterRollback,
+        afterCommit: pidAfter,
+      },
+      savepointMarker: { afterWrite: inTransaction.afterWrite, afterRollback: inTransaction.afterRollback },
+      objects,
+      phases,
+    });
+  } catch (error) {
+    return json(500, {
+      probe: true,
+      ok: false,
+      route,
+      installedGlobals,
+      why: String((error as Error).message ?? error).slice(0, 400),
+      unreachablePhase: error instanceof DatabaseUnreachable ? error.phase : null,
+      phases,
+    });
+  } finally {
+    await db?.end().catch(() => undefined);
+  }
+}
 
 /* WHAT HAPPENED, READ BACK OUT OF THE RECORD rather than remembered. */
 async function report(db: CanaryDatabase, ledger: BudgetLedger, extra: Record<string, unknown>): Promise<Record<string, unknown>> {

@@ -10,12 +10,21 @@ on:
       - "supabase/functions/**"
       - "supabase/migrations/**"
   workflow_dispatch:
+    inputs:
+      run_core_v2_canary:
+        description: Run the one authorized Core V2 canary
+        required: false
+        default: false
+        type: boolean
 
 permissions:
   contents: read
 
 jobs:
   deploy-database:
+    # The canary deploys one function and no migrations. When it is asked
+    # for, the ordinary production path does not run at all.
+    if: ${{ !(github.event_name == 'workflow_dispatch' && inputs.run_core_v2_canary == true) }}
     runs-on: ubuntu-latest
     steps:
       - name: Check out repository
@@ -46,6 +55,7 @@ jobs:
           supabase db push --linked
 
   deploy-functions:
+    if: ${{ !(github.event_name == 'workflow_dispatch' && inputs.run_core_v2_canary == true) }}
     needs: deploy-database
     runs-on: ubuntu-latest
     steps:
@@ -74,3 +84,230 @@ jobs:
         run: >-
           supabase functions deploy
           --project-ref hbqlhplgqwuesrovbiye
+
+  # ══════════════════════════════════════════════════════════════════════
+  # THE ONE AUTHORISED CANARY. TEMPORARY. REMOVED AGAIN AFTERWARDS.
+  #
+  # Two invocations, and only the second one can cost anything:
+  #
+  #   1. a database probe, which reads no key, opens no gate and builds no
+  #      transport. It proves that this connection holds BEGIN, SAVEPOINT,
+  #      ROLLBACK TO SAVEPOINT and COMMIT on ONE backend, and that the
+  #      objects migrations 058 and 059 create are visible.
+  #   2. the paid canary — reached only if every one of those checks passed.
+  #
+  # The record is reached through Supavisor, at a url built from what the
+  # Management API actually reports, masked the moment it exists. The direct
+  # database address is not used.
+  #
+  # The trap is installed before the first change to the platform, so both
+  # temporary secrets and the function itself go away on success, on failure,
+  # on timeout and on cancellation alike. The three provider secrets are read
+  # by name only and are never set, unset, printed or otherwise touched.
+  # ══════════════════════════════════════════════════════════════════════
+  core-v2-canary:
+    if: >-
+      ${{ github.event_name == 'workflow_dispatch'
+          && inputs.run_core_v2_canary == true
+          && github.ref_name == 'claude/core-v2-canary' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    concurrency:
+      group: core-v2-canary
+      cancel-in-progress: false
+    env:
+      PROJECT_REF: hbqlhplgqwuesrovbiye
+      SUPABASE_ACCESS_TOKEN: ${{ secrets.SUPABASE_ACCESS_TOKEN }}
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Install Supabase CLI
+        uses: supabase/setup-cli@v1
+        with:
+          version: latest
+
+      - name: Record the CLI version
+        run: supabase --version
+
+      # Names only. The listing itself is never printed.
+      - name: Confirm the three provider secrets exist, by name
+        run: |
+          set -euo pipefail
+          names="$(supabase secrets list --project-ref "$PROJECT_REF")"
+          missing=""
+          for name in ANTHROPIC_API_KEY OPENAI_API_KEY GEMINI_API_KEY; do
+            if ! printf '%s\n' "$names" | grep -qE "(^|[^A-Z_])${name}([^A-Z_]|$)"; then
+              missing="${missing} ${name}"
+            fi
+          done
+          if [ -n "$missing" ]; then
+            echo "a provider secret is not configured:${missing}"
+            echo "nobody was called."
+            exit 1
+          fi
+          echo "all three provider secret names are present"
+
+      - name: Probe the record, then run the canary only if it holds
+        env:
+          SUPABASE_DB_PASSWORD: ${{ secrets.SUPABASE_DB_PASSWORD }}
+        run: |
+          set -euo pipefail
+
+          # ── the pooler, from what the Management API reports ────────────
+          # Nothing here is guessed: host, user and database name come from
+          # the API. Supavisor's session listener is port 5432 and its
+          # transaction listener is 6543; the probe below proves which one
+          # this connection actually behaves as, rather than trusting it.
+          pooler="$(curl -sS -f \
+            -H "Authorization: Bearer ${SUPABASE_ACCESS_TOKEN}" \
+            "https://api.supabase.com/v1/projects/${PROJECT_REF}/config/database/pooler")"
+
+          primary="$(printf '%s' "$pooler" | jq -c '
+            (if type == "array" then . else [.] end)
+            | (map(select((.database_type // "PRIMARY") == "PRIMARY")) + .)
+            | .[0]')"
+          DB_HOST="$(printf '%s' "$primary" | jq -r '.db_host // .connection_string // empty')"
+          DB_NAME="$(printf '%s' "$primary" | jq -r '.db_name // "postgres"')"
+          DB_USER="$(printf '%s' "$primary" | jq -r '.db_user // empty')"
+          API_MODE="$(printf '%s' "$primary" | jq -r '.pool_mode // "unknown"')"
+          API_PORT="$(printf '%s' "$primary" | jq -r '.db_port // empty')"
+          if [ -z "$DB_HOST" ] || [ -z "$DB_USER" ]; then
+            echo "the Management API did not report a pooler host and user; stopping without calling anybody"
+            printf '%s' "$primary" | jq -r 'keys | @csv'
+            exit 1
+          fi
+          # Session mode is preferred: Core V2 holds multi-statement
+          # transactions and savepoints on one connection.
+          if [ "$API_MODE" = "session" ] && [ -n "$API_PORT" ]; then
+            DB_PORT="$API_PORT"; PORT_SOURCE="reported by the API as session mode"
+          else
+            DB_PORT=5432; PORT_SOURCE="Supavisor session listener on the API-reported host (API reported pool_mode=${API_MODE}, db_port=${API_PORT:-none})"
+          fi
+          echo "pooler host: ${DB_HOST}"
+          echo "pooler user: ${DB_USER}"
+          echo "database:    ${DB_NAME}"
+          echo "port:        ${DB_PORT} — ${PORT_SOURCE}"
+
+          PW_ENC="$(jq -rn --arg p "$SUPABASE_DB_PASSWORD" '$p|@uri')"
+          echo "::add-mask::$PW_ENC"
+          DB_URL="postgresql://${DB_USER}:${PW_ENC}@${DB_HOST}:${DB_PORT}/${DB_NAME}"
+          echo "::add-mask::$DB_URL"
+
+          # ── the trigger ────────────────────────────────────────────────
+          TRIGGER="$(openssl rand -hex 32)"
+          echo "::add-mask::$TRIGGER"
+
+          # ── the trap, before the first change to the platform ──────────
+          cleanup() {
+            echo "── cleanup ──"
+            supabase secrets unset CORE_V2_ALLOW_PAID_CALLS --project-ref "$PROJECT_REF" || true
+            supabase secrets unset CORE_V2_CANARY_TRIGGER --project-ref "$PROJECT_REF" || true
+            supabase secrets unset CORE_V2_CANARY_DB_URL --project-ref "$PROJECT_REF" || true
+            printf 'y\n' | supabase functions delete core-v2-canary --project-ref "$PROJECT_REF" || true
+            echo "── cleanup done ──"
+          }
+          trap cleanup EXIT
+
+          supabase secrets set CORE_V2_CANARY_TRIGGER="$TRIGGER" --project-ref "$PROJECT_REF" > /dev/null
+          supabase secrets set CORE_V2_CANARY_DB_URL="$DB_URL" --project-ref "$PROJECT_REF" > /dev/null
+
+          # ── one function, and no other ─────────────────────────────────
+          supabase functions deploy core-v2-canary \
+            --project-ref "$PROJECT_REF" \
+            --no-verify-jwt
+
+          endpoint="https://${PROJECT_REF}.supabase.co/functions/v1/core-v2-canary"
+
+          # ── 1 · the probe. It cannot spend. ────────────────────────────
+          set +e
+          PROBE_HTTP="$(curl -sS --max-time 120 --no-keepalive \
+            -o probe-report.json -w '%{http_code}' \
+            -X POST "$endpoint" \
+            -H "x-canary-trigger: ${TRIGGER}" \
+            -H 'content-type: application/json' \
+            -d '{"probeDatabaseOnly":true}')"
+          PROBE_RC=$?
+          set -e
+          [ -f probe-report.json ] || echo '{"probe":true,"ok":false,"refused":"no body was returned"}' > probe-report.json
+          echo "── probe: curl ${PROBE_RC}, http ${PROBE_HTTP} ──"
+          cat probe-report.json
+          echo
+
+          PROBE_OK="$(jq -r '.ok // false' probe-report.json 2>/dev/null || echo false)"
+          if [ "$PROBE_RC" -ne 0 ] || [ "$PROBE_HTTP" != "200" ] || [ "$PROBE_OK" != "true" ]; then
+            echo "the record did not hold a transaction with a savepoint on one backend."
+            echo "the paid gate was never opened and no provider was contacted."
+            exit 1
+          fi
+          echo "the probe holds: one backend, savepoint kept and discarded, 058/059 visible."
+
+          # ── 2 · and only now, the paid gate ────────────────────────────
+          supabase secrets set CORE_V2_ALLOW_PAID_CALLS=true --project-ref "$PROJECT_REF" > /dev/null
+          sleep 10
+
+          # ── exactly one paid invocation. No retry, ever, for any reason ─
+          set +e
+          HTTP="$(curl -sS --max-time 300 --no-keepalive \
+            -o canary-report.json -w '%{http_code}' \
+            -X POST "$endpoint" \
+            -H "x-canary-trigger: ${TRIGGER}" \
+            -H 'content-type: application/json' \
+            -d '{"allowProviderNetwork":true,"allowPaidCalls":true}')"
+          CURL_RC=$?
+          set -e
+          [ -f canary-report.json ] || echo '{"refused":"no body was returned"}' > canary-report.json
+          echo "── canary: curl ${CURL_RC}, http ${HTTP} ──"
+          cat canary-report.json
+          echo
+
+          if [ "$CURL_RC" -ne 0 ] || [ "$HTTP" != "200" ]; then
+            echo "the canary did not end with 200; nothing will be invoked again"
+            exit 1
+          fi
+
+      - name: Prove nothing is left deployed or able to spend
+        if: always()
+        run: |
+          set -euo pipefail
+          bad=0
+          functions="$(supabase functions list --project-ref "$PROJECT_REF")"
+          if printf '%s\n' "$functions" | grep -q 'core-v2-canary'; then
+            echo "STILL DEPLOYED: core-v2-canary"; bad=1
+          else
+            echo "gone: core-v2-canary"
+          fi
+          names="$(supabase secrets list --project-ref "$PROJECT_REF")"
+          for name in CORE_V2_ALLOW_PAID_CALLS CORE_V2_CANARY_TRIGGER CORE_V2_CANARY_DB_URL; do
+            if printf '%s\n' "$names" | grep -qE "(^|[^A-Z_])${name}([^A-Z_]|$)"; then
+              echo "STILL SET: ${name}"; bad=1
+            else
+              echo "gone: ${name}"
+            fi
+          done
+          for name in ANTHROPIC_API_KEY OPENAI_API_KEY GEMINI_API_KEY; do
+            if printf '%s\n' "$names" | grep -qE "(^|[^A-Z_])${name}([^A-Z_]|$)"; then
+              echo "untouched: ${name}"
+            else
+              echo "MISSING PROVIDER SECRET: ${name}"; bad=1
+            fi
+          done
+          [ "$bad" = "0" ] || exit 1
+
+      - name: Keep the probe report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: probe-report
+          path: probe-report.json
+          if-no-files-found: warn
+          retention-days: 30
+
+      - name: Keep the canary report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: canary-report
+          path: canary-report.json
+          if-no-files-found: warn
+          retention-days: 30
