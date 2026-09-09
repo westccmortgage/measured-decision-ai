@@ -10,12 +10,21 @@ on:
       - "supabase/functions/**"
       - "supabase/migrations/**"
   workflow_dispatch:
+    inputs:
+      run_core_v2_canary:
+        description: Run the one authorized Core V2 canary
+        required: false
+        default: false
+        type: boolean
 
 permissions:
   contents: read
 
 jobs:
   deploy-database:
+    # The canary deploys one function and no migrations. When it is asked
+    # for, the ordinary production path does not run at all.
+    if: ${{ !(github.event_name == 'workflow_dispatch' && inputs.run_core_v2_canary == true) }}
     runs-on: ubuntu-latest
     steps:
       - name: Check out repository
@@ -46,6 +55,7 @@ jobs:
           supabase db push --linked
 
   deploy-functions:
+    if: ${{ !(github.event_name == 'workflow_dispatch' && inputs.run_core_v2_canary == true) }}
     needs: deploy-database
     runs-on: ubuntu-latest
     steps:
@@ -74,3 +84,155 @@ jobs:
         run: >-
           supabase functions deploy
           --project-ref hbqlhplgqwuesrovbiye
+
+  # ══════════════════════════════════════════════════════════════════════
+  # THE ONE AUTHORISED CANARY. TEMPORARY.
+  #
+  # This job exists to spend at most $5.00 once, on one synthetic workflow,
+  # and to leave nothing behind that could spend again. It is reachable only
+  # by hand, only from the canary branch, and only with the box ticked. It
+  # deploys ONE function and applies NO migrations.
+  #
+  # The trigger is generated in the runner, masked before it is used, and
+  # removed again by a trap that is installed BEFORE anything on the
+  # platform changes — so cleanup happens on success, on failure, on
+  # timeout and on cancellation alike. The three provider secrets are read
+  # by name only and are never set, unset, printed or otherwise touched.
+  # ══════════════════════════════════════════════════════════════════════
+  core-v2-canary:
+    if: >-
+      ${{ github.event_name == 'workflow_dispatch'
+          && inputs.run_core_v2_canary == true
+          && github.ref_name == 'claude/core-v2-canary' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    concurrency:
+      group: core-v2-canary
+      cancel-in-progress: false
+    env:
+      PROJECT_REF: hbqlhplgqwuesrovbiye
+      SUPABASE_ACCESS_TOKEN: ${{ secrets.SUPABASE_ACCESS_TOKEN }}
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Install Supabase CLI
+        uses: supabase/setup-cli@v1
+        with:
+          version: latest
+
+      - name: Record the CLI version
+        run: supabase --version
+
+      # Names only. The list itself is never printed: a digest column is not
+      # a secret, but a habit of printing secret listings is.
+      - name: Confirm the three provider secrets exist, by name
+        run: |
+          set -euo pipefail
+          names="$(supabase secrets list --project-ref "$PROJECT_REF")"
+          missing=""
+          for name in ANTHROPIC_API_KEY OPENAI_API_KEY GEMINI_API_KEY; do
+            if ! printf '%s\n' "$names" | grep -qE "(^|[^A-Z_])${name}([^A-Z_]|$)"; then
+              missing="${missing} ${name}"
+            fi
+          done
+          if [ -n "$missing" ]; then
+            echo "a provider secret is not configured:${missing}"
+            echo "nobody was called."
+            exit 1
+          fi
+          echo "all three provider secret names are present"
+
+      - name: Run the canary, once, and take everything down afterwards
+        run: |
+          set -euo pipefail
+
+          # ── the trigger: made here, masked before it is used anywhere ──
+          TRIGGER="$(openssl rand -hex 32)"
+          echo "::add-mask::$TRIGGER"
+
+          # ── the trap, installed BEFORE the first change to the platform ──
+          cleanup() {
+            echo "── cleanup ──"
+            supabase secrets unset CORE_V2_ALLOW_PAID_CALLS --project-ref "$PROJECT_REF" || true
+            supabase secrets unset CORE_V2_CANARY_TRIGGER --project-ref "$PROJECT_REF" || true
+            printf 'y\n' | supabase functions delete core-v2-canary --project-ref "$PROJECT_REF" || true
+            echo "── cleanup done ──"
+          }
+          trap cleanup EXIT
+
+          # ── the two temporary secrets ──
+          supabase secrets set CORE_V2_CANARY_TRIGGER="$TRIGGER" --project-ref "$PROJECT_REF" > /dev/null
+          supabase secrets set CORE_V2_ALLOW_PAID_CALLS=true --project-ref "$PROJECT_REF" > /dev/null
+
+          # ── one function, and no other ──
+          supabase functions deploy core-v2-canary \
+            --project-ref "$PROJECT_REF" \
+            --no-verify-jwt
+
+          # ── exactly one invocation. No retry, ever, for any reason. ──
+          set +e
+          HTTP="$(curl -sS \
+            --max-time 300 \
+            --no-keepalive \
+            -o canary-report.json \
+            -w '%{http_code}' \
+            -X POST "https://${PROJECT_REF}.supabase.co/functions/v1/core-v2-canary" \
+            -H "x-canary-trigger: ${TRIGGER}" \
+            -H 'content-type: application/json' \
+            -d '{"allowProviderNetwork":true,"allowPaidCalls":true}')"
+          CURL_RC=$?
+          set -e
+
+          echo "curl exit ${CURL_RC}, http ${HTTP}"
+          echo "http_status=${HTTP}" >> "$GITHUB_OUTPUT"
+          [ -f canary-report.json ] || echo '{"refused":"no body was returned"}' > canary-report.json
+          echo "── the canary answered ──"
+          cat canary-report.json
+
+          # The run is over either way; the trap takes the platform down.
+          if [ "$CURL_RC" -ne 0 ] || [ "${HTTP}" != "200" ]; then
+            echo "the canary did not end with 200; nothing will be invoked again"
+            exit 1
+          fi
+        id: canary
+
+      # Runs whatever happened above, including a cancelled or failed job.
+      - name: Prove nothing is left deployed or able to spend
+        if: always()
+        run: |
+          set -euo pipefail
+          bad=0
+          functions="$(supabase functions list --project-ref "$PROJECT_REF")"
+          if printf '%s\n' "$functions" | grep -q 'core-v2-canary'; then
+            echo "STILL DEPLOYED: core-v2-canary"; bad=1
+          else
+            echo "gone: core-v2-canary"
+          fi
+          names="$(supabase secrets list --project-ref "$PROJECT_REF")"
+          for name in CORE_V2_ALLOW_PAID_CALLS CORE_V2_CANARY_TRIGGER; do
+            if printf '%s\n' "$names" | grep -qE "(^|[^A-Z_])${name}([^A-Z_]|$)"; then
+              echo "STILL SET: ${name}"; bad=1
+            else
+              echo "gone: ${name}"
+            fi
+          done
+          for name in ANTHROPIC_API_KEY OPENAI_API_KEY GEMINI_API_KEY; do
+            if printf '%s\n' "$names" | grep -qE "(^|[^A-Z_])${name}([^A-Z_]|$)"; then
+              echo "untouched: ${name}"
+            else
+              echo "MISSING PROVIDER SECRET: ${name}"; bad=1
+            fi
+          done
+          [ "$bad" = "0" ] || exit 1
+
+      # The evidence, whether the canary succeeded or not. Only the report:
+      # no environment files and no logs.
+      - name: Keep the report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: canary-report
+          path: canary-report.json
+          if-no-files-found: warn
+          retention-days: 30
