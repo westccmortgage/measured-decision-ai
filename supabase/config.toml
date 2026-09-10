@@ -32,3 +32,18 @@ verify_jwt = true
 
 [functions.compare-readings]
 verify_jwt = true
+
+# Production Runner V1. Two doors, because there are two kinds of caller.
+#
+# The human door takes start, cancel and status, and the platform verifies
+# every caller's token before the code runs.
+[functions.core-v2-runner]
+verify_jwt = true
+
+# The machine door takes one operation — tick — from a watchdog on a schedule
+# or from the previous invocation handing on. Neither has a user token, so the
+# platform cannot check one; the function proves the caller with a shared
+# secret of its own instead, and refuses to open at all until that secret is
+# set. It is dormant until deployed AND armed: see docs/core-v2-runner.md.
+[functions.core-v2-runner-tick]
+verify_jwt = false

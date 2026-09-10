@@ -5199,6 +5199,122 @@ select pg_temp.check('and the workflow is then holding exactly that',
   (select reserved from public.workflow_cost_budgets
     where workflow_id = '0c0e0000-0000-0000-0000-000000000001') = 0.0045);
 
+-- ═══════════════════════════════ 060 · the durable answer to "run it again"
+--
+-- The one fact that makes a workflow move without a person: when it is next
+-- due, who holds it, and how many passes in a row have moved nothing. What
+-- these check is that it cannot be forged, cannot be written by anyone who
+-- logs in, and cannot be made to wake a workflow the engine has finished with.
+
+select pg_temp.check('row-level security is on for the continuation record',
+  (select relrowsecurity from pg_class where oid = 'public.workflow_continuations'::regclass));
+select pg_temp.check('and on the runner settings, which have no read policy at all — they are the operator''s',
+  (select relrowsecurity from pg_class where oid = 'public.core_v2_runner_settings'::regclass)
+  and (select count(*) from pg_policies where tablename = 'core_v2_runner_settings') = 0);
+select pg_temp.check('the watchdog ships DORMANT: no settings row, and armed defaults to false',
+  (select count(*) from public.core_v2_runner_settings) = 0
+  and (select column_default from information_schema.columns
+        where table_name = 'core_v2_runner_settings' and column_name = 'armed') = 'false');
+select pg_temp.check('every continuation door is granted to the service role and to nobody else',
+  (select bool_and(
+      has_function_privilege('service_role', p.oid, 'execute')
+      and not has_function_privilege('authenticated', p.oid, 'execute')
+      and not has_function_privilege('anon', p.oid, 'execute'))
+     from pg_proc p join pg_namespace n on n.oid = p.pronamespace
+    where n.nspname = 'public' and p.proname in (
+      'core_v2_schedule_continuation','core_v2_claim_continuation','core_v2_release_continuation',
+      'core_v2_settle_continuation','core_v2_due_continuations','core_v2_tick_due_continuations',
+      'core_v2_continuation_limits')));
+reset role;
+set local role authenticated;
+set local test.uid = '11111111-1111-1111-1111-111111111111';
+select pg_temp.refused_because('nobody who logs in may write a continuation — waking is not a thing a member does',
+  $$insert into public.workflow_continuations(workflow_id, organization_id)
+    values ('0c0e0000-0000-0000-0000-000000000001', 'aaaaaaaa-0000-0000-0000-000000000001')$$,
+  'row-level security');
+-- Row-level security is what keeps a person out, exactly as it is for the
+-- money tables: this deployment grants the table privileges broadly and the
+-- policies decide. A table with RLS on and NO policy returns nothing to
+-- everyone but the service role, which is why the settings are checked by
+-- what they yield rather than by an error.
+select pg_temp.check('the operator''s settings yield nothing to anyone who logs in — no policy, no rows',
+  (select count(*) from public.core_v2_runner_settings) = 0);
+select pg_temp.refused_because('and cannot be written by them',
+  $$insert into public.core_v2_runner_settings(id, armed, endpoint)
+    values (true, true, 'https://example.invalid/knock')$$,
+  'row-level security');
+reset role;
+-- And structurally, not just in this transaction's rows: an UPDATE that
+-- happens to match nothing succeeds trivially, so what is checked is that
+-- there is no policy under which one could ever match. One policy, for
+-- reading, and no other.
+select pg_temp.check('a member may read their own organisation''s continuations and change none of them',
+  (select count(*) from pg_policies where tablename = 'workflow_continuations') = 1
+  and (select cmd from pg_policies where tablename = 'workflow_continuations') = 'SELECT');
+
+-- A hold is three facts or none of them, and a settled row says why.
+-- Against a workflow that really exists, so what refuses is the constraint
+-- being checked and not the tenancy guard on the way past it.
+select pg_temp.refused_because('a half-written hold is refused: a lease nobody can prove they own is not a lease',
+  $$insert into public.workflow_continuations(workflow_id, organization_id, state, held_by)
+    values ('0c0e0000-0000-0000-0000-000000000001', 'aaaaaaaa-0000-0000-0000-000000000001', 'held', 'somebody')$$,
+  'workflow_continuations_hold_is_whole');
+select pg_temp.refused_because('and a settled row that does not say why is refused',
+  $$insert into public.workflow_continuations(workflow_id, organization_id, state)
+    values ('0c0e0000-0000-0000-0000-000000000001', 'aaaaaaaa-0000-0000-0000-000000000001', 'settled')$$,
+  'workflow_continuations_settled_says_why');
+
+-- The claim, the fencing token, and the fuse.
+select public.core_v2_schedule_continuation('0c0e0000-0000-0000-0000-000000000001');
+select pg_temp.check('a scheduled workflow is due',
+  (select state from public.workflow_continuations
+    where workflow_id = '0c0e0000-0000-0000-0000-000000000001') = 'due');
+
+create temporary table core_v2_hold on commit drop as
+  select * from public.core_v2_claim_continuation('invariant-runner', 60000);
+select pg_temp.check('one runner takes it, with a token and a deadline of its own',
+  (select state = 'held' and held_by = 'invariant-runner' and hold_token is not null and held_until > now()
+     from core_v2_hold));
+select pg_temp.check('and a second runner asking at the same moment gets nothing, rather than the same row',
+  (select workflow_id from public.core_v2_claim_continuation('another-runner', 60000)) is null);
+select pg_temp.check('a release under the wrong token is refused with a null, never applied',
+  (select workflow_id from public.core_v2_release_continuation(
+     '0c0e0000-0000-0000-0000-000000000001', gen_random_uuid(), true)) is null);
+select pg_temp.check('and the real hold still stands after that',
+  (select held_by from public.workflow_continuations
+    where workflow_id = '0c0e0000-0000-0000-0000-000000000001') = 'invariant-runner');
+select pg_temp.check('a release under the right token gives it back and says when to come again',
+  (select state from public.core_v2_release_continuation(
+     '0c0e0000-0000-0000-0000-000000000001', (select hold_token from core_v2_hold), true)) = 'due');
+
+-- What the fuse is for: a workflow that cannot be advanced stops asking.
+do $$
+declare i integer; token uuid; limits record;
+begin
+  select * into limits from public.core_v2_continuation_limits();
+  for i in 1..limits.maximum_idle_streak loop
+    perform public.core_v2_schedule_continuation('0c0e0000-0000-0000-0000-000000000001', now() - interval '1 minute');
+    select hold_token into token from public.core_v2_claim_continuation('fuse-runner', 60000);
+    exit when token is null;
+    perform public.core_v2_release_continuation('0c0e0000-0000-0000-0000-000000000001', token, false);
+  end loop;
+end $$;
+select pg_temp.check('enough passes that move nothing settle it, rather than waking it forever',
+  (select state from public.workflow_continuations
+    where workflow_id = '0c0e0000-0000-0000-0000-000000000001') = 'settled');
+select pg_temp.check('and it says which fuse it stopped on',
+  (select settled_reason from public.workflow_continuations
+    where workflow_id = '0c0e0000-0000-0000-0000-000000000001') like 'no_progress%');
+select pg_temp.check('a settled workflow cannot be woken by asking again',
+  (select state from public.core_v2_schedule_continuation('0c0e0000-0000-0000-0000-000000000001')) = 'settled');
+select pg_temp.check('and nothing due lists it',
+  not exists (select 1 from public.core_v2_due_continuations(50) w
+               where w = '0c0e0000-0000-0000-0000-000000000001'));
+
+-- The watchdog, unarmed, is silent about nothing.
+select pg_temp.check('an unarmed watchdog says it is unarmed rather than reporting an empty queue',
+  (public.core_v2_tick_due_continuations(5) ->> 'armed') = 'false');
+
 -- ──────────────────────────────────────────────────────── V1 is where it was
 select pg_temp.check('V1 keeps every row it had — Core V2 stands beside it, not on it',
   pg_temp.v1_fingerprint() = (select fingerprint from core_v2_before));

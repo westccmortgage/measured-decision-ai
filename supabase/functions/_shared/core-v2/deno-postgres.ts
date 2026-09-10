@@ -46,12 +46,12 @@ export const CONNECT_TIMEOUT_MS = 10_000;
 export class DatabaseUnreachable extends Error {
   readonly phase: string;
   constructor(message: string, phase: string) {
-    super(`core-v2-canary: the record could not be reached (${phase}): ${message}`);
+    super(`core-v2 edge: the record could not be reached (${phase}): ${message}`);
     this.phase = phase;
   }
 }
 
-export class CanaryDatabase {
+export class EdgeDatabase {
   private client: Client;
   private tail: Promise<unknown> = Promise.resolve();
   private ended = false;

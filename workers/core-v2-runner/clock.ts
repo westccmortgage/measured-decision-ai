@@ -47,7 +47,10 @@ export type ClockRequest = {
   /* What a finished answer still needs: parsed, validated, priced, settled,
      its claims and anchors written, its task closed. */
   settlementRoomMs?: number;
-  /* How often a live attempt renews its task lease. */
+  /* How often a live attempt renews its task lease. Omit it and one is
+     derived from the lease, which is almost always what you want: a heartbeat
+     is a fraction of a lease, not a number of its own. Give one and it is
+     honoured — and refused if it cannot keep that lease alive. */
   heartbeatIntervalMs?: number;
   /* How far past the operator's own death a lease may stand. Small on
      purpose: this is the window in which a dead runner's work is
@@ -84,9 +87,15 @@ const DEFAULTS = {
   safetyMs: 10_000,
   answerWithinMs: 60_000,
   settlementRoomMs: 20_000,
-  heartbeatIntervalMs: 20_000,
   graceMs: 30_000,
 };
+
+/* A lease covers one attempt and then half as much again, so the last
+   heartbeat before a slow finish lands well inside it. */
+const LEASE_SLACK = 1.5;
+/* A heartbeat that is not asked for is a quarter of the lease: four chances
+   to renew before it lapses. */
+const HEARTBEATS_PER_LEASE = 4;
 
 export class ClockBudgetImpossible extends Error {
   readonly reasons: string[];
@@ -106,7 +115,7 @@ export function invocationClock(request: ClockRequest): InvocationClock {
   const safetyMs = Math.trunc(request.safetyMs ?? DEFAULTS.safetyMs);
   const answerWithinMs = Math.trunc(request.answerWithinMs ?? DEFAULTS.answerWithinMs);
   const settlementRoomMs = Math.trunc(request.settlementRoomMs ?? DEFAULTS.settlementRoomMs);
-  const heartbeatIntervalMs = Math.trunc(request.heartbeatIntervalMs ?? DEFAULTS.heartbeatIntervalMs);
+  const askedHeartbeat = request.heartbeatIntervalMs === undefined ? null : Math.trunc(request.heartbeatIntervalMs);
   const graceMs = Math.trunc(request.graceMs ?? DEFAULTS.graceMs);
 
   const reasons: string[] = [];
@@ -116,7 +125,7 @@ export function invocationClock(request: ClockRequest): InvocationClock {
   positive("lifetimeMs", lifetimeMs);
   positive("answerWithinMs", answerWithinMs);
   positive("settlementRoomMs", settlementRoomMs);
-  positive("heartbeatIntervalMs", heartbeatIntervalMs);
+  if (askedHeartbeat !== null) positive("heartbeatIntervalMs", askedHeartbeat);
   if (!Number.isFinite(safetyMs) || safetyMs < 0) reasons.push(`safetyMs must not be negative and is ${safetyMs}`);
   if (!Number.isFinite(graceMs) || graceMs < 0) reasons.push(`graceMs must not be negative and is ${graceMs}`);
   if (reasons.length > 0) throw new ClockBudgetImpossible(reasons);
@@ -134,12 +143,20 @@ export function invocationClock(request: ClockRequest): InvocationClock {
   }
 
   /* A lease outlives one attempt — its answer plus the room to settle it —
-     and then a little, so the last heartbeat before a slow finish does not
-     land after expiry. It is capped at the operator's own life plus the
+     and then a little. It is capped at the operator's own life plus the
      grace, because THAT is the rule the canary learned the hard way: a lease
      may not outlive the operator that owns it by minutes. */
-  const wanted = answerWithinMs + settlementRoomMs + heartbeatIntervalMs * 2;
-  const taskLeaseMs = Math.min(wanted, deadlineMs + graceMs);
+  const taskLeaseMs = Math.min(Math.ceil((answerWithinMs + settlementRoomMs) * LEASE_SLACK), deadlineMs + graceMs);
+
+  /* AND THE HEARTBEAT IS A FRACTION OF THE LEASE, NOT A NUMBER OF ITS OWN.
+     The first version of this file defaulted to a fixed twenty seconds, which
+     is right for an operator that lives two minutes and impossible for one
+     that lives thirty seconds — its own suite refused a perfectly sensible
+     short-lived budget for a reason that was the default's fault rather than
+     the caller's. A heartbeat nobody asked for is now derived; one somebody
+     did ask for is honoured, and refused only if it genuinely cannot keep
+     that lease alive. */
+  const heartbeatIntervalMs = askedHeartbeat ?? Math.max(250, Math.floor(taskLeaseMs / HEARTBEATS_PER_LEASE));
   if (taskLeaseMs <= heartbeatIntervalMs * 2) {
     throw new ClockBudgetImpossible([
       `a lease of ${taskLeaseMs}ms cannot be kept alive by a heartbeat every ${heartbeatIntervalMs}ms`,

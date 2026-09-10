@@ -10,7 +10,7 @@
  * Both seams are replaced, so nothing here opens a socket.
  */
 import { harness, closeNetwork } from "../../core-v2/tests/harness.mjs";
-import { DenoFetchTransport } from "../../../supabase/functions/core-v2-canary/deno-transport.ts";
+import { DenoFetchTransport } from "../../../supabase/functions/_shared/core-v2/deno-transport.ts";
 import { NetworkNotAuthorized, TransportFault } from "../../core-v2-runtime/transport/transport.ts";
 import { authorizedConfig, loadOperatorRegistry } from "../operator-registry.ts";
 import { readFileSync } from "node:fs";
