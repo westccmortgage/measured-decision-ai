@@ -75,7 +75,13 @@ create table if not exists public.analysis_files (
   media_type text not null,
   byte_size bigint not null check (byte_size > 0),
   storage_path text not null,
-  content_sha256 text,
+  -- The whole file's identity, computed in the browser as it uploads: the
+  -- SHA-256 of the concatenated SHA-256 digests of its six-megabyte chunks,
+  -- with the byte length. NOT the plain SHA-256 of the file — a browser has
+  -- no incremental digest, and hashing two gigabytes twice to be able to say
+  -- "sha256" would buy a word, not a fact. It is deterministic, it changes
+  -- when any byte changes, and that is what it is used for.
+  content_fingerprint text,
   upload_state text not null default 'uploading'
     check (upload_state in ('uploading', 'stored', 'failed')),
   -- What the file says about itself: pages, or duration and picture size.
@@ -158,9 +164,56 @@ create policy analysis_parts_write on public.analysis_parts for all
 
 create policy analysis_events_read on public.analysis_events for select
   using (public.is_org_member(organization_id));
+-- A browser preparing material writes its own line in this history, so that
+-- what a person saw happen survives the tab that saw it.
+create policy analysis_events_write on public.analysis_events for insert
+  with check (public.has_org_role(organization_id, array['owner','admin','contributor']::public.studio_role[]));
 
 grant select on table public.analysis_runs, public.analysis_files, public.analysis_parts, public.analysis_events to authenticated;
 grant insert, update on table public.analysis_runs, public.analysis_files, public.analysis_parts to authenticated;
+-- Removing a file, or a part that has to be made again, is part of collecting.
+-- It is not part of running: the guard below refuses both once an analysis has
+-- been started, because material under a finished reading may not move.
+grant delete on table public.analysis_files, public.analysis_parts to authenticated;
+grant insert on table public.analysis_events to authenticated;
+
+-- ─────────────────────────────────────────── material cannot move under a run
+--
+-- The workflow names the hash of every source it was started over, so a
+-- swapped file could never silently change a finished reading. This is the
+-- second lock, in front of the first: once the button has been pressed, the
+-- file list and the prepared pieces of THIS analysis are closed. A different
+-- set of files is a different analysis, and saying so here costs one trigger
+-- and removes a whole class of "but the evidence says something else now".
+
+create or replace function public.analysis_material_is_settled()
+returns trigger language plpgsql security definer set search_path = public as $$
+declare
+  v_analysis uuid;
+  v_state text;
+  v_requested timestamptz;
+begin
+  v_analysis := coalesce(new.analysis_id, old.analysis_id);
+  select state, run_requested_at into v_state, v_requested
+    from public.analysis_runs where id = v_analysis;
+  if v_requested is not null then
+    raise exception 'analysis % has already been run; its material is settled', v_analysis
+      using errcode = 'check_violation';
+  end if;
+  if v_state in ('running', 'finished', 'cancelled') then
+    raise exception 'analysis % is %; its material is settled', v_analysis, v_state
+      using errcode = 'check_violation';
+  end if;
+  return coalesce(new, old);
+end;
+$$;
+
+drop trigger if exists analysis_files_are_settled on public.analysis_files;
+create trigger analysis_files_are_settled before insert or update or delete on public.analysis_files
+  for each row execute function public.analysis_material_is_settled();
+drop trigger if exists analysis_parts_are_settled on public.analysis_parts;
+create trigger analysis_parts_are_settled before insert or update or delete on public.analysis_parts
+  for each row execute function public.analysis_material_is_settled();
 
 drop trigger if exists analysis_runs_touch on public.analysis_runs;
 create trigger analysis_runs_touch before update on public.analysis_runs

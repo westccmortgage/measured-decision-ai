@@ -1,0 +1,37 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <script>/* Theme before first paint: the same choice as the rest of the Studio. */
+try{var t=localStorage.getItem("mdai-theme");document.documentElement.dataset.theme=t==="light"?"light":"dark"}catch(e){document.documentElement.dataset.theme="dark"}</script>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta name="robots" content="noindex,nofollow,noarchive">
+    <meta name="theme-color" content="#070e18">
+    <title>Measured Decision · Analysis</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="analysis.css?v=1">
+  </head>
+  <body>
+    <main class="page">
+      <header class="topbar">
+        <span class="mark" aria-hidden="true"><i></i><i></i><i></i></span>
+        <strong>Measured Decision · Analysis</strong>
+        <span class="spacer"></span>
+        <span class="who" id="who"></span>
+        <button class="quiet" id="theme" type="button" title="Light or dark">◐</button>
+        <button class="quiet" id="sign-out" type="button" hidden>Sign out</button>
+      </header>
+      <div id="screen" class="stack">
+        <div class="card"><p class="muted">Opening…</p></div>
+      </div>
+      <noscript><p class="muted">This page runs the analysis path in your browser, so it needs JavaScript.</p></noscript>
+    </main>
+
+    <script src="../vendor/supabase-js-2.106.2.min.js"></script>
+    <script src="../config.js"></script>
+    <script src="../pano360.js"></script>
+    <script type="module" src="app.js?v=1"></script>
+  </body>
+</html>
