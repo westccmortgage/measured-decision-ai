@@ -197,12 +197,23 @@ Deno.serve(async (request: Request): Promise<Response> => {
    awaited for its result beyond the send, deliberately short, and
    deliberately unable to fail the pass that is already written down. */
 async function knockAgain(secret: string): Promise<void> {
-  const url = Deno.env.get(CHAIN_VARIABLE);
+  /* The operator may point the chain anywhere. Where they have not, this
+     function's own address is derivable from the platform's own variable, and
+     deriving it beats asking somebody to write down a URL that is already
+     known — a chain that is silently off because a variable was never set is
+     a workflow that stops after one pass and looks like a product that
+     forgets. */
+  const base = Deno.env.get("SUPABASE_URL");
+  const url = Deno.env.get(CHAIN_VARIABLE) || (base ? `${base}/functions/v1/${FUNCTION}` : "");
   if (!url) return;
   try {
     const answer = await fetch(url, {
       method: "POST",
-      headers: { "content-type": "application/json", [SECRET_HEADER]: secret },
+      headers: {
+        "content-type": "application/json",
+        [SECRET_HEADER]: secret,
+        authorization: `Bearer ${secret}`,
+      },
       body: JSON.stringify({ op: "tick", wokenBy: "chain" }),
       signal: AbortSignal.timeout(2_000),
     });

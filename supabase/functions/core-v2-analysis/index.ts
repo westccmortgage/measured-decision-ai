@@ -365,6 +365,25 @@ async function status(db: EdgeDatabase, caller: string, body: Body): Promise<Res
   const done = (tasks.completed ?? 0);
   const total = Object.values(tasks).reduce((n, v) => n + v, 0);
 
+  /* A CHAIN THAT STOPPED, PICKED UP AGAIN BY SOMEBODY LOOKING AT IT.
+   *
+   * Each pass ends by knocking on the next, so a run continues without this
+   * page and without a cron. A container killed between the two loses the
+   * knock, and the record then holds a continuation that is due and held by
+   * nobody — which is a stall, and it is visible in exactly this query.
+   *
+   * So: if it is due, unheld and overdue by a clear minute, knock once. It
+   * cannot start anything that was not already started, it cannot start work
+   * for any other workflow, and a person refreshing a stalled run is the
+   * cheapest watchdog there is. */
+  if (continuation && String(continuation.state) === "due" && !continuation.held_by) {
+    const due = Date.parse(String(continuation.due_at ?? ""));
+    if (Number.isFinite(due) && Date.now() - due > 60_000) {
+      await knock();
+      console.log(line({ fn: FUNCTION, event: "analysis.resumed", analysis: analysisId, workflow: workflowId }));
+    }
+  }
+
   return json(200, {
     analysisId,
     title: run.title ?? null,
