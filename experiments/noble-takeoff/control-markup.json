@@ -1,6 +1,6 @@
 {
   "label": "4423 Noble — S-2, S-3, S-4 printed labels",
-  "read_from": "2306-NA_231114 - PC Submittal Set, pages 24-26 (S-2, S-3, S-4), rendered at ~200 dpi (7197x4795 px per sheet)",
+  "read_from": "2306-NA_231114 - PC Submittal Set, sheets S-2 (foundation plan), S-3 (1st floor wall + 2nd floor framing) and S-4 (2nd floor wall + roof framing), pages 24-26 of the 30-page set, rendered at ~200 dpi (4794x7196 px per sheet, a 2x2 grid plus an overview = 5 images each).",
   "how_it_was_made": "Every printed structural label on the three sheets was located by hand on the enlargements and recorded with its page coordinates. The number in `count` is therefore a count of labels drawn, which is a verifiable fact about the sheet. It is not the same as a count of members: one framing line can carry two labels, and one label can cover several members. A reading that reports members where this markup counted labels is reported as a difference in what was counted, and is never scored as wrong.",
   "not_used_to_decide": "Entries flagged disputed are shown and never used to decide between readers. Settling a disputed reference with a reader's own answer would be circular.",
   "entries": [
@@ -9,1208 +9,1241 @@
       "category": "footing",
       "mark": "F1",
       "sheet": "S-2",
-      "page": 24,
+      "page": 1,
       "count": 3,
       "counted": "labels",
       "places": [
         {
           "x": 3305,
           "y": 1010,
-          "tile": "p24-r1c1.jpg"
+          "tile": "p1-r1c1.jpg"
         },
         {
           "x": 4120,
           "y": 1745,
-          "tile": "p24-r1c2.jpg"
+          "tile": "p1-r1c2.jpg"
         },
         {
           "x": 5415,
           "y": 2245,
-          "tile": "p24-r1c2.jpg"
+          "tile": "p1-r1c2.jpg"
         }
       ],
       "note": "Printed labels marked by hand on the ~200 dpi enlargement, with page coordinates.",
       "tiles": [
-        "p24-r1c1.jpg",
-        "p24-r1c2.jpg"
-      ]
+        "p1-r1c1.jpg",
+        "p1-r1c2.jpg"
+      ],
+      "page_in_submittal_set": 24
     },
     {
       "section": "structural_members",
       "category": "footing",
       "mark": "F2",
       "sheet": "S-2",
-      "page": 24,
+      "page": 1,
       "count": 11,
       "counted": "labels",
       "places": [
         {
           "x": 1800,
           "y": 1970,
-          "tile": "p24-r1c1.jpg"
+          "tile": "p1-r1c1.jpg"
         },
         {
           "x": 3180,
           "y": 1075,
-          "tile": "p24-r1c1.jpg"
+          "tile": "p1-r1c1.jpg"
         },
         {
           "x": 3725,
           "y": 1460,
-          "tile": "p24-r1c2.jpg"
+          "tile": "p1-r1c2.jpg"
         },
         {
           "x": 3205,
           "y": 1705,
-          "tile": "p24-r1c1.jpg"
+          "tile": "p1-r1c1.jpg"
         },
         {
           "x": 4465,
           "y": 870,
-          "tile": "p24-r1c2.jpg"
+          "tile": "p1-r1c2.jpg"
         },
         {
           "x": 4660,
           "y": 1750,
-          "tile": "p24-r1c2.jpg"
+          "tile": "p1-r1c2.jpg"
         },
         {
           "x": 2125,
           "y": 2135,
-          "tile": "p24-r1c1.jpg"
+          "tile": "p1-r1c1.jpg"
         },
         {
           "x": 1850,
           "y": 2765,
-          "tile": "p24-r2c1.jpg"
+          "tile": "p1-r2c1.jpg"
         },
         {
           "x": 3210,
           "y": 2005,
-          "tile": "p24-r1c1.jpg"
+          "tile": "p1-r1c1.jpg"
         },
         {
           "x": 4030,
           "y": 2080,
-          "tile": "p24-r1c2.jpg"
+          "tile": "p1-r1c2.jpg"
         },
         {
           "x": 4710,
           "y": 2100,
-          "tile": "p24-r1c2.jpg"
+          "tile": "p1-r1c2.jpg"
         }
       ],
       "disputed": true,
       "note": "Includes a footing tag near the east stair whose mark could not be read with certainty at 200 dpi.",
       "tiles": [
-        "p24-r1c1.jpg",
-        "p24-r1c2.jpg",
-        "p24-r2c1.jpg"
-      ]
+        "p1-r1c1.jpg",
+        "p1-r1c2.jpg",
+        "p1-r2c1.jpg"
+      ],
+      "page_in_submittal_set": 24
     },
     {
       "section": "structural_members",
       "category": "footing",
       "mark": "F3",
       "sheet": "S-2",
-      "page": 24,
+      "page": 1,
       "count": 2,
       "counted": "labels",
       "places": [
         {
           "x": 2235,
           "y": 1130,
-          "tile": "p24-r1c1.jpg"
+          "tile": "p1-r1c1.jpg"
         },
         {
           "x": 1970,
           "y": 1830,
-          "tile": "p24-r1c1.jpg"
+          "tile": "p1-r1c1.jpg"
         }
       ],
       "note": "Printed labels marked by hand on the ~200 dpi enlargement, with page coordinates.",
       "tiles": [
-        "p24-r1c1.jpg"
-      ]
+        "p1-r1c1.jpg"
+      ],
+      "page_in_submittal_set": 24
     },
     {
       "section": "structural_members",
       "category": "footing",
       "mark": "F4",
       "sheet": "S-2",
-      "page": 24,
+      "page": 1,
       "count": 4,
       "counted": "labels",
       "places": [
         {
           "x": 1510,
           "y": 1935,
-          "tile": "p24-r1c1.jpg"
+          "tile": "p1-r1c1.jpg"
         },
         {
           "x": 5230,
           "y": 865,
-          "tile": "p24-r1c2.jpg"
+          "tile": "p1-r1c2.jpg"
         },
         {
           "x": 5425,
           "y": 1785,
-          "tile": "p24-r1c2.jpg"
+          "tile": "p1-r1c2.jpg"
         },
         {
           "x": 1710,
           "y": 2635,
-          "tile": "p24-r2c1.jpg"
+          "tile": "p1-r2c1.jpg"
         }
       ],
       "note": "Printed labels marked by hand on the ~200 dpi enlargement, with page coordinates.",
       "tiles": [
-        "p24-r1c1.jpg",
-        "p24-r1c2.jpg",
-        "p24-r2c1.jpg"
-      ]
+        "p1-r1c1.jpg",
+        "p1-r1c2.jpg",
+        "p1-r2c1.jpg"
+      ],
+      "page_in_submittal_set": 24
     },
     {
       "section": "structural_members",
       "category": "beam",
       "mark": "FB 1",
       "sheet": "S-3",
-      "page": 25,
+      "page": 2,
       "count": 12,
       "counted": "labels",
       "places": [
         {
           "x": 2045,
           "y": 1228,
-          "tile": "p25-r1c1.jpg"
+          "tile": "p2-r1c1.jpg"
         },
         {
           "x": 2045,
           "y": 1585,
-          "tile": "p25-r1c1.jpg"
+          "tile": "p2-r1c1.jpg"
         },
         {
           "x": 2600,
           "y": 905,
-          "tile": "p25-r1c1.jpg"
+          "tile": "p2-r1c1.jpg"
         },
         {
           "x": 4580,
           "y": 1040,
-          "tile": "p25-r1c2.jpg"
+          "tile": "p2-r1c2.jpg"
         },
         {
           "x": 3085,
           "y": 2400,
-          "tile": "p25-r2c1.jpg"
+          "tile": "p2-r2c1.jpg"
         },
         {
           "x": 3895,
           "y": 1985,
-          "tile": "p25-r1c2.jpg"
+          "tile": "p2-r1c2.jpg"
         },
         {
           "x": 4595,
           "y": 1990,
-          "tile": "p25-r1c2.jpg"
+          "tile": "p2-r1c2.jpg"
         },
         {
           "x": 3895,
           "y": 2400,
-          "tile": "p25-r2c2.jpg"
+          "tile": "p2-r2c2.jpg"
         },
         {
           "x": 4260,
           "y": 2695,
-          "tile": "p25-r2c2.jpg"
+          "tile": "p2-r2c2.jpg"
         },
         {
           "x": 5150,
           "y": 2060,
-          "tile": "p25-r1c2.jpg"
+          "tile": "p2-r1c2.jpg"
         },
         {
           "x": 5315,
           "y": 2060,
-          "tile": "p25-r1c2.jpg"
+          "tile": "p2-r1c2.jpg"
         },
         {
           "x": 5205,
           "y": 2245,
-          "tile": "p25-r1c2.jpg"
+          "tile": "p2-r1c2.jpg"
         }
       ],
       "note": "Printed labels marked by hand on the ~200 dpi enlargement, with page coordinates.",
       "tiles": [
-        "p25-r1c1.jpg",
-        "p25-r1c2.jpg",
-        "p25-r2c1.jpg",
-        "p25-r2c2.jpg"
-      ]
+        "p2-r1c1.jpg",
+        "p2-r1c2.jpg",
+        "p2-r2c1.jpg",
+        "p2-r2c2.jpg"
+      ],
+      "page_in_submittal_set": 25
     },
     {
       "section": "structural_members",
       "category": "beam",
       "mark": "FB 10",
       "sheet": "S-3",
-      "page": 25,
+      "page": 2,
       "count": 1,
       "counted": "labels",
       "places": [
         {
           "x": 1600,
           "y": 2360,
-          "tile": "p25-r1c1.jpg"
+          "tile": "p2-r1c1.jpg"
         }
       ],
       "note": "Printed labels marked by hand on the ~200 dpi enlargement, with page coordinates.",
       "tiles": [
-        "p25-r1c1.jpg"
-      ]
+        "p2-r1c1.jpg"
+      ],
+      "page_in_submittal_set": 25
     },
     {
       "section": "structural_members",
       "category": "beam",
       "mark": "FB 11",
       "sheet": "S-3",
-      "page": 25,
+      "page": 2,
       "count": 3,
       "counted": "labels",
       "places": [
         {
           "x": 1700,
           "y": 2017,
-          "tile": "p25-r1c1.jpg"
+          "tile": "p2-r1c1.jpg"
         },
         {
           "x": 1470,
           "y": 2360,
-          "tile": "p25-r1c1.jpg"
+          "tile": "p2-r1c1.jpg"
         },
         {
           "x": 1700,
           "y": 2695,
-          "tile": "p25-r2c1.jpg"
+          "tile": "p2-r2c1.jpg"
         }
       ],
       "note": "Printed labels marked by hand on the ~200 dpi enlargement, with page coordinates.",
       "tiles": [
-        "p25-r1c1.jpg",
-        "p25-r2c1.jpg"
-      ]
+        "p2-r1c1.jpg",
+        "p2-r2c1.jpg"
+      ],
+      "page_in_submittal_set": 25
     },
     {
       "section": "structural_members",
       "category": "beam",
       "mark": "FB 2",
       "sheet": "S-3",
-      "page": 25,
+      "page": 2,
       "count": 5,
       "counted": "labels",
       "places": [
         {
           "x": 2940,
           "y": 958,
-          "tile": "p25-r1c1.jpg"
+          "tile": "p2-r1c1.jpg"
         },
         {
           "x": 3470,
           "y": 1830,
-          "tile": "p25-r1c1.jpg"
+          "tile": "p2-r1c1.jpg"
         },
         {
           "x": 4145,
           "y": 1550,
-          "tile": "p25-r1c2.jpg"
+          "tile": "p2-r1c2.jpg"
         },
         {
           "x": 3945,
           "y": 1620,
-          "tile": "p25-r1c2.jpg"
+          "tile": "p2-r1c2.jpg"
         },
         {
           "x": 4265,
           "y": 2085,
-          "tile": "p25-r1c2.jpg"
+          "tile": "p2-r1c2.jpg"
         }
       ],
       "note": "Printed labels marked by hand on the ~200 dpi enlargement, with page coordinates.",
       "tiles": [
-        "p25-r1c1.jpg",
-        "p25-r1c2.jpg"
-      ]
+        "p2-r1c1.jpg",
+        "p2-r1c2.jpg"
+      ],
+      "page_in_submittal_set": 25
     },
     {
       "section": "structural_members",
       "category": "beam",
       "mark": "FB 3",
       "sheet": "S-3",
-      "page": 25,
+      "page": 2,
       "count": 4,
       "counted": "labels",
       "places": [
         {
           "x": 1960,
           "y": 1440,
-          "tile": "p25-r1c1.jpg"
+          "tile": "p2-r1c1.jpg"
         },
         {
           "x": 2005,
           "y": 2017,
-          "tile": "p25-r1c1.jpg"
+          "tile": "p2-r1c1.jpg"
         },
         {
           "x": 1960,
           "y": 2360,
-          "tile": "p25-r1c1.jpg"
+          "tile": "p2-r1c1.jpg"
         },
         {
           "x": 3510,
           "y": 2665,
-          "tile": "p25-r2c1.jpg"
+          "tile": "p2-r2c1.jpg"
         }
       ],
       "note": "Printed labels marked by hand on the ~200 dpi enlargement, with page coordinates.",
       "tiles": [
-        "p25-r1c1.jpg",
-        "p25-r2c1.jpg"
-      ]
+        "p2-r1c1.jpg",
+        "p2-r2c1.jpg"
+      ],
+      "page_in_submittal_set": 25
     },
     {
       "section": "structural_members",
       "category": "beam",
       "mark": "FB 4",
       "sheet": "S-3",
-      "page": 25,
+      "page": 2,
       "count": 1,
       "counted": "labels",
       "places": [
         {
           "x": 3250,
           "y": 958,
-          "tile": "p25-r1c1.jpg"
+          "tile": "p2-r1c1.jpg"
         }
       ],
       "note": "Printed labels marked by hand on the ~200 dpi enlargement, with page coordinates.",
       "tiles": [
-        "p25-r1c1.jpg"
-      ]
+        "p2-r1c1.jpg"
+      ],
+      "page_in_submittal_set": 25
     },
     {
       "section": "structural_members",
       "category": "beam",
       "mark": "FB 5",
       "sheet": "S-3",
-      "page": 25,
+      "page": 2,
       "count": 2,
       "counted": "labels",
       "places": [
         {
           "x": 2600,
           "y": 1190,
-          "tile": "p25-r1c1.jpg"
+          "tile": "p2-r1c1.jpg"
         },
         {
           "x": 4990,
           "y": 1155,
-          "tile": "p25-r1c2.jpg"
+          "tile": "p2-r1c2.jpg"
         }
       ],
       "note": "Printed labels marked by hand on the ~200 dpi enlargement, with page coordinates.",
       "tiles": [
-        "p25-r1c1.jpg",
-        "p25-r1c2.jpg"
-      ]
+        "p2-r1c1.jpg",
+        "p2-r1c2.jpg"
+      ],
+      "page_in_submittal_set": 25
     },
     {
       "section": "structural_members",
       "category": "beam",
       "mark": "FB 6",
       "sheet": "S-3",
-      "page": 25,
+      "page": 2,
       "count": 1,
       "counted": "labels",
       "places": [
         {
           "x": 3510,
           "y": 2135,
-          "tile": "p25-r1c1.jpg"
+          "tile": "p2-r1c1.jpg"
         }
       ],
       "note": "Printed labels marked by hand on the ~200 dpi enlargement, with page coordinates.",
       "tiles": [
-        "p25-r1c1.jpg"
-      ]
+        "p2-r1c1.jpg"
+      ],
+      "page_in_submittal_set": 25
     },
     {
       "section": "structural_members",
       "category": "beam",
       "mark": "FB 7",
       "sheet": "S-3",
-      "page": 25,
+      "page": 2,
       "count": 1,
       "counted": "labels",
       "places": [
         {
           "x": 2565,
           "y": 1825,
-          "tile": "p25-r1c1.jpg"
+          "tile": "p2-r1c1.jpg"
         }
       ],
       "note": "Printed labels marked by hand on the ~200 dpi enlargement, with page coordinates.",
       "tiles": [
-        "p25-r1c1.jpg"
-      ]
+        "p2-r1c1.jpg"
+      ],
+      "page_in_submittal_set": 25
     },
     {
       "section": "structural_members",
       "category": "beam",
       "mark": "FB 8",
       "sheet": "S-3",
-      "page": 25,
+      "page": 2,
       "count": 1,
       "counted": "labels",
       "places": [
         {
           "x": 3085,
           "y": 1885,
-          "tile": "p25-r1c1.jpg"
+          "tile": "p2-r1c1.jpg"
         }
       ],
       "note": "Printed labels marked by hand on the ~200 dpi enlargement, with page coordinates.",
       "tiles": [
-        "p25-r1c1.jpg"
-      ]
+        "p2-r1c1.jpg"
+      ],
+      "page_in_submittal_set": 25
     },
     {
       "section": "structural_members",
       "category": "beam",
       "mark": "FB 9",
       "sheet": "S-3",
-      "page": 25,
+      "page": 2,
       "count": 1,
       "counted": "labels",
       "places": [
         {
           "x": 4530,
           "y": 1370,
-          "tile": "p25-r1c2.jpg"
+          "tile": "p2-r1c2.jpg"
         }
       ],
       "note": "Printed labels marked by hand on the ~200 dpi enlargement, with page coordinates.",
       "tiles": [
-        "p25-r1c2.jpg"
-      ]
+        "p2-r1c2.jpg"
+      ],
+      "page_in_submittal_set": 25
     },
     {
       "section": "structural_members",
       "category": "header",
       "mark": "HDR",
       "sheet": "S-3",
-      "page": 25,
+      "page": 2,
       "count": 16,
       "counted": "labels",
       "places": [
         {
           "x": 2035,
           "y": 907,
-          "tile": "p25-r1c1.jpg"
+          "tile": "p2-r1c1.jpg"
         },
         {
           "x": 2275,
           "y": 907,
-          "tile": "p25-r1c1.jpg"
+          "tile": "p2-r1c1.jpg"
         },
         {
           "x": 2915,
           "y": 905,
-          "tile": "p25-r1c1.jpg"
+          "tile": "p2-r1c1.jpg"
         },
         {
           "x": 3255,
           "y": 905,
-          "tile": "p25-r1c1.jpg"
+          "tile": "p2-r1c1.jpg"
         },
         {
           "x": 4230,
           "y": 905,
-          "tile": "p25-r1c2.jpg"
+          "tile": "p2-r1c2.jpg"
         },
         {
           "x": 3375,
           "y": 1365,
-          "tile": "p25-r1c1.jpg"
+          "tile": "p2-r1c1.jpg"
         },
         {
           "x": 4280,
           "y": 1300,
-          "tile": "p25-r1c2.jpg"
+          "tile": "p2-r1c2.jpg"
         },
         {
           "x": 4060,
           "y": 1410,
-          "tile": "p25-r1c2.jpg"
+          "tile": "p2-r1c2.jpg"
         },
         {
           "x": 3955,
           "y": 1525,
-          "tile": "p25-r1c2.jpg"
+          "tile": "p2-r1c2.jpg"
         },
         {
           "x": 4370,
           "y": 1695,
-          "tile": "p25-r1c2.jpg"
+          "tile": "p2-r1c2.jpg"
         },
         {
           "x": 2970,
           "y": 2495,
-          "tile": "p25-r2c1.jpg"
+          "tile": "p2-r2c1.jpg"
         },
         {
           "x": 4035,
           "y": 2695,
-          "tile": "p25-r2c2.jpg"
+          "tile": "p2-r2c2.jpg"
         },
         {
           "x": 4475,
           "y": 2695,
-          "tile": "p25-r2c2.jpg"
+          "tile": "p2-r2c2.jpg"
         },
         {
           "x": 4995,
           "y": 2005,
-          "tile": "p25-r1c2.jpg"
+          "tile": "p2-r1c2.jpg"
         },
         {
           "x": 4815,
           "y": 2245,
-          "tile": "p25-r1c2.jpg"
+          "tile": "p2-r1c2.jpg"
         },
         {
           "x": 1985,
           "y": 2048,
-          "tile": "p25-r1c1.jpg"
+          "tile": "p2-r1c1.jpg"
         }
       ],
       "disputed": true,
       "note": "Unnumbered header labels. Which schedule row governs each one cannot be resolved without the printed header table, so the number of members behind these labels is not settled.",
       "tiles": [
-        "p25-r1c1.jpg",
-        "p25-r1c2.jpg",
-        "p25-r2c1.jpg",
-        "p25-r2c2.jpg"
-      ]
+        "p2-r1c1.jpg",
+        "p2-r1c2.jpg",
+        "p2-r2c1.jpg",
+        "p2-r2c2.jpg"
+      ],
+      "page_in_submittal_set": 25
     },
     {
       "section": "structural_members",
       "category": "header",
       "mark": "HDR 1",
       "sheet": "S-3",
-      "page": 25,
+      "page": 2,
       "count": 4,
       "counted": "labels",
       "places": [
         {
           "x": 3730,
           "y": 905,
-          "tile": "p25-r1c2.jpg"
+          "tile": "p2-r1c2.jpg"
         },
         {
           "x": 1835,
           "y": 2360,
-          "tile": "p25-r1c1.jpg"
+          "tile": "p2-r1c1.jpg"
         },
         {
           "x": 3510,
           "y": 2595,
-          "tile": "p25-r2c1.jpg"
+          "tile": "p2-r2c1.jpg"
         },
         {
           "x": 4585,
           "y": 2490,
-          "tile": "p25-r2c2.jpg"
+          "tile": "p2-r2c2.jpg"
         }
       ],
       "note": "Printed labels marked by hand on the ~200 dpi enlargement, with page coordinates.",
       "tiles": [
-        "p25-r1c1.jpg",
-        "p25-r1c2.jpg",
-        "p25-r2c1.jpg",
-        "p25-r2c2.jpg"
-      ]
+        "p2-r1c1.jpg",
+        "p2-r1c2.jpg",
+        "p2-r2c1.jpg",
+        "p2-r2c2.jpg"
+      ],
+      "page_in_submittal_set": 25
     },
     {
       "section": "structural_members",
       "category": "header",
       "mark": "HDR 2",
       "sheet": "S-3",
-      "page": 25,
+      "page": 2,
       "count": 1,
       "counted": "labels",
       "places": [
         {
           "x": 2375,
           "y": 2695,
-          "tile": "p25-r2c1.jpg"
+          "tile": "p2-r2c1.jpg"
         }
       ],
       "note": "Printed labels marked by hand on the ~200 dpi enlargement, with page coordinates.",
       "tiles": [
-        "p25-r2c1.jpg"
-      ]
+        "p2-r2c1.jpg"
+      ],
+      "page_in_submittal_set": 25
     },
     {
       "section": "structural_members",
       "category": "header",
       "mark": "HDR 3",
       "sheet": "S-3",
-      "page": 25,
+      "page": 2,
       "count": 1,
       "counted": "labels",
       "places": [
         {
           "x": 2085,
           "y": 1520,
-          "tile": "p25-r1c1.jpg"
+          "tile": "p2-r1c1.jpg"
         }
       ],
       "note": "Printed labels marked by hand on the ~200 dpi enlargement, with page coordinates.",
       "tiles": [
-        "p25-r1c1.jpg"
-      ]
+        "p2-r1c1.jpg"
+      ],
+      "page_in_submittal_set": 25
     },
     {
       "section": "structural_members",
       "category": "header",
       "mark": "HDR 4",
       "sheet": "S-3",
-      "page": 25,
+      "page": 2,
       "count": 1,
       "counted": "labels",
       "places": [
         {
           "x": 5320,
           "y": 1390,
-          "tile": "p25-r1c2.jpg"
+          "tile": "p2-r1c2.jpg"
         }
       ],
       "note": "Printed labels marked by hand on the ~200 dpi enlargement, with page coordinates.",
       "tiles": [
-        "p25-r1c2.jpg"
-      ]
+        "p2-r1c2.jpg"
+      ],
+      "page_in_submittal_set": 25
     },
     {
       "section": "structural_members",
       "category": "beam",
       "mark": "HIP BM 1",
       "sheet": "S-4",
-      "page": 26,
+      "page": 3,
       "count": 4,
       "counted": "labels",
       "places": [
         {
           "x": 2720,
           "y": 1520,
-          "tile": "p26-r1c1.jpg"
+          "tile": "p3-r1c1.jpg"
         },
         {
           "x": 3820,
           "y": 1670,
-          "tile": "p26-r1c2.jpg"
+          "tile": "p3-r1c2.jpg"
         },
         {
           "x": 3870,
           "y": 1965,
-          "tile": "p26-r1c2.jpg"
+          "tile": "p3-r1c2.jpg"
         },
         {
           "x": 2695,
           "y": 2090,
-          "tile": "p26-r1c1.jpg"
+          "tile": "p3-r1c1.jpg"
         }
       ],
       "note": "Printed labels marked by hand on the ~200 dpi enlargement, with page coordinates.",
       "tiles": [
-        "p26-r1c1.jpg",
-        "p26-r1c2.jpg"
-      ]
+        "p3-r1c1.jpg",
+        "p3-r1c2.jpg"
+      ],
+      "page_in_submittal_set": 26
     },
     {
       "section": "structural_members",
       "category": "beam",
       "mark": "HIP BM 2",
       "sheet": "S-4",
-      "page": 26,
+      "page": 3,
       "count": 4,
       "counted": "labels",
       "places": [
         {
           "x": 2245,
           "y": 1050,
-          "tile": "p26-r1c1.jpg"
+          "tile": "p3-r1c1.jpg"
         },
         {
           "x": 4160,
           "y": 1340,
-          "tile": "p26-r1c2.jpg"
+          "tile": "p3-r1c2.jpg"
         },
         {
           "x": 2230,
           "y": 2560,
-          "tile": "p26-r2c1.jpg"
+          "tile": "p3-r2c1.jpg"
         },
         {
           "x": 4320,
           "y": 2420,
-          "tile": "p26-r2c2.jpg"
+          "tile": "p3-r2c2.jpg"
         }
       ],
       "disputed": true,
       "note": "Four marks were found on S-4; an advisor reading the same sheet counted six. Not settled, so not used to decide between readers.",
       "tiles": [
-        "p26-r1c1.jpg",
-        "p26-r1c2.jpg",
-        "p26-r2c1.jpg",
-        "p26-r2c2.jpg"
-      ]
+        "p3-r1c1.jpg",
+        "p3-r1c2.jpg",
+        "p3-r2c1.jpg",
+        "p3-r2c2.jpg"
+      ],
+      "page_in_submittal_set": 26
     },
     {
       "section": "structural_members",
       "category": "rafter",
       "mark": "R.R.1",
       "sheet": "S-4",
-      "page": 26,
+      "page": 3,
       "count": 12,
       "counted": "zones",
       "places": [
         {
           "x": 2045,
           "y": 1290,
-          "tile": "p26-r1c1.jpg"
+          "tile": "p3-r1c1.jpg"
         },
         {
           "x": 2045,
           "y": 1520,
-          "tile": "p26-r1c1.jpg"
+          "tile": "p3-r1c1.jpg"
         },
         {
           "x": 2455,
           "y": 1680,
-          "tile": "p26-r1c1.jpg"
+          "tile": "p3-r1c1.jpg"
         },
         {
           "x": 3470,
           "y": 1330,
-          "tile": "p26-r1c1.jpg"
+          "tile": "p3-r1c1.jpg"
         },
         {
           "x": 4210,
           "y": 1610,
-          "tile": "p26-r1c2.jpg"
+          "tile": "p3-r1c2.jpg"
         },
         {
           "x": 4785,
           "y": 1400,
-          "tile": "p26-r1c2.jpg"
+          "tile": "p3-r1c2.jpg"
         },
         {
           "x": 5275,
           "y": 1290,
-          "tile": "p26-r1c2.jpg"
+          "tile": "p3-r1c2.jpg"
         },
         {
           "x": 5275,
           "y": 1710,
-          "tile": "p26-r1c2.jpg"
+          "tile": "p3-r1c2.jpg"
         },
         {
           "x": 4785,
           "y": 1990,
-          "tile": "p26-r1c2.jpg"
+          "tile": "p3-r1c2.jpg"
         },
         {
           "x": 2045,
           "y": 2165,
-          "tile": "p26-r1c1.jpg"
+          "tile": "p3-r1c1.jpg"
         },
         {
           "x": 2045,
           "y": 2555,
-          "tile": "p26-r2c1.jpg"
+          "tile": "p3-r2c1.jpg"
         },
         {
           "x": 3470,
           "y": 2290,
-          "tile": "p26-r1c1.jpg"
+          "tile": "p3-r1c1.jpg"
         }
       ],
       "note": "Twelve framing-zone callouts, marked by hand with their page coordinates. These are zones, not individual rafters — a reading that reports twelve rafters has counted the wrong thing, and that is the difference this entry exists to expose.",
       "tiles": [
-        "p26-r1c1.jpg",
-        "p26-r1c2.jpg",
-        "p26-r2c1.jpg"
-      ]
+        "p3-r1c1.jpg",
+        "p3-r1c2.jpg",
+        "p3-r2c1.jpg"
+      ],
+      "page_in_submittal_set": 26
     },
     {
       "section": "structural_members",
       "category": "beam",
       "mark": "RB 1",
       "sheet": "S-4",
-      "page": 26,
+      "page": 3,
       "count": 2,
       "counted": "labels",
       "places": [
         {
           "x": 2090,
           "y": 1385,
-          "tile": "p26-r1c1.jpg"
+          "tile": "p3-r1c1.jpg"
         },
         {
           "x": 2090,
           "y": 2345,
-          "tile": "p26-r1c1.jpg"
+          "tile": "p3-r1c1.jpg"
         }
       ],
       "note": "Printed labels marked by hand on the ~200 dpi enlargement, with page coordinates.",
       "tiles": [
-        "p26-r1c1.jpg"
-      ]
+        "p3-r1c1.jpg"
+      ],
+      "page_in_submittal_set": 26
     },
     {
       "section": "structural_members",
       "category": "beam",
       "mark": "RB 2",
       "sheet": "S-4",
-      "page": 26,
+      "page": 3,
       "count": 2,
       "counted": "labels",
       "places": [
         {
           "x": 2425,
           "y": 1520,
-          "tile": "p26-r1c1.jpg"
+          "tile": "p3-r1c1.jpg"
         },
         {
           "x": 2425,
           "y": 2270,
-          "tile": "p26-r1c1.jpg"
+          "tile": "p3-r1c1.jpg"
         }
       ],
       "note": "Printed labels marked by hand on the ~200 dpi enlargement, with page coordinates.",
       "tiles": [
-        "p26-r1c1.jpg"
-      ]
+        "p3-r1c1.jpg"
+      ],
+      "page_in_submittal_set": 26
     },
     {
       "section": "structural_members",
       "category": "beam",
       "mark": "RB 2?",
       "sheet": "S-4",
-      "page": 26,
+      "page": 3,
       "count": 1,
       "counted": "labels",
       "places": [
         {
           "x": 5210,
           "y": 1570,
-          "tile": "p26-r1c2.jpg"
+          "tile": "p3-r1c2.jpg"
         }
       ],
       "disputed": true,
       "note": "One label could not be read with certainty as RB 2.",
       "tiles": [
-        "p26-r1c2.jpg"
-      ]
+        "p3-r1c2.jpg"
+      ],
+      "page_in_submittal_set": 26
     },
     {
       "section": "structural_members",
       "category": "beam",
       "mark": "RB 3",
       "sheet": "S-4",
-      "page": 26,
+      "page": 3,
       "count": 1,
       "counted": "labels",
       "places": [
         {
           "x": 3680,
           "y": 1840,
-          "tile": "p26-r1c2.jpg"
+          "tile": "p3-r1c2.jpg"
         }
       ],
       "note": "Printed labels marked by hand on the ~200 dpi enlargement, with page coordinates.",
       "tiles": [
-        "p26-r1c2.jpg"
-      ]
+        "p3-r1c2.jpg"
+      ],
+      "page_in_submittal_set": 26
     },
     {
       "section": "structural_members",
       "category": "header",
       "mark": "RHDR",
       "sheet": "S-4",
-      "page": 26,
+      "page": 3,
       "count": 28,
       "counted": "labels",
       "places": [
         {
           "x": 2285,
           "y": 905,
-          "tile": "p26-r1c1.jpg"
+          "tile": "p3-r1c1.jpg"
         },
         {
           "x": 2510,
           "y": 905,
-          "tile": "p26-r1c1.jpg"
+          "tile": "p3-r1c1.jpg"
         },
         {
           "x": 2035,
           "y": 1225,
-          "tile": "p26-r1c1.jpg"
+          "tile": "p3-r1c1.jpg"
         },
         {
           "x": 2512,
           "y": 1205,
-          "tile": "p26-r1c1.jpg"
+          "tile": "p3-r1c1.jpg"
         },
         {
           "x": 3025,
           "y": 1335,
-          "tile": "p26-r1c1.jpg"
+          "tile": "p3-r1c1.jpg"
         },
         {
           "x": 2035,
           "y": 1585,
-          "tile": "p26-r1c1.jpg"
+          "tile": "p3-r1c1.jpg"
         },
         {
           "x": 3090,
           "y": 1990,
-          "tile": "p26-r1c1.jpg"
+          "tile": "p3-r1c1.jpg"
         },
         {
           "x": 3555,
           "y": 905,
-          "tile": "p26-r1c1.jpg"
+          "tile": "p3-r1c1.jpg"
         },
         {
           "x": 3935,
           "y": 905,
-          "tile": "p26-r1c2.jpg"
+          "tile": "p3-r1c2.jpg"
         },
         {
           "x": 3795,
           "y": 1005,
-          "tile": "p26-r1c2.jpg"
+          "tile": "p3-r1c2.jpg"
         },
         {
           "x": 3315,
           "y": 1435,
-          "tile": "p26-r1c1.jpg"
+          "tile": "p3-r1c1.jpg"
         },
         {
           "x": 4180,
           "y": 1550,
-          "tile": "p26-r1c2.jpg"
+          "tile": "p3-r1c2.jpg"
         },
         {
           "x": 4445,
           "y": 905,
-          "tile": "p26-r1c2.jpg"
+          "tile": "p3-r1c2.jpg"
         },
         {
           "x": 5150,
           "y": 1155,
-          "tile": "p26-r1c2.jpg"
+          "tile": "p3-r1c2.jpg"
         },
         {
           "x": 4450,
           "y": 1555,
-          "tile": "p26-r1c2.jpg"
+          "tile": "p3-r1c2.jpg"
         },
         {
           "x": 4540,
           "y": 1760,
-          "tile": "p26-r1c2.jpg"
+          "tile": "p3-r1c2.jpg"
         },
         {
           "x": 4785,
           "y": 1855,
-          "tile": "p26-r1c2.jpg"
+          "tile": "p3-r1c2.jpg"
         },
         {
           "x": 4965,
           "y": 1855,
-          "tile": "p26-r1c2.jpg"
+          "tile": "p3-r1c2.jpg"
         },
         {
           "x": 2190,
           "y": 2695,
-          "tile": "p26-r2c1.jpg"
+          "tile": "p3-r2c1.jpg"
         },
         {
           "x": 2890,
           "y": 2695,
-          "tile": "p26-r2c1.jpg"
+          "tile": "p3-r2c1.jpg"
         },
         {
           "x": 3340,
           "y": 2145,
-          "tile": "p26-r1c1.jpg"
+          "tile": "p3-r1c1.jpg"
         },
         {
           "x": 3870,
           "y": 2290,
-          "tile": "p26-r1c2.jpg"
+          "tile": "p3-r1c2.jpg"
         },
         {
           "x": 3870,
           "y": 2590,
-          "tile": "p26-r2c2.jpg"
+          "tile": "p3-r2c2.jpg"
         },
         {
           "x": 3380,
           "y": 2665,
-          "tile": "p26-r2c1.jpg"
+          "tile": "p3-r2c1.jpg"
         },
         {
           "x": 3670,
           "y": 2665,
-          "tile": "p26-r2c2.jpg"
+          "tile": "p3-r2c2.jpg"
         },
         {
           "x": 4060,
           "y": 2695,
-          "tile": "p26-r2c2.jpg"
+          "tile": "p3-r2c2.jpg"
         },
         {
           "x": 4585,
           "y": 2490,
-          "tile": "p26-r2c2.jpg"
+          "tile": "p3-r2c2.jpg"
         },
         {
           "x": 5150,
           "y": 2070,
-          "tile": "p26-r1c2.jpg"
+          "tile": "p3-r1c2.jpg"
         }
       ],
       "disputed": true,
       "note": "Unnumbered roof header labels, same reason as HDR.",
       "tiles": [
-        "p26-r1c1.jpg",
-        "p26-r1c2.jpg",
-        "p26-r2c1.jpg",
-        "p26-r2c2.jpg"
-      ]
+        "p3-r1c1.jpg",
+        "p3-r1c2.jpg",
+        "p3-r2c1.jpg",
+        "p3-r2c2.jpg"
+      ],
+      "page_in_submittal_set": 26
     },
     {
       "section": "structural_members",
       "category": "header",
       "mark": "RHDR 1",
       "sheet": "S-4",
-      "page": 26,
+      "page": 3,
       "count": 3,
       "counted": "labels",
       "places": [
         {
           "x": 1960,
           "y": 1360,
-          "tile": "p26-r1c1.jpg"
+          "tile": "p3-r1c1.jpg"
         },
         {
           "x": 1960,
           "y": 2310,
-          "tile": "p26-r1c1.jpg"
+          "tile": "p3-r1c1.jpg"
         },
         {
           "x": 5315,
           "y": 1440,
-          "tile": "p26-r1c2.jpg"
+          "tile": "p3-r1c2.jpg"
         }
       ],
       "note": "Printed labels marked by hand on the ~200 dpi enlargement, with page coordinates.",
       "tiles": [
-        "p26-r1c1.jpg",
-        "p26-r1c2.jpg"
-      ]
+        "p3-r1c1.jpg",
+        "p3-r1c2.jpg"
+      ],
+      "page_in_submittal_set": 26
     },
     {
       "section": "structural_members",
       "category": "header",
       "mark": "RHDR 2",
       "sheet": "S-4",
-      "page": 26,
+      "page": 3,
       "count": 1,
       "counted": "labels",
       "places": [
         {
           "x": 3985,
           "y": 2085,
-          "tile": "p26-r1c2.jpg"
+          "tile": "p3-r1c2.jpg"
         }
       ],
       "note": "Printed labels marked by hand on the ~200 dpi enlargement, with page coordinates.",
       "tiles": [
-        "p26-r1c2.jpg"
-      ]
+        "p3-r1c2.jpg"
+      ],
+      "page_in_submittal_set": 26
     },
     {
       "section": "structural_members",
       "category": "ridge",
       "mark": "RIDGE BM 1",
       "sheet": "S-4",
-      "page": 26,
+      "page": 3,
       "count": 2,
       "counted": "labels",
       "places": [
         {
           "x": 3345,
           "y": 1805,
-          "tile": "p26-r1c1.jpg"
+          "tile": "p3-r1c1.jpg"
         },
         {
           "x": 4890,
           "y": 1700,
-          "tile": "p26-r1c2.jpg"
+          "tile": "p3-r1c2.jpg"
         }
       ],
       "note": "Printed labels marked by hand on the ~200 dpi enlargement, with page coordinates.",
       "tiles": [
-        "p26-r1c1.jpg",
-        "p26-r1c2.jpg"
-      ]
+        "p3-r1c1.jpg",
+        "p3-r1c2.jpg"
+      ],
+      "page_in_submittal_set": 26
     },
     {
       "section": "structural_members",
       "category": "ridge",
       "mark": "RIDGE BM 2",
       "sheet": "S-4",
-      "page": 26,
+      "page": 3,
       "count": 3,
       "counted": "labels",
       "places": [
         {
           "x": 2015,
           "y": 1415,
-          "tile": "p26-r1c1.jpg"
+          "tile": "p3-r1c1.jpg"
         },
         {
           "x": 2015,
           "y": 2365,
-          "tile": "p26-r1c1.jpg"
+          "tile": "p3-r1c1.jpg"
         },
         {
           "x": 5275,
           "y": 1510,
-          "tile": "p26-r1c2.jpg"
+          "tile": "p3-r1c2.jpg"
         }
       ],
       "disputed": true,
       "note": "Three places carry this mark; whether they are three assemblies or one assembly in three places is not settled on the sheet.",
       "tiles": [
-        "p26-r1c1.jpg",
-        "p26-r1c2.jpg"
-      ]
+        "p3-r1c1.jpg",
+        "p3-r1c2.jpg"
+      ],
+      "page_in_submittal_set": 26
     }
   ],
   "what_the_count_is": "Every `count` in this file is a count of PRINTED LABELS located on the sheet, not a count of building members. The 138 labels recorded here are 138 marks drawn on three sheets. One framing line can carry two labels, one label can cover several members, and R.R.1 labels a framing zone rather than a rafter — which is why each entry states `counted` and why a reading that reports members is recorded as counting something else, never as being wrong.",
-  "how_to_check_an_entry": "Open the sheet's ~200 dpi enlargement named in `tiles` and look at the page coordinates in `places`. Every label can be found that way; nothing here rests on a number without a place."
+  "how_to_check_an_entry": "These sheets carry a 270-degree rotation, so the renderer draws each one landscape at ~200 dpi: 7196 x 4794 px, cut into a 2x2 grid (each tile 3598 x 2397 px) plus a whole-page overview. Open the tile named in `tiles` and look at the page coordinates in `places`. Every label can be found that way; nothing here rests on a number without a place.",
+  "page_numbering": "`page` and `tiles` are numbered for the standalone three-sheet file used for this comparison, where S-2 is page 1, S-3 page 2 and S-4 page 3. `page_in_submittal_set` is the same sheet's page in the full 30-page set."
 }

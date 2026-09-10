@@ -283,7 +283,17 @@ console.log("\n── the Noble markup counts labels, not members ──");
     markup.entries.find((entry) => entry.mark === "R.R.1").counted === "zones");
   check("every label can be opened at the enlargement it was read from",
     markup.entries.every((entry) => entry.places.length === entry.count
-      && entry.places.every((place) => /^p\d+-r[12]c[12]\.jpg$/.test(place.tile) && place.x > 0 && place.y > 0)));
+      /* The sheets carry a 270-degree rotation, so the renderer draws them
+         landscape at ~200 dpi — 7196 x 4794 px, a 2x2 grid of 3598 x 2397
+         tiles. A markup whose tile names did not follow that geometry would
+         send a checker to the wrong enlargement. */
+      && entry.places.every((place) => place.tile === `p${entry.page}-r${place.y < 2397 ? 1 : 2}c${place.x < 3598 ? 1 : 2}.jpg`
+        && place.x > 0 && place.x < 7196 && place.y > 0 && place.y < 4794)));
+  check("and both page numbers are kept — the sheet in this reading, and the sheet in the full set",
+    markup.entries.every((entry) => [1, 2, 3].includes(entry.page)
+      && [24, 25, 26].includes(entry.page_in_submittal_set))
+    && /S-2 is page 1/.test(markup.page_numbering),
+    markup.entries.map((entry) => `${entry.sheet}:p${entry.page}/${entry.page_in_submittal_set}`).slice(0, 3).join(" "));
   check("six groups are marked disputed, with the reason on each",
     markup.entries.filter((entry) => entry.disputed).length === 6
     && markup.entries.filter((entry) => entry.disputed).every((entry) => entry.note.length > 20));
