@@ -20,7 +20,7 @@ import { harness, closeNetwork } from "../../core-v2/tests/harness.mjs";
 import { invocationClock, ClockBudgetImpossible, EDGE_FUNCTION_LIFETIME_MS } from "../clock.ts";
 import { policyForClock } from "../runner.ts";
 import { seedOfSourceUri, sourceSetOfRecord, syntheticSourceSet, SourceSetUnreadable, SYNTHETIC_SCHEME } from "../source-set.ts";
-import { line, operational } from "../../../supabase/functions/core-v2-runner/log.ts";
+import { asToken, line, operational } from "../../../supabase/functions/core-v2-runner/log.ts";
 import { DenoFetchTransport } from "../../../supabase/functions/_shared/core-v2/deno-transport.ts";
 import { NetworkNotAuthorized, TransportFault } from "../../core-v2-runtime/transport/transport.ts";
 import { entityId } from "../../core-v2/kernel/ids.ts";
@@ -232,6 +232,24 @@ t.section("a log line carries ids and never content");
     operational("sk-ant-api03-abcdefghijklmnop") === "[not operational]");
   t.check("nor a prompt", operational("── the assignment ──\ntaskId: 1") === "[not operational]");
   t.check("nor an object", operational({ prompt: "read this" }) === "[not operational]");
+  /* THE ONE THING A LOG MAY SAY ABOUT A FAILURE.
+     `problem: "Error"` is not a diagnosis, so an error message is flattened
+     to one machine word — and the flattening must not become a hole in the
+     rule above. Prose stops being prose; a credential stays refused. */
+  t.check("a failure message becomes one machine word, and keeps its meaning",
+    asToken("core-v2: stored material could not be read (404)")
+      === "core-v2:_stored_material_could_not_be_read_404", String(asToken("core-v2: stored material could not be read (404)")));
+  t.check("with no spaces, quotes or punctuation left in it",
+    /^[A-Za-z0-9_.:/@+-]+$/.test(String(asToken("relation \"public.thing\" does not exist"))),
+    String(asToken('relation "public.thing" does not exist')));
+  t.check("a message carrying something worth stealing is still refused whole",
+    asToken("failed with sk-ant-api03-abcdefghijklmnop") === "[not operational]");
+  t.check("and so is one that only mentions a key",
+    asToken("no api_key_abcdefghij in the environment") === "[not operational]");
+  t.check("a message longer than a log line is cut, not dropped",
+    String(asToken("z".repeat(400))).length === 120);
+  t.check("and nothing at all stays nothing", asToken("") === null && asToken(undefined) === null);
+
   const emitted = JSON.parse(line({ fn: "core-v2-runner-tick", workflow: "abc-123", quoted: "E-001 beta 5 kg", n: 3 }));
   t.check("a line always says when it was written", typeof emitted.at === "string" && emitted.at.length > 10);
   t.check("and refuses the content while keeping the ids",
