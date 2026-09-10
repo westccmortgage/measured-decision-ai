@@ -30,9 +30,9 @@ import { EdgeDatabase, DatabaseUnreachable } from "../_shared/core-v2/deno-postg
 import { isRouteProblem, routeToRecord } from "../_shared/core-v2/route.ts";
 import { PostgresOrchestrationRepository } from "../../../workers/core-v2/postgres/repository.ts";
 import { SyntheticRecordsPack } from "../../../workers/core-v2/domains/synthetic-records/pack.ts";
-import { enqueueWorkflow } from "../../../workers/core-v2-runtime/dispatcher.ts";
 import { PostgresContinuationStore } from "../../../workers/core-v2-runner/continuations.ts";
-import { syntheticSourceSet } from "../../../workers/core-v2-runner/source-set.ts";
+import { parseStartRequest, startWorkflowAtomically } from "../../../workers/core-v2-runner/start.ts";
+import { isShapeRefusal } from "../../../workers/core-v2-runner/source-set.ts";
 import { line } from "./log.ts";
 
 const ROUTE_PREFIX = "CORE_V2_RUNNER";
@@ -114,38 +114,45 @@ Deno.serve(async (request: Request): Promise<Response> => {
  * a real id.
  */
 async function start(db: EdgeDatabase, caller: string, body: Body): Promise<Response> {
-  const organizationId = body.organizationId;
-  const seed = body.sourceSetSeed;
-  if (!isUuid(organizationId)) return json(400, { refused: "start needs the organizationId whose workflow this is" });
-  if (typeof seed !== "string" || seed.trim() === "") {
-    return json(400, { refused: "start needs sourceSetSeed: the source set this workflow reads, named so that any later runner can rebuild exactly it" });
-  }
-  if (!await memberOf(db, caller, organizationId)) {
+  /* REFUSED BEFORE ANYTHING EXISTS.
+     A shape V1 cannot run is a 400 with the numbers in it. It is never a
+     workflow row that will fail its own material check on every pass until a
+     fuse settles it, because that costs somebody an investigation to learn
+     what a sentence could have told them. */
+  const request = parseStartRequest(body);
+  if (isShapeRefusal(request)) return json(400, { refused: request.refused, field: request.field ?? null });
+
+  if (!await memberOf(db, caller, request.organizationId)) {
     return json(403, { refused: "the caller is not a member of that organisation" });
   }
 
-  const pack = new SyntheticRecordsPack();
-  const shape = {
-    seed: seed.trim(),
-    sources: positive(body.sources, 1),
-    sheetsPerSource: positive(body.sheetsPerSource, 1),
-    entriesPerTable: positive(body.entriesPerTable, 3),
-  };
-  const set = syntheticSourceSet(shape, organizationId);
-  const repo = new PostgresOrchestrationRepository(db as never, { organizationId });
-  const store = new PostgresContinuationStore(db as never);
-
-  const workflow = await enqueueWorkflow(repo, set.manifest, pack);
-  await store.schedule(workflow.workflowId, null);
+  /* ONE COMMIT: the workflow, its sources, its start command, its audit and
+     the continuation the watchdog reads. A process that dies anywhere inside
+     this leaves nothing behind — which is the only honest alternative to
+     leaving a real workflow that nothing will ever run. */
+  const started = await startWorkflowAtomically({
+    client: db as never,
+    request,
+    pack: new SyntheticRecordsPack(),
+  });
 
   console.log(line({
-    fn: FUNCTION, event: "workflow.started", workflow: workflow.workflowId,
-    organization: organizationId, sources: set.manifest.sources.length,
+    fn: FUNCTION, event: "workflow.started", workflow: started.workflowId,
+    organization: request.organizationId, sources: started.sourceSet.manifest.sources.length,
+    sheets_per_source: request.shape.sheetsPerSource, entries_per_table: request.shape.entriesPerTable,
   }));
 
   return json(202, {
-    workflowId: workflow.workflowId,
-    state: workflow.state,
+    workflowId: started.workflowId,
+    state: started.state,
+    /* Every number the material came from, echoed back, because these are now
+       what the record itself keeps and what a later runner rebuilds from. */
+    sourceSet: {
+      seed: request.shape.seed,
+      sources: request.shape.sources,
+      sheetsPerSource: request.shape.sheetsPerSource,
+      entriesPerTable: request.shape.entriesPerTable,
+    },
     /* Said plainly, because it is the promise this whole change makes. */
     continuation: "due now; the runner will continue this workflow until it reaches a terminal state, with no further call",
   });
@@ -170,15 +177,34 @@ async function cancel(db: EdgeDatabase, caller: string, body: Body): Promise<Res
 
   const repo = new PostgresOrchestrationRepository(db as never, { organizationId });
   await repo.requestCancel(workflowId, Date.now());
+
   /* Due immediately, so the cancellation is acted on at the next tick rather
      than after whatever backoff the workflow happened to be sitting in. */
   const store = new PostgresContinuationStore(db as never);
-  await store.schedule(workflowId, null);
+  const scheduled = await store.schedule(workflowId, null);
 
-  console.log(line({ fn: FUNCTION, event: "workflow.cancel_requested", workflow: workflowId, organization: organizationId }));
+  /* AND IF THE WAKING HAD ALREADY BEEN TURNED OFF.
+     A settled continuation is absorbing on purpose, so `schedule` leaves it
+     settled — which used to mean a cancellation of a still-running workflow
+     was written down and then never acted on by anything, ever. Migration 061
+     opens exactly this case and no other: the workflow's own
+     cancel_requested_at is set and its state is not yet terminal. */
+  let reopened = false;
+  if (!scheduled || scheduled.state === "settled") {
+    const back = await store.reopenForCancellation(workflowId);
+    reopened = back !== null && back.state === "due";
+  }
+
+  console.log(line({
+    fn: FUNCTION, event: "workflow.cancel_requested", workflow: workflowId,
+    organization: organizationId, reopened,
+  }));
   return json(202, {
     workflowId,
     cancelRequested: true,
+    /* Said out loud: a cancellation that had to restart the waking is a
+       different fact from one that merely joined a queue. */
+    wakingReopened: reopened,
     note: "finished work is kept; unsent work is stopped; an outcome nobody knows stays unknown",
   });
 }
@@ -243,7 +269,3 @@ async function status(db: EdgeDatabase, caller: string, body: Body): Promise<Res
   });
 }
 
-function positive(value: unknown, fallback: number): number {
-  const n = Number(value);
-  return Number.isFinite(n) && n >= 1 ? Math.trunc(n) : fallback;
-}

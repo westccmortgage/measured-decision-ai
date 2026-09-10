@@ -60,6 +60,11 @@ export interface ContinuationStore {
     nextDueAt?: Date | null; error?: string | null;
   }): Promise<ReleaseOutcome>;
   settle(workflowId: string, reason: string): Promise<ContinuationRecord | null>;
+  /* Puts a SETTLED row back in the queue, and only when the workflow itself
+     records a cancellation and is not yet terminal — migration 061 reads
+     cancel_requested_at inside the function rather than trusting a caller.
+     Every other row is returned untouched. */
+  reopenForCancellation(workflowId: string, reason?: string): Promise<ContinuationRecord | null>;
   due(limit: number): Promise<string[]>;
   read(workflowId: string): Promise<ContinuationRecord | null>;
   limits(): Promise<ContinuationLimits>;
@@ -145,6 +150,14 @@ export class PostgresContinuationStore implements ContinuationStore {
   async settle(workflowId: string, reason: string): Promise<ContinuationRecord | null> {
     const r = await this.client.query(
       `select ${COLUMNS} from public.core_v2_settle_continuation($1::uuid, $2) c`,
+      [workflowId, reason],
+    );
+    return r.rows.length && r.rows[0].workflow_id ? toRecord(r.rows[0]) : null;
+  }
+
+  async reopenForCancellation(workflowId: string, reason = "cancellation_requested_after_settling"): Promise<ContinuationRecord | null> {
+    const r = await this.client.query(
+      `select ${COLUMNS} from public.core_v2_reopen_continuation($1::uuid, $2) c`,
       [workflowId, reason],
     );
     return r.rows.length && r.rows[0].workflow_id ? toRecord(r.rows[0]) : null;

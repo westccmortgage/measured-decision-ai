@@ -58,6 +58,11 @@ export class Scheduler {
                 throw error;
         }
     }
+    /* Omitted means yes: an in-memory run, a test and every caller that does
+       not live inside a container with a clock all start whatever is ready. */
+    mayStartWork() {
+        return this.options.mayStartWork ? this.options.mayStartWork() === true : true;
+    }
     get limits() {
         return { maximumTasks: this.policy.maximumTasksPerWorkflow, maximumEdges: this.policy.maximumDependencyEdgesPerWorkflow, maximumChildrenPerParent: this.policy.maximumChildTasksPerParent, maximumDepth: this.policy.maximumFollowUpDepth };
     }
@@ -160,7 +165,7 @@ export class Scheduler {
         let workflow = await this.repo.getWorkflow(wf);
         if (!workflow)
             throw new Error("core-v2: plan() before tick()");
-        const report = { reconciled: 0, released: 0, stopped: 0, dispatched: [], completed: [], failed: [], unknown: [], cancelled: [], childrenCreated: 0, childrenReused: 0, escalations: [], workflowState: workflow.state };
+        const report = { reconciled: 0, released: 0, stopped: 0, dispatched: [], deferred: [], completed: [], failed: [], unknown: [], cancelled: [], childrenCreated: 0, childrenReused: 0, escalations: [], workflowState: workflow.state };
         /* Reconciliation first, cancelled or not: what a dead worker left
            submitted becomes unknown, what it left leased goes back to the queue. */
         report.reconciled += await this.reconcileUnknown(wf);
@@ -205,6 +210,10 @@ export class Scheduler {
         for (const task of runnable) {
             if (room <= 0)
                 break;
+            /* Nothing is leased that this process could not also finish. A lease
+               taken and abandoned is the thing that cost the canary a whole pass. */
+            if (!this.mayStartWork())
+                break;
             const roleActive = activeByRole.get(task.roleKey) ?? 0;
             if (roleActive >= this.policy.maximumConcurrentTasksPerRole)
                 continue;
@@ -229,12 +238,35 @@ export class Scheduler {
         for (const lane of lanes.values()) {
             lane.sort((a, b) => INDEPENDENCE_GROUPS.indexOf(a.independenceGroup ?? "") - INDEPENDENCE_GROUPS.indexOf(b.independenceGroup ?? "") || a.taskId.localeCompare(b.taskId));
         }
+        /* THE QUESTION ASKED AGAIN, BETWEEN ONE READING AND THE NEXT.
+           A lane runs its tasks in order: the second blind reader of a subject
+           starts only once the first has answered. If the first spent the window,
+           the second is not sent — it goes back to the queue, unrun, and the next
+           pass of this same workflow starts it. */
+        const deferred = [];
         const outcomes = (await Promise.all([...lanes.values()].map(async (lane) => {
             const results = [];
-            for (const task of lane)
+            for (const task of lane) {
+                if (!this.mayStartWork()) {
+                    deferred.push(task.taskId);
+                    continue;
+                }
                 results.push(await this.runTask(task));
+            }
             return results;
         }))).flat();
+        for (const taskId of deferred) {
+            try {
+                await this.repo.transitionTask(taskId, "leased", "queued", "no_time_left_in_this_pass");
+                report.deferred.push(taskId);
+                await this.repo.audit({ action: "core_v2.task.deferred", entityType: "workflow_task", entityId: taskId, detail: { reason: "no_time_left_in_this_pass" } });
+            }
+            catch { /* somebody else already moved it; the record is the authority */ }
+        }
+        /* A task that was never started was never dispatched. Saying otherwise
+           would tell the pass above that work happened, and the fuse that stops a
+           workflow waking forever is built out of that answer. */
+        report.dispatched = report.dispatched.filter((id) => !report.deferred.includes(id));
         for (const o of outcomes) {
             if (o.state === "completed")
                 report.completed.push(o.taskId);

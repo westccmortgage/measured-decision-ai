@@ -25,6 +25,7 @@ run() {
 run "one start, and then nobody"                                       continuation.mjs
 run "what a dead process leaves, and what the next one may do about it" resilience.mjs
 run "the lines the runner may not cross"                               boundaries.mjs
+run "the handlers a person and a watchdog actually call"               handlers.mjs
 
 echo
 echo "────────────────────────────────────────────"

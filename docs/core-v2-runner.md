@@ -15,6 +15,7 @@ each choice is in the files themselves — `workers/core-v2-runner/clock.ts`,
 | Piece | What it is | Who calls it |
 |---|---|---|
 | `supabase/migrations/060_…sql` | the durable "when does this run again" record, its doors, and the watchdog entry point | applied once |
+| `supabase/migrations/061_…sql` | one narrow door: a **settled** continuation may be reopened when the workflow itself records a cancellation and is not yet over | the cancel operation |
 | `core-v2-runner` (Edge Function) | **start**, **cancel**, **status** | a person, with a token |
 | `core-v2-runner-tick` (Edge Function) | **tick** — advance whatever is due | the watchdog, and the previous tick |
 
@@ -52,15 +53,16 @@ is step 5 below.
 
 ## Deployment
 
-### 1 · Apply the migration
+### 1 · Apply the migrations
 
 ```
 supabase db push --linked
 ```
 
-Adds `workflow_continuations`, its five doors, `core_v2_runner_settings`
-(empty) and `core_v2_tick_due_continuations`. It rewrites nothing in 058 or
-059.
+**060** adds `workflow_continuations`, its five doors, `core_v2_runner_settings`
+(empty) and `core_v2_tick_due_continuations`. **061** adds one function,
+`core_v2_reopen_continuation`, and nothing else. Neither rewrites anything in
+058 or 059, and 061 does not change 060.
 
 ### 2 · Give the functions a route to the record
 
@@ -163,12 +165,25 @@ that answer rather than returning zero as though the queue were empty.
 
 ```
 POST /core-v2-runner            Authorization: Bearer <user token>
-{"op":"start","organizationId":"<uuid>","sourceSetSeed":"<name of the source set>"}
-→ 202 {"workflowId":"…","state":"created","continuation":"due now; …"}
+{"op":"start","organizationId":"<uuid>","sourceSetSeed":"<name of the source set>",
+ "sources":1,"sheetsPerSource":1,"entriesPerTable":3}
+→ 202 {"workflowId":"…","state":"created","sourceSet":{…},"continuation":"due now; …"}
 ```
 
 The id is real and immutable the moment it returns. Nothing has run yet and
 nothing needs to have.
+
+**The workflow, its sources, its start command, its audit entry and its first
+continuation are one commit.** A process that dies part way through a start
+leaves nothing at all — never a real workflow that no watchdog will ever look
+at.
+
+**Every number is remembered and every number is checked.** `sources`,
+`sheetsPerSource` and `entriesPerTable` are optional and default to 1, 1 and 3;
+all three are written into the source names the record keeps, and a later
+runner rebuilds the material from those rather than from any default. V1 runs
+1–8 sources, 1–8 sheets each and 1–16 entries per table; anything outside that
+is a 400 naming the field and the bounds, **before** a workflow exists.
 
 ### Status
 
@@ -190,6 +205,13 @@ POST /core-v2-runner            {"op":"cancel","workflowId":"…"}
 Asks. Whichever runner next holds the workflow honours it, including one
 holding it right now. Finished work is kept. Unsent work is stopped. An attempt
 that may have been served **stays an unknown outcome** and is not relabelled.
+
+If the workflow's waking had already been settled — five idle passes, the
+continuation ceiling, or a hand-off to a person — the cancel operation reopens
+it for this one purpose, and the answer says `"wakingReopened": true`. That is
+migration 061, and it is the only thing that can move a settled row: it reads
+`cancel_requested_at` from the workflow itself and refuses a workflow that is
+already over.
 
 ---
 
@@ -243,6 +265,23 @@ select state, due_at, held_by, held_until, continuations, idle_streak,
 | `settled`, reason `material_not_provable` | the runner could not rebuild this workflow's material from its own sources | the source set is not one this deployment can read |
 | `held` with `held_until` in the past | a runner died holding it | nothing: the next claim takes it |
 | `due` with `due_at` in the past | nobody is ticking | check the watchdog (below) |
+| `due` with `due_at` a few seconds ahead | a pass is waiting for a lease somebody else holds | nothing: it comes back when that lease could no longer be alive |
+
+**Whenever a continuation settles for anything but a terminal workflow, the
+WORKFLOW is written too** — including when the SQL settled it without a runner
+ever holding it (a workflow already over, or one at the continuation ceiling).
+That case is caught by the next idle tick, which reports `reconciled` in its
+answer. It moves to `needs_attention` — or to `failed`, if it
+never got past its own start handshake — with `error_code = 'runner_stopped'`
+and the settling reason in `error_message`, and one `core_v2.workflow.runner_stopped`
+audit entry. So the two records never disagree, and a workflow that says
+`running` really is one something intends to run.
+
+```sql
+select state, error_code, error_message from public.intelligence_workflows where id = '…';
+select detail from public.audit_events
+ where entity_id = '…' and action = 'core_v2.workflow.runner_stopped';
+```
 
 ### "Nothing is ticking"
 
@@ -271,6 +310,22 @@ Reconcile it with what the provider's own record says, through
 `core_v2_reconcile_attempt`. The money stays held until then, which is correct:
 "free" and "unknown" are different facts.
 
+### "A task keeps going back to the queue"
+
+That is the clock working, not a fault. A reading is only started when there is
+room left to answer it *and* write it down inside this invocation's life; when
+there is not, the task is handed back unrun and uncharged and the next pass
+starts it. Each one leaves a trail:
+
+```sql
+select entity_id, detail from public.audit_events where action = 'core_v2.task.deferred';
+```
+
+A tick's answer reports the same number as `deferred`. Seeing it every pass
+means one reading takes longer than the window allows — raise
+`CORE_V2_RUNNER_LIFETIME_MS` if the platform gives more life, or lower the
+answer window so more readings fit. Seeing it occasionally is the design.
+
 ### "I need it to run right now"
 
 ```sql
@@ -286,10 +341,11 @@ Only brings a due time forward, never resurrects a settled workflow.
 Stated plainly so nobody discovers it in production:
 
 - **Material lives in the fixture, not in object storage.** A workflow's
-  sources name the set they belong to, and the runner rebuilds them from that
-  name and checks them hash by hash. Sources whose bytes live in object storage
-  are the next step; a source whose scheme this runner does not recognise is
-  refused by name rather than guessed at.
+  sources name the set they belong to — seed, sheets per source, entries per
+  table — and the runner rebuilds them from that name and checks them hash by
+  hash. Sources whose bytes live in object storage are the next step; a source
+  whose scheme this runner does not recognise is refused by name rather than
+  guessed at.
 - **One domain pack.** The synthetic-records pack is the one this repository
   has, and the runner runs it.
 - **No fan-out across workflows.** One invocation advances one workflow. Two

@@ -117,7 +117,7 @@ t.section("(13) no key is read before the last check before submission");
   t.check("and the step the key belongs to says so in its own words",
     /THE LAST THING BEFORE THE REQUEST IS BUILT is the key/.test(sealed));
 
-  const world = read("supabase/functions/core-v2-runner/world.ts");
+  const world = read("workers/core-v2-runner/world.ts");
   t.check("the world the runner is handed reads no key itself — it hands the environment on",
     !/apiKey\s*[:=]\s*["'`]/.test(world) && /environment/.test(world));
 }

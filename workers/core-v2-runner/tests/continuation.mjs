@@ -18,6 +18,7 @@
 import { harness } from "../../core-v2/tests/harness.mjs";
 import { withThrowawayDatabase } from "../../core-v2/tests/postgres-harness.mjs";
 import { PostgresContinuationStore } from "../continuations.ts";
+import { invocationClock } from "../clock.ts";
 import { TERMINAL_WORKFLOW_STATES } from "../../core-v2/kernel/transitions.ts";
 import { buildWorld, startWorkflow, runnerPass, runUntilSettled, slowScripts, SHORT_LIFE, LONG_LIFE } from "./world.mjs";
 
@@ -101,10 +102,21 @@ await withThrowawayDatabase(async ({ client, organizationId }) => {
      invocations would be a weaker thing to assert — what matters is that the
      first one COULD not finish and nobody was asked to run the second. */
   const first = await runnerPass({ client, name: "first-life", world, store, life: SHORT_LIFE });
+  /* Either answer is the clock and not the work: "more work remains" when the
+     window closed between passes, "no time left in this pass" when it closed
+     between two readings and the second was handed back to the queue unrun.
+     What must never appear here is a workflow handed to a person or settled. */
   t.check("the first life ran out of clock with work still to do",
-    first.stopReason === "more_work_remains", String(first.stopReason));
-  t.check("and it used the life it was given, rather than giving up early",
-    first.elapsedMs > SHORT_LIFE.lifetimeMs / 2, `${first.elapsedMs}ms of ${SHORT_LIFE.lifetimeMs}ms`);
+    first.stopReason === "more_work_remains" || first.stopReason === "no_time_left_in_this_pass",
+    String(first.stopReason));
+  /* What "used the life it was given" means is the window in which it was
+     ALLOWED to start work — not the whole lifetime, because the rest of the
+     lifetime is reserved for the last answer and for writing it down. A pass
+     that spends its whole leasing window and then stops has given up nothing. */
+  const shortClock = invocationClock(SHORT_LIFE);
+  t.check("and it used the window it was allowed to start work in, rather than giving up early",
+    first.elapsedMs >= shortClock.stopLeasingMs,
+    `${first.elapsedMs}ms of a ${shortClock.stopLeasingMs}ms leasing window in a ${SHORT_LIFE.lifetimeMs}ms life`);
   t.check("the workflow was not finished when that process died",
     TERMINAL_WORKFLOW_STATES.includes(await stateOf(client, workflowId)) === false,
     String(await stateOf(client, workflowId)));

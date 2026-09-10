@@ -54,6 +54,22 @@ export type SchedulerOptions = {
   leaseTtlMs: number;
   now: () => number;
   dispatcher?: string;
+  /* MAY THIS PROCESS START SOMETHING NEW RIGHT NOW.
+   *
+   * Asked before a task is leased, and again immediately before each task in
+   * a lane is run — because a lane runs its tasks one after another, and the
+   * second reader of a subject starts after the first one has finished. A
+   * single timer around the pass cannot see that moment; only a question
+   * asked at that moment can.
+   *
+   * Answering false does not fail anything. A task that was leased and then
+   * not started is handed back to the queue, unrun and uncharged, for the
+   * next pass of THIS workflow to pick up. Running out of a process's time is
+   * not a reading that failed and is never recorded as one.
+   *
+   * Omitted means yes, always — which is what an in-memory run and every
+   * existing test want. */
+  mayStartWork?: () => boolean;
 };
 
 export type TickReport = {
@@ -61,6 +77,9 @@ export type TickReport = {
   released: number;
   stopped: number;
   dispatched: string[];
+  /* Leased, then handed back unrun because there was no time left to answer
+     and settle inside this process's life. Not a failure, not a charge. */
+  deferred: string[];
   completed: string[];
   failed: string[];
   unknown: string[];
@@ -143,6 +162,12 @@ export class Scheduler {
     if (!wf || wf.state !== "running") return;
     try { await this.repo.transitionWorkflow(workflowId, "running", "needs_attention"); }
     catch (error) { if (!(error instanceof StaleState)) throw error; }
+  }
+
+  /* Omitted means yes: an in-memory run, a test and every caller that does
+     not live inside a container with a clock all start whatever is ready. */
+  private mayStartWork(): boolean {
+    return this.options.mayStartWork ? this.options.mayStartWork() === true : true;
   }
 
   private get limits(): AdmissionLimits {
@@ -237,7 +262,7 @@ export class Scheduler {
     const wf = this.manifest.workflowId;
     let workflow = await this.repo.getWorkflow(wf);
     if (!workflow) throw new Error("core-v2: plan() before tick()");
-    const report: TickReport = { reconciled: 0, released: 0, stopped: 0, dispatched: [], completed: [], failed: [], unknown: [], cancelled: [], childrenCreated: 0, childrenReused: 0, escalations: [], workflowState: workflow.state };
+    const report: TickReport = { reconciled: 0, released: 0, stopped: 0, dispatched: [], deferred: [], completed: [], failed: [], unknown: [], cancelled: [], childrenCreated: 0, childrenReused: 0, escalations: [], workflowState: workflow.state };
 
     /* Reconciliation first, cancelled or not: what a dead worker left
        submitted becomes unknown, what it left leased goes back to the queue. */
@@ -275,6 +300,9 @@ export class Scheduler {
     if (workflow.state === "needs_attention" && runnable.length) workflow = await this.repo.transitionWorkflow(wf, "needs_attention", "running");
     for (const task of runnable) {
       if (room <= 0) break;
+      /* Nothing is leased that this process could not also finish. A lease
+         taken and abandoned is the thing that cost the canary a whole pass. */
+      if (!this.mayStartWork()) break;
       const roleActive = activeByRole.get(task.roleKey) ?? 0;
       if (roleActive >= this.policy.maximumConcurrentTasksPerRole) continue;
       const leased = await this.repo.leaseTask(task.taskId, this.options.owner, this.options.leaseTtlMs, this.options.now());
@@ -298,11 +326,31 @@ export class Scheduler {
     for (const lane of lanes.values()) {
       lane.sort((a, b) => INDEPENDENCE_GROUPS.indexOf(a.independenceGroup ?? "") - INDEPENDENCE_GROUPS.indexOf(b.independenceGroup ?? "") || a.taskId.localeCompare(b.taskId));
     }
+    /* THE QUESTION ASKED AGAIN, BETWEEN ONE READING AND THE NEXT.
+       A lane runs its tasks in order: the second blind reader of a subject
+       starts only once the first has answered. If the first spent the window,
+       the second is not sent — it goes back to the queue, unrun, and the next
+       pass of this same workflow starts it. */
+    const deferred: string[] = [];
     const outcomes = (await Promise.all([...lanes.values()].map(async (lane) => {
       const results: Awaited<ReturnType<Scheduler["runTask"]>>[] = [];
-      for (const task of lane) results.push(await this.runTask(task));
+      for (const task of lane) {
+        if (!this.mayStartWork()) { deferred.push(task.taskId); continue; }
+        results.push(await this.runTask(task));
+      }
       return results;
     }))).flat();
+    for (const taskId of deferred) {
+      try {
+        await this.repo.transitionTask(taskId, "leased", "queued", "no_time_left_in_this_pass");
+        report.deferred.push(taskId);
+        await this.repo.audit({ action: "core_v2.task.deferred", entityType: "workflow_task", entityId: taskId, detail: { reason: "no_time_left_in_this_pass" } });
+      } catch { /* somebody else already moved it; the record is the authority */ }
+    }
+    /* A task that was never started was never dispatched. Saying otherwise
+       would tell the pass above that work happened, and the fuse that stops a
+       workflow waking forever is built out of that answer. */
+    report.dispatched = report.dispatched.filter((id) => !report.deferred.includes(id));
     for (const o of outcomes) {
       if (o.state === "completed") report.completed.push(o.taskId);
       else if (o.state === "outcome_unknown") report.unknown.push(o.taskId);

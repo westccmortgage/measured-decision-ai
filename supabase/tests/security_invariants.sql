@@ -5315,6 +5315,51 @@ select pg_temp.check('and nothing due lists it',
 select pg_temp.check('an unarmed watchdog says it is unarmed rather than reporting an empty queue',
   (public.core_v2_tick_due_continuations(5) ->> 'armed') = 'false');
 
+-- ═══════════════ 061 · a settled workflow can still be cancelled, and only that
+--
+-- Settling is absorbing, which is right, and which left one state nobody
+-- should be able to reach: a workflow that is still going, whose waking has
+-- been turned off, and whose owner then asks for it to be cancelled. 061
+-- opens exactly that case. These check that it opens NOTHING ELSE — that it
+-- reads the workflow's own cancel_requested_at rather than trusting a caller,
+-- that it will not restart a workflow that is over, and that it is the
+-- service role's door alone.
+
+select pg_temp.check('the reopening door is the service role''s, and nobody else''s',
+  (select has_function_privilege('service_role', p.oid, 'execute')
+      and not has_function_privilege('authenticated', p.oid, 'execute')
+      and not has_function_privilege('anon', p.oid, 'execute')
+     from pg_proc p join pg_namespace n on n.oid = p.pronamespace
+    where n.nspname = 'public' and p.proname = 'core_v2_reopen_continuation'));
+
+-- The workflow from the fuse test above is settled and not cancelled.
+select pg_temp.check('a settled workflow nobody has asked to cancel stays settled',
+  (select state from public.core_v2_reopen_continuation('0c0e0000-0000-0000-0000-000000000001')) = 'settled');
+
+update public.intelligence_workflows
+   set cancel_requested_at = now()
+ where id = '0c0e0000-0000-0000-0000-000000000001';
+select pg_temp.check('but once the RECORD ITSELF says a cancellation was asked for, the waking reopens',
+  (select state from public.core_v2_reopen_continuation('0c0e0000-0000-0000-0000-000000000001')) = 'due');
+select pg_temp.check('and the reopened row carries no settled reason and no held fuse',
+  (select settled_reason is null and settled_at is null and idle_streak = 0 and held_by is null
+     from public.workflow_continuations
+    where workflow_id = '0c0e0000-0000-0000-0000-000000000001'));
+select pg_temp.check('the reopened workflow is what a runner is next handed',
+  exists (select 1 from public.core_v2_due_continuations(50) w
+           where w = '0c0e0000-0000-0000-0000-000000000001'));
+
+-- And a workflow that is over is not restarted by a late cancellation.
+do $$
+declare token uuid;
+begin
+  perform public.core_v2_settle_continuation('0c0e0000-0000-0000-0000-000000000001', 'over');
+  update public.intelligence_workflows set state = 'cancelled'
+   where id = '0c0e0000-0000-0000-0000-000000000001';
+end $$;
+select pg_temp.check('a workflow that is already over is never woken by a late cancellation',
+  (select state from public.core_v2_reopen_continuation('0c0e0000-0000-0000-0000-000000000001')) = 'settled');
+
 -- ──────────────────────────────────────────────────────── V1 is where it was
 select pg_temp.check('V1 keeps every row it had — Core V2 stands beside it, not on it',
   pg_temp.v1_fingerprint() = (select fingerprint from core_v2_before));

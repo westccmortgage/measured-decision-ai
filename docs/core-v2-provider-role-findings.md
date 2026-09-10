@@ -12,6 +12,17 @@ providers were given *different jobs*. Two read records; one criticised and
 composed. Nothing here supports the sentence "provider X is best", and this
 document does not contain it.
 
+And three rules this document holds itself to throughout:
+
+- **A count of successful calls is not a ranking of models.** Every count is a
+  count of what we asked for, under which adapter and which contract version.
+- **A rule we never told a model is not that model's defect.** Where the record
+  cannot show the rule was in the contract, the answer is recorded exactly and
+  left unattributed.
+- **A technically accepted answer is not a completed assignment.** Calls, table
+  rows and segments are counted separately, and an empty envelope is counted as
+  an empty envelope.
+
 ---
 
 ## 1 · Who was asked to do what
@@ -79,6 +90,16 @@ throughout, and never cost anything.
 "Never sent" is a cancellation before submission — the engine stopping work it
 had not yet bought. It is not a failure of anything, and it cost $0.
 
+**A COUNT OF SUCCESSFUL CALLS IS NOT A RANKING OF MODELS.** Every number in
+that table is a count of *our* invocations: how many times we asked, under
+which adapter, with which schema, at which contract version, on which role.
+Anthropic has the most successes because it was given the most work and the
+most roles; Google has the fewest because it was given six attempts, four of
+which our own request builder made unanswerable. Read the rows as a record of
+what this system did, never as a score any provider earned. Nothing in this
+document ranks providers against each other, and no row here would support it
+if it tried.
+
 Two rows deserve to be read slowly:
 
 - **All three of Google's successes are in window B.** Before the schema dialect
@@ -115,7 +136,8 @@ the provider spoke.
 | Google | 1 | `material_refused` — material for a segment this assignment names did not come back | our fixture wiring |
 
 That is **15 of the 23 non-success outcomes in the whole canary** — the other
-eight being four briefing defects and four model behaviours, below. The single
+eight being four briefing defects and four answers our checker refused, below,
+which the record cannot attribute. The single
 largest cause of lost readings was arithmetic about time, not model quality:
 eight attempts were lost to the clock — five to a task lease that outlived the
 process holding it, three recorded only as an unknown provider outcome. That
@@ -137,22 +159,42 @@ convention nobody had told it:
 All four were fixed by writing the rule into the role's own `outputContract`
 rather than leaving it in the validator. None recurred afterwards.
 
-### Model-behaviour failures — the residue
+### Answers our checker refused — and what the record can and cannot say about why
 
-What is left after both classes above are removed:
+Four attempts are left after both classes above. They are recorded here
+exactly, and then *not* attributed, because the record does not contain the
+one thing attribution would need.
 
-| Provider | Count | What happened |
-|---|---:|---|
-| Anthropic | 1 | `answer_without_outcome` — the answer did not say how it ended |
-| Google | 1 | `assessment names claim A, which the packet did not present` |
-| Google | 1 | `assessment of A cites anchor …, which the envelope does not carry` |
-| Google | 1 | `decision_composer may not return assessments` — in a **stable** generation |
+| Provider | Count | What the checker said | What the answer actually contained |
+|---|---:|---|---|
+| Anthropic | 1 | `answer_without_outcome` — the answer does not say how it ended | an envelope with no outcome field |
+| Google | 1 | `assessment names claim A, which the packet did not present` | 3 assessments, **0 anchors** |
+| Google | 1 | `assessment of A cites anchor …, which the envelope does not carry` | 3 assessments, **0 anchors** |
+| Google | 1 | `decision_composer may not return assessments` (stable generation) | 3 assessments **with 3 quoted anchors**, outcome `completed` |
 
-Four attempts across the whole canary. Three of the four are Google's, and all
-three are the same shape: **the critic reached for something outside the packet
-it was handed.** Two invented a reference; one answered in the wrong role's
-vocabulary. That is a real, specific, repeated behaviour and it is the single
-most important qualitative finding about Google in this record.
+Two things follow, and the second is the more important.
+
+**The two Google reference errors are one error.** Both answers carried three
+assessments and an empty `anchors` array. They did not invent a source; they
+named anchor keys they had not also returned. The checker is right to refuse
+that, and the refusal reads as "cited something that is not here" whichever
+way round the omission happened.
+
+**None of these four can be called a model defect on this evidence.** The rule
+each answer broke — an outcome field is required; an assessment names an anchor
+you also return; a composer returns decisions and not assessments — has to have
+been *in the contract the role was handed* before a violation of it is the
+model's error rather than ours. Prompts are deliberately not retained, and the
+role contracts of that generation are not in the record either. What *is* in
+the record is that the contracts of that era were one-line phrases: the repair
+that stopped four other refusals recurring was writing the rule into the role's
+own `outputContract`, and it worked every time it was applied. The reasonable
+reading is therefore that these are the same class — **rules we enforced but had
+not stated** — and the honest label is **not yet proven either way**.
+
+The last row deserves saying plainly: the composer produced three assessments
+with three verbatim anchors, which is substantive work, and it was refused on
+which field that work arrived in.
 
 ---
 
@@ -168,18 +210,29 @@ Wire latency, `submitted_at` → `received_at`, successes only, milliseconds.
 | OpenAI | B | 4 | 11 586 | 5 890 | 12 492 | 15 470 |
 | Google | A = B | 3 | 20 763 | 16 066 | 18 853 | 27 371 |
 
-Three things the table says:
+**These rows are not comparable to each other and must not be read as speed.**
+Every provider answered a different mixture of roles, on different material,
+under a different contract version, with different output ceilings. The one
+comparison the record could support — the same role, the same segments, the
+same contract — is the blind-extraction pair, and even there the two readers
+were handed *different* role contracts at different times. Until a run holds
+role, material and contract version fixed, no statement of the form "X is N
+times faster than Y" is supported by anything here, and this document does not
+make one.
 
-1. **OpenAI is the tightest distribution in the record** — 5.9 s to 16.8 s
-   across sixteen answers, and the stable window did not move it. A budget can
-   be written around that.
+What the rows do say, each about itself:
+
+1. **OpenAI's own distribution is tight** — 5.9 s to 16.8 s across sixteen
+   answers, and the stable window did not move it. A timeout can be written
+   around its own numbers.
 2. **Anthropic got slower in the stable window, not faster.** Its median went
-   from 10.8 s to 41.7 s. This is expected and is ours: window B is where the
-   role contracts became long and specific, so the same reader is doing more
-   work per call. It is still worth stating plainly, because a 55-second answer
-   inside a 150-second process is exactly the arithmetic that broke the canary.
-3. **Google's three successes are all in the 16–27 s band**, but three points do
-   not make a distribution.
+   from 10.8 s to 41.7 s. This is ours: window B is where the role contracts
+   became long and specific, so the same reader is doing more work per call —
+   which is also why its window-B latency cannot be compared with anyone
+   else's window-B latency. It matters because a 55-second answer inside a
+   150-second process is exactly the arithmetic that broke the canary.
+3. **Google's three successes are all in the 16–27 s band**, on the critic role
+   only, and three points do not make a distribution.
 
 ---
 
@@ -191,8 +244,8 @@ columns add up to the provider's whole record.
 
 | Provider | Window | Uncached input | Cache read | Visible output | Reasoning output | Settled | Still held |
 |---|---|---:|---:|---:|---:|---:|---:|
-| Anthropic | before B | 110 170 | 0 | 21 402 | **0** | $1.085900 | $1.658880 |
-| Anthropic | B | 24 781 | 0 | 5 244 | **0** | $0.255005 | $0 |
+| Anthropic | before B | 110 170 | 0 | 21 402 | **not reported separately** | $1.085900 | $1.658880 |
+| Anthropic | B | 24 781 | 0 | 5 244 | **not reported separately** | $0.255005 | $0 |
 | OpenAI | before B | 22 581 | 9 810 | 4 472 | 4 669 | $0.277068 | $0.245760 |
 | OpenAI | B | 6 082 | 3 254 | 1 208 | 957 | $0.068930 | $0 |
 | Google | before B | 6 105 | 0 | 972 | 7 951 | $0.119286 | $0.131072 |
@@ -208,20 +261,31 @@ Hidden reasoning relative to visible output:
 
 | Provider | Reasoning ÷ visible output (whole canary) | Reasoning ÷ visible output (window B) |
 |---|---:|---:|
-| Anthropic | **0.00** — never reported a reasoning token | 0.00 |
+| Anthropic | **unknown** | **unknown** |
 | OpenAI | 0.99 | 0.79 |
 | Google | **5.42** | **4.30** |
 
-Google spent between four and five hidden tokens for every visible one. On the
-critic role — the role where the visible output is three short assessments —
-that is where its money went. Anthropic's zero is a fact about what this
-canary's adapter received and recorded, not proof that no internal reasoning
-occurred; it means no reasoning tokens were ever *reported* to us, so none could
-ever be priced.
+**Anthropic's reasoning figure is unknown, and a zero in that column would be a
+false reading of our own normaliser.** For that adapter the whole of the output
+arrives as one count, and the runtime records it under `visible_output_tokens`
+because that is the only honest place to put a number nobody has split. An
+empty `reasoning_output_tokens` field therefore means *this adapter did not
+receive a separate reasoning figure* — not that no thinking happened, and
+certainly not that any thinking was free. Whatever Anthropic's models thought
+was inside the 26 646 output tokens that were counted, and it was paid for at
+the output rate along with everything else.
+
+What the record does support: **OpenAI reported roughly one hidden token per
+visible one, and Google reported between four and five.** For Google that is
+where the money went, on a role whose visible output is three short
+assessments. For Anthropic the ratio is not a small number — it is a number the
+canary never collected, and section 11 lists collecting it as work.
 
 **Only OpenAI ever showed a cache read** (13 064 tokens across the canary).
 Neither of the other two returned a cached-input figure our normaliser could
-record, so prompt-cache economics are **not yet proven** for them here.
+record. As with reasoning, that is a fact about what our adapters received and
+recorded — whether the cause is the provider, our adapter or the shape of our
+prompts is **not yet proven**, and is the same investigation.
 
 ---
 
@@ -229,6 +293,40 @@ record, so prompt-cache economics are **not yet proven** for them here.
 
 This is the part that is actually about reading, and it is the strongest signal
 in the whole record.
+
+**First, what is being counted.** A call, a table row and a segment are three
+different units and this document keeps them apart:
+
+| Unit | What it counts | Whole canary |
+|---|---|---:|
+| model call submitted | one request that actually left for a provider | **74** |
+| answer accepted | a call whose envelope passed the checker | **50** |
+| answer that produced something | an accepted envelope carrying at least one claim, assessment, segment or decision | **31** |
+| answer that refused, with a stated reason | an accepted envelope carrying no output and at least one limitation | **18** |
+| answer that was simply empty | accepted, no output, no reason given | **1** |
+| table row read | one entry of one table, read by one reader | **43** claims |
+| segment reported | one table or note located inside a sheet by a discovery | **28** |
+
+Three of those lines need saying out loud.
+
+**A refusal with a reason is not an empty answer.** Eighteen accepted answers
+carried no claims because there was nothing legible to claim, and every one of
+them said so. That is the assignment being done correctly, and it is counted
+separately from both success and failure precisely so it cannot be quietly
+folded into either.
+
+**One accepted answer was genuinely empty.** The `decision_composer` attempt
+that "succeeded" returned `outcome: completed` with no decisions, no claims, no
+assessments, no anchors and no limitations. It was a technical success and it
+did none of the assignment. Counting it as a completed role would misdescribe
+the only decision-composition success in the record, so it is counted as a
+call, as an accepted answer, and as nothing else.
+
+**Calls, rows and segments never divide into one another.** 74 calls did not
+produce 74 units of anything; 43 rows were read by two readers over a handful
+of tables; 28 segments came from a smaller number of discoveries. Any ratio
+built across these columns would be a statement about our task graph, not about
+a provider.
 
 The fixture is deterministic in its seed, so the truth of each generation is
 computable, not opinion:
@@ -292,16 +390,20 @@ in the record.
   extraction, blind note extraction.
 - **Successful attempts:** 31 of 48 overall; 6 of 6 in the stable window.
 - **Known failures:** 6, of which 3 are our URL or tool schema, 2 are our
-  briefing, and 1 is a model behaviour (`answer_without_outcome`).
+  briefing, and 1 an answer the checker refused that the record cannot
+  attribute (`answer_without_outcome`).
 - **Unknown outcomes:** 6, all caused by our lease arithmetic. $1.658880 is
   still held against them.
 - **Latency:** median 10.8 s overall, 41.7 s under the fuller stable contract,
   max 55.6 s.
-- **Tokens:** 134 951 input, 26 646 visible output, **0 reasoning reported**,
-  no cache reads recorded.
+- **Tokens:** 134 951 input, 26 646 output — recorded as visible because this
+  adapter receives one output count and nobody has split it. **How much of that
+  was thinking is unknown**, and it was paid for either way. No cache reads
+  recorded.
 - **Settled cost:** $1.340905.
-- **Structured output:** 34 answers reached the validator; 3 were rejected
-  (≈9%), none in the stable window.
+- **Structured output:** 34 answers reached the checker; 3 were refused (≈9%),
+  none in the stable window; two of the three were rules our contracts had not
+  stated, and the third is unattributed (section 4).
 - **Evidence discipline:** 21 anchors, all verbatim, no unanchored claim.
 - **Useful qualitative behaviour:** the most explicit refusals in the record —
   it named the byte count of the unreadable material, the fact it had no
@@ -328,8 +430,8 @@ in the record.
 - **Tokens:** 28 663 uncached input, **13 064 cache reads — the only cache
   economics in the record**, 5 680 visible output, 5 626 reasoning.
 - **Settled cost:** $0.345998.
-- **Structured output:** 18 answers reached the validator; 2 were rejected
-  (≈11%), none in the stable window.
+- **Structured output:** 18 answers reached the checker; 2 were refused (≈11%),
+  none in the stable window, and both were rules we had not written down.
 - **Evidence discipline:** 22 anchors, all verbatim, no unanchored claim.
 - **Useful qualitative behaviour:** concise, correctly-scoped refusals, and it
   volunteered the right next step ("human review of the source image is
@@ -347,20 +449,28 @@ in the record.
 
 - **Roles actually performed:** evidence criticism, disagreement verification,
   decision composition.
-- **Successful attempts:** 3 of 12 overall — **all three in the stable window**:
-  two `evidence_critic`, and one `decision_composer` whose envelope was empty.
-- **Known failures:** 7. Four are ours (two schema-dialect 400s, one output
-  ceiling, one fixture wiring). Three are model behaviour: two assessments that
-  reached outside the packet, and one — in a stable generation — that answered
-  in the wrong role. Five of the seven were `evidence_critic` attempts.
+- **Successful attempts:** 3 of 12 overall — **all three in the stable window**.
+  Two were `evidence_critic` answers that did the work: three assessments each,
+  each anchored to a verbatim source row. The third was the `decision_composer`
+  envelope that was accepted and empty. So: **two substantive answers, one
+  technical one.**
+- **Known failures:** 7. Four are unambiguously ours (two schema-dialect 400s,
+  one output ceiling, one fixture wiring). Three were refused by our checker
+  and are **not attributed** — see section 4; two of them are one omission, and
+  the third contained three anchored assessments refused for arriving in the
+  wrong field. Five of the seven were `evidence_critic` attempts.
 - **Unknown outcomes:** one attempt submitted and never resolved; one prepared
   and never sent. $0.245760 still held between them.
 - **Latency:** three successes, 16.1 s / 18.9 s / 27.4 s.
 - **Tokens:** 13 358 input, 3 357 visible output, **18 199 reasoning** — 5.4
   hidden tokens per visible token.
 - **Settled cost:** $0.285388.
-- **Structured output:** the weakest measured. Of 7 answers that reached the
-  validator, 3 were rejected outright and 1 was truncated at our ceiling.
+- **Structured output:** of 7 answers that reached the checker, 3 were refused
+  and 1 was truncated at our own 4096-token ceiling. Two of the three refusals
+  are the same omission — assessments returned with an empty `anchors` array —
+  and none of the three can be attributed on this evidence (section 4). This is
+  the shortest record of the three providers, on the newest adapter, under a
+  contract we never rewrote.
 - **Evidence discipline:** its 6 assessment anchors all quote the source row
   verbatim — e.g. `E-002     beta       39        kg` — and its explanations
   name the values it confirmed. When it stayed inside the packet, its criticism
@@ -372,14 +482,24 @@ in the record.
   JSON-Schema dialect we sent (union `type` arrays are rejected as
   "Proto field is not repeating"); and 4096 output tokens is not enough for the
   critic role.
-- **Recommended primary roles:** evidence criticism, as a **secondary** with a
-  packet-bounds check in front of it.
+- **Recommended primary role:** evidence criticism — the role it holds today,
+  which it keeps. A reference check in front of the decision it feeds is a
+  sensible guard and is described below for what it is.
 - **Roles it should not receive yet:** decision composition — see below — and
   disagreement verification, which has one attempt and zero successes.
 - **Configuration required:** a proto-compatible schema translation; an output
-  ceiling of at least 16 384; and a validator that refuses out-of-packet
-  references *before* they cost anything, which is what its three real failures
-  all needed.
+  ceiling of at least 16 384; and role contracts that state, in the contract,
+  the rules our checker enforces — the same repair that stopped four other
+  refusals recurring for the two readers.
+
+**A reference check is a guard on the decision, not a refund on the call.** It
+is worth saying because the opposite is easy to assume. Checking that every
+anchor an assessment names is actually in the envelope protects what happens
+*after* generation: nothing unfounded reaches a decision. It does not recover
+the money — the call was made, the tokens were counted, the reservation was
+settled. Three of Google's twelve attempts were paid for and then refused at
+the checker. Guards belong before the request, in the contract, wherever the
+same defect can be prevented rather than caught.
 
 #### Decision composition did not happen
 
@@ -400,33 +520,39 @@ should not route it to anyone yet.
 ## 9 · The plain answers
 
 **Which AI was most reliable at structured extraction?**
-On this evidence they are indistinguishable, and both are excellent. Anthropic
-and OpenAI each read 6 of 6 stable segments correctly, each produced verbatim
-anchors for every claim, and each rejected ≈1 in 8 answers *before* the contract
-was written properly and none after. OpenAI did it in a third of the time.
-Calling a winner on 6 versus 4 clean attempts would be an invented result.
+The record does not separate them, and the counts must not be read as a
+ranking. In the stable window Anthropic read 6 of 6 segments correctly and
+OpenAI read 6 of 6 correctly; each anchored every claim verbatim; each had
+around one refusal in eight *before* the contracts were written properly and
+none after. Six and four clean attempts cannot distinguish two readers, and
+their differing totals reflect how much work we gave each one.
 
 **Which handled discovery and segmentation best?**
-Anthropic, because it is the only provider that ever tried: 15 of 20 attempts
-succeeded overall, 2 of 2 in the stable window, and its five failures were three
-of our defects, one of our briefing, and one malformed answer. For the other two
-providers, discovery is **not yet proven**.
+Anthropic is the only provider that ever tried: 15 of 20 attempts accepted,
+2 of 2 in the stable window, 28 segments reported. Its five failures were three
+of our defects, one of our briefing, and one unattributed malformed envelope.
+For OpenAI and Google, discovery is **not yet proven** — not weaker, unmeasured.
 
 **Which was strongest as an evidence critic?**
-Google is the only candidate, and its record is mixed rather than strong: two
-clean criticisms against two out-of-packet failures, with three further critic
-attempts lost to our schema, our ceiling and our fixture. When it stayed inside the packet its
-assessments were exemplary — quoted, reason-coded, value-restating. When it did
-not, it cited a claim the packet never presented. **Best available, not proven
-good.**
+Google is the only provider that has ever held the role. Its record is two
+substantive criticisms — three assessments each, every one anchored to a
+verbatim row with a reason code — against three attempts our own request
+builder, ceiling and fixture ruined, and two refused for an omission we cannot
+show we told it to avoid. That is a thin record, not a poor one, and it is the
+record of the newest adapter under the one role contract nobody rewrote.
 
 **Which consumed the most hidden reasoning relative to visible output?**
-Google, decisively — 5.4 reasoning tokens per visible token across the canary,
-4.3 in the stable window. OpenAI ran at about 1.0. Anthropic reported none at
-all, so none could be priced.
+Of the providers that report the figure, **Google**, at four to five hidden
+tokens per visible one; OpenAI reported about one to one. **Anthropic's ratio is
+unknown** — our normaliser receives one undivided output count for that adapter,
+so an empty reasoning field there means "not measured", never "none" and never
+"free".
 
 **Which role allocation should Production Runner V1 use first?**
-Section 10.
+The one it already has, unchanged: Anthropic discovers and reads first, OpenAI
+reads second and independently, Google criticises the evidence. This is a
+**working configuration, not a proven ranking**, and none of the three is being
+moved or dropped on this evidence. Section 10.
 
 **What must the next clean acceptance run measure?**
 Section 11.
@@ -435,49 +561,75 @@ Section 11.
 
 ## 10 · Routing table for Production Runner V1
 
+The allocation the canary ran under, kept as it is. Confidence describes how
+much the record proves about the assignment — never how the providers compare.
+
 | Core V2 role | Primary provider | Secondary provider | Why | Confidence |
 |---|---|---|---|---|
-| Discovery / segmentation | **Anthropic** | none yet | Only provider ever to do it; 2/2 clean, 15/20 overall, every failure traced to our route, schema or briefing | **Low–moderate** — no alternative has ever been measured |
-| Blind extraction (reader A) | **Anthropic** | OpenAI | 6/6 correct against computed truth; most explicit refusals in the record | **Moderate** — correct on every clean attempt, but only six of them |
-| Blind extraction (reader B) | **OpenAI** | Anthropic | 6/6 correct, tightest latency band (5.9–16.8 s), only provider showing cache reads | **Moderate** — same small denominator |
+| Discovery / segmentation | **Anthropic** | none assigned yet | The only provider ever given the role; 2/2 clean, 15/20 overall, 28 segments; every failure traced to our route, schema or briefing | **Low–moderate** — the role works, no alternative has been measured |
+| Blind extraction (reader A) | **Anthropic** | OpenAI | 6/6 correct against computed truth; every claim anchored verbatim; the most explicit refusals in the record | **Moderate** — correct on every clean attempt, on six of them |
+| Blind extraction (reader B) | **OpenAI** | Anthropic | 6/6 correct; every claim anchored verbatim; its own latency band is tight and its cache reads are the only ones recorded | **Moderate** — same small denominator |
 | Comparison / independence | *kernel, deterministic* | — | Every comparison in the canary was made by the kernel; the 14 disagreements are all coverage gaps, never value conflicts | **Not yet proven** for any model — the path has never seen a real disagreement |
-| Critic / evidence verification | **Google** | none yet | The only provider measured on it; verbatim anchors and clean reason codes when inside the packet | **Low** — 2 clean criticisms, 2 out-of-packet failures; needs a bounds check in front |
+| Critic / evidence verification | **Google** | none assigned yet | Two substantive criticisms with verbatim anchors and reason codes; the role stays where it is while its adapter and contract get the repair the readers already had | **Low** — thin record, most of it spent on our defects |
 | Derivation | *kernel, deterministic* | — | `category_totaliser` ran as code and cost nothing; no model was asked | **Not applicable** — deliberately not a model role |
-| Decision composition | **none — hold for a person** | — | Four attempts, one empty "success", zero decisions ever composed by a model; every real decision came from a deterministic rule or a human hold | **Not yet proven** |
+| Decision composition | **held for a person** | — | Four attempts: one accepted-and-empty, one refused on a field rule, two never resolved. No decision in the database was composed by a model | **Not yet proven** |
 
-The runner should start with exactly this table: two readers, an Anthropic
-discoverer, deterministic derivation, Google as a critic behind a packet-bounds
-check, and **no model composing decisions at all**.
+Two things this table is not. It is not a ranking: three providers held three
+different assignments and no row compares one with another. And it is not a
+verdict on Google — the critic role stays with Google, and what changes is the
+schema translation, the output ceiling and the role contract, all of which are
+ours.
 
----
+## 11 · What is not yet proven, and what the next clean run has to measure
 
-## 11 · What the next clean acceptance run has to measure
+Two statements to keep together, because leaving either one out misleads.
 
-Everything below is currently unproven, and each is unproven for a reason the
-record names.
+**Not yet proven:** that two independent readers ever genuinely disagree about
+a value, and that a model composes a decision anybody would want. Fourteen
+disagreements were recorded and every one is a coverage gap — a reading that
+never arrived — so the adjudication path has never been exercised on a real
+conflict. Four decision-composition attempts produced one accepted-and-empty
+envelope and no decisions at all.
+
+**Already a full result:** the thirty decisions that were taken. They carry
+`authority = deterministic_rule` because a machine rule decided them on
+anchored, corroborated readings, and that is the system working as designed —
+not a placeholder for a model that has not arrived. A decision taken by a rule
+on evidence is a decision.
+
+What the next clean run has to measure:
 
 1. **A real value disagreement.** Zero have ever occurred. Until two readers
-   genuinely differ, adjudication, `disagreement_verifier` and the whole
-   arbitration path are untested against anything but coverage gaps.
+   genuinely differ, adjudication and `disagreement_verifier` are untested
+   against anything but coverage gaps.
 2. **Note reading, on legible material.** Our fixture renders notes as ~170-byte
    PNGs. Fix the material, then measure — one `revision_status` claim in the
    entire canary is not a measurement.
 3. **A rate, not a sample.** Six and four clean attempts cannot support a
-   reliability figure. Enough generations to give each reader tens of clean
-   attempts per role.
-4. **Google inside its packet.** Re-run the critic with the proto-compatible
-   schema, a 16 384 output ceiling, and a bounds check, and count how often it
-   still reaches outside.
-5. **Decision composition, or its formal abandonment.** Either a model composes
+   reliability figure for anybody. Enough generations to give each reader tens
+   of clean attempts per role.
+4. **Google inside a contract it was given.** Re-run the critic with the
+   proto-compatible schema, a 16 384 output ceiling, and the rule about anchors
+   written into the role's own `outputContract` — the repair that stopped four
+   equivalent refusals for the readers. Then count what is left.
+5. **Anthropic's reasoning, separately.** The adapter records one undivided
+   output count, so the split is unknown and unpriceable. Until it is
+   collected, no statement about that provider's hidden-token cost is possible
+   in either direction.
+6. **Decision composition, or its formal abandonment.** Either a model composes
    a decision with evidence, or the role is declared deterministic-plus-human
    and the packet stops being built for it.
-6. **Latency under the fuller contracts.** Anthropic's median went from 10.8 s
-   to 41.7 s when the contracts got specific. The runner's clock is built
-   around a 60-second answer window; the next run should confirm that window is
-   right rather than assume it.
-7. **Cache economics for Anthropic and Google.** Only OpenAI ever returned a
+7. **The same role, material and contract on two providers at once.** Nothing in
+   this document compares providers, because nothing in the canary held those
+   three fixed. One generation that does would make the first honest
+   like-for-like measurement this project has.
+8. **Latency under the fuller contracts.** Anthropic's median went from 10.8 s
+   to 41.7 s when its contracts got specific. The runner's clock is built
+   around a 60-second answer window; the next run should confirm that window
+   rather than assume it.
+9. **Cache economics for Anthropic and Google.** Only OpenAI ever returned a
    cache read. Whether that is the provider, the adapter or the prompt shape is
    unknown, and it is the single largest available cost reduction.
-8. **The held money.** $2.150400 sits against 14 attempts with unknown
-   outcomes. A clean run should reconcile them against each provider's own
-   record and measure how much of an unknown outcome is genuinely unknowable.
+10. **The held money.** $2.150400 sits against 14 attempts with unknown
+    outcomes. A clean run should reconcile them against each provider's own
+    record and measure how much of an unknown outcome is genuinely unknowable.

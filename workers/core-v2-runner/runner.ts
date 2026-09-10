@@ -10,19 +10,42 @@
  *
  * WHAT ONE INVOCATION DOES.
  *
- *   1. claims ONE due continuation — one statement, under SKIP LOCKED, so a
- *      second runner that overlaps this one takes a different workflow or
- *      none at all;
+ *   1. takes ONE due continuation — either the hold its caller already has, or
+ *      one it claims itself under SKIP LOCKED, so a second runner that
+ *      overlaps this one takes a different workflow or none at all. A caller
+ *      that already chose a workflow, read its sources and built its world
+ *      hands that hold IN. The first version of this file made its caller give
+ *      the hold back and then claimed again, which meant the world belonged to
+ *      one workflow and the pass could run a different one;
  *   2. if that workflow has never been begun, finishes the start handshake
  *      058 defines: claim the command, plan, acknowledge;
  *   3. authorises spending ONLY if the workflow has no budget yet. A
  *      continuation inherits the authority its workflow was started under.
  *      Re-authorising is not a smaller mistake than over-spending; it is the
  *      same mistake with a better story;
- *   4. advances that one workflow, and only that one, until the clock says
- *      stop leasing — then waits for what is already in flight rather than
- *      abandoning it;
- *   5. says when to come back, in the record, before it returns.
+ *   4. advances that one workflow, and only that one, until the ONE absolute
+ *      deadline it was given says there is no longer room to start a reading,
+ *      wait for it and write it down — then waits for what is already in
+ *      flight rather than abandoning it;
+ *   5. says when to come back, in the record, before it returns, and — when it
+ *      is stopping for good — writes the workflow's own state to match.
+ *
+ * ONE DEADLINE, TAKEN AT THE DOOR.
+ *
+ * The deadline is absolute and it starts when the INVOCATION started, not when
+ * this function did. Connecting to the record, reading a workflow's sources,
+ * rebuilding its material and validating an operator declaration all happen
+ * before the first line here runs, and they all take time that the container
+ * is counting. A pass that started its own full budget after that work was
+ * quietly promising itself a lifetime it did not have — which is how a request
+ * gets started forty-five seconds before a process is killed, and how an
+ * attempt becomes an outcome nobody will ever know.
+ *
+ * The same deadline is then asked about before EVERY submission, including the
+ * second reader of a subject inside one scheduler tick, because a lane runs
+ * its readings one after another and a timer around the pass cannot see the
+ * moment between them. A reading with no room left is not sent: it goes back
+ * to the queue, unrun, for the next pass of THIS workflow.
  *
  * WHAT MAKES IT SAFE TO OVERLAP.
  *
@@ -54,7 +77,7 @@ import type { Queryable } from "../core-v2/postgres/wire.ts";
 import { Dispatcher, problemToken } from "../core-v2-runtime/dispatcher.ts";
 import type { EventSink, WorkflowPass } from "../core-v2-runtime/dispatcher.ts";
 import type { InvocationClock } from "./clock.ts";
-import type { ContinuationStore } from "./continuations.ts";
+import type { ContinuationHold, ContinuationStore } from "./continuations.ts";
 
 /* The states after which nothing this engine can do will move the workflow.
    The same list migration 060 settles a continuation on, kept here so a
@@ -65,6 +88,13 @@ export const RUNNER_FINISHED_STATES: readonly WorkflowState[] = ["completed", "p
 export type StopReason =
   | "workflow_reached_a_terminal_state"
   | "handed_to_a_person"
+  /* Something is leased, running or in flight and this pass is not it. Not
+     idle, not stuck, and specifically not the kind of nothing-happened that
+     should count towards the fuse. */
+  | "waiting_for_a_live_lease"
+  /* There was work to do and no room left in this process's life to do it.
+     The work is queued and the next pass starts it. */
+  | "no_time_left_in_this_pass"
   | "more_work_remains"
   | "hold_was_not_ours";
 
@@ -83,6 +113,12 @@ export type PassOutcome = {
   stopReason: StopReason | null;
   /* Whether the record still says this workflow should be continued. */
   scheduledAgain: boolean;
+  /* Tasks leased and handed straight back because there was no room to start
+     them. They are queued, unrun, uncharged, and waiting for the next pass. */
+  deferred: number;
+  /* Set when this pass stopped the workflow for good and wrote its state to
+     say so: the reason, and what the workflow now says. */
+  finalStop: { reason: string; workflowState: WorkflowState | null } | null;
   ticks: number;
   passes: number;
   elapsedMs: number;
@@ -109,6 +145,22 @@ export type RunnerOptions = {
   name: string;
   clock: InvocationClock;
   store: ContinuationStore;
+  /* THE WORKFLOW THIS PASS IS FOR, ALREADY CHOSEN.
+     A caller that had to choose a workflow in order to build its world — read
+     its sources, rebuild its material, find its organisation — passes the hold
+     it is holding. Omitted, this function claims one itself, which is what a
+     portable runner with a world that serves any workflow wants. What it never
+     does is take one hold, give it back, and claim another. */
+  hold?: ContinuationHold;
+  /* WHEN THIS INVOCATION MUST HAVE RETURNED, as an absolute time on the same
+     scale as `now()`. Given by whoever started counting first — the request
+     handler, before it connected to anything. Omitted, the pass takes the
+     clock's own deadline from the moment it starts, which is right only when
+     nothing happened before it. */
+  deadlineAt?: number;
+  /* When the invocation began, for elapsed time in the record. Defaults to
+     the moment this function starts. */
+  startedAt?: number;
   connect: () => Promise<Queryable & { end?: () => Promise<void> }>;
   /* Closing belongs to whoever opened it. A runner handed a long-lived
      connection that closed it on the way out would take the caller's next
@@ -157,7 +209,16 @@ export async function runOnePass(options: RunnerOptions): Promise<PassOutcome> {
   const setTimer = options.setTimer ?? ((fn: () => void, ms: number) => setTimeout(fn, ms));
   const clearTimer = options.clearTimer ?? ((handle: unknown) => clearTimeout(handle as ReturnType<typeof setTimeout>));
   const clock = options.clock;
-  const startedAt = now();
+  const enteredAt = now();
+  const startedAt = options.startedAt ?? enteredAt;
+  /* ONE ABSOLUTE DEADLINE, AND EVERYTHING ELSE DERIVED FROM IT.
+     Given by the caller when the caller started counting first. What matters
+     is that preparation SHRINKS the working window rather than resetting it:
+     if connecting and building the world took forty seconds, forty seconds
+     are gone, and the last moment at which a reading may be started moves
+     back by forty seconds with them. */
+  const deadlineAt = options.deadlineAt ?? (enteredAt + clock.deadlineMs);
+  const stopLeasingAt = deadlineAt - clock.answerWithinMs - clock.settlementRoomMs;
   const problems: string[] = [];
   /* The dispatcher calls its sink unconditionally, so a runner started
      without one hands it a no-op rather than an undefined. */
@@ -168,14 +229,50 @@ export async function runOnePass(options: RunnerOptions): Promise<PassOutcome> {
 
   const idle = (): PassOutcome => ({
     workflowId: null, claimed: false, continuations: 0, state: null, moved: false,
-    stopReason: null, scheduledAgain: false, ticks: 0, passes: 0,
+    stopReason: null, scheduledAgain: false, deferred: 0, finalStop: null, ticks: 0, passes: 0,
     elapsedMs: now() - startedAt, problems,
   });
 
-  /* ── the hold ───────────────────────────────────────────────────────── */
-  const hold = await options.store.claim(options.name, clock.runnerHoldMs);
+  /* ── the hold: the caller's, or one of our own ──────────────────────── */
+  const hold = options.hold ?? await options.store.claim(options.name, clock.runnerHoldMs);
   if (!hold) { say("runner.nothing_due"); return idle(); }
-  say("runner.holding", { workflow: hold.workflowId, continuation: hold.continuations });
+  say("runner.holding", {
+    workflow: hold.workflowId, continuation: hold.continuations,
+    hold: options.hold ? "given" : "claimed",
+    /* What is actually left, after everything that happened before this. */
+    usable_ms: Math.max(0, deadlineAt - enteredAt),
+    lease_until_ms: Math.max(0, stopLeasingAt - enteredAt),
+  });
+
+  /* A pass with no room to start anything is not a failure and must not be
+     recorded as one. It gives the hold straight back, unchanged, and says so. */
+  if (stopLeasingAt <= now()) {
+    say("runner.no_room", { workflow: hold.workflowId });
+    let scheduled = false;
+    try {
+      const back = await options.store.release({
+        workflowId: hold.workflowId, holdToken: hold.holdToken,
+        /* NOT `moved`, and not due immediately.
+           A pass with no room to start anything moved nothing, and saying
+           otherwise would reset the record's backoff and let a chain knock
+           straight back into the same wall — a hot loop bounded only by the
+           continuation ceiling. Letting the backoff apply means the next
+           attempt is seconds later, not microseconds, and if a deployment
+           can NEVER start anything the idle fuse settles it after five and
+           says why. An operator whose runner has no usable life should be
+           told that, and `last_error` is where it is written. */
+        moved: false, error: "no_time_left_in_this_pass",
+      });
+      scheduled = back !== null && back.state !== "settled";
+    } catch (error) { problems.push(problemToken(error)); }
+    /* Nothing was connected, so there is nothing to give back. */
+    return {
+      workflowId: hold.workflowId, claimed: true, continuations: hold.continuations,
+      state: null, moved: false, stopReason: "no_time_left_in_this_pass",
+      scheduledAgain: scheduled, deferred: 0, finalStop: null, ticks: 0, passes: 0,
+      elapsedMs: now() - startedAt, problems,
+    };
+  }
 
   const client = await options.connect();
   let moved = false;
@@ -183,12 +280,18 @@ export async function runOnePass(options: RunnerOptions): Promise<PassOutcome> {
   let passes = 0;
   let state: WorkflowState | null = null;
   let stopReason: StopReason = "more_work_remains";
+  let deferred = 0;
+  let last: WorkflowPass | null = null;
+  let finalStop: PassOutcome["finalStop"] = null;
   let dispatcher: Dispatcher | null = null;
   const winding = new AbortController();
   let stopLeasing: unknown = null;
+  /* Held outside the try because the final state of the workflow is written
+     after it, and a pass that failed still has to say what it left behind. */
+  let repo: OrchestrationRepository | null = null;
 
   try {
-    const repo = options.world.repository(client);
+    repo = options.world.repository(client);
 
     /* ── the start handshake, once and only once ──────────────────────── */
     const before = await repo.getWorkflow(hold.workflowId);
@@ -229,6 +332,11 @@ export async function runOnePass(options: RunnerOptions): Promise<PassOutcome> {
       routing: options.world.routing,
       policy: policyForClock(clock, options.policy, options.concurrentAttempts),
       leaseTtlMs: clock.taskLeaseMs,
+      /* ASKED BEFORE EVERY LEASE AND BEFORE EVERY SUBMISSION, including the
+         second reading of a subject inside one tick. This is the whole of the
+         "do not start what you cannot finish" rule, and it is one expression
+         because it is one rule. */
+      mayStartWork: () => now() < stopLeasingAt && !winding.signal.aborted,
       /* One workflow gets this invocation. The runner already chose which. */
       workflowsPerPass: 1,
       events: emit,
@@ -259,24 +367,33 @@ export async function runOnePass(options: RunnerOptions): Promise<PassOutcome> {
       if (cancelled) state = cancelled.state;
     }
 
-    /* ── advancing, under the clock ───────────────────────────────────── */
-    stopLeasing = setTimer(() => winding.abort(), clock.stopLeasingMs);
-    const leaseUntil = startedAt + clock.stopLeasingMs;
+    /* ── advancing, under the one deadline ────────────────────────────── */
+    stopLeasing = setTimer(() => winding.abort(), Math.max(0, stopLeasingAt - now()));
 
-    while (now() < leaseUntil && !winding.signal.aborted && !isFinished(state)) {
+    while (now() < stopLeasingAt && !winding.signal.aborted && !isFinished(state)) {
       const pass: WorkflowPass | null = await dispatcher.advance(hold.workflowId);
       passes += 1;
       if (!pass) { problems.push("workflow_not_advanceable"); break; }
       ticks += pass.ticks;
       state = pass.state;
+      last = pass;
+      deferred += pass.deferred;
       if (pass.worked) moved = true;
 
       if (isFinished(pass.state)) { stopReason = "workflow_reached_a_terminal_state"; break; }
+
+      /* Work this pass leased and handed back for want of time. There is more
+         to do and the clock is why it is not being done, which is a different
+         answer from every other one this loop can give. */
+      if (pass.deferred > 0 && !pass.worked) { stopReason = "no_time_left_in_this_pass"; break; }
 
       /* Nothing runnable, nothing running, nothing to reconcile and nothing
          this process is still waiting on. The engine has done what it can and
          the workflow is somebody's to look at. */
       if (pass.quiet && !machineCanStillAct(pass)) { stopReason = "handed_to_a_person"; break; }
+    }
+    if (stopReason === "more_work_remains" && now() >= stopLeasingAt && deferred > 0) {
+      stopReason = "no_time_left_in_this_pass";
     }
 
     /* Waits for what is already in flight rather than dropping it: an attempt
@@ -296,22 +413,53 @@ export async function runOnePass(options: RunnerOptions): Promise<PassOutcome> {
     if (dispatcher) { try { await dispatcher.stop(); } catch { /* already going */ } }
   }
 
+  /* ── WAITING IS NOT BEING STUCK ─────────────────────────────────────
+     A pass that moved nothing because something else holds a live lease —
+     another runner, or an attempt this process is still waiting on — has not
+     failed to advance the workflow. It has correctly declined to interfere
+     with work in progress. Counting that towards the "five passes moved
+     nothing" fuse would settle a perfectly healthy workflow because a sibling
+     was busy, so it does not count: the pass reports movement and comes back
+     when the lease it is waiting on could no longer be alive.
+
+     This cannot wait forever. A lease either finishes or expires, and an
+     expired lease is reclaimed by the very next tick — which IS movement. The
+     hard ceiling on continuations in migration 060 remains the backstop
+     underneath all of it. */
+  const waiting = stopReason === "more_work_remains" && !moved && last !== null &&
+    (last.remaining.busy > 0 || last.remaining.inFlight > 0);
+  if (waiting) stopReason = "waiting_for_a_live_lease";
+
   /* ── saying when to come back, before returning ───────────────────── */
   let scheduledAgain = false;
   try {
     if (stopReason === "handed_to_a_person" && !isFinished(state)) {
+      /* THE WORKFLOW IS TOLD, NOT ONLY THE CONTINUATION.
+         Settling the continuation alone left a workflow that still said
+         `running` with nothing that would ever run it — the exact state
+         nobody should be able to reach. The workflow's own state is written
+         first, through the transitions 058 already defines, so that a person
+         reading the workflow sees the same fact as a person reading the
+         continuation. */
+      finalStop = await recordFinalStop(repo, hold.workflowId, "handed_to_a_person", state);
       await options.store.settle(hold.workflowId, "handed_to_a_person");
       /* The hold is released by settling; nothing schedules this again. */
-      say("runner.handed_to_a_person", { workflow: hold.workflowId, state });
+      say("runner.handed_to_a_person", { workflow: hold.workflowId, state: finalStop?.workflowState ?? state });
+      if (finalStop) state = finalStop.workflowState;
     } else {
       const released = await options.store.release({
         workflowId: hold.workflowId,
         holdToken: hold.holdToken,
-        moved,
-        /* A pass that moved something comes straight back: there is more to
-           do and the clock, not the work, is why it stopped. A pass that
-           moved nothing lets the record's own backoff decide. */
-        nextDueAt: moved ? new Date(now()) : null,
+        /* Movement, deferral and waiting all mean the same thing to the fuse:
+           this pass is not evidence that the workflow cannot be advanced. */
+        moved: moved || deferred > 0 || waiting,
+        /* A pass that moved something, or left queued work behind, comes
+           straight back: the clock, not the work, is why it stopped. A pass
+           waiting on somebody else's lease comes back when that lease can no
+           longer be alive. A pass that moved nothing lets the record's own
+           backoff decide. */
+        nextDueAt: waiting ? new Date(now() + clock.taskLeaseMs)
+          : (moved || deferred > 0) ? new Date(now()) : null,
         error: problems.length > 0 ? problems[0] : null,
       });
       if (released === null) {
@@ -319,11 +467,22 @@ export async function runOnePass(options: RunnerOptions): Promise<PassOutcome> {
         say("runner.hold_expired", { workflow: hold.workflowId });
       } else {
         scheduledAgain = released.state !== "settled";
+        /* THE SQL'S OWN FUSES ALSO END A WORKFLOW, AND THE WORKFLOW IS TOLD.
+           core_v2_release_continuation settles the row itself when the idle
+           streak or the continuation ceiling is reached. Before this, that
+           left the same orphan: a settled continuation and a workflow still
+           claiming to be running. The reason the SQL gave is carried straight
+           through to the workflow's own error code. */
+        if (released.state === "settled" && released.settledReason && !isFinished(state)) {
+          finalStop = await recordFinalStop(repo, hold.workflowId, released.settledReason, state);
+          if (finalStop) state = finalStop.workflowState;
+        }
         say("runner.released", {
-          workflow: hold.workflowId, state, moved,
+          workflow: hold.workflowId, state, moved, deferred,
           continuation_state: released.state,
           idle_streak: released.idleStreak,
           settled: released.settledReason,
+          final_stop: finalStop ? finalStop.reason : null,
         });
       }
     }
@@ -341,9 +500,81 @@ export async function runOnePass(options: RunnerOptions): Promise<PassOutcome> {
     moved,
     stopReason,
     scheduledAgain,
+    deferred,
+    finalStop,
     ticks,
     passes,
     elapsedMs: now() - startedAt,
     problems,
   };
+}
+
+/* ─────────────────────────────────────────── the workflow is told, too
+ *
+ * When a pass stops a workflow for good — a person is needed, five passes
+ * moved nothing, the continuation ceiling was reached — the continuation is
+ * settled, and settling is absorbing. If the workflow itself still said
+ * `running`, the two records would disagree forever: `status` would report a
+ * running analysis, and nothing anywhere would ever run it.
+ *
+ * So the workflow is moved too, using only the transitions migration 058
+ * already allows:
+ *
+ *     planning · running · ready_for_decision · deciding  →  needs_attention
+ *     queued                                              →  failed
+ *     created                                             →  queued → failed
+ *
+ * `needs_attention` is not terminal, and that is deliberate: a person can act
+ * on it, and a cancellation can still reach it. `failed` is used only where
+ * `needs_attention` is not a legal destination — a workflow that never got
+ * past its own start handshake did not need attention, it did not begin.
+ *
+ * Anything already terminal is left exactly as it is, and a workflow already
+ * at `needs_attention` is not moved to itself; both simply record the reason.
+ */
+export async function recordFinalStop(
+  repo: OrchestrationRepository | null,
+  workflowId: string,
+  reason: string,
+  fallbackState: WorkflowState | null,
+): Promise<{ reason: string; workflowState: WorkflowState | null }> {
+  if (!repo) return { reason, workflowState: fallbackState };
+  try {
+    const workflow = await repo.getWorkflow(workflowId);
+    if (!workflow) return { reason, workflowState: fallbackState };
+    if (isFinished(workflow.state)) return { reason, workflowState: workflow.state };
+
+    const patch = { errorCode: "runner_stopped", errorMessage: reason };
+    const note = async (state: WorkflowState) => {
+      await repo.audit({
+        action: "core_v2.workflow.runner_stopped", entityType: "intelligence_workflow", entityId: workflowId,
+        detail: { reason, from: workflow.state, to: state },
+      });
+    };
+
+    if (workflow.state === "needs_attention") { await note("needs_attention"); return { reason, workflowState: "needs_attention" }; }
+    if (["planning", "running", "ready_for_decision", "deciding"].includes(workflow.state)) {
+      const moved = await repo.transitionWorkflow(workflowId, workflow.state, "needs_attention", patch);
+      await note(moved.state);
+      return { reason, workflowState: moved.state };
+    }
+    if (workflow.state === "queued") {
+      const moved = await repo.transitionWorkflow(workflowId, "queued", "failed", patch);
+      await note(moved.state);
+      return { reason, workflowState: moved.state };
+    }
+    if (workflow.state === "created") {
+      /* It never got through its own start handshake. Both moves are legal
+         and the end state is the honest one: it did not begin. */
+      await repo.transitionWorkflow(workflowId, "created", "queued");
+      const moved = await repo.transitionWorkflow(workflowId, "queued", "failed", patch);
+      await note(moved.state);
+      return { reason, workflowState: moved.state };
+    }
+    return { reason, workflowState: workflow.state };
+  } catch {
+    /* Somebody else moved it first. The record is the authority and it has
+       already been written by whoever won. */
+    return { reason, workflowState: fallbackState };
+  }
 }
