@@ -130,13 +130,24 @@ platform, not a redeploy: the code is unchanged.
 The chain in step 4e is an optimisation. The watchdog is the authority, and
 without it a lost invocation strands a workflow until somebody notices.
 
+**The secret is the watchdog's own, and nobody needs to hold a copy.** 060
+stored only the NAME of a Vault secret on purpose, and 065 finished the other
+half: the tick door recognises that secret by ASKING THE RECORD — which it is
+already connected to — rather than by comparing it against a variable somebody
+had to set twice. So generate the value inside the database and never look at
+it. It cannot be pasted into the wrong place if it never leaves.
+
 ```sql
--- the secret lives in Vault; the settings table holds only its NAME
-select vault.create_secret('<the same value as CORE_V2_RUNNER_SECRET>', 'core_v2_runner_secret');
+-- the value is made in the database and never leaves it; the settings table
+-- holds only its NAME
+select vault.create_secret(
+  encode(extensions.gen_random_bytes(32), 'hex'),
+  'core_v2_runner_secret',
+  'The value the Core V2 watchdog knocks with.');
 
 insert into public.core_v2_runner_settings (id, armed, endpoint, secret_name)
 values (true, true,
-        'https://<project-ref>.functions.supabase.co/core-v2-runner-tick',
+        'https://<project-ref>.supabase.co/functions/v1/core-v2-runner-tick',
         'core_v2_runner_secret')
 on conflict (id) do update
    set armed = true, endpoint = excluded.endpoint, secret_name = excluded.secret_name;
@@ -156,6 +167,22 @@ select public.core_v2_tick_due_continuations(10);
 
 An unarmed watchdog, a missing `pg_net` and an unreadable secret each say so in
 that answer rather than returning zero as though the queue were empty.
+
+And check that the door on the other side recognised the knock, which is a
+different question from whether one was sent:
+
+```sql
+select public.core_v2_runner_secret_matches(
+  (select decrypted_secret from vault.decrypted_secrets where name = 'core_v2_runner_secret'));
+-- t
+```
+
+The function answers true or false and never returns the value. In the
+function log a knock the door recognised this way appears as
+`{"event":"auth.by_record"}`.
+
+**Armed where.** The test branch of this project — `viuqggxrahckzbrnecoo` — is
+armed and running this cron job every minute. Production is not.
 
 ---
 
