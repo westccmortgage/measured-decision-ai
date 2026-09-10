@@ -86,3 +86,11 @@
   to = "https://measureddecision.ai/:splat"
   status = 301
   force = true
+
+# The experiment workspace is never served. Netlify publishes the repository
+# root, so without this rule a merged experiments/ folder would be public.
+[[redirects]]
+  from = "/experiments/*"
+  to = "/404.html"
+  status = 404
+  force = true

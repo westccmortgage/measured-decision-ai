@@ -1,0 +1,4 @@
+source/
+kit/out/
+results/*
+!results/scoring-template.csv
