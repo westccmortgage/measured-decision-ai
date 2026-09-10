@@ -305,8 +305,18 @@ async function sectionsOf(client, workflowId) {
   for (const row of decisions) {
     const key = String(row.subject_key ?? "");
     if (!key) continue;
-    const owner = subjects.has(key) ? key : placeOf(key);
-    if (subjects.has(owner)) subjects.get(owner).decisions.push({ type: String(row.decision_type), status: String(row.status) });
+    /* THE SAME RULE, AT THE THIRD DOOR A SUBJECT CAN COME IN BY. The ingest's
+       statement about a file's bytes is filtered out of the tasks and out of
+       the claims, and it walks in here as a DECISION. This helper used to
+       drop such a decision on the floor — it only ever attached to a slot
+       that already existed — and so it agreed with itself while the shipping
+       door put `source:1` under Confirmed. What follows is the door's own
+       shape, fallback included, so the two cannot drift apart again. */
+    if (key.startsWith("source:")) continue;
+    const owner = subjects.has(key)
+      ? key
+      : [...subjects.keys()].filter((x) => key.startsWith(`${x}/`)).sort((a, b) => b.length - a.length)[0] ?? key;
+    slot(owner).decisions.push({ type: String(row.decision_type), status: String(row.status) });
   }
   const placed = new Map();
   for (const [key, shape] of subjects) placed.set(key, sectionFor(shape));
@@ -607,8 +617,22 @@ await withThrowawayDatabase(async ({ client, organizationId }) => {
       `select coalesce(error_message, '') as said from public.agent_attempts
         where workflow_id = $1 and error_message is not null limit 1`, [fifth.workflowId])).rows[0];
     t.check("and it names the authorization that was missing, where an operator reads it",
-      Boolean(said) && /CORE_V2_ALLOW_PAID_CALLS|authorization/.test(String(said.said)),
+      Boolean(said) && /CORE_V2_ALLOW_PAID_CALLS|authorization|provider-network/.test(String(said.said)),
       String(said?.said ?? "nothing was written down").slice(0, 160));
+
+    /* AND THE OWNER'S SCREEN DOES NOT OVERSTATE IT. Not one word was read
+       about these drawings, so Confirmed has to be empty. The only decision
+       this run produced is the ingest's — the bytes are the bytes the
+       manifest named — and a bookkeeping fact about a file is not a finding
+       about anybody's plans. The shipping door put it under Confirmed. */
+    const dormantScreen = await sectionsOf(client, fifth.workflowId);
+    const dormantSections = [...dormantScreen.placed.entries()];
+    t.check("CONFIRMED IS EMPTY — nothing was read, so nothing is confirmed",
+      dormantSections.every(([, section]) => section !== "confirmed"),
+      dormantSections.map(([k, v]) => `${k}=${v}`).join(" · ") || "no places at all");
+    t.check("and no card is about a file's own bytes",
+      dormantSections.every(([key]) => !key.startsWith("source:")),
+      dormantSections.map(([k]) => k).join(" · "));
   }
 
   t.section("nothing left this process");

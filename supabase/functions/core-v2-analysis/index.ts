@@ -733,6 +733,17 @@ async function results(db: EdgeDatabase, caller: string, body: Body): Promise<Re
   }
   for (const d of decisions) {
     const key = String(d.subject_key ?? "");
+    /* THE SAME RULE THE TASKS AND THE CLAIMS ARE HELD TO, AND IT HAS TO BE
+       REPEATED HERE BECAUSE A DECISION ARRIVES BY A DIFFERENT DOOR.
+       `source:1` is the ingest saying the bytes are the bytes the manifest
+       named. It is true, it is necessary, and it is not a finding about
+       anybody's plans. Filtered out of the tasks and out of the claims, it
+       still walked in as a DECISION — and the fallback below made it a place
+       of its own, so the first thing an owner saw under Confirmed was a
+       bookkeeping fact about a file rather than nothing. Confirmed showing
+       "1" when nothing about the drawings was confirmed is the exact
+       overstatement the three sections exist to prevent. */
+    if (key.startsWith("source:")) continue;
     /* A decision names the subject it is about, and the kernel may qualify
        that name — `moment/2/1/corroborated` is a decision about the claim on
        `moment/2/1`. Matching on the prefix is how a decision reaches the place
