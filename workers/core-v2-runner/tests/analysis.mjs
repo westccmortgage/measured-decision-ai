@@ -495,6 +495,19 @@ await withThrowawayDatabase(async ({ client, organizationId }) => {
     moments.length === 5 && moments.every(([, where]) => where === "needsCheck"),
     moments.map(([key, where]) => `${key}=${where}`).join(" "));
 
+  /* THE COMPOSER IS NOT LOAD-BEARING.
+     A model that writes the decision paragraph is running in this workflow.
+     Whether it earns its place is a question this repository has not settled,
+     so the result must not depend on it: take every decision away and each
+     place lands in the same section it landed in with them. */
+  const withoutDecisions = [...subjects.entries()]
+    .map(([key, shape]) => [key, sectionFor({ ...shape, decisions: [] })]);
+  const moved = placed.filter(([key, where], i) => withoutDecisions[i][1] !== where);
+  t.check("taking the composer's decisions away moves nothing — the result does not rest on it",
+    moved.length === 0, moved.map(([key, where]) => `${key} was ${where}`).join(" · "));
+  t.check("and there were decisions to take away, so that proves something",
+    decided.rows.length > 0, `${decided.rows.length} decisions`);
+
   /* And the two cases this run did not produce, put to the rule directly. */
   const two = (a, b) => ({
     readings: [

@@ -88,6 +88,25 @@ both from the record, never from a request and never from an ambient variable.
 No press, no spending; and nothing spends past the amount authorised. One
 analysis may be authorised at most $25.
 
+## Recovering the instruction a reader was given
+
+Every attempt records the role it ran under and the version of that role
+(`agent_attempts.role_key`, `.role_version`), and the fingerprint of the packet
+it was actually sent (`.packet_fingerprint`). The task it belongs to records the
+contract version (`workflow_tasks.contract_version`), and the workflow records
+which pack wrote the instruction and at which version (`intelligence_workflows
+.domain_pack`, `.domain_pack_version`). Those five together name one instruction
+exactly, and the pack's own source is where its words are — written out in full
+in `workers/core-v2/domains/source-documents/pack.ts`, because a rule a reader
+is judged by belongs in the instruction the reader is handed.
+
+## The composer is not load-bearing
+
+A model that writes the decision paragraph runs in the workflow. Whether it
+earns its place is a question this repository has not settled, so the result
+does not rest on it: the acceptance test takes every decision away and checks
+that each place lands in exactly the section it landed in with them.
+
 ## Keys
 
 No provider key is ever sent to a browser. The page holds the signed-in
