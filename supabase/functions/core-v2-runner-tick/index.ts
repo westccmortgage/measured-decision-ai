@@ -41,7 +41,7 @@ import { tickOnce } from "../../../workers/core-v2-runner/tick.ts";
 import { denoTransport } from "../core-v2-runner/world.ts";
 import bundledDeclaration from "../../../workers/core-v2-canary/registry.canary.json" with { type: "json" };
 import { readStoredObject } from "../_shared/core-v2/storage.ts";
-import { line } from "../core-v2-runner/log.ts";
+import { asToken, line } from "../core-v2-runner/log.ts";
 
 const ROUTE_PREFIX = "CORE_V2_RUNNER";
 const FUNCTION = "core-v2-runner-tick";
@@ -219,8 +219,8 @@ Deno.serve(async (request: Request): Promise<Response> => {
     console.error(line({
       fn: FUNCTION, event: "unhandled",
       problem: problem?.name ?? "unknown",
-      said: String(problem?.message ?? "").slice(0, 400),
-      where: String(problem?.stack ?? "").split("\n").slice(1, 4).join(" | ").slice(0, 400),
+      said: asToken(problem?.message),
+      where: asToken(String(problem?.stack ?? "").split("\n")[1] ?? ""),
     }));
     return json(500, { refused: "the tick did not complete" });
   } finally {
