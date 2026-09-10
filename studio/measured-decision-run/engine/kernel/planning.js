@@ -68,10 +68,24 @@ export function specsToTasks(specs, workflowId, lookup, registry, policy, parent
             continue;
         }
         /* One assignment carrying the whole set is the shape of request the
-           kernel exists to replace. */
-        const sourcesNamed = new Set(spec.sources.map((s) => s.sourceId ?? lookup.segments.get(s.segmentId)?.sourceId));
-        if (allSourceIds.size > 1 && sourcesNamed.size >= allSourceIds.size && spec.phase !== "compose") {
-            refusals.push(`${spec.key}: one assignment over every source of the workflow`);
+           kernel exists to replace — and what makes it that shape is naming WHOLE
+           SOURCES, not touching more than one of them.
+         *
+         * A comparison is the case that proves the difference. "This part of that
+         * source against that part of the other one" names two sources and is two
+         * bounded pieces; refusing it because the workflow happens to hold exactly
+         * two sources would make comparison impossible in precisely the
+         * arrangement where it is most obviously right. "That whole source and
+         * that whole other one" names the same two sources and is the request this
+         * engine exists to refuse.
+         *
+         * So the count is of refs that name a source outright. A ref that names a
+         * segment is already bounded by what a segment is, and how many of those
+         * one assignment may carry is the role's `maximumSources` and the policy's
+         * `maximumPacketSources`, both checked directly above. */
+        const wholeSourcesNamed = new Set(spec.sources.filter((s) => !s.segmentId && s.sourceId).map((s) => s.sourceId));
+        if (allSourceIds.size > 1 && wholeSourcesNamed.size >= allSourceIds.size && spec.phase !== "compose") {
+            refusals.push(`${spec.key}: one assignment over every source of the workflow, whole`);
             continue;
         }
         if (spec.independenceGroup && !role.requiresIndependentReading) {

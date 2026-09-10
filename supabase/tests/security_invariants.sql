@@ -5519,6 +5519,24 @@ end $$;
 select pg_temp.check('a spend authority without a press, or a press without an amount, is not a row that can exist',
   exists (select 1 from pg_constraint where conname = 'analysis_runs_paid_gate_is_whole'));
 
+-- ═════════════════════════════════════════════ 064 · what gets compared with what
+
+select pg_temp.check('an analysis carries the owner''s own answer to what should be compared',
+  exists (select 1 from information_schema.columns
+           where table_schema = 'public' and table_name = 'analysis_runs' and column_name = 'pairing'));
+
+do $$
+declare moved boolean := false;
+begin
+  begin
+    update public.analysis_runs set pairing = '{"pagePairs": []}'::jsonb
+     where id = '0d0a0000-0000-0000-0000-000000000001';
+    moved := true;
+  exception when others then moved := false;
+  end;
+  perform pg_temp.check('and once it has been run, what it compares cannot be changed either', not moved);
+end $$;
+
 
 -- ──────────────────────────────────────────────────────── V1 is where it was
 select pg_temp.check('V1 keeps every row it had — Core V2 stands beside it, not on it',

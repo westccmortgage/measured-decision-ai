@@ -29,6 +29,7 @@ run "the handlers a person and a watchdog actually call"               handlers.
 # Real files, a real browser and a real cluster. It needs Chromium, which this
 # repository does not vendor; see studio/tests/analysis-browser.mjs.
 run "an owner's own files, all the way through"                        analysis.mjs
+run "two things, compared"                                             comparison.mjs
 
 printf "\n\033[1m%s\033[0m\n" "── the three doors, type-checked against what they import"
 if bash ./typecheck-doors.sh; then :; else fail=1; fi

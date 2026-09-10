@@ -372,6 +372,28 @@ export function answerFromRequest(question: AgentQuestion): Envelope {
         }
         anchors.push({ anchorKey: key, sourceKind: at.sourceKind, sourceId: at.sourceId, segmentId: at.segmentId, locator: at.locator, quotedText: at.quotedText });
         const entryId = claim.subjectKey.replace(/^entry\//, "");
+
+        /* A COMPARISON IS RE-DONE, NOT SPOT-CHECKED.
+           When the claim names two places, checking it means opening both and
+           answering the same question again — with the same code the reader
+           used, so a difference is a difference in the material rather than in
+           two people's arithmetic. Looking at one side would let a critic
+           "support" a comparison it never made. */
+        const places = new Set(claim.anchors.map((a) => a.segmentId).filter(Boolean));
+        const claimSides = sidesOf(assignment, material);
+        if (places.size >= 2 && claimSides.length >= 2) {
+          const again = compareSides(claimSides[0], claimSides[1]);
+          const said = String(claim.value.text ?? "").trim().toLowerCase();
+          assessments.push({
+            claimRef: claim.ref,
+            ...(same(again.answer, said)
+              ? { assessment: "supports", reasonCode: "matches_source", explanation: `reading both places again gives ${again.answer}: ${again.said[0]} / ${again.said[1]}`.slice(0, 300) }
+              : { assessment: "contradicts", reasonCode: "value_differs", explanation: `reading both places again gives ${again.answer}, not ${said}`.slice(0, 300), proposedValue: { known: true, quantity: null, text: again.answer }, proposedUnit: null }),
+            anchorKeys: [key],
+          });
+          continue;
+        }
+
         const verdict = readVerdict(claim, entryId, shown.text, questionIn(prompt.text));
         assessments.push({ claimRef: claim.ref, ...verdict, anchorKeys: [key] });
       }
@@ -419,10 +441,16 @@ export function answerFromRequest(question: AgentQuestion): Envelope {
 
       const written = shown.find((m) => m.text.trim().length > 0);
       const seen = shown.find((m) => m.picture !== null);
-      const place = assignment.sources.find((s) => {
-        const found = forSegment(s.segmentId);
-        return found !== null && found.text.trim().length === 0;
-      }) ?? assignment.sources[0];
+      /* THE ANCHOR NAMES WHERE THE ANSWER CAME FROM.
+         Not the prettiest place to open, the place that was read. A reading
+         taken from the page's text anchors to that text; a measurement of the
+         picture anchors to the picture. Anchoring a text reading to the image
+         beside it looks tidier and is a lie about provenance — and it breaks
+         the check that follows, because a critic reopening "the place this
+         claim names" would be handed a picture with no words in it. */
+      const from = written ?? seen ?? null;
+      const place = assignment.sources.find((s) => s.segmentId === from?.segmentId)
+        ?? assignment.sources[0];
 
       const env = envelope(assignment);
       let answer: string;
@@ -460,9 +488,209 @@ export function answerFromRequest(question: AgentQuestion): Envelope {
       return env;
     }
 
+    /* TWO PIECES OF MATERIAL, AND THE ONE COMPARISON A STAND-IN CAN HONESTLY
+     * MAKE OF EACH KIND.
+     *
+     * TWO TEXTS. A statement is a line whose last word is a number. A key
+     * stated ONCE on each side with a different number is a contradiction —
+     * that is a real reading of both texts, it quotes both lines, and it says
+     * nothing about anything it did not find. A key stated twice on a side is
+     * a list rather than a statement and is left alone.
+     *
+     * A PICTURE AGAINST A TEXT. The stand-in cannot see what is in a picture.
+     * It can measure colour, so when the text names a colour it can measure —
+     * and only then — it measures that colour in the picture and answers. When
+     * the text names none, the answer is "unclear" and the limitation says
+     * why, because measuring something the assignment did not ask about would
+     * be answering a different question.
+     */
+    case "page_pair_reader":
+    case "moment_page_reader": {
+      const sides = sidesOf(assignment, material);
+      if (sides.length < 2) return nothingToRead(assignment, "this assignment is about two pieces of material and fewer than two were attached");
+      const [left, right] = sides;
+      const env = envelope(assignment);
+
+      const anchorFor = (side: Side, key: string, quoted: string, from: "text" | "picture" | "nothing") => {
+        const onPicture = from === "picture" && side.pictureSegmentId !== null;
+        return {
+          anchorKey: key,
+          sourceKind: onPicture ? "segment_locator" : "segment",
+          sourceId: side.sourceId,
+          segmentId: onPicture ? side.pictureSegmentId : (side.textSegmentId ?? side.pictureSegmentId),
+          locator: onPicture ? { bbox: [0, 0, 1, 1] } : {},
+          quotedText: quoted.slice(0, 400),
+        };
+      };
+
+      const compared = compareSides(left, right);
+      const answer = compared.answer;
+      if (compared.limitation) env.limitations = [compared.limitation];
+      const anchors = [
+        anchorFor(left, "left", compared.said[0], compared.read[0]),
+        anchorFor(right, "right", compared.said[1], compared.read[1]),
+      ];
+
+      env.anchors = anchors;
+      env.claims = [{
+        claimKey: "compared",
+        subjectType: assignment.subjectKey.startsWith("pages/") ? "pages" : "moment_page",
+        subjectKey: assignment.subjectKey, predicate: "finding",
+        value: { known: true, quantity: null, text: answer },
+        unit: null, observationBasis: "observed", scope: {},
+        anchorKeys: (anchors as { anchorKey: string }[]).map((a) => a.anchorKey),
+        machineConfidence: answer === "unclear" ? 0.3 : 0.7,
+      }];
+      return env;
+    }
+
     default:
       return nothingToRead(assignment, `this stand-in has no behaviour for ${assignment.roleKey}`);
   }
+}
+
+
+/* THE COMPARISON ITSELF, IN ONE PLACE.
+ *
+ * The reader answers it and the critic answers it again from the same
+ * material. They must be the same piece of code: a critic that re-derives the
+ * answer differently is not checking the reading, it is holding a second
+ * opinion — and the difference between those two is the whole of what a check
+ * is worth. */
+/* `read` is what each side was read FROM, in the order the sides were passed.
+   It is what an anchor has to name: a comparison made out of two texts is
+   anchored to those texts, and one made out of a picture is anchored to the
+   picture. Anchoring to whichever piece looks better on a screen would send
+   the next reader — the critic — to material the finding was never made
+   from. */
+export type Comparison = {
+  answer: string;
+  limitation: string | null;
+  said: [string, string];
+  read: ["text" | "picture" | "nothing", "text" | "picture" | "nothing"];
+};
+
+export function compareSides(left: Side, right: Side): Comparison {
+  if (left.text.trim() && right.text.trim()) {
+    const found = contradiction(left.text, right.text);
+    return found
+      ? { answer: "no", limitation: null, said: [found.left, found.right], read: ["text", "text"] }
+      : { answer: "yes", limitation: null, said: [firstLine(left.text), firstLine(right.text)], read: ["text", "text"] };
+  }
+  const leftIsWritten = left.text.trim().length > 0;
+  const written = leftIsWritten ? left : right.text.trim() ? right : null;
+  const seen = left.picture ? left : right.picture ? right : null;
+  if (!written || !seen || !seen.picture || written === seen) {
+    return {
+      answer: "unclear", limitation: "neither piece of material could be read: one carries no text and the other no picture this reader can measure",
+      said: [firstLine(left.text) || "(nothing readable)", firstLine(right.text) || "(nothing readable)"],
+      read: [left.text.trim() ? "text" : left.picture ? "picture" : "nothing", right.text.trim() ? "text" : right.picture ? "picture" : "nothing"],
+    };
+  }
+  const order = (a: string, b: string): [string, string] => (leftIsWritten ? [a, b] : [b, a]);
+  const asked = colourNamed(written.text);
+  if (!asked) {
+    return {
+      answer: "unclear",
+      limitation: "this reader can measure colour in a picture and nothing else, and the other side names no colour to look for",
+      said: order(firstLine(written.text), describePicture(seen.picture)),
+      read: order("text", "picture") as Comparison["read"],
+    };
+  }
+  const share = seen.picture[asked.colour];
+  return {
+    answer: share >= 0.004 ? "yes" : "no",
+    limitation: null,
+    said: order(asked.line, `${describePicture(seen.picture)} — ${(share * 100).toFixed(2)}% of it ${asked.colour}`),
+    read: order("text", "picture") as Comparison["read"],
+  };
+}
+
+/* ────────────────────────────── the two sides of a comparison assignment */
+
+type Side = {
+  sourceId: string | null;
+  /* One place, and the two segments it can be pointed at: the words on it and
+     the picture of it. Which one an anchor names is decided by which one the
+     answer was read from. */
+  textSegmentId: string | null;
+  pictureSegmentId: string | null;
+  ordinal: number;
+  text: string;
+  picture: Picture | null;
+};
+
+/* One side is one PLACE — a page and its own text are one side, not two. The
+   sources block says which segment belongs to which source and ordinal, so the
+   grouping is read from the assignment rather than assumed from the order the
+   material happened to arrive in. */
+export function sidesOf(assignment: Assignment, material: Attached[]): Side[] {
+  const sides = new Map<string, Side>();
+  for (const source of assignment.sources) {
+    const shown = material.find((m) => m.segmentId === source.segmentId);
+    if (!shown) continue;
+    const key = `${source.sourceId}/${source.segmentKind === "page_text" ? source.ordinal : source.ordinal}`;
+    const side = sides.get(key) ?? {
+      sourceId: source.sourceId, textSegmentId: null, pictureSegmentId: null,
+      ordinal: source.ordinal, text: "", picture: null,
+    };
+    if (shown.text.trim() && !side.text) { side.text = shown.text; side.textSegmentId = source.segmentId; }
+    if (shown.picture && !side.picture) { side.picture = shown.picture; side.pictureSegmentId = source.segmentId; }
+    sides.set(key, side);
+  }
+  return [...sides.values()];
+}
+
+export const firstLine = (text: string): string =>
+  (text.split("\n").map((l) => l.trim()).find((l) => l.length > 2) ?? text.slice(0, 120));
+
+/* A statement: a line whose last word is a number, keyed by the words before
+   it. A key that appears more than once on a side is a list, not a statement,
+   and is left out — two bedrooms numbered 1 and 2 do not contradict each
+   other, and a reader that said they did would be inventing a finding. */
+function statements(text: string): Map<string, { value: string; line: string }> {
+  const seen = new Map<string, { value: string; line: string; times: number }>();
+  for (const raw of text.split("\n")) {
+    const line = raw.trim();
+    if (!line) continue;
+    const words = line.split(/\s+/);
+    if (words.length < 2) continue;
+    const value = words[words.length - 1];
+    if (!/^[-+]?\d+(?:[.,]\d+)?$/.test(value)) continue;
+    const key = words.slice(0, -1).join(" ").toUpperCase().replace(/[^A-Z0-9 ]+/g, "").trim();
+    if (!key) continue;
+    const already = seen.get(key);
+    if (already) already.times += 1;
+    else seen.set(key, { value, line, times: 1 });
+  }
+  const once = new Map<string, { value: string; line: string }>();
+  for (const [key, found] of seen) if (found.times === 1) once.set(key, { value: found.value, line: found.line });
+  return once;
+}
+
+export function contradiction(left: string, right: string): { left: string; right: string; key: string } | null {
+  const a = statements(left);
+  const b = statements(right);
+  for (const [key, one] of a) {
+    const other = b.get(key);
+    if (other && other.value !== one.value) return { left: one.line, right: other.line, key };
+  }
+  return null;
+}
+
+/* The only four things this stand-in can look for in a picture, and it looks
+   for one only when the other side of the comparison names it. */
+const COLOURS = ["red", "orange", "green", "blue"] as const;
+
+export function colourNamed(text: string): { colour: typeof COLOURS[number]; line: string } | null {
+  for (const raw of text.split("\n")) {
+    const line = raw.trim();
+    const low = line.toLowerCase();
+    for (const colour of COLOURS) {
+      if (new RegExp(`\\b${colour}\\b`).test(low)) return { colour, line };
+    }
+  }
+  return null;
 }
 
 /* THE QUESTION, AS THE ASSIGNMENT PUT IT.
@@ -477,7 +705,12 @@ export function questionIn(prompt: string): string {
     if (!/^\s{2,}\S/.test(lines[i])) break;
     said.push(lines[i].trim());
   }
-  return said.join(" ");
+  /* A pack that marks the question gets the question. One that does not gets
+     the whole objective, which is the best that can be done with it — and is
+     why a pack whose readers are judged on the words of a question should
+     mark it. */
+  const marked = said.find((line) => /^QUESTION:/i.test(line));
+  return marked ? marked.replace(/^QUESTION:\s*/i, "").trim() : said.join(" ");
 }
 
 /* Do the words of the question appear in this text, and on which line.

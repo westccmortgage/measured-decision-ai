@@ -203,7 +203,12 @@ function userText(packet: WorkPacket, role: AgentRoleDefinition): string {
   lines.push("Copy taskId, packetVersion, roleKey and roleVersion into your result exactly as written here.");
   lines.push("");
   lines.push("objective:");
-  lines.push(`  ${packet.objective}`);
+  /* EVERY line of it, indented. An objective of more than one line used to
+     lose its indentation after the first, so its remaining lines sat flush
+     against the section headers around them — reading, to anything parsing
+     the prompt and to a person skimming it, as though the objective had ended
+     and something else had begun. */
+  for (const line of String(packet.objective).split("\n")) lines.push(`  ${line}`);
   if (packet.blindContext) { lines.push(""); lines.push(BLIND_READING); }
 
   lines.push("");

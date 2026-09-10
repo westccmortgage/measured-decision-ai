@@ -30,8 +30,10 @@ import { signedUrlFor } from "../_shared/core-v2/storage.ts";
 import { PostgresContinuationStore } from "../../../workers/core-v2-runner/continuations.ts";
 import { startFromManifest } from "../../../workers/core-v2-runner/start.ts";
 import { manifestOfAnalysis, readAnalysis, clock, workflowIdForAnalysis } from "../../../workers/core-v2-runner/analysis.ts";
+import { decidePairing } from "../../../workers/core-v2-runner/pairing.ts";
+import type { ChosenPairing } from "../../../workers/core-v2-runner/pairing.ts";
 import { questionFor } from "../../../workers/core-v2-runner/world.ts";
-import { emptySections, sectionFor } from "../../../workers/core-v2-runner/sections.ts";
+import { emptySections, isComparisonSubject, sectionFor } from "../../../workers/core-v2-runner/sections.ts";
 import type { SubjectShape } from "../../../workers/core-v2-runner/sections.ts";
 import { SourceDocumentsPack } from "../../../workers/core-v2/domains/source-documents/pack.ts";
 import { loadOperatorRegistry } from "../../../workers/core-v2-canary/operator-registry.ts";
@@ -113,9 +115,10 @@ Deno.serve(async (request: Request): Promise<Response> => {
     if (op === "run") return await run(db, caller, body);
     if (op === "status") return await status(db, caller, body);
     if (op === "cancel") return await cancel(db, caller, body);
+    if (op === "pairing") return await pairing(db, caller, body);
     if (op === "results") return await results(db, caller, body);
     if (op === "evidence") return await evidence(db, caller, body);
-    return json(400, { refused: `unknown operation ${op || "(none)"}; this door knows preflight, estimate, run, status, results, cancel and evidence` });
+    return json(400, { refused: `unknown operation ${op || "(none)"}; this door knows preflight, estimate, run, status, pairing, results, cancel and evidence` });
   } catch (error) {
     if (error instanceof DatabaseUnreachable) return json(503, { refused: "the record is not reachable" });
     console.error(line({ fn: FUNCTION, event: "unhandled", op, problem: (error as Error).name }));
@@ -162,6 +165,9 @@ type Shape = {
   pages: number;
   frames: number;
   files: number;
+  pairs: number;
+  unpaired: number;
+  pairingNote: string;
 };
 
 async function shapeOf(db: EdgeDatabase, analysisId: string): Promise<Shape> {
@@ -173,7 +179,18 @@ async function shapeOf(db: EdgeDatabase, analysisId: string): Promise<Shape> {
        from public.analysis_parts p where p.analysis_id = $1::uuid`, [analysisId])).rows[0] ?? {};
   const pages = Number(counts.pages ?? 0);
   const frames = Number(counts.frames ?? 0);
-  const subjects = pages + frames;
+
+  /* WHAT WILL ACTUALLY BE READ.
+     A comparison analysis reads PAIRS, and there are neither as many pairs as
+     there are pages nor as few. Counting pieces would quote a price for work
+     nobody is going to do, in either direction. */
+  const analysis = await readAnalysis(db as never, analysisId);
+  const pairing = analysis
+    ? decidePairing(analysis, analysis.chosenPairing as ChosenPairing, { maximumPairs: MAXIMUM_SUBJECTS })
+    : { pairs: [], unpaired: [], note: "" };
+  const subjects = pairing.pairs.length > 0 ? pairing.pairs.length
+    : analysis && analysis.questionKind !== "specific_question" ? 0
+    : pages + frames;
   const readerAttempts = subjects * 2;
   /* One critic pass per subject is what the engine will ask for at most; it
      asks for fewer when readers agree and the rule accepts without one. */
@@ -194,6 +211,9 @@ async function shapeOf(db: EdgeDatabase, analysisId: string): Promise<Shape> {
   return {
     subjects, readerAttempts, criticAttempts, pages, frames,
     files: Number(counts.files ?? 0),
+    pairs: pairing.pairs.length,
+    unpaired: pairing.unpaired.length,
+    pairingNote: pairing.note,
     worstUsd: Number(((readerAttempts + criticAttempts) * worstPerAttempt).toFixed(2)),
   };
 }
@@ -253,10 +273,24 @@ async function run(db: EdgeDatabase, caller: string, body: Body): Promise<Respon
     return json(409, { refused: `this analysis holds ${shape.subjects} places to read and one analysis may hold ${MAXIMUM_SUBJECTS}`, ...shape });
   }
 
-  const pack = new SourceDocumentsPack({ question: questionFor(analysis) });
+  /* THE PAIRS, DECIDED ONCE, HERE.
+     Not in the pack — deciding needs the page text, which segments do not
+     carry — and not again on a later pass, because the owner may have changed
+     their mind since and a finished reading would then rest on a question
+     nobody asked. It goes into the requested scope, which 058 freezes. */
+  const pairing = decidePairing(analysis, analysis.chosenPairing as ChosenPairing, { maximumPairs: MAXIMUM_SUBJECTS });
+  if (analysis.questionKind !== "specific_question" && pairing.pairs.length === 0) {
+    return json(409, {
+      refused: "nothing in this analysis is paired, so there is nothing to compare",
+      detail: pairing.unpaired.map((u) => u.question),
+      unpaired: pairing.unpaired, pairingNote: pairing.note,
+    });
+  }
+
+  const pack = new SourceDocumentsPack({ question: questionFor(analysis), pairs: pairing.pairs });
   let manifest;
   try {
-    manifest = manifestOfAnalysis(analysis, workflowIdForAnalysis(analysisId));
+    manifest = manifestOfAnalysis(analysis, workflowIdForAnalysis(analysisId), pairing);
   } catch (error) {
     return json(409, { refused: "this analysis cannot be read as a source set", detail: (error as { reasons?: string[] }).reasons });
   }
@@ -479,6 +513,59 @@ async function cancel(db: EdgeDatabase, caller: string, body: Body): Promise<Res
 }
 
 
+
+/* ────────────────────────────────────────────────────────────── pairing
+ *
+ * WHAT WILL BE COMPARED WITH WHAT, AND WHAT HAS NO PARTNER.
+ *
+ * Read-only. The owner's own choice is written straight to `analysis_runs
+ * .pairing` by the page, under the same row-level security as everything else
+ * they own; this answers what that choice CURRENTLY produces, so the screen
+ * can show the pairs before anybody presses anything and can say plainly which
+ * places nobody has related to anything.
+ */
+async function pairing(db: EdgeDatabase, caller: string, body: Body): Promise<Response> {
+  const analysisId = body.analysisId;
+  if (!isUuid(analysisId)) return json(400, { refused: "pairing needs an analysisId" });
+  const analysis = await readAnalysis(db as never, analysisId);
+  if (!analysis) return json(404, { refused: "no such analysis" });
+  if (!await memberOf(db, caller, analysis.organizationId)) {
+    return json(403, { refused: "that analysis belongs to another organisation" });
+  }
+
+  const decided = decidePairing(analysis, analysis.chosenPairing as ChosenPairing, { maximumPairs: MAXIMUM_SUBJECTS });
+  const named = (place: { file: number; ordinal: number }, kind: "page" | "moment") => {
+    const file = analysis.files.find((f) => f.ordinal === place.file);
+    if (!file) return `file ${place.file}`;
+    if (kind === "page") return `${file.fileName}, page ${place.ordinal}`;
+    const part = file.parts.find((p) => p.partKind === "video_frame" && p.ordinal === place.ordinal);
+    const seconds = part ? Number(part.locator.seconds ?? 0) : null;
+    return `${file.fileName} at ${seconds === null ? `moment ${place.ordinal}` : clock(seconds)}`;
+  };
+
+  return json(200, {
+    analysisId,
+    questionKind: analysis.questionKind,
+    /* Everything the owner could choose between, named the way the screen
+       names it, so a picker needs no vocabulary of its own. */
+    pages: analysis.files.filter((f) => f.kind === "pdf").flatMap((f) =>
+      f.parts.filter((p) => p.partKind === "pdf_page_image").map((p) => ({
+        file: f.ordinal, ordinal: p.ordinal, label: `${f.fileName}, page ${p.ordinal}`,
+      }))),
+    clips: analysis.files.filter((f) => f.kind !== "pdf").map((f) => ({
+      file: f.ordinal, label: f.fileName,
+      moments: f.parts.filter((p) => p.partKind === "video_frame").length,
+    })),
+    chosen: analysis.chosenPairing,
+    pairs: decided.pairs.map((p) => p.kind === "pages"
+      ? { kind: p.kind, why: p.why, a: p.a, b: p.b, label: `${named(p.a, "page")}  ·  ${named(p.b, "page")}` }
+      : { kind: p.kind, why: p.why, moment: p.moment, page: p.page, label: `${named(p.moment, "moment")}  ·  ${named(p.page, "page")}` }),
+    unpaired: decided.unpaired.map((u) => ({ ...u, label: named(u.place, u.kind) })),
+    note: decided.note,
+    settled: analysis.state === "running" || analysis.state === "finished",
+  });
+}
+
 /* ─────────────────────────────────────────────────────────────── results
  *
  * THREE SECTIONS, AND ONE FACT IN ONE OF THEM.
@@ -508,6 +595,15 @@ async function results(db: EdgeDatabase, caller: string, body: Body): Promise<Re
   }
   const workflowId = run.workflow_id ? String(run.workflow_id) : null;
   if (!workflowId) return json(200, { analysisId, started: false, subjects: [], sections: emptySections() });
+
+  /* WHAT NOBODY COULD RELATE TO ANYTHING.
+     Frozen with the workflow, so a result shows the same gaps it was produced
+     with. These are not failures and not findings: they are places the run
+     could not ask a comparison question about, and the owner is the one who
+     can close them. */
+  const scope = asObject((await db.query(
+    `select requested_scope from public.intelligence_workflows where id = $1::uuid`, [workflowId])).rows[0]?.requested_scope);
+  const unpaired = Array.isArray(scope.unpaired) ? scope.unpaired as { kind: string; place: { file: number; ordinal: number }; question: string }[] : [];
 
   /* Every reading, with who made it, what it said, and the piece of the
      owner's own file it came out of. */
@@ -563,11 +659,16 @@ async function results(db: EdgeDatabase, caller: string, body: Body): Promise<Re
   const bySubject = new Map<string, SubjectShape & {
     subjectType: string; subjectKey: string; problems: string[];
   }>();
+  /* Declared before the loops that use it, because a subject's identity is
+     decided by the whole set of task subjects rather than by each in turn. */
   const slot = (type: string, key: string) => {
     const id = `${type}:${key}`;
     let found = bySubject.get(id);
     if (!found) {
-      found = { subjectType: type, subjectKey: key, readings: [], reviews: [], decisions: [], taskStates: [], problems: [] };
+      found = {
+        subjectType: type, subjectKey: key, readings: [], reviews: [], decisions: [], taskStates: [],
+        problems: [], comparison: isComparisonSubject(key),
+      };
       bySubject.set(id, found);
     }
     return found;
@@ -577,15 +678,30 @@ async function results(db: EdgeDatabase, caller: string, body: Body): Promise<Re
      part before the first slash is the kind, which is how a task row and a
      claim row find each other without the tasks table carrying a second copy
      of it. */
+  /* WHICH TASK SUBJECTS ARE PLACES A PERSON CARES ABOUT.
+     Two are not. `source:1` is the ingest saying the bytes are what the
+     manifest said they were — true, necessary, and not a finding. And a
+     subject that extends another — `pages/1/1/1/3/corroborated` is the
+     kernel's decision ABOUT `pages/1/1/1/3` — is that place, not a second
+     one; leaving it separate splits one fact across two cards. */
+  const taskKeys = openTasks.map((row) => String(row.subject_key)).filter((key) => !key.startsWith("source:"));
+  const placeOf = (key: string) =>
+    taskKeys.filter((other) => other !== key && key.startsWith(`${other}/`))
+      .sort((a, b) => b.length - a.length)[0] ?? key;
+
   for (const row of openTasks) {
-    const key = String(row.subject_key);
+    const raw = String(row.subject_key);
+    if (raw.startsWith("source:")) continue;
+    const key = placeOf(raw);
     const s = slot(key.split("/")[0] || "subject", key);
     s.taskStates.push(String(row.state));
     if (row.terminal_reason) s.problems.push(String(row.terminal_reason));
   }
 
   for (const c of claims) {
-    const s = slot(String(c.subject_type), String(c.subject_key));
+    /* The ingest's statement about the bytes is not one of the findings. */
+    if (String(c.predicate) === "content_identity") continue;
+    const s = slot(String(c.subject_type), placeOf(String(c.subject_key)));
     s.readings.push({
       claimId: String(c.id),
       predicate: String(c.predicate),
@@ -617,15 +733,27 @@ async function results(db: EdgeDatabase, caller: string, body: Body): Promise<Re
   }
   for (const d of decisions) {
     const key = String(d.subject_key ?? "");
-    /* A decision whose subject is not one of the reading subjects still
-       belongs to the analysis; it goes under its own key. */
+    /* A decision names the subject it is about, and the kernel may qualify
+       that name — `moment/2/1/corroborated` is a decision about the claim on
+       `moment/2/1`. Matching on the prefix is how a decision reaches the place
+       it belongs to; matching on equality quietly loses every one of them,
+       which is how a screen ends up showing nothing as decided while the
+       record is full of decisions. */
     const s = [...bySubject.values()].find((x) => x.subjectKey === key)
+      ?? [...bySubject.values()].filter((x) => key.startsWith(`${x.subjectKey}/`))
+           .sort((a, b) => b.subjectKey.length - a.subjectKey.length)[0]
       ?? slot("decision", key || "the analysis");
     s.decisions.push({
       decisionId: String(d.id), type: String(d.decision_type), status: String(d.status),
       authority: String(d.authority), title: String(d.title), rationale: String(d.rationale ?? ""),
       summary: asObject(d.summary),
     });
+  }
+
+  for (const gap of unpaired) {
+    const key = `${gap.kind}/${gap.place.file}/${gap.place.ordinal}`;
+    const slotted = slot(gap.kind, key);
+    slotted.problems.push(gap.question);
   }
 
   const subjects = [...bySubject.values()]
@@ -644,6 +772,8 @@ async function results(db: EdgeDatabase, caller: string, body: Body): Promise<Re
       discrepancy: sections.discrepancy.length,
       needsCheck: sections.needsCheck.length,
     },
+    unpaired: unpaired.length,
+    pairingNote: String(scope.pairingNote ?? ""),
   });
 }
 
@@ -679,6 +809,22 @@ async function evidence(db: EdgeDatabase, caller: string, body: Body): Promise<R
     [analysisId, typeof wanted === "string" ? wanted : null, isUuid(partId) ? partId : null])).rows[0];
   if (!found) return json(404, { refused: "no such piece of material in this analysis" });
 
+  /* THE WORDS ARE HERE, AND HERE IS THE PAGE THEY ARE ON.
+     A reading taken from a page's text anchors to that text, which is the
+     truth about where it came from and is nothing to look at. The page image
+     of the same page is what a person wants on the screen, so it comes too —
+     named as what it is, beside the words rather than instead of them. */
+  let pageImage: string | null = null;
+  if (String(found.part_kind) === "pdf_page_text") {
+    const sibling = (await db.query(
+      `select p.storage_path from public.analysis_parts p
+        where p.analysis_id = $1::uuid and p.file_id = (
+                select file_id from public.analysis_parts where id = $2::uuid)
+          and p.part_kind = 'pdf_page_image' and p.ordinal = $3::int`,
+      [analysisId, String(found.id), Number(found.ordinal)])).rows[0];
+    if (sibling?.storage_path) pageImage = await signedUrlFor(String(sibling.storage_path));
+  }
+
   const url = found.storage_path ? await signedUrlFor(String(found.storage_path)) : null;
   const locator = typeof found.locator === "string" ? JSON.parse(found.locator) : (found.locator ?? {});
   return json(200, {
@@ -693,7 +839,8 @@ async function evidence(db: EdgeDatabase, caller: string, body: Body): Promise<R
       ? `${String(found.file_name)} at ${clock(Number(locator.seconds ?? 0))}`
       : `${String(found.file_name)}, page ${Number(found.ordinal)}`,
     text: found.inline_text ?? null,
-    url,
-    urlExpiresInSeconds: url ? 900 : null,
+    url: url ?? pageImage,
+    pageImage,
+    urlExpiresInSeconds: url || pageImage ? 900 : null,
   });
 }

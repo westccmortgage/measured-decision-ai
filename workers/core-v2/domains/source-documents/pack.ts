@@ -49,6 +49,14 @@ export const PACK_VERSION = "1.0";
 export const TASK = {
   readPage: `${PACK_ID}:read_page`,
   readMoment: `${PACK_ID}:read_moment`,
+  /* THE TWO ASSIGNMENTS THAT CAN ANSWER A COMPARISON.
+     A reader handed one page can say what is on it and no more. Whether a set
+     agrees with itself, and whether what the camera saw is what the sheet
+     called for, are questions about TWO pieces of material, and they are only
+     answerable when both are in the same assignment — the same two, for both
+     blind readers. */
+  comparePages: `${PACK_ID}:compare_pages`,
+  momentAgainstPage: `${PACK_ID}:moment_against_page`,
 };
 
 /* The three answers a reader may give, and nothing else. `unclear` is a real
@@ -63,6 +71,31 @@ export const SEGMENT_KINDS = {
   pageText: "page_text",
   moment: "moment",
 };
+
+/* WHAT A SUBJECT KEY SAYS, so that a screen, a claim and a task all name the
+   same thing the same way. Every one of these is places in the owner's own
+   material — file ordinal and page or moment ordinal — and nothing else. */
+export const SUBJECT = {
+  page: (file: number, page: number) => `page/${file}/${page}`,
+  moment: (file: number, moment: number) => `moment/${file}/${moment}`,
+  /* Sorted, so the same two sheets are one subject however they were found. */
+  pages: (a: { file: number; ordinal: number }, b: { file: number; ordinal: number }) => {
+    const [first, second] = [a, b].sort((x, y) => x.file - y.file || x.ordinal - y.ordinal);
+    return `pages/${first.file}/${first.ordinal}/${second.file}/${second.ordinal}`;
+  },
+  momentAgainstPage: (m: { file: number; ordinal: number }, p: { file: number; ordinal: number }) =>
+    `moment/${m.file}/${m.ordinal}/page/${p.file}/${p.ordinal}`,
+};
+
+/* The pairs a workflow was started over, as the manifest carries them. The
+   pack does not decide them: deciding what corresponds to what needs the page
+   TEXT, which segments do not carry, and it must be settled once rather than
+   recomputed differently on some later pass. workers/core-v2-runner/pairing.ts
+   decides; this reads. */
+export type ScopePlace = { file: number; ordinal: number };
+export type ScopePair =
+  | { kind: "pages"; a: ScopePlace; b: ScopePlace; why?: string }
+  | { kind: "moment_page"; moment: ScopePlace; page: ScopePlace; why?: string };
 
 /* ─────────────────────────────────────────────────────────── the contracts
  *
@@ -107,6 +140,31 @@ const ONE_CLAIM_RULE =
   + "unchanged from the assignment you were given. You are answering about that "
   + "one place and no other.";
 
+/* WHAT "YES" MEANS WHEN THERE ARE TWO PIECES OF MATERIAL.
+   A closed vocabulary is only useful if every reader means the same thing by
+   it, so the pair contracts say what each word claims rather than leaving a
+   reader to decide. */
+const PAIR_ANSWER_RULE_PAGES =
+  "value.text is exactly one of \"yes\", \"no\" or \"unclear\". \"yes\" means the "
+  + "two sheets AGREE on everything you were asked about. \"no\" means you found "
+  + "something one sheet states and the other contradicts — quote BOTH, one in "
+  + "each anchor. \"unclear\" means the two sheets do not settle it between them, "
+  + "which is an answer and not a failure.";
+
+const PAIR_ANSWER_RULE_MOMENT =
+  "value.text is exactly one of \"yes\", \"no\" or \"unclear\". \"yes\" means what "
+  + "this frame shows MATCHES what the sheet calls for. \"no\" means the sheet "
+  + "calls for something this frame contradicts — anchor to the line on the "
+  + "sheet and to the place in the frame. \"unclear\" means this frame does not "
+  + "settle it. A \"no\" is about THIS MOMENT: it is not a statement that the "
+  + "thing is missing from the video, and you must not write one.";
+
+const TWO_ANCHORS_RULE =
+  "Your claim names an anchor in EACH piece of material you were given — one "
+  + "on each sheet, or one on the sheet and one in the frame. A comparison "
+  + "anchored to only one side is an assertion about a pair that only looked "
+  + "at half of it.";
+
 export const ROLES: AgentRoleDefinition[] = [
   {
     roleKey: "page_reader", version: "1.0", kind: "analyst", phase: "analyze", taskTypes: [TASK.readPage],
@@ -132,6 +190,30 @@ export const ROLES: AgentRoleDefinition[] = [
     allowedActions: ["request_human_review"], routingProfile: "visual_analysis", executorKind: "model",
     producesAssessments: false, producesAdjudication: false, producesDecisions: false, producesCalculations: false, producesSegments: false,
   },
+  {
+    roleKey: "page_pair_reader", version: "1.0", kind: "analyst", phase: "analyze", taskTypes: [TASK.comparePages],
+    description: "Reads two sheets of one set together and answers whether they agree.",
+    inputContract: "two page images, and the text of each page where the file carried any",
+    outputContract: `${ONE_CLAIM_RULE} ${PAIR_ANSWER_RULE_PAGES} ${ANCHOR_RULE} ${TWO_ANCHORS_RULE} ${LOCATOR_RULE_PAGE} `
+      + "You were given exactly these two sheets. Do not reason about a third, and do not "
+      + "assume what a sheet you were not shown says. You are one of two readers working "
+      + "separately on this same pair and cannot see the other reading.",
+    maximumSources: 4, maximumClaims: 1, maximumFollowUpDepth: 0, requiresVisualInput: true, requiresIndependentReading: true,
+    allowedActions: ["request_human_review"], routingProfile: "visual_analysis", executorKind: "model",
+    producesAssessments: false, producesAdjudication: false, producesDecisions: false, producesCalculations: false, producesSegments: false,
+  },
+  {
+    roleKey: "moment_page_reader", version: "1.0", kind: "analyst", phase: "analyze", taskTypes: [TASK.momentAgainstPage],
+    description: "Reads one sampled frame against one plan sheet and answers whether what is visible matches what the sheet calls for.",
+    inputContract: "one frame image taken at a time the record holds, one page image, and the text of that page where the file carried any",
+    outputContract: `${ONE_CLAIM_RULE} ${PAIR_ANSWER_RULE_MOMENT} ${ANCHOR_RULE} ${TWO_ANCHORS_RULE} ${LOCATOR_RULE_MOMENT} `
+      + "This is ONE sampled frame, not the whole video, and one sheet, not the whole set. "
+      + "You are one of two readers working separately on this same pair and cannot see the "
+      + "other reading.",
+    maximumSources: 3, maximumClaims: 1, maximumFollowUpDepth: 0, requiresVisualInput: true, requiresIndependentReading: true,
+    allowedActions: ["request_human_review"], routingProfile: "visual_analysis", executorKind: "model",
+    producesAssessments: false, producesAdjudication: false, producesDecisions: false, producesCalculations: false, producesSegments: false,
+  },
 ];
 
 export type SourceDocumentsOptions = {
@@ -141,6 +223,10 @@ export type SourceDocumentsOptions = {
   question?: string;
   /* How many blind readers per subject. Two, unless the policy allows fewer. */
   readers?: number;
+  /* The pairs this workflow was started over, decided once from the record.
+     Empty means every place is read on its own, which is what a "check one
+     thing" analysis asks for. */
+  pairs?: ScopePair[];
 };
 
 const DEFAULT_QUESTION =
@@ -152,21 +238,59 @@ export class SourceDocumentsPack implements DomainPack {
   readonly roles = ROLES;
   readonly objectives: Record<string, string>;
   readonly question: string;
+  readonly pairs: ScopePair[];
   private readers: number;
 
   constructor(options: SourceDocumentsOptions = {}) {
     this.question = (options.question ?? "").trim() || DEFAULT_QUESTION;
     this.readers = Math.max(1, Math.min(2, options.readers ?? 2));
+    this.pairs = options.pairs ?? [];
     this.objectives = {
+      /* THE OWNER'S QUESTION ON A LINE OF ITS OWN, under a marker.
+         An instruction is mostly instruction; the question inside it is the
+         one part that changes from analysis to analysis, and it is the part
+         anything reading the record afterwards — a person, a test, the
+         stand-in that answers offline — needs to be able to pick out exactly.
+         Marking it costs a word and removes a whole class of "the reader
+         answered about the wrong thing". */
       [TASK.readPage]:
-        `Look at this one page and answer this question about it: ${this.question}\n`
+        `Look at this one page and answer this question about it.\nQUESTION: ${this.question}\n`
         + "Answer yes, no, or unclear, and anchor your answer to the place on the page you "
         + "looked at, quoting what is written there. Answer about this page only.",
       [TASK.readMoment]:
-        `Look at this one frame and answer this question about it: ${this.question}\n`
+        `Look at this one frame and answer this question about it.\nQUESTION: ${this.question}\n`
         + "Answer yes, no, or unclear, and anchor your answer to what is visible in the frame. "
         + "This is one sampled moment, not the whole video: do not conclude anything about "
         + "moments you were not shown.",
+      [TASK.comparePages]:
+        `Here are two sheets from the same set. Read them together and answer this question.\nQUESTION: ${this.question}\n`
+        + "Answer yes if they agree, no if one states something the other contradicts, or "
+        + "unclear if they do not settle it between them. Quote the line you read on EACH "
+        + "sheet. These two sheets are all you were given; do not reason about a third.",
+      [TASK.momentAgainstPage]:
+        `Here is one sampled frame of a video and one plan sheet. Answer this question.\nQUESTION: ${this.question}\n`
+        + "Answer yes if what the frame shows matches what the sheet calls for, no if the "
+        + "sheet calls for something this frame contradicts, or unclear if this frame does "
+        + "not settle it. Quote the line on the sheet and say what you saw in the frame. "
+        + "A no is about this moment only: it is not a statement that the thing is missing "
+        + "from the video.",
+
+      /* THE CRITIC IS TOLD THE QUESTION. It is checking an ANSWER, and an
+         answer cannot be checked by somebody who was not told what was asked.
+         Without this the critic reads the kernel's generic objective, judges
+         the claim against a question nobody put, and disputes findings that
+         the material plainly supports — which is worse than not checking at
+         all, because it looks like diligence. */
+      [KERNEL_TASK_TYPES.verifyClaim]:
+        `A reader was asked this question about the material you are being shown.\nQUESTION: ${this.question}\n`
+        + "They answered yes, no or unclear. Open the material again and say whether it "
+        + "supports that answer: supports if reading it yourself gives the same answer, "
+        + "contradicts if it gives a different one — and then say which — insufficient if "
+        + "the material cannot settle it either way. Judge the answer, not the wording.",
+      [KERNEL_TASK_TYPES.verifyDisagreement]:
+        `Two readers gave different answers to this question about the same place.\nQUESTION: ${this.question}\n`
+        + "Open the material yourself and say which answer it supports, if either. "
+        + "You are not choosing between the readers; you are reading the source.",
     };
   }
 
@@ -182,28 +306,23 @@ export class SourceDocumentsPack implements DomainPack {
     const groups = INDEPENDENCE_GROUPS.slice(0, Math.min(this.readers, input.policy.maximumIndependentReadersPerSubject));
     const ordinalOf = (sourceId: string) => input.manifest.sources.find((x) => x.sourceId === sourceId)?.ordinal ?? 0;
 
-    for (const segment of accepted) {
-      const isPage = segment.segmentKind === SEGMENT_KINDS.page;
-      const isMoment = segment.segmentKind === SEGMENT_KINDS.moment;
-      if (!isPage && !isMoment) continue;
+    /* The places, by where they are in the owner's material rather than by
+       segment id, because that is how a pair names them. */
+    const at = (kind: string, file: number, ordinal: number) => accepted.find(
+      (s) => s.segmentKind === kind && ordinalOf(s.sourceId) === file && s.ordinal === ordinal);
+    const textFor = (segment: SegmentRecord | undefined) => segment
+      ? texts.find((t) => t.sourceId === segment.sourceId && t.ordinal === segment.ordinal)
+      : undefined;
+    const ref = (segment: SegmentRecord) => ({ sourceId: null, segmentId: segment.segmentId });
 
-      const subject = isPage
-        ? `page/${ordinalOf(segment.sourceId)}/${segment.ordinal}`
-        : `moment/${ordinalOf(segment.sourceId)}/${segment.ordinal}`;
-      const taskType = isPage ? TASK.readPage : TASK.readMoment;
-      const roleKey = isPage ? "page_reader" : "moment_reader";
-
-      /* The page's own text, when the file carried any. A scanned page has
-         none, and then the reader has the image and says so if it cannot
-         read it — which is the honest outcome for a scan. */
-      const companion = isPage
-        ? texts.find((t) => t.sourceId === segment.sourceId && t.ordinal === segment.ordinal)
-        : undefined;
-      const sources = companion
-        ? [{ sourceId: null, segmentId: segment.segmentId }, { sourceId: null, segmentId: companion.segmentId }]
-        : [{ sourceId: null, segmentId: segment.segmentId }];
-
-      const keys = groups.map((g) => `read:${segment.segmentId}:${g}`);
+    /* One subject, read blind by each group, then compared. The shape is the
+       same whatever the assignment is about; only the material and the task
+       type differ, which is the point of doing it in one place. */
+    const readTwiceThenCompare = (
+      key: string, subject: string, taskType: string, roleKey: string,
+      sources: { sourceId: null; segmentId: string }[],
+    ) => {
+      const keys = groups.map((g) => `read:${key}:${g}`);
       for (const [i, group] of groups.entries()) {
         specs.push({
           key: keys[i], phase: "analyze", taskType, roleKey, subjectKey: subject,
@@ -211,10 +330,58 @@ export class SourceDocumentsPack implements DomainPack {
         });
       }
       specs.push({
-        key: `compare:${segment.segmentId}`, phase: "compare", taskType: KERNEL_TASK_TYPES.compare,
+        key: `compare:${key}`, phase: "compare", taskType: KERNEL_TASK_TYPES.compare,
         roleKey: "claim_comparator", subjectKey: subject, sources: [], independenceGroup: null, priority: 200,
         dependsOn: keys.map((k) => ({ key: k, kind: "requires_claims" as const })), dependsOnTaskIds: [],
       });
+    };
+
+    /* ── PAIRS, when the analysis was started over any ────────────────────
+       A pair is the assignment; the two places inside it are never also read
+       on their own, because reading a page alone answers a different question
+       and would fill the result with findings nobody asked for. */
+    if (this.pairs.length > 0) {
+      for (const pair of this.pairs) {
+        if (pair.kind === "pages") {
+          const a = at(SEGMENT_KINDS.page, pair.a.file, pair.a.ordinal);
+          const b = at(SEGMENT_KINDS.page, pair.b.file, pair.b.ordinal);
+          if (!a || !b || a.segmentId === b.segmentId) continue;
+          const sources = [ref(a), ref(b)];
+          const aText = textFor(a); if (aText) sources.push(ref(aText));
+          const bText = textFor(b); if (bText) sources.push(ref(bText));
+          readTwiceThenCompare(
+            `pages:${[a.segmentId, b.segmentId].sort().join(":")}`,
+            SUBJECT.pages(pair.a, pair.b), TASK.comparePages, "page_pair_reader", sources);
+          continue;
+        }
+        const moment = at(SEGMENT_KINDS.moment, pair.moment.file, pair.moment.ordinal);
+        const page = at(SEGMENT_KINDS.page, pair.page.file, pair.page.ordinal);
+        if (!moment || !page) continue;
+        const sources = [ref(moment), ref(page)];
+        const pageText = textFor(page); if (pageText) sources.push(ref(pageText));
+        readTwiceThenCompare(
+          `moment-page:${moment.segmentId}:${page.segmentId}`,
+          SUBJECT.momentAgainstPage(pair.moment, pair.page), TASK.momentAgainstPage, "moment_page_reader", sources);
+      }
+      return specs;
+    }
+
+    /* ── ONE PLACE AT A TIME, when no pair was asked for ──────────────────
+       "Check one thing" is a question about each place on its own, and this
+       is the assignment that answers it. */
+    for (const segment of accepted) {
+      const isPage = segment.segmentKind === SEGMENT_KINDS.page;
+      const isMoment = segment.segmentKind === SEGMENT_KINDS.moment;
+      if (!isPage && !isMoment) continue;
+
+      const file = ordinalOf(segment.sourceId);
+      const subject = isPage ? SUBJECT.page(file, segment.ordinal) : SUBJECT.moment(file, segment.ordinal);
+      const companion = isPage ? textFor(segment) : undefined;
+      const sources = companion ? [ref(segment), ref(companion)] : [ref(segment)];
+      readTwiceThenCompare(
+        segment.segmentId, subject,
+        isPage ? TASK.readPage : TASK.readMoment,
+        isPage ? "page_reader" : "moment_reader", sources);
     }
     return specs;
   }
@@ -227,11 +394,19 @@ export class SourceDocumentsPack implements DomainPack {
 
   validateClaim(packet: WorkPacket, claim: ProposedClaim, _envelope: AgentResultEnvelope): string[] {
     const problems: string[] = [];
-    if (packet.taskType !== TASK.readPage && packet.taskType !== TASK.readMoment) {
+    /* One subject type per assignment, so a claim cannot quietly answer about
+       a different shape of thing than it was asked about. */
+    const SUBJECT_TYPE: Record<string, string> = {
+      [TASK.readPage]: "page",
+      [TASK.readMoment]: "moment",
+      [TASK.comparePages]: "pages",
+      [TASK.momentAgainstPage]: "moment_page",
+    };
+    const wanted = SUBJECT_TYPE[packet.taskType];
+    if (!wanted) {
       if (packet.taskType.startsWith(`${PACK_ID}:`)) problems.push(`claim ${claim.claimKey}: ${packet.taskType} produces no claims`);
       return problems;
     }
-    const wanted = packet.taskType === TASK.readPage ? "page" : "moment";
     if (claim.predicate !== "finding") {
       problems.push(`claim ${claim.claimKey}: a reader of this pack reports "finding", not "${claim.predicate}"`);
     }
@@ -251,6 +426,30 @@ export class SourceDocumentsPack implements DomainPack {
       }
       if (claim.value.quantity !== null && claim.value.quantity !== undefined) {
         problems.push(`claim ${claim.claimKey}: a finding is an answer, not a quantity`);
+      }
+    }
+    /* A COMPARISON THAT LOOKED AT ONE SIDE IS NOT A COMPARISON.
+       The kernel checks that every anchor points somewhere real; only the pack
+       knows that THIS assignment was about two places and that an answer
+       resting on one of them is an assertion about a pair half of which was
+       never opened. */
+    if (packet.taskType === TASK.comparePages || packet.taskType === TASK.momentAgainstPage) {
+      const named = new Set(
+        (_envelope.anchors ?? [])
+          .filter((a) => claim.anchorKeys.includes(a.anchorKey))
+          .map((a) => a.segmentId)
+          .filter((id): id is string => typeof id === "string" && id.length > 0));
+      /* The page's own text is the same place as its image, so the two sides
+         are counted by which piece of material they belong to rather than by
+         how many segments happened to be attached. */
+      const sides = new Set<string>();
+      for (const id of named) {
+        const source = packet.sources.find((x) => x.segmentId === id);
+        if (source) sides.add(`${source.sourceId}/${source.locator?.page ?? source.ordinal}`);
+      }
+      if (sides.size < 2) {
+        problems.push(
+          `claim ${claim.claimKey}: this assignment is about two pieces of material and the answer anchors to ${sides.size === 1 ? "only one" : "neither"} of them`);
       }
     }
     return problems;

@@ -28,6 +28,7 @@ import type { Queryable } from "../core-v2/postgres/wire.ts";
 import { PostgresOrchestrationRepository } from "../core-v2/postgres/repository.ts";
 import { SyntheticRecordsPack } from "../core-v2/domains/synthetic-records/pack.ts";
 import { SourceDocumentsPack } from "../core-v2/domains/source-documents/pack.ts";
+import type { ScopePair } from "../core-v2/domains/source-documents/pack.ts";
 import { AnalysisMaterialResolver, analysisOfSourceUri, manifestOfAnalysis, readAnalysis } from "./analysis.ts";
 import type { ReadObject } from "./analysis.ts";
 import { RoleRegistry } from "../core-v2/kernel/roles.ts";
@@ -304,9 +305,23 @@ async function analysisWorld(options: {
     return { refused: "the analysis this workflow names belongs to another organisation" };
   }
 
+  /* WHAT THIS RUN COMPARES, read back rather than decided again.
+     The pairs were settled once when the workflow was started and written
+     into its requested scope, which 058 freezes. A pass that decided them
+     again could reach a different answer — the owner may have changed their
+     mind since — and would then be building assignments the first pass never
+     made, over material a finished reading already rests on. */
+  const scope = (await client.query(
+    `select requested_scope from public.intelligence_workflows where id = $1::uuid`, [workflowId])).rows[0];
+  const requested = scope ? asJsonObject(scope.requested_scope) : {};
+  const pairs = Array.isArray(requested.pairs) ? (requested.pairs as ScopePair[]) : [];
+
   let manifest;
   try {
-    manifest = manifestOfAnalysis(analysis, workflowId);
+    manifest = manifestOfAnalysis(analysis, workflowId, {
+      pairs, unpaired: Array.isArray(requested.unpaired) ? requested.unpaired : [],
+      note: String(requested.pairingNote ?? ""),
+    });
   } catch (error) {
     return {
       refused: "this runner cannot rebuild the material this analysis was started over",
@@ -340,7 +355,7 @@ async function analysisWorld(options: {
   }
 
   const config = configuredFor(registry, gates, answerWithinMs, authorized, analysis.paidCallsAllowed);
-  const pack = new SourceDocumentsPack({ question: questionFor(analysis) });
+  const pack = new SourceDocumentsPack({ question: questionFor(analysis), pairs });
   const roles = new RoleRegistry(pack);
   const ledger = new BudgetLedger(client as never, config);
 
@@ -380,6 +395,14 @@ async function analysisWorld(options: {
 /* The owner's words when they typed any, and otherwise the plain meaning of
    the kind of analysis they chose. Nothing here embellishes: a reader is
    asked the question that was asked. */
+/* A jsonb column arrives as an object from one driver and as text from
+   another. Both are read the same way here, and neither is guessed at. */
+function asJsonObject(value: unknown): Record<string, unknown> {
+  if (value === null || value === undefined) return {};
+  if (typeof value === "string") { try { return JSON.parse(value) as Record<string, unknown>; } catch { return {}; } }
+  return value as Record<string, unknown>;
+}
+
 export function questionFor(analysis: { question: string; questionKind: string }): string {
   const typed = (analysis.question ?? "").trim();
   if (typed) return typed;

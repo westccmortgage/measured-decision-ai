@@ -76,6 +76,9 @@ export type AnalysisRecord = {
   state: string;
   authorizedUsd: number | null;
   paidCallsAllowed: boolean;
+  /* The owner's own answer to "what should be compared with what". Empty
+     means the material's own cross-references decide. */
+  chosenPairing: Record<string, unknown>;
   files: AnalysisFile[];
 };
 
@@ -90,7 +93,7 @@ const asJson = (value: unknown): Record<string, unknown> => {
 export async function readAnalysis(client: Queryable, analysisId: string): Promise<AnalysisRecord | null> {
   const runs = await client.query(
     `select a.id::text as id, a.organization_id::text as organization_id, a.title, a.question,
-            a.question_kind, a.state, a.authorized_usd, a.run_requested_at
+            a.question_kind, a.state, a.authorized_usd, a.run_requested_at, a.pairing
        from public.analysis_runs a where a.id = $1::uuid`, [analysisId]);
   if (!runs.rows.length) return null;
   const run = runs.rows[0];
@@ -134,6 +137,7 @@ export async function readAnalysis(client: Queryable, analysisId: string): Promi
     state: String(run.state),
     authorizedUsd: authorized,
     paidCallsAllowed: run.run_requested_at !== null && run.run_requested_at !== undefined && (authorized ?? 0) > 0,
+    chosenPairing: asJson(run.pairing),
     files: files.rows.map((row) => ({
       fileId: String(row.id), ordinal: Number(row.ordinal),
       kind: String(row.kind) as AnalysisFile["kind"],
@@ -185,7 +189,11 @@ export function workflowIdForAnalysis(analysisId: string): string {
   return entityId("core_v2.analysis.workflow", analysisId);
 }
 
-export function manifestOfAnalysis(analysis: AnalysisRecord, workflowId: string): SourceManifest {
+export function manifestOfAnalysis(
+  analysis: AnalysisRecord,
+  workflowId: string,
+  pairing: { pairs: unknown[]; unpaired: unknown[]; note: string } = { pairs: [], unpaired: [], note: "" },
+): SourceManifest {
   /* A manifest carries the id the workflow will be created under. A
      placeholder here becomes a workflow nothing can find. */
   if (!isUuid(workflowId)) {
@@ -246,6 +254,13 @@ export function manifestOfAnalysis(analysis: AnalysisRecord, workflowId: string)
       questionKind: analysis.questionKind,
       files: analysis.files.length,
       segments: sources.reduce((n, s) => n + s.declaredSegments.length, 0),
+      /* WHAT THIS RUN COMPARES, frozen with the workflow. 058 does not let a
+         requested scope change, so the pairs a reading was made under can be
+         read back from the record for as long as the result stands — and a
+         later pass builds exactly the assignments the first one did. */
+      pairs: pairing.pairs,
+      unpaired: pairing.unpaired,
+      pairingNote: pairing.note,
     },
     sources,
   };

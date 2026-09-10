@@ -312,8 +312,12 @@ await withThrowawayDatabase(async ({ client, organizationId }) => {
 
   const planFile = pdfFile(1, "plan-set.pdf", material.plans.bytes, material.plans.made);
   const clipFile = videoFile(2, "walkthrough.webm", material.clip.bytes, material.clip.made);
+  /* "Check one thing" is the question that IS about each place on its own —
+     every page and every sampled moment answered against one question. The
+     comparison kinds, which pair two pieces of material, are the subject of
+     tests/comparison.mjs next door. */
   const first = await seedAnalysis(client, organizationId, {
-    title: "Riverside level 2", questionKind: "video_against_plans",
+    title: "Riverside level 2", questionKind: "specific_question",
     question: "Is a smoke detector shown in every bedroom?",
     files: [planFile, clipFile],
   });
@@ -327,18 +331,6 @@ await withThrowawayDatabase(async ({ client, organizationId }) => {
     pass = await tickVia(client, { transport: sealedTransport(seen) });
   }
 
-  if (process.env.MDAI_DEBUG) {
-    const seg = await client.query(`select segment_kind, status, count(*)::text as n from public.source_segments where workflow_id=$1 group by 1,2 order by 1,2`, [started.workflowId]);
-    console.log("SEGMENTS", seg.rows);
-    const tasks = await client.query(`select task_type, role_key, state, count(*)::text as n from public.workflow_tasks where workflow_id=$1 group by 1,2,3 order by 1,2,3`, [started.workflowId]);
-    console.log("TASKS", tasks.rows);
-    const att = await client.query(`select role_key, state, validation_state, error_code, count(*)::text as n from public.agent_attempts where workflow_id=$1 group by 1,2,3,4`, [started.workflowId]);
-    console.log("ATTEMPTS", att.rows);
-    const probs = await client.query(`select role_key, validation_problems::text, error_message from public.agent_attempts where workflow_id=$1 and validation_state='invalid' limit 3`, [started.workflowId]);
-    console.log("PROBLEMS", probs.rows);
-    const ts = await client.query(`select task_type, count(*)::text as n from public.task_sources ts join public.workflow_tasks t on t.id=ts.task_id where t.workflow_id=$1 group by 1`, [started.workflowId]);
-    console.log("TASK SOURCES", ts.rows);
-  }
   t.check("the material was fetched from storage rather than from the record",
     objectReads > 0, `${objectReads} objects read back`);
 
@@ -565,7 +557,7 @@ await withThrowawayDatabase(async ({ client, organizationId }) => {
 
   const secondFile = pdfFile(1, "scan-set.pdf", material.scan.bytes, material.scan.made);
   const second = await seedAnalysis(client, organizationId, {
-    title: "Survey scans", questionKind: "plan_consistency", question: "",
+    title: "Survey scans", questionKind: "specific_question", question: "",
     files: [secondFile],
   });
   const secondRun = await startAnalysis(client, organizationId, second);
@@ -598,7 +590,7 @@ await withThrowawayDatabase(async ({ client, organizationId }) => {
   t.section("(7) a stop stops new work, and says what was already sent");
 
   const third = await seedAnalysis(client, organizationId, {
-    title: "A run somebody stops", questionKind: "plan_consistency", question: "",
+    title: "A run somebody stops", questionKind: "specific_question", question: "",
     files: [pdfFile(1, "plan-set.pdf", material.plans.bytes, material.plans.made)],
   });
   const thirdRun = await startAnalysis(client, organizationId, third);
@@ -624,7 +616,7 @@ await withThrowawayDatabase(async ({ client, organizationId }) => {
   t.section("(9) a different file is different material");
 
   const fourth = await seedAnalysis(client, organizationId, {
-    title: "Before the swap", questionKind: "plan_consistency", question: "",
+    title: "Before the swap", questionKind: "specific_question", question: "",
     files: [pdfFile(1, "plan-set.pdf", material.plans.bytes, material.plans.made)],
   });
   const beforeSwap = manifestOfAnalysis(await readAnalysis(client, fourth), workflowIdForAnalysis(fourth));

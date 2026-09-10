@@ -101,9 +101,38 @@ export async function pdfPageText(document, pageNumber) {
   try {
     const page = await document.getPage(pageNumber);
     const content = await page.getTextContent();
-    const text = (content.items || []).map((item) => item.str ?? "").join(" ")
-      .replace(/[ \t]+/g, " ").replace(/\s*\n\s*/g, "\n").trim();
-    return text;
+    /* LINES, NOT A WALL OF WORDS.
+     *
+     * pdf.js hands back one item per run of glyphs, in no particular order and
+     * with no line breaks. Joining them with spaces produces a page whose
+     * every statement runs into the next — "CEILING HEIGHT 2700 DOOR SCHEDULE
+     * REF" — and a reader given that cannot say which words belong together,
+     * let alone quote a line.
+     *
+     * Each item carries its own position. Items sharing a baseline are a line;
+     * lines run down the page; words run across it. That is all this does, and
+     * it is what makes a quotation from a page mean something. */
+    const rows = new Map();
+    for (const item of content.items || []) {
+      const text = item.str ?? "";
+      if (!text.trim()) continue;
+      const transform = item.transform || [];
+      const y = Math.round(Number(transform[5] ?? 0));
+      const x = Number(transform[4] ?? 0);
+      /* Two baselines within a couple of points are the same line: superscripts
+         and mixed font sizes sit a hair off their neighbours. */
+      let key = y;
+      for (const existing of rows.keys()) if (Math.abs(existing - y) <= 2) { key = existing; break; }
+      const row = rows.get(key) ?? [];
+      row.push({ x, text });
+      rows.set(key, row);
+    }
+    return [...rows.entries()]
+      .sort((a, b) => b[0] - a[0])
+      .map(([, row]) => row.sort((a, b) => a.x - b.x).map((w) => w.text).join(" ").replace(/[ \t]+/g, " ").trim())
+      .filter(Boolean)
+      .join("\n")
+      .trim();
   } catch {
     return "";
   }
