@@ -28,6 +28,7 @@ import "../_shared/core-v2/install-node-globals.ts";
 
 import { EdgeDatabase, DatabaseUnreachable } from "../_shared/core-v2/deno-postgres.ts";
 import { isRouteProblem, routeToRecord } from "../_shared/core-v2/route.ts";
+import { corsHeaders, preflightResponse } from "../_shared/core-v2/cors.ts";
 import { PostgresOrchestrationRepository } from "../../../workers/core-v2/postgres/repository.ts";
 import { SyntheticRecordsPack } from "../../../workers/core-v2/domains/synthetic-records/pack.ts";
 import { PostgresContinuationStore } from "../../../workers/core-v2-runner/continuations.ts";
@@ -40,8 +41,15 @@ const FUNCTION = "core-v2-runner";
 
 type Body = Record<string, unknown>;
 
+/* Every answer carries the cross-origin headers, not only the preflight: a
+   browser that was told it may ask still cannot read a reply that does not
+   say so. */
+let asking: Request | null = null;
 const json = (status: number, body: Body) =>
-  new Response(JSON.stringify(body), { status, headers: { "content-type": "application/json" } });
+  new Response(JSON.stringify(body), {
+    status,
+    headers: { "content-type": "application/json", ...(asking ? corsHeaders(asking) : {}) },
+  });
 
 /* The subject of the token the platform already verified. Decoding is all
    this does — the signature was checked before this code ran, and doing it
@@ -77,6 +85,9 @@ const isUuid = (value: unknown): value is string =>
   typeof value === "string" && /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(value);
 
 Deno.serve(async (request: Request): Promise<Response> => {
+  asking = request;
+  /* The permission a browser asks for before it sends a header of its own. */
+  if (request.method === "OPTIONS") return preflightResponse(request);
   if (request.method !== "POST") return json(405, { refused: "this door takes POST" });
 
   const caller = callerFrom(request);

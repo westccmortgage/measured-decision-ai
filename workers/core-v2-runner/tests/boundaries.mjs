@@ -240,4 +240,33 @@ t.section("a log line carries ids and never content");
 }
 
 t.check("nothing in this suite tried to open a socket", tripped() === 0, `guard tripped ${tripped()} times`);
+
+/* ─────────────────────────────────────── A DOOR A BROWSER CAN ACTUALLY OPEN
+ *
+ * A door that answers 405 to OPTIONS has not refused anybody: it has made
+ * itself unreachable from every page while still answering curl perfectly.
+ * The analysis door shipped that way once, and this is why it cannot again.
+ */
+t.section("the two human doors answer the question a browser asks first");
+{
+const tick = read("supabase/functions/core-v2-runner-tick/index.ts");
+const door = read("supabase/functions/core-v2-runner/index.ts");
+const analysis = read("supabase/functions/core-v2-analysis/index.ts");
+const cors = read("supabase/functions/_shared/core-v2/cors.ts");
+for (const [name, text] of [["the human door", door], ["the analysis door", analysis]]) {
+  t.check(`${name} answers the preflight before it refuses a method`,
+    /request\.method === "OPTIONS"/.test(text)
+    && text.indexOf('request.method === "OPTIONS"') < text.indexOf('request.method !== "POST"'),
+    "OPTIONS must be answered above the POST-only refusal");
+  t.check(`${name} stamps every answer, not only the preflight`,
+    /corsHeaders\(asking\)/.test(text));
+}
+t.check("the machine door does NOT open itself to a browser — nothing on a page calls it",
+  !/access-control-allow-origin/i.test(tick) && !/corsHeaders/.test(tick));
+t.check("the allowed origins are this product's own, a developer's machine, and this site's deploys",
+  cors.includes("https://measureddecision.ai") && cors.includes("measureddecisionai") && cors.includes("localhost"));
+t.check("and the deploy pattern is anchored at both ends, so a lookalike host is not this site",
+  cors.includes("^https:\\/\\/") && cors.includes("netlify\\.app$"));
+}
+
 t.finish();

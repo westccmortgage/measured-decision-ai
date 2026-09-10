@@ -209,11 +209,11 @@ async function knockAgain(secret: string): Promise<void> {
   try {
     const answer = await fetch(url, {
       method: "POST",
-      headers: {
-        "content-type": "application/json",
-        [SECRET_HEADER]: secret,
-        authorization: `Bearer ${secret}`,
-      },
+      /* The header this door actually checks, and nothing else. An
+         `authorization: Bearer` beside it would buy nothing — `verify_jwt` is
+         false here — and would put a bearer-shaped line in the one file the
+         boundary suite reads to prove no key is named. */
+      headers: { "content-type": "application/json", [SECRET_HEADER]: secret },
       body: JSON.stringify({ op: "tick", wokenBy: "chain" }),
       signal: AbortSignal.timeout(2_000),
     });

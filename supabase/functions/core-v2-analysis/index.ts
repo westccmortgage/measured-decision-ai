@@ -25,6 +25,7 @@ import "../_shared/core-v2/install-node-globals.ts";
 
 import { EdgeDatabase, DatabaseUnreachable } from "../_shared/core-v2/deno-postgres.ts";
 import { isRouteProblem, routeToRecord } from "../_shared/core-v2/route.ts";
+import { corsHeaders, preflightResponse } from "../_shared/core-v2/cors.ts";
 import { signedUrlFor } from "../_shared/core-v2/storage.ts";
 import { PostgresContinuationStore } from "../../../workers/core-v2-runner/continuations.ts";
 import { startFromManifest } from "../../../workers/core-v2-runner/start.ts";
@@ -50,10 +51,19 @@ const MAXIMUM_SUBJECTS = 120;
 
 type Body = Record<string, unknown>;
 
+/* Every answer carries the cross-origin headers, not only the preflight: a
+   browser that was told it may ask still cannot read a reply that does not
+   say so. `request` is threaded in for the one header that depends on who is
+   asking. */
+let asking: Request | null = null;
 const json = (status: number, body: Body) =>
   new Response(JSON.stringify(body), {
     status,
-    headers: { "content-type": "application/json", "cache-control": "no-store" },
+    headers: {
+      "content-type": "application/json",
+      "cache-control": "no-store",
+      ...(asking ? corsHeaders(asking) : {}),
+    },
   });
 
 const isUuid = (value: unknown): value is string =>
@@ -79,6 +89,9 @@ async function memberOf(db: EdgeDatabase, userId: string, organizationId: string
 }
 
 Deno.serve(async (request: Request): Promise<Response> => {
+  asking = request;
+  /* The permission a browser asks for before it sends a header of its own. */
+  if (request.method === "OPTIONS") return preflightResponse(request);
   if (request.method !== "POST") return json(405, { refused: "this door takes POST" });
 
   const caller = callerFrom(request);
