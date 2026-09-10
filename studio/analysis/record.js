@@ -269,11 +269,15 @@ export class AnalysisRecord {
         media_type: "image/png", byte_size: rendered.blob.size, content_sha256: hash,
         blob: rendered.blob,
         locator: {
+          /* THE KERNEL'S OWN GEOMETRY, and only it, in the two keys the
+             kernel can actually check: a box normalised 0..1, and a time
+             range in milliseconds. A reader that bounds a region of this page
+             gives a box inside this one, and the record can then say where on
+             the page a finding came from. The page's own size in points and
+             the pixels the reader was given are kept beside it, because a box
+             in 0..1 means nothing without them. */
+          bbox: [0, 0, 1, 1],
           page,
-          /* The whole page, in the page's own points, and the pixels the
-             reader was actually given. A fragment inside it is quoted by the
-             reader as a box in these coordinates. */
-          box: { x: 0, y: 0, width: rendered.pointWidth, height: rendered.pointHeight },
           pointWidth: rendered.pointWidth, pointHeight: rendered.pointHeight,
           pixelWidth: rendered.pixelWidth, pixelHeight: rendered.pixelHeight,
           reducedToGrey: rendered.reduced,
@@ -320,7 +324,12 @@ export class AnalysisRecord {
           locator: {
             /* The second the decoder landed on, not the second that was asked
                for. Both are kept, because the difference is the honest answer
-               to "where exactly did this come from". */
+               to "where exactly did this come from" — and the millisecond pair
+               is the kernel's own range vocabulary, so an anchor inside this
+               moment can be checked rather than believed. */
+            bbox: [0, 0, 1, 1],
+            start_ms: Math.round(frame.actualSeconds * 1000),
+            end_ms: Math.round(frame.actualSeconds * 1000),
             seconds: frame.actualSeconds,
             requestedSeconds: frame.requestedSeconds,
             pixelWidth: frame.pixelWidth, pixelHeight: frame.pixelHeight,

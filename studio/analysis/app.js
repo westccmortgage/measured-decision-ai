@@ -779,7 +779,7 @@ function findingCard(subject) {
             <div>Answer: <b>${esc(answerOf(r) || "—")}</b> <span class="faint">(${esc(r.status)})</span></div>
             ${(r.anchors || []).map((a) => `
               ${a.quotedText ? `<p class="quote">“${esc(a.quotedText)}”</p>` : ""}
-              ${a.contentHash ? `<button type="button" class="quiet" data-evidence="${esc(a.contentHash)}">Open the evidence →</button>` : ""}
+              ${a.contentHash ? `<button type="button" class="quiet" data-evidence="${esc(a.contentHash)}" data-region="${esc(JSON.stringify(a.locator?.bbox ?? null))}">Open the evidence →</button>` : ""}
             `).join("")}
           </div>`).join("")}
         ${reviews.length ? `<div class="details"><h3>Checked against the source</h3>
@@ -800,7 +800,11 @@ function findingCard(subject) {
     </details>`);
 
   node.querySelectorAll("[data-evidence]").forEach((button) =>
-    button.addEventListener("click", () => openEvidence(button.getAttribute("data-evidence"))));
+    button.addEventListener("click", () => {
+      let region = null;
+      try { region = JSON.parse(button.getAttribute("data-region") || "null"); } catch { region = null; }
+      openEvidence(button.getAttribute("data-evidence"), region);
+    }));
   return node;
 }
 
@@ -825,7 +829,7 @@ function placeWords(subjectKey) {
 
 /* ── the evidence ────────────────────────────────────────────────────── */
 
-async function openEvidence(contentHash) {
+async function openEvidence(contentHash, region) {
   let found;
   try {
     found = await call("evidence", { analysisId: state.open.run.id, contentHash });
@@ -853,7 +857,7 @@ async function openEvidence(contentHash) {
       return;
     }
   }
-  showStill(found);
+  showStill(found, region);
 }
 
 async function signedOriginal(file) {
@@ -864,12 +868,15 @@ async function signedOriginal(file) {
   return data?.signedUrl ?? null;
 }
 
-function showStill(found) {
-  const box = found.locator?.box;
-  const pageWidth = Number(found.locator?.pointWidth) || 0;
-  const pageHeight = Number(found.locator?.pointHeight) || 0;
-  const overlay = box && pageWidth && pageHeight
-    ? `<div class="evidence-box" style="left:${(box.x / pageWidth) * 100}%;top:${(box.y / pageHeight) * 100}%;width:${(box.width / pageWidth) * 100}%;height:${(box.height / pageHeight) * 100}%"></div>`
+function showStill(found, region) {
+  /* The region a reading actually named, in the kernel's own geometry: four
+     numbers normalised against this very image. A finding with no box is
+     shown without one rather than with a guessed one. */
+  const box = Array.isArray(region) && region.length === 4 ? region
+    : Array.isArray(found.locator?.bbox) && found.locator.bbox.length === 4 ? null
+    : null;
+  const overlay = box
+    ? `<div class="evidence-box" style="left:${box[0] * 100}%;top:${box[1] * 100}%;width:${(box[2] - box[0]) * 100}%;height:${(box[3] - box[1]) * 100}%"></div>`
     : "";
   const node = h(`
     <div class="evidence-backdrop">

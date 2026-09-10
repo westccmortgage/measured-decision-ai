@@ -28,8 +28,10 @@ import { isRouteProblem, routeToRecord } from "../_shared/core-v2/route.ts";
 import { signedUrlFor } from "../_shared/core-v2/storage.ts";
 import { PostgresContinuationStore } from "../../../workers/core-v2-runner/continuations.ts";
 import { startFromManifest } from "../../../workers/core-v2-runner/start.ts";
-import { manifestOfAnalysis, readAnalysis, clock } from "../../../workers/core-v2-runner/analysis.ts";
+import { manifestOfAnalysis, readAnalysis, clock, workflowIdForAnalysis } from "../../../workers/core-v2-runner/analysis.ts";
 import { questionFor } from "../../../workers/core-v2-runner/world.ts";
+import { emptySections, sectionFor } from "../../../workers/core-v2-runner/sections.ts";
+import type { SubjectShape } from "../../../workers/core-v2-runner/sections.ts";
 import { SourceDocumentsPack } from "../../../workers/core-v2/domains/source-documents/pack.ts";
 import { loadOperatorRegistry } from "../../../workers/core-v2-canary/operator-registry.ts";
 import bundledDeclaration from "../../../workers/core-v2-canary/registry.canary.json" with { type: "json" };
@@ -241,7 +243,7 @@ async function run(db: EdgeDatabase, caller: string, body: Body): Promise<Respon
   const pack = new SourceDocumentsPack({ question: questionFor(analysis) });
   let manifest;
   try {
-    manifest = manifestOfAnalysis(analysis, "00000000-0000-0000-0000-000000000000");
+    manifest = manifestOfAnalysis(analysis, workflowIdForAnalysis(analysisId));
   } catch (error) {
     return json(409, { refused: "this analysis cannot be read as a source set", detail: (error as { reasons?: string[] }).reasons });
   }
@@ -457,10 +459,10 @@ async function cancel(db: EdgeDatabase, caller: string, body: Body): Promise<Res
  *                    nobody could read, a reading nobody corroborated, an
  *                    answer of "unclear". A thing here has NOT been decided.
  *
- * The rule that puts a subject in a section is written out below in one
- * function so it can be read and argued with. What it will not do is call an
- * ambiguous automatic agreement "confirmed": corroboration needs two readings
- * from different independence domains, and a lone reading is never enough.
+ * The rule that puts a subject in a section is workers/core-v2-runner/
+ * sections.ts, on its own, so it can be read and argued with without reading
+ * an HTTP handler — and so a test can put a case to it directly. What it will
+ * not do is call an ambiguous automatic agreement "confirmed".
  */
 async function results(db: EdgeDatabase, caller: string, body: Body): Promise<Response> {
   const analysisId = body.analysisId;
@@ -526,10 +528,8 @@ async function results(db: EdgeDatabase, caller: string, body: Body): Promise<Re
       label: a.label ?? null,
     }));
 
-  const bySubject = new Map<string, {
-    subjectType: string; subjectKey: string;
-    readings: unknown[]; reviews: unknown[]; decisions: unknown[];
-    taskStates: string[]; problems: string[];
+  const bySubject = new Map<string, SubjectShape & {
+    subjectType: string; subjectKey: string; problems: string[];
   }>();
   const slot = (type: string, key: string) => {
     const id = `${type}:${key}`;
@@ -615,61 +615,11 @@ async function results(db: EdgeDatabase, caller: string, body: Body): Promise<Re
   });
 }
 
-function emptySections() {
-  return { confirmed: [] as unknown[], discrepancy: [] as unknown[], needsCheck: [] as unknown[] };
-}
-
 const asObject = (value: unknown): Record<string, unknown> => {
   if (value === null || value === undefined) return {};
   if (typeof value === "string") { try { return JSON.parse(value) as Record<string, unknown>; } catch { return {}; } }
   return value as Record<string, unknown>;
 };
-
-/* THE RULE, IN ONE PLACE.
- *
- * Read it as a ladder: the first rung that matches wins, so a subject appears
- * once. Contradiction outranks agreement on purpose — a reviewer who went back
- * to the source and found otherwise is the strongest thing on the page. */
-function sectionFor(s: {
-  readings: unknown[]; reviews: unknown[]; decisions: unknown[]; taskStates: string[]; problems: string[];
-}): "confirmed" | "discrepancy" | "needsCheck" {
-  type Reading = { value?: Record<string, unknown>; independenceDomain?: string | null; status?: string };
-  type Review = { verdict?: string };
-  const readings = s.readings as Reading[];
-  const reviews = s.reviews as Review[];
-  const decisions = s.decisions as { type?: string; status?: string }[];
-
-  if (reviews.some((r) => r.verdict === "contradicts")) return "discrepancy";
-  if (decisions.some((d) => d.type === "reject_claim" || d.type === "reject_all")) return "discrepancy";
-
-  /* What each independent family actually said, as the compared answer. */
-  const answered = new Map<string, Set<string>>();
-  for (const r of readings) {
-    const answer = String((r.value ?? {}).text ?? (r.value ?? {}).known ?? "").trim().toLowerCase();
-    if (!answer) continue;
-    const domain = String(r.independenceDomain ?? "unknown");
-    const set = answered.get(domain) ?? new Set<string>();
-    set.add(answer);
-    answered.set(domain, set);
-  }
-  const domains = [...answered.keys()];
-  const distinct = new Set([...answered.values()].flatMap((set) => [...set]));
-
-  /* Two independent families, different answers: that is the discrepancy the
-     whole arrangement exists to find. */
-  if (domains.length >= 2 && distinct.size > 1) return "discrepancy";
-
-  const decided = decisions.some((d) =>
-    d.type === "accept_claim" && (d.status === "machine_decided" || d.status === "human_decided"));
-  const corroborated = domains.length >= 2 && distinct.size === 1 && !distinct.has("unclear");
-  const accepted = readings.some((r) => r.status === "accepted" || r.status === "verified");
-
-  if ((decided || corroborated || accepted)
-      && !s.taskStates.some((state) => ["queued", "leased", "running", "blocked"].includes(state))) {
-    return "confirmed";
-  }
-  return "needsCheck";
-}
 
 /* ─────────────────────────────────────────────────────────────── evidence
  *

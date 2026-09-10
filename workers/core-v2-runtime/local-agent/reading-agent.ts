@@ -28,6 +28,8 @@
  */
 import type { ClaimValue } from "../../core-v2/kernel/contracts.ts";
 import { readTextFromImage } from "../../core-v2/domains/synthetic-records/material.ts";
+import { decodePicture, describePicture } from "./picture.ts";
+import type { Picture } from "./picture.ts";
 import { parseMaterialHeading } from "../providers/provider.ts";
 
 /* ─────────────────────────────────────────── what arrives with a request */
@@ -49,7 +51,13 @@ type Attached = {
   mimeType: string;
   contentHash: string;
   byteLength: number;
+  /* Text when the material IS text, or when it is one of this repository's
+     own fixture images, whose pixels are an encoding of text. An ordinary
+     picture — a page rendered from somebody's PDF, a frame out of their clip
+     — has no text, and says so by leaving this empty rather than by throwing. */
   text: string;
+  /* What is measurably in an ordinary picture. Null for text. */
+  picture: Picture | null;
 };
 
 /* ──────────────────────────────────────────── reading the assignment back */
@@ -193,8 +201,19 @@ export function attachedMaterial(parts: AgentPart[]): Attached[] {
     const content = parts[i + 1];
     if (!content) continue;
     i++;
-    const text = content.kind === "text" ? content.text : readTextFromImage(content.bytes);
-    out.push({ ...heading, text });
+    let text = "";
+    let picture: Picture | null = null;
+    if (content.kind === "text") {
+      text = content.text;
+    } else {
+      /* The fixture encoding first, because a fixture image IS its text. An
+         ordinary PNG makes that reader throw, and then it is measured
+         instead. Neither path guesses: the picture reader returns null for
+         anything it cannot actually decode. */
+      try { text = readTextFromImage(content.bytes); }
+      catch { picture = decodePicture(content.bytes); }
+    }
+    out.push({ ...heading, text, picture });
   }
   return out;
 }
@@ -353,7 +372,7 @@ export function answerFromRequest(question: AgentQuestion): Envelope {
         }
         anchors.push({ anchorKey: key, sourceKind: at.sourceKind, sourceId: at.sourceId, segmentId: at.segmentId, locator: at.locator, quotedText: at.quotedText });
         const entryId = claim.subjectKey.replace(/^entry\//, "");
-        const verdict = readVerdict(claim, entryId, shown.text);
+        const verdict = readVerdict(claim, entryId, shown.text, questionIn(prompt.text));
         assessments.push({ claimRef: claim.ref, ...verdict, anchorKeys: [key] });
       }
       env.anchors = anchors;
@@ -374,13 +393,126 @@ export function answerFromRequest(question: AgentQuestion): Envelope {
       return env;
     }
 
+    /* THE OWNER'S OWN PAGES AND MOMENTS.
+     *
+     * What this stand-in can honestly do with a real page or a real frame,
+     * and what it cannot. It cannot understand a picture; no arrangement of if
+     * statements can. What it CAN do is exactly two things, both of them
+     * measurements of the material in front of it:
+     *
+     *   · when the file carried a text layer, look for the words of the
+     *     question in it, and quote the line it found them on — verbatim,
+     *     from the owner's own file;
+     *   · when it did not — a scan, a video frame — decode the picture and
+     *     say what is measurably in it, and answer `unclear`, because a
+     *     measurement of colour is not an answer to a question about what
+     *     the picture shows.
+     *
+     * That second branch is the important one. A stand-in that answered
+     * anyway would make every offline run look like a product that works.
+     */
+    case "page_reader":
+    case "moment_reader": {
+      const asked = questionIn(prompt.text);
+      const shown = assignment.sources.map((s) => forSegment(s.segmentId)).filter((m): m is Attached => m !== null);
+      if (shown.length === 0) return nothingToRead(assignment, "no material was attached to this assignment");
+
+      const written = shown.find((m) => m.text.trim().length > 0);
+      const seen = shown.find((m) => m.picture !== null);
+      const place = assignment.sources.find((s) => {
+        const found = forSegment(s.segmentId);
+        return found !== null && found.text.trim().length === 0;
+      }) ?? assignment.sources[0];
+
+      const env = envelope(assignment);
+      let answer: string;
+      let quoted: string;
+      if (written) {
+        const found = lookFor(asked, written.text);
+        answer = found.answer;
+        quoted = found.quoted;
+      } else if (seen && seen.picture) {
+        answer = "unclear";
+        quoted = describePicture(seen.picture);
+        env.limitations = ["this reader was given a picture with no text layer and can measure it but not read it"];
+      } else {
+        return nothingToRead(assignment, "the material attached could not be read at all");
+      }
+
+      /* Where it read. A picture it measured whole is bounded by the whole
+         picture, which is true and checkable; a line of text carries no
+         geometry this stand-in can honestly turn into a box, so that anchor
+         names the segment and stops there. */
+      env.anchors = [{
+        anchorKey: "seen",
+        sourceKind: written ? "segment" : "segment_locator",
+        sourceId: place.sourceId, segmentId: place.segmentId,
+        locator: written ? {} : { bbox: [0, 0, 1, 1] },
+        quotedText: quoted.slice(0, 400),
+      }];
+      env.claims = [{
+        claimKey: "seen", subjectType: assignment.subjectKey.split("/")[0],
+        subjectKey: assignment.subjectKey, predicate: "finding",
+        value: { known: true, quantity: null, text: answer },
+        unit: null, observationBasis: "observed", scope: {},
+        anchorKeys: ["seen"], machineConfidence: answer === "unclear" ? 0.3 : 0.7,
+      }];
+      return env;
+    }
+
     default:
       return nothingToRead(assignment, `this stand-in has no behaviour for ${assignment.roleKey}`);
   }
 }
 
+/* THE QUESTION, AS THE ASSIGNMENT PUT IT.
+   The compiler writes the pack's objective under `objective:`, indented. The
+   pack puts the owner's own words in it, so this is where they are. */
+export function questionIn(prompt: string): string {
+  const lines = prompt.split("\n");
+  const at = lines.findIndex((line) => line.trim() === "objective:");
+  if (at < 0) return "";
+  const said: string[] = [];
+  for (let i = at + 1; i < lines.length; i += 1) {
+    if (!/^\s{2,}\S/.test(lines[i])) break;
+    said.push(lines[i].trim());
+  }
+  return said.join(" ");
+}
+
+/* Do the words of the question appear in this text, and on which line.
+   Deliberately crude, and deliberately honest about being crude: it is a word
+   search, it says so in its reason, and it never answers from anything but
+   the text it was handed. */
+const NOISE = new Set(["about", "answer", "anything", "been", "does", "each", "every", "from", "have",
+  "look", "material", "question", "shown", "that", "their", "them", "there", "these", "this", "what",
+  "when", "where", "which", "with", "your", "page", "frame", "moment", "video", "clip", "plan", "plans",
+  "quote", "unclear", "yes", "does", "given", "only", "must", "were", "will", "into", "same", "one"]);
+
+export function lookFor(question: string, text: string): { answer: string; quoted: string } {
+  const words = [...new Set(String(question || "").toLowerCase().match(/[a-z][a-z0-9-]{3,}/g) ?? [])]
+    .filter((word) => !NOISE.has(word));
+  const lines = text.split(/\n|(?<=\.)\s+/).map((line) => line.trim()).filter((line) => line.length > 2);
+  const haystack = text.toLowerCase();
+  if (words.length === 0) {
+    return { answer: text.trim() ? "unclear" : "unclear", quoted: lines[0] ?? text.slice(0, 200) };
+  }
+  const present = words.filter((word) => haystack.includes(word));
+  let best = lines[0] ?? text.slice(0, 200);
+  let bestScore = -1;
+  for (const line of lines) {
+    const low = line.toLowerCase();
+    const score = words.reduce((total, word) => total + (low.includes(word) ? 1 : 0), 0);
+    if (score > bestScore) { bestScore = score; best = line; }
+  }
+  const answer = present.length === words.length ? "yes"
+    : present.length * 2 < words.length ? "no"
+    : "unclear";
+  return { answer, quoted: best };
+}
+
 /* What the reopened material says about one claim. */
-function readVerdict(claim: Claim, entryId: string, text: string): { assessment: string; reasonCode: string; explanation: string; proposedValue?: ClaimValue | null; proposedUnit?: string | null } {
+function readVerdict(claim: Claim, entryId: string, text: string, question = ""): { assessment: string; reasonCode: string; explanation: string; proposedValue?: ClaimValue | null; proposedUnit?: string | null } {
   if (claim.predicate === "quantity") {
     const row = tableRows(text).find((r) => r.id === entryId);
     if (!row) return { assessment: "contradicts", reasonCode: "not_in_source", explanation: "the material holds nothing for this subject at this place", proposedValue: null, proposedUnit: null };
@@ -392,6 +524,28 @@ function readVerdict(claim: Claim, entryId: string, text: string): { assessment:
       return { assessment: "wrong_unit", reasonCode: "unit_differs", explanation: `the material gives ${row.unit}`, proposedValue: value, proposedUnit: row.unit };
     }
     return { assessment: "contradicts", reasonCode: "value_differs", explanation: `the material shows ${row.quantity} ${row.unit}`, proposedValue: value, proposedUnit: row.unit };
+  }
+  if (claim.predicate === "finding") {
+    /* The critic reopens the same place and asks the same question of it. It
+       has no more ability than the reader did, which is why "unclear" is
+       supported rather than contradicted: agreeing that a place cannot be
+       read from is a real verdict, and calling it a contradiction would
+       manufacture a disagreement out of a shared limitation. */
+    const asked = question;
+    if (!text.trim()) {
+      return claim.value.text === "unclear"
+        ? { assessment: "supports", reasonCode: "place_not_readable", explanation: "this place carries no text either, so unclear is what the material supports" }
+        : { assessment: "insufficient", reasonCode: "not_readable_here", explanation: "this place carries no text, so an answer of yes or no cannot be checked here" };
+    }
+    const again = lookFor(asked, text);
+    if (same(again.answer, String(claim.value.text ?? ""))) {
+      return { assessment: "supports", reasonCode: "matches_source", explanation: `the material reads: ${again.quoted.slice(0, 120)}` };
+    }
+    return {
+      assessment: "contradicts", reasonCode: "value_differs",
+      explanation: `reading the same place again gives ${again.answer}: ${again.quoted.slice(0, 120)}`,
+      proposedValue: { known: true, quantity: null, text: again.answer }, proposedUnit: null,
+    };
   }
   if (claim.predicate === "revision_status") {
     const note = noteOf(text);

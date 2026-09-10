@@ -19,7 +19,7 @@
  * source set — which the engine already refuses to continue a workflow with.
  */
 import type { SegmentDescriptor, SourceDescriptor, SourceManifest } from "../core-v2/kernel/contracts.ts";
-import { canonical, entityId, sha256 } from "../core-v2/kernel/ids.ts";
+import { canonical, entityId, isUuid, sha256 } from "../core-v2/kernel/ids.ts";
 import type { Queryable } from "../core-v2/postgres/wire.ts";
 import type { MaterialResolver, MediaKind, ResolvedMaterial } from "../core-v2-runtime/material/material.ts";
 import type { SourceReference } from "../core-v2/kernel/contracts.ts";
@@ -173,7 +173,24 @@ export function fileContentHash(file: AnalysisFile): string {
    workflow, the source and the segment's own place — so the same analysis
    always produces the same ids and a rebuild after a restart lines up with
    what is already stored. */
+/* THE WORKFLOW ID AN ANALYSIS BECOMES, DRAWN FROM THE ANALYSIS ITSELF.
+ *
+ * Deterministic on purpose. The workflow's id is what `createWorkflow` keys
+ * on, so a second press of Run — a double click, a retried request, a browser
+ * that reloaded mid-flight — finds the workflow that already exists instead of
+ * starting a second one over the same files. The material cannot have changed
+ * underneath it: migration 063 closes an analysis's files the moment a run is
+ * requested. */
+export function workflowIdForAnalysis(analysisId: string): string {
+  return entityId("core_v2.analysis.workflow", analysisId);
+}
+
 export function manifestOfAnalysis(analysis: AnalysisRecord, workflowId: string): SourceManifest {
+  /* A manifest carries the id the workflow will be created under. A
+     placeholder here becomes a workflow nothing can find. */
+  if (!isUuid(workflowId)) {
+    throw new AnalysisNotReadable(analysis.analysisId, [`"${workflowId}" is not a workflow id`]);
+  }
   const reasons: string[] = [];
   if (analysis.files.length === 0) reasons.push("it holds no stored file");
 

@@ -26,6 +26,9 @@ run "one start, and then nobody"                                       continuat
 run "what a dead process leaves, and what the next one may do about it" resilience.mjs
 run "the lines the runner may not cross"                               boundaries.mjs
 run "the handlers a person and a watchdog actually call"               handlers.mjs
+# Real files, a real browser and a real cluster. It needs Chromium, which this
+# repository does not vendor; see studio/tests/analysis-browser.mjs.
+run "an owner's own files, all the way through"                        analysis.mjs
 
 printf "\n\033[1m%s\033[0m\n" "── the three doors, type-checked against what they import"
 if bash ./typecheck-doors.sh; then :; else fail=1; fi

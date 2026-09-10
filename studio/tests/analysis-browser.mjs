@@ -21,8 +21,12 @@ import { chromium } from "/opt/node22/lib/node_modules/playwright/index.mjs";
 import http from "node:http";
 import fs from "node:fs";
 import path from "node:path";
+import { fileURLToPath } from "node:url";
 
-export const FIXTURES = path.resolve("studio/tests/fixtures/analysis");
+/* From this file, not from the working directory: two suites in two
+   directories use this helper and neither of them is run from the root. */
+export const REPO_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../..");
+export const FIXTURES = path.join(REPO_ROOT, "studio/tests/fixtures/analysis");
 export const CHROME = "/opt/pw-browsers/chromium-1194/chrome-linux/chrome";
 
 const TYPES = {
@@ -31,7 +35,7 @@ const TYPES = {
   ".webm": "video/webm", ".mp4": "video/mp4", ".png": "image/png",
 };
 
-export async function serveRepository(root = path.resolve(".")) {
+export async function serveRepository(root = REPO_ROOT) {
   const server = http.createServer((request, response) => {
     let file = path.join(root, decodeURIComponent(request.url.split("?")[0]));
     if (fs.existsSync(file) && fs.statSync(file).isDirectory()) file = path.join(file, "index.html");

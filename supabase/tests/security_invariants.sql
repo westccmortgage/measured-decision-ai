@@ -5446,6 +5446,80 @@ select pg_temp.check('a workflow that is over is never re-labelled by the repair
     where w.id = '0c0e0000-0000-0000-0000-000000000001') in ('cancelled','completed','partial','failed'));
 
 
+-- ═══════════════════════════════════════════════════ 063 · an owner's own files
+--
+-- Four tables under the organisation's own row-level security, one gate that
+-- says whether anything may be sent for this analysis, and one trigger that
+-- closes an analysis's material the moment somebody presses Run.
+
+select pg_temp.check('an analysis, its files, its pieces and its history are all behind row-level security',
+  (select count(*) from pg_class c join pg_namespace n on n.oid = c.relnamespace
+    where n.nspname = 'public' and c.relrowsecurity
+      and c.relname in ('analysis_runs','analysis_files','analysis_parts','analysis_events')) = 4);
+
+select pg_temp.check('nobody signed in may ask what an analysis was authorised to spend — that is the runner''s question',
+  not has_function_privilege('authenticated', 'public.core_v2_analysis_authority(uuid)', 'execute')
+  and not has_function_privilege('anon', 'public.core_v2_analysis_authority(uuid)', 'execute')
+  and has_function_privilege('service_role', 'public.core_v2_analysis_authority(uuid)', 'execute'));
+
+insert into public.analysis_runs (id, organization_id, title, question_kind, question, state)
+values ('0d0a0000-0000-0000-0000-000000000001', 'aaaaaaaa-0000-0000-0000-000000000001',
+        'a test analysis', 'plan_consistency', '', 'ready');
+
+select pg_temp.check('an analysis nobody has pressed Run on may not spend a penny',
+  (public.core_v2_analysis_authority(
+     (select workflow_id from public.analysis_runs where id = '0d0a0000-0000-0000-0000-000000000001'))
+   ->> 'paid_calls_allowed') = 'false');
+
+insert into public.analysis_files (id, analysis_id, organization_id, ordinal, kind, file_name, media_type,
+  byte_size, storage_path, upload_state)
+values ('0d0f0000-0000-0000-0000-000000000001', '0d0a0000-0000-0000-0000-000000000001',
+        'aaaaaaaa-0000-0000-0000-000000000001', 1, 'pdf', 'a.pdf', 'application/pdf', 1024,
+        'aaaaaaaa-0000-0000-0000-000000000001/analysis/x/1-source.pdf', 'stored');
+select pg_temp.check('while an analysis is being collected, its files can still be changed',
+  (select upload_state from public.analysis_files where id = '0d0f0000-0000-0000-0000-000000000001') = 'stored');
+
+-- The press, written the way the door writes it.
+insert into public.intelligence_workflows (id, organization_id, domain_pack, domain_pack_version, workflow_type,
+  engine_version, state, source_set_fingerprint, request_fingerprint)
+values ('0d0b0000-0000-0000-0000-000000000001'::uuid, 'aaaaaaaa-0000-0000-0000-000000000001',
+  'source-documents', '1.0', 'plan_consistency', 'core-v2.test', 'created', 'fp-analysis-1', 'rq-analysis-1');
+update public.analysis_runs
+   set workflow_id = '0d0b0000-0000-0000-0000-000000000001'::uuid, authorized_usd = 5,
+       run_requested_at = now(), state = 'running'
+ where id = '0d0a0000-0000-0000-0000-000000000001';
+
+select pg_temp.check('once it has been pressed, the amount authorised is what the runner reads from the record',
+  (public.core_v2_analysis_authority('0d0b0000-0000-0000-0000-000000000001'::uuid) ->> 'paid_calls_allowed') = 'true'
+  and (public.core_v2_analysis_authority('0d0b0000-0000-0000-0000-000000000001'::uuid) ->> 'authorized_usd')::numeric = 5);
+
+do $$
+declare moved boolean := false;
+begin
+  begin
+    update public.analysis_files set file_name = 'something-else.pdf'
+     where id = '0d0f0000-0000-0000-0000-000000000001';
+    moved := true;
+  exception when others then moved := false;
+  end;
+  perform pg_temp.check('and the material under a started analysis cannot be changed at all', not moved);
+end $$;
+
+do $$
+declare removed boolean := false;
+begin
+  begin
+    delete from public.analysis_files where id = '0d0f0000-0000-0000-0000-000000000001';
+    removed := true;
+  exception when others then removed := false;
+  end;
+  perform pg_temp.check('nor removed', not removed);
+end $$;
+
+select pg_temp.check('a spend authority without a press, or a press without an amount, is not a row that can exist',
+  exists (select 1 from pg_constraint where conname = 'analysis_runs_paid_gate_is_whole'));
+
+
 -- ──────────────────────────────────────────────────────── V1 is where it was
 select pg_temp.check('V1 keeps every row it had — Core V2 stands beside it, not on it',
   pg_temp.v1_fingerprint() = (select fingerprint from core_v2_before));

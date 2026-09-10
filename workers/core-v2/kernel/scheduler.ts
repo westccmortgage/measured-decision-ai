@@ -197,6 +197,20 @@ export class Scheduler {
    *
    * With no deadline given, the policy's own timeout is the answer, which is
    * what every existing caller has always had. */
+  /* HOW LONG THIS PASS HAS, OR NOTHING AT ALL.
+   *
+   * `null` is not "no time"; it is "nobody is holding a stopwatch". A pass
+   * inside an Edge Function container has a deadline and every gate below
+   * applies to it. A pass in a long-lived process, and every test that runs
+   * one, has none — and a gate that fired anyway would refuse work for a
+   * deadline that does not exist. That is the shape of the bug this returns
+   * null to prevent. */
+  private msLeft(): number | null {
+    if (!this.options.msUntilDeadline) return null;
+    const left = this.options.msUntilDeadline();
+    return Number.isFinite(left) ? left : null;
+  }
+
   private roomForOneAttempt(): number {
     if (!this.options.msUntilDeadline) return this.policy.attemptTimeoutMs;
     const left = this.options.msUntilDeadline();
@@ -597,7 +611,7 @@ export class Scheduler {
      * whole answer's worth here and nothing at the send itself would be a
      * gate that says yes and then watches the deadline pass while the record
      * is being written. */
-    if (this.roomForOneAttempt() <= this.submissionAllowanceMs()) {
+    if (this.msLeft() !== null && this.roomForOneAttempt() <= this.submissionAllowanceMs()) {
       await this.repo.transitionAttempt(attempt.attemptId, "prepared", "cancelled_before_submission", { errorCode: "no_time_left_before_submission" });
       await this.deferTask(task.taskId, "no_time_left_before_submission");
       await this.repo.audit({ action: "core_v2.attempt.cancelled_before_submission", entityType: "agent_attempt", entityId: attempt.attemptId, detail: { task: task.taskId, reason: "no_time_left_before_submission" } });
@@ -656,7 +670,7 @@ export class Scheduler {
      * with an allowance for exactly these two writes, so reaching here means
      * they overran it — a real anomaly, and one the record should say out
      * loud rather than smooth over. */
-    if (this.roomForOneAttempt() <= 0) {
+    if (this.msLeft() !== null && this.roomForOneAttempt() <= 0) {
       const reason = "not_sent_deadline_passed: the deadline passed while the attempt was being recorded, so nothing was sent";
       try {
         await this.repo.commitValidatedResult(this.emptyCommit(task, attempt.attemptId, null, "failed_known", "failed_known", reason, [reason], {}, "not_sent_deadline_passed"));

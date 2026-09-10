@@ -72,22 +72,28 @@ export const SEGMENT_KINDS = {
  * discovering rules that lived only in the checker.
  */
 const ANCHOR_RULE =
-  "Every claim names at least one anchor in anchors[]. An anchor has sourceKind "
-  + "\"segment\", segmentId set to the segment you were handed, and quotedText: "
-  + "the words at that place copied character for character when the material "
-  + "has words, or a short plain description of what is visible there when it "
-  + "does not. Do not name an anchorKey you have not also returned in anchors[].";
+  "Every claim names at least one anchor in anchors[], and every anchorKey it "
+  + "names is an anchor you also returned. An anchor sets segmentId to the "
+  + "segment you were handed and quotedText to the words at that place copied "
+  + "character for character when the material has words, or a short plain "
+  + "description of what is visible there when it does not. Two anchor kinds "
+  + "and no others: sourceKind \"segment_locator\" when you can bound the "
+  + "region you read, and sourceKind \"segment\" with locator \"{}\" when you "
+  + "cannot. Bounding it is better; guessing at it is worse than not bounding "
+  + "it at all.";
 
 const LOCATOR_RULE_PAGE =
-  "locator is the JSON object \"{\\\"bbox\\\":[0.05,0.1,0.95,0.6]}\" — four numbers "
-  + "normalised 0..1 giving left, top, right, bottom of the region of the page "
-  + "you looked at. The page image you were given is the whole page, so the box "
-  + "is inside it. If you cannot bound the region, use \"{}\" rather than a "
-  + "guessed box.";
+  "For a \"segment_locator\" anchor, locator is {\"bbox\":[left,top,right,bottom]} "
+  + "— four numbers normalised 0..1 against the page image you were given, "
+  + "left <= right and top <= bottom. The image is the whole page, so your box "
+  + "lies inside [0,0,1,1]. No other key of locator is read.";
 
 const LOCATOR_RULE_MOMENT =
-  "locator is \"{}\": the moment is the segment itself and the record already "
-  + "holds its time. Do not invent a time, a direction, or a position in space.";
+  "For a \"segment_locator\" anchor, locator is {\"bbox\":[left,top,right,bottom]} "
+  + "normalised 0..1 against the frame you were given. The TIME is already in "
+  + "the record and is not yours to set; neither is a compass direction or a "
+  + "position in space. Do not invent one. If you cannot bound the region, use "
+  + "sourceKind \"segment\" and locator {}.";
 
 const ANSWER_RULE =
   "value.known true with value.text exactly one of \"yes\", \"no\" or \"unclear\", "

@@ -74,6 +74,20 @@ export class Scheduler {
      *
      * With no deadline given, the policy's own timeout is the answer, which is
      * what every existing caller has always had. */
+    /* HOW LONG THIS PASS HAS, OR NOTHING AT ALL.
+     *
+     * `null` is not "no time"; it is "nobody is holding a stopwatch". A pass
+     * inside an Edge Function container has a deadline and every gate below
+     * applies to it. A pass in a long-lived process, and every test that runs
+     * one, has none — and a gate that fired anyway would refuse work for a
+     * deadline that does not exist. That is the shape of the bug this returns
+     * null to prevent. */
+    msLeft() {
+        if (!this.options.msUntilDeadline)
+            return null;
+        const left = this.options.msUntilDeadline();
+        return Number.isFinite(left) ? left : null;
+    }
     roomForOneAttempt() {
         if (!this.options.msUntilDeadline)
             return this.policy.attemptTimeoutMs;
@@ -81,6 +95,20 @@ export class Scheduler {
         if (!Number.isFinite(left))
             return this.policy.attemptTimeoutMs;
         return Math.min(this.policy.attemptTimeoutMs, left - this.policy.settlementAllowanceMs);
+    }
+    /* WHAT THE TWO WRITES BETWEEN THE DECISION AND THE SEND ARE WORTH.
+     *
+     * Deciding to send is not sending. Between them the record is written twice
+     * — the attempt row, then the atomic submission that proves the lease, the
+     * cancellation and independence and reserves the money — and both are round
+     * trips to a database that can be slow exactly when everything else is.
+     *
+     * A gate that does not budget for them is a gate that says yes and then
+     * watches the deadline pass while the record is being written. So the gate
+     * that can still put the work back asks for this much more than nothing,
+     * and the gate at the send itself asks only for what is left. */
+    submissionAllowanceMs() {
+        return Math.max(250, Math.min(5_000, Math.ceil(this.policy.settlementAllowanceMs / 4)));
     }
     /* A task put back exactly as it was found: queued, no lease, no attempt,
        nothing bought. The reason lives in the audit trail because a task waiting
@@ -480,6 +508,23 @@ export class Scheduler {
             await this.repo.audit({ action: "core_v2.attempt.cancelled_before_submission", entityType: "agent_attempt", entityId: attempt.attemptId, detail: { task: task.taskId, reason } });
             return done("cancelled");
         };
+        /* ── THE LAST MOMENT THE WORK CAN STILL BE PUT BACK ─────────────────
+         *
+         * The attempt row has just been written and that write cost time. From
+         * the next line the task is `running`, and a running task has nowhere to
+         * go but an outcome — so this is the last point at which "there is no
+         * room" can be answered by leaving the work exactly as it was found.
+         *
+         * The allowance is what the two writes ahead are worth. Asking for a
+         * whole answer's worth here and nothing at the send itself would be a
+         * gate that says yes and then watches the deadline pass while the record
+         * is being written. */
+        if (this.msLeft() !== null && this.roomForOneAttempt() <= this.submissionAllowanceMs()) {
+            await this.repo.transitionAttempt(attempt.attemptId, "prepared", "cancelled_before_submission", { errorCode: "no_time_left_before_submission" });
+            await this.deferTask(task.taskId, "no_time_left_before_submission");
+            await this.repo.audit({ action: "core_v2.attempt.cancelled_before_submission", entityType: "agent_attempt", entityId: attempt.attemptId, detail: { task: task.taskId, reason: "no_time_left_before_submission" } });
+            return done("deferred");
+        }
         try {
             await this.repo.transitionTask(task.taskId, "leased", "running");
         }
@@ -512,6 +557,46 @@ export class Scheduler {
         const report = (more) => {
             facts = { ...facts, ...more, usage: { ...(facts.usage ?? {}), ...(more.usage ?? {}) } };
         };
+        /* ── THE SEND ITSELF, AND THE ONE QUESTION ASKED ON ITS THRESHOLD ───
+         *
+         * Everything above this line is the record. Below it a request leaves the
+         * process and somebody's meter starts. The two writes that just happened
+         * — the attempt row and the atomic submission — each took time, and the
+         * whole point of a deadline is that it can pass during them.
+         *
+         * Shortening the wait afterwards does not answer this. A request sent one
+         * millisecond before the container is killed is not a fast call; it is an
+         * outcome nobody will ever know, and this engine never buys one of those
+         * twice. So the last question is asked here, at the boundary, and if the
+         * answer is no THE REQUEST IS NOT MADE.
+         *
+         * The record then says what actually happened, which is a KNOWN failure:
+         * prepared, submitted in the record, never sent. The reservation is
+         * released at zero cost through the same commit the kernel uses for every
+         * other known failure, because nothing was consumed.
+         *
+         * This gate is the backstop, not the working answer. The gate above,
+         * which can still put the task back in the queue untouched, is placed
+         * with an allowance for exactly these two writes, so reaching here means
+         * they overran it — a real anomaly, and one the record should say out
+         * loud rather than smooth over. */
+        if (this.msLeft() !== null && this.roomForOneAttempt() <= 0) {
+            const reason = "not_sent_deadline_passed: the deadline passed while the attempt was being recorded, so nothing was sent";
+            try {
+                await this.repo.commitValidatedResult(this.emptyCommit(task, attempt.attemptId, null, "failed_known", "failed_known", reason, [reason], {}, "not_sent_deadline_passed"));
+            }
+            catch {
+                try {
+                    await this.repo.transitionAttempt(attempt.attemptId, "submitted", "failed_known", { errorCode: "not_sent_deadline_passed", errorMessage: reason });
+                }
+                catch { /* already moved */ }
+                const now = await this.repo.getTask(task.taskId);
+                if (now && now.state === "running")
+                    await this.repo.transitionTask(task.taskId, "running", "failed_known", "not_sent_deadline_passed");
+            }
+            await this.repo.audit({ action: "core_v2.attempt.not_sent", entityType: "agent_attempt", entityId: attempt.attemptId, detail: { task: task.taskId, reason: "not_sent_deadline_passed" } });
+            return done("failed_known");
+        }
         const heartbeat = this.startHeartbeat(task.taskId, leaseToken);
         let envelope;
         /* What came back, before the kernel gave it a shape. The record keeps
