@@ -430,23 +430,44 @@ export class Dispatcher {
     return r.rows.map((row) => row.id!).filter((id): id is string => Boolean(id));
   }
 
+  /* ONE WORKFLOW'S CANCELLATION, HONOURED WHEREVER IT WAS ASKED FOR.
+   *
+   * Public because a caller that holds exactly one workflow — the production
+   * runner does — must be able to honour a cancellation on that one without
+   * scanning the queue for every other. It was private, and the first version
+   * of the runner therefore drove `advance()` straight past a cancelled
+   * workflow: the scheduler's tick correctly refuses to do anything for a
+   * workflow being cancelled, so nothing happened, forever, and the runner
+   * eventually handed a cancelled workflow to a person as though it were
+   * merely stuck.
+   *
+   * Answers true when it did the cancelling, so the caller can tell that from
+   * "there was nothing to cancel". */
+  async honourCancellation(workflowId: string, repo?: OrchestrationRepository): Promise<boolean> {
+    const record = repo ?? await this.record();
+    const workflow = await record.getWorkflow(workflowId);
+    if (!workflow || workflow.cancelRequestedAt === null) return false;
+    if (workflow.domainPack !== this.options.pack.id) return false;
+    if (TERMINAL.includes(workflow.state)) return false;
+    try {
+      const held = await this.hold(workflowId);
+      const outcome = await held.scheduler.cancel("cancel_requested");
+      this.held.delete(workflowId);
+      this.emit("workflow.cancelled", {
+        workflow: workflowId, unsent_cancelled: outcome.unsentCancelled,
+        submitted_unresolved: outcome.submittedUnresolved, completed_preserved: outcome.completedPreserved,
+      });
+      return true;
+    } catch (error) {
+      this.emit("workflow.error", { workflow: workflowId, problem: problemToken(error), during: "cancellation" });
+      return false;
+    }
+  }
+
   private async honourCancellations(repo: OrchestrationRepository): Promise<string[]> {
     const cancelled: string[] = [];
     for (const workflowId of await this.cancellingWorkflows()) {
-      const workflow = await repo.getWorkflow(workflowId);
-      if (!workflow || workflow.domainPack !== this.options.pack.id) continue;
-      try {
-        const held = await this.hold(workflowId);
-        const outcome = await held.scheduler.cancel("cancel_requested");
-        this.held.delete(workflowId);
-        cancelled.push(workflowId);
-        this.emit("workflow.cancelled", {
-          workflow: workflowId, unsent_cancelled: outcome.unsentCancelled,
-          submitted_unresolved: outcome.submittedUnresolved, completed_preserved: outcome.completedPreserved,
-        });
-      } catch (error) {
-        this.emit("workflow.error", { workflow: workflowId, problem: problemToken(error), during: "cancellation" });
-      }
+      if (await this.honourCancellation(workflowId, repo)) cancelled.push(workflowId);
     }
     return cancelled;
   }

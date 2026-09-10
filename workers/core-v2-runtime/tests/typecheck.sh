@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
-# Type-check the universal kernel, the execution layer and the canary that
-# drives them TOGETHER, so that a change to one that breaks another is caught
-# here rather than at run time.
+# Type-check the universal kernel, the execution layer, the canary and the
+# production runner TOGETHER, so that a change to one that breaks another is
+# caught here rather than at run time.
 #
 # This repository has no node_modules and no @types/node by design: the code
 # runs under `node --experimental-strip-types`, which erases types and
@@ -91,6 +91,7 @@ cat > "$work/tsconfig.json" <<JSON
     "$root/workers/core-v2/**/*.ts",
     "$root/workers/core-v2-runtime/**/*.ts",
     "$root/workers/core-v2-canary/**/*.ts",
+    "$root/workers/core-v2-runner/**/*.ts",
     "$work/globals.d.ts", "$work/modules.d.ts"
   ]
 }
@@ -101,7 +102,7 @@ if ! command -v tsc > /dev/null 2>&1; then
   exit 1
 fi
 if tsc -p "$work/tsconfig.json"; then
-  echo "  the kernel, the runtime and the canary type-check together"
+  echo "  the kernel, the runtime, the canary and the runner type-check together"
 else
   echo "  TYPE ERRORS — see above"
   exit 1
