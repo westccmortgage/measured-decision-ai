@@ -47,3 +47,10 @@ verify_jwt = true
 # set. It is dormant until deployed AND armed: see docs/core-v2-runner.md.
 [functions.core-v2-runner-tick]
 verify_jwt = false
+
+# The owner's own analyses. Create, estimate, run, watch, stop, and open the
+# evidence behind a result. Every caller is a signed-in person, so the platform
+# checks the token before the code runs. Uploads deliberately do NOT come
+# through here — the browser puts bytes straight into storage under RLS.
+[functions.core-v2-analysis]
+verify_jwt = true

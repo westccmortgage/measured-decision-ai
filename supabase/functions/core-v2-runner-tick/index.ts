@@ -39,6 +39,8 @@ import { invocationClock, EDGE_FUNCTION_LIFETIME_MS } from "../../../workers/cor
 import { PostgresContinuationStore } from "../../../workers/core-v2-runner/continuations.ts";
 import { tickOnce } from "../../../workers/core-v2-runner/tick.ts";
 import { denoTransport } from "../core-v2-runner/world.ts";
+import bundledDeclaration from "../../../workers/core-v2-canary/registry.canary.json" with { type: "json" };
+import { readStoredObject } from "../_shared/core-v2/storage.ts";
 import { line } from "../core-v2-runner/log.ts";
 
 const ROUTE_PREFIX = "CORE_V2_RUNNER";
@@ -70,11 +72,33 @@ Deno.serve(async (request: Request): Promise<Response> => {
 
   if (request.method !== "POST") return json(405, { refused: "this door takes POST" });
 
-  const expected = Deno.env.get(SECRET_VARIABLE) ?? "";
-  if (!expected) return json(503, { refused: `${SECRET_VARIABLE} is not set; this door stays shut` });
-  if (!sameSecret(request.headers.get(SECRET_HEADER) ?? "", expected)) {
-    return json(401, { refused: "not for you" });
+  /* WHO MAY KNOCK ON A DOOR WITH NO USER BEHIND IT.
+   *
+   * Two credentials, and both are proved by this code rather than by the
+   * platform, because `verify_jwt = false` is what lets a cron job knock at
+   * all.
+   *
+   *   · CORE_V2_RUNNER_SECRET, when an operator sets one. A dedicated secret
+   *     is the better credential and it stays the first thing asked for.
+   *   · the platform's own service-role key, which every Edge Function is
+   *     given and which the human door already holds. It is what lets the
+   *     "Run analysis" press reach this door without anybody having to create,
+   *     copy and rotate a second secret first.
+   *
+   * Neither is compared with a short circuit, and with neither set the door
+   * does not open at all. */
+  const secret = Deno.env.get(SECRET_VARIABLE) ?? "";
+  const serviceKey = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY") ?? "";
+  if (!secret && !serviceKey) {
+    return json(503, { refused: `neither ${SECRET_VARIABLE} nor SUPABASE_SERVICE_ROLE_KEY is set; this door stays shut` });
   }
+  const offeredHeader = request.headers.get(SECRET_HEADER) ?? "";
+  const authorization = request.headers.get("authorization") ?? "";
+  const offeredBearer = authorization.toLowerCase().startsWith("bearer ") ? authorization.slice(7).trim() : "";
+  const allowed = (secret && sameSecret(offeredHeader, secret))
+    || (serviceKey && (sameSecret(offeredHeader, serviceKey) || sameSecret(offeredBearer, serviceKey)));
+  if (!allowed) return json(401, { refused: "not for you" });
+  const expected = secret || serviceKey;
 
   const route = routeToRecord(ROUTE_PREFIX, (name) => Deno.env.get(name));
   if (isRouteProblem(route)) return json(503, { refused: route.problem });
@@ -99,6 +123,8 @@ Deno.serve(async (request: Request): Promise<Response> => {
         environment: (name: string) => Deno.env.get(name),
       },
       transport: denoTransport,
+      readObject: readStoredObject,
+      bundledRegistry: bundledDeclaration,
       startedAt: started,
       deadlineAt,
       events: (event) => console.log(line(event as unknown as Record<string, unknown>)),
@@ -163,7 +189,7 @@ Deno.serve(async (request: Request): Promise<Response> => {
     console.error(line({ fn: FUNCTION, event: "unhandled", problem: (error as Error).name }));
     return json(500, { refused: "the tick did not complete" });
   } finally {
-    if (db) await db.close().catch(() => undefined);
+    if (db) await db.end().catch(() => undefined);
   }
 });
 

@@ -39,7 +39,7 @@
  * material check on every pass until a fuse settles it.
  */
 import type { DomainPack } from "../core-v2/kernel/domain.ts";
-import type { WorkflowRecord } from "../core-v2/kernel/repository.ts";
+import type { SourceManifest, WorkflowRecord } from "../core-v2/kernel/contracts.ts";
 import type { Queryable } from "../core-v2/postgres/wire.ts";
 import { PostgresOrchestrationRepository } from "../core-v2/postgres/repository.ts";
 import { enqueueWorkflow } from "../core-v2-runtime/dispatcher.ts";
@@ -116,12 +116,41 @@ export type StartOptions = {
 export async function startWorkflowAtomically(options: StartOptions): Promise<StartOutcome> {
   const { client, request, pack } = options;
   const sourceSet = syntheticSourceSet(request.shape, request.organizationId);
+  const workflow = await startFromManifest({
+    client, organizationId: request.organizationId, manifest: sourceSet.manifest,
+    pack, betweenWrites: options.betweenWrites,
+  });
+  return { workflowId: workflow.workflowId, state: workflow.state, sourceSet };
+}
 
-  const workflow = await client.transaction(async (tx) => {
+export type ManifestStartOptions = {
+  client: TransactionalClient;
+  organizationId: string;
+  manifest: SourceManifest;
+  pack: DomainPack;
+  /* Run inside the transaction, after the workflow rows and before the
+     continuation — the place a start could once die and leave a workflow
+     nothing would ever run. Production passes nothing. */
+  betweenWrites?: (tx: Queryable, workflowId: string) => Promise<void>;
+  /* Also inside the transaction, after the continuation. This is where an
+     owner's analysis writes down which workflow it became and what it was
+     authorised to spend, so those facts and the workflow arrive together. */
+  alongside?: (tx: Queryable, workflowId: string) => Promise<void>;
+};
+
+/* THE SAME ONE COMMIT, FOR A MANIFEST SOMEBODY ELSE BUILT.
+ *
+ * The synthetic start above invents its manifest from a shape. An analysis of
+ * uploaded files builds its manifest from the record of what was uploaded and
+ * prepared. Both need exactly the same guarantee — workflow, sources, outbox,
+ * audit and the first continuation in one commit — so both go through here. */
+export async function startFromManifest(options: ManifestStartOptions): Promise<WorkflowRecord> {
+  const { client, organizationId, manifest, pack } = options;
+  return await client.transaction(async (tx) => {
     const repo = new PostgresOrchestrationRepository(
-      alreadyInTransaction(tx) as never, { organizationId: request.organizationId },
+      alreadyInTransaction(tx) as never, { organizationId },
     );
-    const created = await enqueueWorkflow(repo, sourceSet.manifest, pack);
+    const created = await enqueueWorkflow(repo, manifest, pack);
     if (options.betweenWrites) await options.betweenWrites(tx, created.workflowId);
     /* The same door migration 060 gives every other caller, called on this
        transaction rather than beside it. */
@@ -129,8 +158,7 @@ export async function startWorkflowAtomically(options: StartOptions): Promise<St
       `select 1 from public.core_v2_schedule_continuation($1::uuid, now())`,
       [created.workflowId],
     );
+    if (options.alongside) await options.alongside(tx, created.workflowId);
     return created;
   });
-
-  return { workflowId: workflow.workflowId, state: workflow.state, sourceSet };
 }

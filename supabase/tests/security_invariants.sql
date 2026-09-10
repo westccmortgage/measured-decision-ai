@@ -5386,6 +5386,66 @@ end $$;
 select pg_temp.check('a workflow that is already over is never woken by a late cancellation',
   (select state from public.core_v2_reopen_continuation('0c0e0000-0000-0000-0000-000000000001')) = 'settled');
 
+-- ═════════════ 062 · a stop is one write, and the watchdog finishes it
+--
+-- The half-written stop is the state nobody should be able to reach: a
+-- settled continuation beside a workflow that still says it is running. These
+-- check the two doors that close it — the one-statement stop, and the repair
+-- the minute cron runs whether or not anything else is happening.
+
+select pg_temp.check('the one-write stop and the repair are the service role''s alone',
+  (select bool_and(
+      has_function_privilege('service_role', p.oid, 'execute')
+      and not has_function_privilege('authenticated', p.oid, 'execute')
+      and not has_function_privilege('anon', p.oid, 'execute'))
+     from pg_proc p join pg_namespace n on n.oid = p.pronamespace
+    where n.nspname = 'public' and p.proname in (
+      'core_v2_note_workflow_stopped', 'core_v2_stop_workflow_and_settle',
+      'core_v2_finish_stopped_workflows', 'core_v2_watchdog_tick')));
+
+insert into public.intelligence_workflows (id, organization_id, domain_pack, domain_pack_version, workflow_type,
+  engine_version, state, source_set_fingerprint, request_fingerprint)
+values ('0c0e0000-0000-0000-0000-000000000009', 'aaaaaaaa-0000-0000-0000-000000000001',
+  'synthetic-records', '1.0', 'analysis', 'core-v2.test', 'created', 'fp-stop-009', 'rq-stop-009');
+update public.intelligence_workflows set state = 'queued' where id = '0c0e0000-0000-0000-0000-000000000009';
+update public.intelligence_workflows set state = 'planning' where id = '0c0e0000-0000-0000-0000-000000000009';
+update public.intelligence_workflows set state = 'running' where id = '0c0e0000-0000-0000-0000-000000000009';
+
+-- The record a process leaves when it dies between the two writes.
+select public.core_v2_schedule_continuation('0c0e0000-0000-0000-0000-000000000009', now());
+select public.core_v2_settle_continuation('0c0e0000-0000-0000-0000-000000000009', 'handed_to_a_person');
+select pg_temp.check('a half-written stop leaves a workflow that still says it is running',
+  (select state from public.intelligence_workflows where id = '0c0e0000-0000-0000-0000-000000000009') = 'running');
+
+select pg_temp.check('the watchdog''s own tick repairs it, with nothing else happening',
+  ((public.core_v2_watchdog_tick(10) -> 'repaired' ->> 'count')::int) >= 1);
+select pg_temp.check('and the workflow now carries the reason it stopped',
+  (select error_code = 'runner_stopped' and error_message = 'handed_to_a_person' and state = 'needs_attention'
+     from public.intelligence_workflows where id = '0c0e0000-0000-0000-0000-000000000009'));
+select pg_temp.check('a workflow already told is not told again',
+  ((public.core_v2_watchdog_tick(10) -> 'repaired' ->> 'count')::int) = 0);
+
+-- The stop itself, as one statement.
+insert into public.intelligence_workflows (id, organization_id, domain_pack, domain_pack_version, workflow_type,
+  engine_version, state, source_set_fingerprint, request_fingerprint)
+values ('0c0e0000-0000-0000-0000-000000000010', 'aaaaaaaa-0000-0000-0000-000000000001',
+  'synthetic-records', '1.0', 'analysis', 'core-v2.test', 'created', 'fp-stop-010', 'rq-stop-010');
+update public.intelligence_workflows set state = 'queued' where id = '0c0e0000-0000-0000-0000-000000000010';
+update public.intelligence_workflows set state = 'planning' where id = '0c0e0000-0000-0000-0000-000000000010';
+update public.intelligence_workflows set state = 'running' where id = '0c0e0000-0000-0000-0000-000000000010';
+select public.core_v2_schedule_continuation('0c0e0000-0000-0000-0000-000000000010', now());
+select pg_temp.check('one statement settles the waking and tells the workflow together',
+  (public.core_v2_stop_workflow_and_settle('0c0e0000-0000-0000-0000-000000000010', 'no_progress_in_5_continuations')
+     ->> 'continuation_state') = 'settled');
+select pg_temp.check('and both halves are in the record',
+  (select state = 'needs_attention' and error_code = 'runner_stopped'
+      and error_message = 'no_progress_in_5_continuations'
+     from public.intelligence_workflows where id = '0c0e0000-0000-0000-0000-000000000010'));
+select pg_temp.check('a workflow that is over is never re-labelled by the repair',
+  (select public.core_v2_note_workflow_stopped(w.id, 'late') from public.intelligence_workflows w
+    where w.id = '0c0e0000-0000-0000-0000-000000000001') in ('cancelled','completed','partial','failed'));
+
+
 -- ──────────────────────────────────────────────────────── V1 is where it was
 select pg_temp.check('V1 keeps every row it had — Core V2 stands beside it, not on it',
   pg_temp.v1_fingerprint() = (select fingerprint from core_v2_before));

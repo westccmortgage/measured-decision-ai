@@ -65,6 +65,14 @@ export interface ContinuationStore {
      cancel_requested_at inside the function rather than trusting a caller.
      Every other row is returned untouched. */
   reopenForCancellation(workflowId: string, reason?: string): Promise<ContinuationRecord | null>;
+  /* STOPPING FOR GOOD, AS ONE WRITE.
+     Migration 062 tells the workflow why and settles its continuation in the
+     same statement, so a process cannot die between the two and leave a
+     workflow that says `running` beside a queue that will never call it. */
+  stopForGood(workflowId: string, reason: string): Promise<{ workflowState: string | null; continuationState: string | null }>;
+  /* What a process that died before 062 existed — or a row migration 060
+     settles inside a claim without handing it to anybody — left behind. */
+  finishStoppedWorkflows(limit: number): Promise<string[]>;
   due(limit: number): Promise<string[]>;
   read(workflowId: string): Promise<ContinuationRecord | null>;
   limits(): Promise<ContinuationLimits>;
@@ -161,6 +169,25 @@ export class PostgresContinuationStore implements ContinuationStore {
       [workflowId, reason],
     );
     return r.rows.length && r.rows[0].workflow_id ? toRecord(r.rows[0]) : null;
+  }
+
+  async stopForGood(workflowId: string, reason: string): Promise<{ workflowState: string | null; continuationState: string | null }> {
+    const r = await this.client.query(
+      `select public.core_v2_stop_workflow_and_settle($1::uuid, $2) as outcome`, [workflowId, reason]);
+    const raw = r.rows[0]?.outcome;
+    const outcome = (typeof raw === "string" ? JSON.parse(raw) : raw ?? {}) as Record<string, unknown>;
+    return {
+      workflowState: outcome.workflow_state === null || outcome.workflow_state === undefined ? null : String(outcome.workflow_state),
+      continuationState: outcome.continuation_state === null || outcome.continuation_state === undefined ? null : String(outcome.continuation_state),
+    };
+  }
+
+  async finishStoppedWorkflows(limit: number): Promise<string[]> {
+    const r = await this.client.query(
+      `select public.core_v2_finish_stopped_workflows($1::int) as outcome`, [Math.trunc(limit)]);
+    const raw = r.rows[0]?.outcome;
+    const outcome = (typeof raw === "string" ? JSON.parse(raw) : raw ?? {}) as { told?: unknown };
+    return Array.isArray(outcome.told) ? outcome.told.map((id) => String(id)) : [];
   }
 
   async due(limit: number): Promise<string[]> {

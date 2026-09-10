@@ -292,6 +292,9 @@ export async function runOnePass(options: RunnerOptions): Promise<PassOutcome> {
 
   try {
     repo = options.world.repository(client);
+    /* A const the closures below can hold. `repo` itself stays nullable for the
+       shutdown path, and a callback cannot narrow a binding that may change. */
+    const repository = repo;
 
     /* ── the start handshake, once and only once ──────────────────────── */
     const before = await repo.getWorkflow(hold.workflowId);
@@ -326,7 +329,7 @@ export async function runOnePass(options: RunnerOptions): Promise<PassOutcome> {
       name: options.name,
       signal: winding.signal,
       connect: async () => lent as never,
-      repository: () => repo,
+      repository: () => repository,
       pack: options.world.pack,
       executors: options.world.executors,
       routing: options.world.routing,
@@ -447,11 +450,11 @@ export async function runOnePass(options: RunnerOptions): Promise<PassOutcome> {
          first, through the transitions 058 already defines, so that a person
          reading the workflow sees the same fact as a person reading the
          continuation. */
-      finalStop = await recordFinalStop(repo, hold.workflowId, "handed_to_a_person", state);
-      await options.store.settle(hold.workflowId, "handed_to_a_person");
+      const stopped = await options.store.stopForGood(hold.workflowId, "handed_to_a_person");
+      finalStop = { reason: "handed_to_a_person", workflowState: (stopped.workflowState ?? state) as WorkflowState | null };
       /* The hold is released by settling; nothing schedules this again. */
-      say("runner.handed_to_a_person", { workflow: hold.workflowId, state: finalStop?.workflowState ?? state });
-      if (finalStop) state = finalStop.workflowState;
+      say("runner.handed_to_a_person", { workflow: hold.workflowId, state: finalStop.workflowState });
+      state = finalStop.workflowState;
     } else {
       const released = await options.store.release({
         workflowId: hold.workflowId,
@@ -480,8 +483,13 @@ export async function runOnePass(options: RunnerOptions): Promise<PassOutcome> {
            claiming to be running. The reason the SQL gave is carried straight
            through to the workflow's own error code. */
         if (released.state === "settled" && released.settledReason && !isFinished(state)) {
-          finalStop = await recordFinalStop(repo, hold.workflowId, released.settledReason, state);
-          if (finalStop) state = finalStop.workflowState;
+          /* The SQL settled the row itself, so the workflow is told through
+             the same door — bounded, idempotent, and it writes only to a
+             workflow that is behind. */
+          await options.store.finishStoppedWorkflows(5);
+          const after = repo ? await repo.getWorkflow(hold.workflowId) : null;
+          finalStop = { reason: released.settledReason, workflowState: after ? after.state : state };
+          state = finalStop.workflowState;
         }
         say("runner.released", {
           workflow: hold.workflowId, state, moved, deferred,
@@ -516,6 +524,14 @@ export async function runOnePass(options: RunnerOptions): Promise<PassOutcome> {
 }
 
 /* ─────────────────────────────────────────── the workflow is told, too
+ *
+ * KEPT FOR ONE CALLER AND ONE REASON. Migration 062 does this in SQL, in the
+ * same statement that settles the continuation, and that is what the runner
+ * uses. This walker remains for a repository that is not Postgres — the
+ * in-memory one a test may hand in — and for the material refusal, which has
+ * no continuation to settle alongside.
+ */
+/*
  *
  * When a pass stops a workflow for good — a person is needed, five passes
  * moved nothing, the continuation ceiling was reached — the continuation is

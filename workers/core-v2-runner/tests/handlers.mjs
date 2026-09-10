@@ -666,6 +666,99 @@ await withThrowawayDatabase(async ({ client, organizationId }) => {
     t.check("and no task that had already answered was asked a second time",
       n(twice.rows) === 0, `${n(twice.rows)} tasks answered twice`);
   }
+
+  {
+    /* ── THE DEADLINE PASSING WHILE THE ATTEMPT IS BEING RECORDED ───────
+     *
+     * Deciding to send is not sending. Between the two there are two writes —
+     * the attempt row, and the atomic submission that proves the lease and
+     * reserves the money — and each is a round trip to a record that can be
+     * slow exactly when everything else is.
+     *
+     * Here the clock is spent INSIDE those writes: the insert of the attempt
+     * costs the rest of the window. Shortening the wait afterwards would not
+     * help — the request would already have gone. The requirement is that it
+     * does not go at all. */
+    /* Its own workflow, because this proof needs model work still to do and
+       the passes above finished the one they were given. */
+    const recording = await startVia(client, organizationId, { sourceSetSeed: "clock/mid-recording" });
+    await client.query(
+      `update public.workflow_continuations set due_at = now() + interval '1 hour' where workflow_id <> $1`,
+      [recording.workflowId]);
+    await dueNow(client, recording.workflowId);
+    const recordStart = clock.now();
+    const deadlineAt = recordStart + derived.deadlineMs;
+    let spent = false;
+    /* The interception has to follow the query INTO the transaction: the
+       attempt row is written inside one, and a wrapper that hands the real
+       transaction object straight through never sees that write at all. */
+    const chargeFor = (sql, params) => {
+      /* Only a MODEL attempt: the deterministic ingest writes an attempt row
+         too, and charging the clock to that would stop the pass before there
+         was ever anything to send — which proves nothing about the send. */
+      if (spent || !/insert into public\.agent_attempts/.test(sql)) return;
+      if (!Array.isArray(params) || !params.includes("model")) return;
+      spent = true;
+      /* Past the point where an answer and its settlement would fit, and past
+         the allowance the earlier gate keeps for exactly these two writes —
+         so the only thing left to stop this is the gate at the send. */
+      clock.advance(derived.deadlineMs - derived.settlementRoomMs + 500 - (clock.now() - recordStart));
+    };
+    const watched = (inner) => ({
+      query: async (sql, params) => { chargeFor(sql, params); return inner.query(sql, params); },
+    });
+    const slowToRecord = {
+      query: async (sql, params) => { chargeFor(sql, params); return client.query(sql, params); },
+      transaction: (fn) => client.transaction((tx) => fn(watched(tx))),
+    };
+
+    const sent = [];
+    const outcome = await tickOnce({
+      runner: "clock-slow-record",
+      client: slowToRecord,
+      store: new PostgresContinuationStore(client),
+      clock: derived,
+      gates: gatesWith(),
+      transport: sealedTransport({ sent, now: clock.now }),
+      startedAt: recordStart,
+      deadlineAt,
+      now: clock.now,
+      setTimer: clock.setTimer,
+      clearTimer: clock.clearTimer,
+    });
+
+    t.check("a pass whose attempt-recording ate the window still returns cleanly",
+      outcome.kind === "ran", String(outcome.kind));
+    t.check("NOT ONE REQUEST LEFT THE PROCESS after the deadline passed mid-recording",
+      sent.length === 0, `${sent.length} requests`);
+
+    const notSent = await client.query(
+      `select count(*)::text as n from public.agent_attempts
+        where workflow_id = $1 and error_code in ('not_sent_deadline_passed','no_time_left_before_submission')`,
+      [recording.workflowId]);
+    const stillWaiting = await client.query(
+      `select count(*)::text as n from public.workflow_tasks
+        where workflow_id = $1 and state = 'queued' and lease_owner is null`, [recording.workflowId]);
+    t.check("the record says exactly what happened rather than smoothing it over",
+      n(notSent.rows) > 0, `${n(notSent.rows)} attempts recorded as never sent`);
+    t.check("and nothing became an outcome nobody knows — we know: it was not sent",
+      n(await (await client.query(
+        `select count(*)::text as n from public.agent_attempts
+          where workflow_id = $1 and state = 'outcome_unknown'`, [recording.workflowId])).rows) === 0);
+    t.check("work is still waiting in the queue for a pass with a whole window",
+      n(stillWaiting.rows) > 0, `${n(stillWaiting.rows)} queued`);
+
+    /* And the next pass, with room, actually sends. */
+    await dueNow(client, recording.workflowId);
+    const later = [];
+    const next = await tickVia(client, {
+      runner: "clock-after-slow-record", life: { ...LIFE, lifetimeMs: 25_000 },
+      transport: sealedTransport({ sent: later }),
+    });
+    t.check("and a pass with a whole window in front of it does send",
+      next.kind === "ran" && later.length > 0, `${later.length} requests`);
+  }
+
 });
 
 /* ═══════════════════════════════════════════════════════════════════════ */
@@ -781,6 +874,88 @@ await withThrowawayDatabase(async ({ client, organizationId }) => {
       (again.kind === "ran" || again.kind === "nothing_due") &&
       !(again.reconciled ?? []).includes(halfWritten.workflowId),
       JSON.stringify(again.reconciled ?? []));
+  }
+
+  {
+    /* ── ONE WORKFLOW, ALONE, WITH A HALF-WRITTEN STOP ─────────────────
+     *
+     * The repair must not need a second workflow to come along, and must not
+     * need anybody to call a tick. This is the case that used to fall through
+     * both: a single analysis whose continuation was settled and whose
+     * workflow was never told. Nothing else is due, so nothing ticks, so
+     * nothing repairs it — and the owner is left with a workflow that says it
+     * is running and a queue that will never call it again.
+     *
+     * Migration 062 closes it twice over: the stop is now ONE statement, and
+     * what an older process left behind is found by the watchdog's own minute
+     * tick. This proves the second half, with the database holding exactly one
+     * workflow and no runner involved at all. */
+    await client.query(`delete from public.workflow_continuations`);
+    const alone = await startVia(client, organizationId, { sourceSetSeed: "stop/alone-in-the-world" });
+    await client.query(`update public.intelligence_workflows set state = 'queued' where id = $1`, [alone.workflowId]);
+    await client.query(`update public.intelligence_workflows set state = 'planning' where id = $1`, [alone.workflowId]);
+    await client.query(`update public.intelligence_workflows set state = 'running' where id = $1`, [alone.workflowId]);
+    /* Settled WITHOUT telling the workflow: the record a process leaves when
+       it dies between the two writes. */
+    await store.settle(alone.workflowId, "handed_to_a_person");
+
+    const only = await client.query(`select count(*)::text as n from public.workflow_continuations`);
+    t.check("the database holds exactly one continuation, and it is this one",
+      n(only.rows) === 1, `${n(only.rows)} rows`);
+    t.check("nothing is due, so nothing would ever tick",
+      (await store.due(10)).length === 0);
+
+    const before = (await client.query(
+      `select state, error_code from public.intelligence_workflows where id = $1`, [alone.workflowId])).rows[0];
+    t.check("and the workflow still says it is running",
+      String(before.state) === "running" && String(before.error_code ?? "") !== "runner_stopped",
+      `${before.state} / ${before.error_code ?? "(none)"}`);
+
+    /* THE WATCHDOG'S OWN MINUTE TICK, and nothing else. No runner, no second
+       workflow, no call anybody typed. */
+    const watchdog = await client.query(`select public.core_v2_watchdog_tick(10) as answer`);
+    const answer = typeof watchdog.rows[0].answer === "string"
+      ? JSON.parse(watchdog.rows[0].answer) : watchdog.rows[0].answer;
+    t.check("the watchdog repairs it on its own tick",
+      Number(answer.repaired?.count ?? 0) === 1, JSON.stringify(answer.repaired));
+
+    const after = (await client.query(
+      `select state, error_code, error_message from public.intelligence_workflows where id = $1`,
+      [alone.workflowId])).rows[0];
+    t.check("the workflow now says why it stopped",
+      String(after.error_code) === "runner_stopped" && String(after.error_message) === "handed_to_a_person",
+      `${after.state}: ${after.error_code} / ${after.error_message}`);
+    t.check("and it is left where a person can act on it, or cancel it",
+      String(after.state) === "needs_attention", String(after.state));
+
+    const again = await client.query(`select public.core_v2_watchdog_tick(10) as answer`);
+    const twice = typeof again.rows[0].answer === "string" ? JSON.parse(again.rows[0].answer) : again.rows[0].answer;
+    t.check("a workflow already told is not told again on every minute",
+      Number(twice.repaired?.count ?? 0) === 0, JSON.stringify(twice.repaired));
+  }
+
+  {
+    /* ── AND THE STOP ITSELF IS ONE WRITE ──────────────────────────────
+     * There is no window to die in any more: the workflow's state and its
+     * continuation settle together or neither does. */
+    const atomic = await startVia(client, organizationId, { sourceSetSeed: "stop/one-write" });
+    await client.query(`update public.intelligence_workflows set state = 'queued' where id = $1`, [atomic.workflowId]);
+    await client.query(`update public.intelligence_workflows set state = 'planning' where id = $1`, [atomic.workflowId]);
+    await client.query(`update public.intelligence_workflows set state = 'running' where id = $1`, [atomic.workflowId]);
+
+    const stopped = await store.stopForGood(atomic.workflowId, "no_progress_in_5_continuations");
+    t.check("one call settles the waking and tells the workflow together",
+      stopped.continuationState === "settled" && stopped.workflowState === "needs_attention",
+      `${stopped.workflowState} / ${stopped.continuationState}`);
+    const written = (await client.query(
+      `select state, error_code, error_message from public.intelligence_workflows where id = $1`,
+      [atomic.workflowId])).rows[0];
+    t.check("and the record shows both halves, with the reason",
+      String(written.state) === "needs_attention" && String(written.error_code) === "runner_stopped" &&
+      String(written.error_message) === "no_progress_in_5_continuations",
+      `${written.state}: ${written.error_code} / ${written.error_message}`);
+    t.check("so the repair finds nothing left to do",
+      (await store.finishStoppedWorkflows(10)).includes(atomic.workflowId) === false);
   }
 
   {

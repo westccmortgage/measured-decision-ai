@@ -25,10 +25,10 @@
  *      B is the exact failure this repository already paid for once.
  */
 import type { Queryable } from "../core-v2/postgres/wire.ts";
-import { PostgresOrchestrationRepository } from "../core-v2/postgres/repository.ts";
 import type { InvocationClock } from "./clock.ts";
 import type { ContinuationStore } from "./continuations.ts";
-import { recordFinalStop, runOnePass } from "./runner.ts";
+import { runOnePass } from "./runner.ts";
+import type { ReadObject } from "./analysis.ts";
 import type { PassOutcome } from "./runner.ts";
 import { authorityFor, buildWorldFor, concurrencyFor, isProblem, operatorRegistry } from "./world.ts";
 import type { Gates } from "./world.ts";
@@ -44,6 +44,12 @@ export type TickOptions = {
   clock: InvocationClock;
   gates: Gates;
   transport: (config: RuntimeConfig) => HttpTransport & { unresolvedHosts: string[] };
+  /* How this deployment reads a stored object. An analysis of uploaded files
+     needs it; the demonstration set does not. */
+  readObject?: ReadObject;
+  /* The declaration this deployment ships with, used when the environment
+     names none. Never invented here: it is a file an operator wrote. */
+  bundledRegistry?: unknown;
   /* When the invocation started, and when it must have returned. Both
      absolute, both from the caller, both taken before anything was built. */
   startedAt: number;
@@ -87,7 +93,7 @@ export async function tickOnce(options: TickOptions): Promise<TickOutcome> {
    * a tick that might never come; doing it here means the very invocation that
    * caused the settle also repairs it. It is one bounded query and it writes
    * only to workflows that are behind. */
-  const reconciled = await tellSettledWorkflows(client, 10);
+  const reconciled = await store.finishStoppedWorkflows(10);
 
   if (!hold) return { kind: "nothing_due", reconciled };
 
@@ -101,12 +107,15 @@ export async function tickOnce(options: TickOptions): Promise<TickOutcome> {
   const organizationId = String(owner.id);
 
   /* ── the gates, each named so a refusal says which one to turn on ───── */
-  const registry = operatorRegistry(gates.environment);
-  const authorized = authorityFor(gates.environment);
-  if (isProblem(registry) || authorized === null) {
+  const registry = operatorRegistry(gates.environment, options.bundledRegistry);
+  /* An owner's analysis carries its own authority in the record, so a missing
+     deployment-wide amount is not a refusal here — the world asks the record
+     and refuses if nobody authorised anything. A workflow of the
+     demonstration set still needs the variable, and says so. */
+  const authorized = authorityFor(gates.environment) ?? 0;
+  if (isProblem(registry)) {
     const missing = [
-      isProblem(registry) ? REGISTRY_VARIABLE : null,
-      authorized === null ? AUTHORITY_VARIABLE : null,
+      REGISTRY_VARIABLE,
       gates.environment(PAID_CALLS_VARIABLE) === "true" ? null : PAID_CALLS_VARIABLE,
     ].filter((x): x is string => x !== null);
     /* Nothing was built and nothing was tried. The hold goes back with the
@@ -119,6 +128,7 @@ export async function tickOnce(options: TickOptions): Promise<TickOutcome> {
   const built = await buildWorldFor({
     client, workflowId: hold.workflowId, organizationId, registry, gates,
     answerWithinMs: clock.answerWithinMs, authorized, transport: options.transport,
+    readObject: options.readObject,
   });
   if (isProblem(built)) {
     /* A runner that cannot prove it holds this workflow's material stops
@@ -128,11 +138,7 @@ export async function tickOnce(options: TickOptions): Promise<TickOutcome> {
        is two records disagreeing about whether anything will ever happen.
        The repository used here is the plain one from the world that could not
        be built, so this is written through a repository of its own. */
-    try {
-      const repo = new PostgresOrchestrationRepository(client as never, { organizationId });
-      await recordFinalStop(repo, hold.workflowId, "material_not_provable", null);
-    } catch { /* the settle below is what stops it; this only explains it */ }
-    await store.settle(hold.workflowId, "material_not_provable");
+    await store.stopForGood(hold.workflowId, "material_not_provable");
     return { kind: "material_not_provable", workflowId: hold.workflowId, detail: built.detail, reconciled };
   }
 
@@ -155,38 +161,3 @@ export async function tickOnce(options: TickOptions): Promise<TickOutcome> {
   return { kind: "ran", workflowId: hold.workflowId, outcome, unresolvedHosts: built.unresolvedHosts, seed: built.seed, reconciled };
 }
 
-
-/* Workflows whose waking has stopped and which have not been told why.
- *
- * Deliberately narrow: it looks only at rows that are already `settled`, only
- * at workflows that are not already over, and only at ones nothing has written
- * a runner stop onto. It never schedules anything, never claims anything, and
- * never moves a workflow that is finished. All it does is make the two records
- * agree — which also means a cancellation can still find the workflow, because
- * `needs_attention` is not terminal.
- */
-export async function tellSettledWorkflows(client: Queryable, limit: number): Promise<string[]> {
-  const rows = (await client.query(
-    `select c.workflow_id::text as workflow_id, c.settled_reason,
-            w.organization_id::text as organization_id
-       from public.workflow_continuations c
-       join public.intelligence_workflows w on w.id = c.workflow_id
-      where c.state = 'settled'
-        and w.state not in ('completed', 'partial', 'failed', 'cancelled')
-        and coalesce(w.error_code, '') <> 'runner_stopped'
-      limit $1::int`,
-    [Math.trunc(limit)])).rows;
-
-  const told: string[] = [];
-  for (const row of rows) {
-    const workflowId = String(row.workflow_id);
-    try {
-      const repo = new PostgresOrchestrationRepository(client as never, {
-        organizationId: String(row.organization_id),
-      });
-      await recordFinalStop(repo, workflowId, String(row.settled_reason ?? "waking_stopped"), null);
-      told.push(workflowId);
-    } catch { /* somebody else got there; the record is the authority */ }
-  }
-  return told;
-}

@@ -102,7 +102,7 @@ Deno.serve(async (request: Request): Promise<Response> => {
     console.error(line({ fn: FUNCTION, event: "unhandled", op, problem: (error as Error).name }));
     return json(500, { refused: "the operation did not complete" });
   } finally {
-    if (db) await db.close().catch(() => undefined);
+    if (db) await db.end().catch(() => undefined);
   }
 });
 

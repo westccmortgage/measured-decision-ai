@@ -38,7 +38,48 @@ export function routeVariables(prefix: string): RouteVariables {
   };
 }
 
-export function routeToRecord(prefix: string, env: (name: string) => string | undefined): Route | RouteProblem {
+/* A ROUTE THIS PROJECT ALREADY HAS.
+ *
+ * The pooler's host and user were read from the Management API once and set as
+ * secrets for the canary. They are facts about this database, not about that
+ * function, and asking an operator to write the same two values under a second
+ * prefix would be asking them to keep one fact in two places.
+ *
+ * So the search is: this function's own prefix, then any prefix a sibling
+ * already established, then the platform's own url. The first that answers
+ * wins, and the answer says which one it was. */
+export function routeToRecord(
+  prefix: string,
+  env: (name: string) => string | undefined,
+  alsoTry: string[] = ["CORE_V2_CANARY"],
+): Route | RouteProblem {
+  const first = routeUnderPrefix(prefix, env);
+  if (!isRouteProblem(first)) return first;
+  for (const other of alsoTry) {
+    const found = routeUnderPrefix(other, env);
+    if (!isRouteProblem(found)) return found;
+  }
+  /* Last: the platform's own url, complete. It is the direct address rather
+     than the pooler's, which does not always answer from the Edge Runtime —
+     so it is tried last and its failure is a connection error rather than a
+     silent wrong answer. */
+  const platform = env("SUPABASE_DB_URL");
+  if (platform) {
+    try {
+      const parsed = new URL(platform);
+      if (parsed.password) {
+        return {
+          url: platform,
+          describe: `${parsed.hostname}:${parsed.port || "5432"}${parsed.pathname}`,
+          passwordFrom: "SUPABASE_DB_URL (the platform's own)",
+        };
+      }
+    } catch { /* fall through to the first problem, which names what to set */ }
+  }
+  return first;
+}
+
+function routeUnderPrefix(prefix: string, env: (name: string) => string | undefined): Route | RouteProblem {
   const names = routeVariables(prefix);
 
   const complete = env(names.complete);

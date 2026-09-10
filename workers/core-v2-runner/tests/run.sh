@@ -27,6 +27,9 @@ run "what a dead process leaves, and what the next one may do about it" resilien
 run "the lines the runner may not cross"                               boundaries.mjs
 run "the handlers a person and a watchdog actually call"               handlers.mjs
 
+printf "\n\033[1m%s\033[0m\n" "── the three doors, type-checked against what they import"
+if bash ./typecheck-doors.sh; then :; else fail=1; fi
+
 echo
 echo "────────────────────────────────────────────"
 if [ "$fail" = "1" ]; then echo "SOMETHING FAILED — see above"; exit 1; fi
