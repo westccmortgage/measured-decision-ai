@@ -42,7 +42,8 @@ import type { RuntimeConfig } from "../core-v2-runtime/runtime-config.ts";
 import { loadOperatorRegistry } from "../core-v2-canary/operator-registry.ts";
 import type { OperatorRegistry } from "../core-v2-canary/operator-registry.ts";
 import { sourceSetOfRecord } from "./source-set.ts";
-import type { HttpTransport } from "../core-v2-runtime/transport/transport.ts";
+import type { HttpRequest, HttpResponse, HttpTransport } from "../core-v2-runtime/transport/transport.ts";
+import { NetworkNotAuthorized } from "../core-v2-runtime/transport/transport.ts";
 import type { RunnerWorld } from "./runner.ts";
 
 export const REGISTRY_VARIABLE = "CORE_V2_RUNNER_REGISTRY";
@@ -149,6 +150,48 @@ export type BuiltWorld = {
   seed: string;
 };
 
+/* ─────────────────────────── A TRANSPORT THAT WILL NOT BE BUILT IS A REFUSAL
+ *
+ * The transport a real deployment builds refuses to EXIST unless every
+ * authorization is in place. That is right, and it is the ordinary state of a
+ * deployment that is deliberately dormant — which is what this repository
+ * ships as. Letting that refusal escape from here breaks the promise made at
+ * the top of this file, and broke it in production: with the gates shut the
+ * world is still built and still runs, and the refusal is what ends up in the
+ * record. Instead, the whole pass died with `unhandled`, the workflow stayed
+ * at `created`, and an operator was told nothing about which switch was off.
+ *
+ * So a transport that will not be built is replaced by one that will not
+ * send. It carries the reasons the real one gave, and the executors already
+ * know what to do with it: `network_not_authorized`, nothing sent, nothing
+ * owed, and the reasons written on the attempt where somebody can read them.
+ */
+class TransportThatWillNotSend implements HttpTransport {
+  readonly name = "not-authorised";
+  readonly unresolvedHosts: string[] = [];
+  readonly said: string;
+  readonly refusals: string[];
+  constructor(said: string, refusals: string[]) {
+    this.said = said;
+    this.refusals = refusals;
+  }
+  send(_request: HttpRequest): Promise<HttpResponse> {
+    return Promise.reject(new NetworkNotAuthorized(this.said, this.refusals));
+  }
+}
+
+function transportOrRefusal(
+  make: (config: RuntimeConfig) => HttpTransport & { unresolvedHosts: string[] },
+  config: RuntimeConfig,
+): HttpTransport & { unresolvedHosts: string[] } {
+  try {
+    return make(config);
+  } catch (error) {
+    if (!(error instanceof NetworkNotAuthorized)) throw error;
+    return new TransportThatWillNotSend(error.message, error.refusals);
+  }
+}
+
 /* Builds the world for ONE workflow. The workflow id is not decoration: the
    sources it reads, the material it may resolve and the budget it may hold
    are all that workflow's, and a runner holding this world can advance no
@@ -208,7 +251,7 @@ export async function buildWorldFor(options: {
   const stored = new Map<string, { mediaKind: string; mimeType: string; bytes: Uint8Array }>();
   for (const [hash, item] of sourceSet.material) stored.set(hash, item);
 
-  const transport = options.transport(config);
+  const transport = transportOrRefusal(options.transport, config);
   const executors = buildProviderRegistry({
     config, transport, routing: registry.routing,
     compilePrompt: (packet: WorkPacket) => compilePrompt(packet, roles.role(packet.roleKey)),
@@ -359,7 +402,7 @@ async function analysisWorld(options: {
   const roles = new RoleRegistry(pack);
   const ledger = new BudgetLedger(client as never, config);
 
-  const transport = options.transport(config);
+  const transport = transportOrRefusal(options.transport, config);
   const executors = buildProviderRegistry({
     config, transport, routing: registry.routing,
     compilePrompt: (packet: WorkPacket) => compilePrompt(packet, roles.role(packet.roleKey)),

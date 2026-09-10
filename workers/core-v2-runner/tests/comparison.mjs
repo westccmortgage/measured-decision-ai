@@ -27,6 +27,7 @@ import path from "node:path";
 import { harness } from "../../core-v2/tests/harness.mjs";
 import { withThrowawayDatabase } from "../../core-v2/tests/postgres-harness.mjs";
 import { LocalProviderTransport } from "../../core-v2-runtime/providers/local-answers.ts";
+import { NetworkNotAuthorized } from "../../core-v2-runtime/transport/transport.ts";
 import { answerFromRequest } from "../../core-v2-runtime/local-agent/reading-agent.ts";
 import { SourceDocumentsPack } from "../../core-v2/domains/source-documents/pack.ts";
 import { manifestOfAnalysis, readAnalysis, workflowIdForAnalysis } from "../analysis.ts";
@@ -547,6 +548,68 @@ await withThrowawayDatabase(async ({ client, organizationId }) => {
       where workflow_id = $1 and predicate = 'finding' and status in ('accepted','verified')`,
     [fourth.workflowId])).rows);
   t.check("with findings the owner can read, produced while nobody was looking", findings > 0, `${findings} settled findings`);
+
+  /* ───────────────────────────────────────────────────────────────────────
+     (5) THE DEPLOYMENT IS DORMANT, WHICH IS NOT THE SAME AS BROKEN.
+
+     This repository ships with the paid gates shut, and the transport a real
+     deployment builds REFUSES TO EXIST until every authorization is in
+     place. The promise the runner makes about that state is written at the
+     top of world.ts: the world is still built, the pass still runs, and the
+     refusal is what ends up in the record — because a runner that crashes
+     when it cannot spend tells an operator nothing.
+
+     It did crash. On the deployed test platform every pass died with
+     `unhandled`, the workflow sat at `created` forever, and the watchdog
+     re-claimed it every three minutes with nothing to show. This is that,
+     reproduced: a transport factory that refuses in exactly the way the real
+     one does.  */
+  t.section("(5) the deployment cannot spend, and says so instead of dying");
+  {
+    const dormant = await seedAnalysis(client, organizationId, {
+      title: "A deployment with its gates shut", questionKind: "plan_consistency",
+      question: "Do these two sheets state the same ceiling height?",
+      files: [planSet],
+    });
+    const fifth = await startAnalysis(client, organizationId, dormant);
+
+    const outcome = await tickVia(client, {
+      runner: "core-v2-runner-tick",
+      transport: () => {
+        throw new NetworkNotAuthorized(
+          "core-v2: a transport that can reach a provider may not be built until every authorization is in place",
+          ["CORE_V2_ALLOW_PAID_CALLS is not set to true", "no provider network flag on this invocation"]);
+      },
+    });
+
+    t.check("the pass ran rather than throwing", outcome.kind === "ran", String(outcome.kind));
+    t.check("and the workflow left `created` under its own steam",
+      outcome.kind === "ran" && outcome.outcome.state !== "created",
+      outcome.kind === "ran" ? String(outcome.outcome.state) : "it never ran");
+
+    /* The deterministic work — reading a file into the record — needs no
+       provider and still happens. It is the MODEL attempts, the only ones
+       that could have cost anything, that must every one be a door that was
+       never opened. */
+    const refusals = (await client.query(
+      `select executor_kind, state, coalesce(error_code, '—') as error_code, count(*)::text as n
+         from public.agent_attempts where workflow_id = $1
+        group by 1, 2, 3 order by 4 desc`, [fifth.workflowId])).rows;
+    const model = refusals.filter((r) => String(r.executor_kind) === "model");
+    t.check("every attempt that could have cost anything is written down as a door that was never opened",
+      model.length > 0 && model.every((r) =>
+        String(r.state) === "failed_known" && String(r.error_code) === "network_not_authorized"),
+      refusals.map((r) => `${r.executor_kind}:${r.state}/${r.error_code}×${r.n}`).join(" · ") || "no attempts at all");
+    t.check("and the work that needed no provider still happened",
+      refusals.some((r) => String(r.executor_kind) !== "model" && String(r.state) === "succeeded"));
+
+    const said = (await client.query(
+      `select coalesce(error_message, '') as said from public.agent_attempts
+        where workflow_id = $1 and error_message is not null limit 1`, [fifth.workflowId])).rows[0];
+    t.check("and it names the authorization that was missing, where an operator reads it",
+      Boolean(said) && /CORE_V2_ALLOW_PAID_CALLS|authorization/.test(String(said.said)),
+      String(said?.said ?? "nothing was written down").slice(0, 160));
+  }
 
   t.section("nothing left this process");
   t.check("no provider was reached, by anything, at any point", reachedOut === 0, `${reachedOut} attempts`);
