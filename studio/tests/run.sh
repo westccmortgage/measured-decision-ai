@@ -37,6 +37,7 @@ run "the prime domain reaches AWS"    studio/tests/prime-domain-reaches-the-clou
 run "the create-project form"         studio/tests/create-project-form.mjs
 run "the drop box has a way onward"   studio/tests/intake-dead-end.mjs
 run "the two doors are told apart"    studio/tests/two-doors.mjs
+run "which database a page talks to" studio/tests/which-database.mjs
 run "one way through"                 studio/tests/one-way-through.mjs
 run "signing in from a phone"         studio/tests/mobile-sign-in.mjs
 run "every screen, pressed"           studio/tests/screen-audit.mjs

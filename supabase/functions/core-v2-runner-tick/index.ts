@@ -210,7 +210,18 @@ Deno.serve(async (request: Request): Promise<Response> => {
     });
   } catch (error) {
     if (error instanceof DatabaseUnreachable) return json(503, { refused: "the record is not reachable" });
-    console.error(line({ fn: FUNCTION, event: "unhandled", problem: (error as Error).name }));
+    /* THE NAME OF AN ERROR IS NOT A DIAGNOSIS. Every ordinary failure in
+       here is called "Error", so a log that carried only the name said
+       nothing at all — which cost this deployment one round of guessing.
+       The message and the first frames go in the log, where an operator can
+       read them, and never in the response, which anybody may read. */
+    const problem = error as Error;
+    console.error(line({
+      fn: FUNCTION, event: "unhandled",
+      problem: problem?.name ?? "unknown",
+      said: String(problem?.message ?? "").slice(0, 400),
+      where: String(problem?.stack ?? "").split("\n").slice(1, 4).join(" | ").slice(0, 400),
+    }));
     return json(500, { refused: "the tick did not complete" });
   } finally {
     if (db) await db.end().catch(() => undefined);
