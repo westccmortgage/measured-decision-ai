@@ -184,6 +184,8 @@ label.field > span { display: block; font-size: 13px; color: var(--ink-soft); ma
 .pill[data-tone="good"] { color: var(--good); border-color: color-mix(in srgb, var(--good) 45%, transparent); }
 .pill[data-tone="warn"] { color: var(--warn); border-color: color-mix(in srgb, var(--warn) 45%, transparent); }
 .pill[data-tone="bad"] { color: var(--bad); border-color: color-mix(in srgb, var(--bad) 45%, transparent); }
+.pill[data-kind="test"] { color: var(--warn); border-color: color-mix(in srgb, var(--warn) 45%, transparent); }
+.pill[data-kind="live"] { color: var(--ink-faint); }
 .pill[data-tone="open"] { color: var(--open); border-color: color-mix(in srgb, var(--open) 45%, transparent); }
 
 .refusal {

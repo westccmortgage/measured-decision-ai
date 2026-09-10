@@ -11,7 +11,7 @@ try{var t=localStorage.getItem("mdai-theme");document.documentElement.dataset.th
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
-    <link rel="stylesheet" href="analysis.css?v=1">
+    <link rel="stylesheet" href="analysis.css?v=2">
   </head>
   <body>
     <main class="page">
@@ -19,6 +19,7 @@ try{var t=localStorage.getItem("mdai-theme");document.documentElement.dataset.th
         <span class="mark" aria-hidden="true"><i></i><i></i><i></i></span>
         <strong>Measured Decision · Analysis</strong>
         <span class="spacer"></span>
+        <span class="pill" id="where" data-kind="test" title=""></span>
         <span class="who" id="who"></span>
         <button class="quiet" id="theme" type="button" title="Light or dark">◐</button>
         <button class="quiet" id="sign-out" type="button" hidden>Sign out</button>
@@ -32,6 +33,6 @@ try{var t=localStorage.getItem("mdai-theme");document.documentElement.dataset.th
     <script src="../vendor/supabase-js-2.106.2.min.js"></script>
     <script src="../config.js"></script>
     <script src="../pano360.js"></script>
-    <script type="module" src="app.js?v=1"></script>
+    <script type="module" src="app.js?v=2"></script>
   </body>
 </html>

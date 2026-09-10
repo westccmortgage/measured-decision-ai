@@ -17,17 +17,32 @@
  *      nothing else. Provider keys live in the function environment; this file
  *      could not reach a provider if it tried.
  */
+import { backendFor } from "./backend.js";
 import { AnalysisRecord, Refusal } from "./record.js";
 import { KINDS, MAXIMUM_FILES, humanBytes } from "./formats.js";
 import { clock, coverageSentence } from "./plan.js";
 
-const config = window.MDAI_CONFIG || {};
 const FUNCTION = "core-v2-analysis";
 const screen = document.getElementById("screen");
 
+/* WHICH DATABASE THIS PAGE IS TALKING TO. Decided by the address it was opened
+   at, said out loud on the screen, and defaulting to production so that a
+   merge cannot quietly point the product at a test branch. */
+const backend = backendFor(window.location.hostname, window.MDAI_CONFIG || {});
+const config = {
+  supabaseUrl: backend.supabaseUrl,
+  supabasePublishableKey: backend.publishableKey,
+  storageBucket: backend.storageBucket,
+};
+
 const client = window.supabase?.createClient && config.supabaseUrl && config.supabasePublishableKey
   ? window.supabase.createClient(config.supabaseUrl, config.supabasePublishableKey, {
-      auth: { persistSession: true, autoRefreshToken: true, detectSessionInUrl: true },
+      auth: {
+        persistSession: true, autoRefreshToken: true, detectSessionInUrl: true,
+        /* One key per backend, so a session on the test branch and a session
+           on production do not overwrite each other in this browser. */
+        storageKey: `mdai-analysis-${backend.database}`,
+      },
     })
   : null;
 
@@ -39,6 +54,7 @@ const state = {
   analyses: [],
   open: null,        // { run, files, events }
   status: null,
+  pairing: null,    // what will be compared with what
   results: null,
   busy: new Map(),   // fileId -> { phase, sent, total, what }
   pending: null,     // a file whose row does not exist yet
@@ -128,6 +144,12 @@ function analysisIdInUrl() {
 
 async function route() {
   stopPolling();
+  const where = document.getElementById("where");
+  if (where) {
+    where.textContent = backend.name;
+    where.title = `${backend.note} (${backend.database})`;
+    where.dataset.kind = backend.name === "production" ? "live" : "test";
+  }
   document.getElementById("who").textContent = state.session?.user?.email || "";
   document.getElementById("sign-out").hidden = !state.session;
   state.problem = "";
@@ -150,6 +172,8 @@ async function refreshOpen(analysisId) {
     state.open = await state.record.read(analysisId);
     if (!state.open) { state.problem = "That analysis is not in this workspace."; return; }
     state.status = await call("status", { analysisId });
+    state.pairing = state.open.run.question_kind === "specific_question"
+      ? null : await call("pairing", { analysisId });
     state.results = state.open.run.workflow_id ? await call("results", { analysisId }) : null;
   } catch (error) {
     state.problem = error.message;
@@ -175,13 +199,27 @@ function stopPolling() { if (state.poll) { clearInterval(state.poll); state.poll
 
 function render() {
   if (!state.session) return screen.replaceChildren(signIn());
-  if (!state.organizationId) return screen.replaceChildren(h(`
-    <div class="card">
-      <h1>This account has no workspace yet</h1>
-      <p class="lede">An analysis belongs to a workspace, and yours has not been created. Open the
-      Studio once and create a project — that makes the workspace — then come back here.</p>
-      <p><a href="../index.html">Open the Studio →</a></p>
-    </div>`));
+  if (!state.organizationId) {
+    const card = h(`
+      <div class="card">
+        <p class="eyebrow">One step, once</p>
+        <h1>This account has no workspace yet</h1>
+        <p class="lede">An analysis belongs to a workspace — a private place for your files, your
+        analyses and what they were authorised to spend. You do not have one on
+        <strong>${esc(backend.name)}</strong> yet.</p>
+        <button class="primary" id="make-workspace" type="button">Create my workspace</button>
+        <p class="faint" id="workspace-said" style="margin-top:10px"></p>
+      </div>`);
+    card.querySelector("#make-workspace").addEventListener("click", async (event) => {
+      event.currentTarget.disabled = true;
+      const said = screen.querySelector("#workspace-said");
+      const { error } = await client.rpc("bootstrap_personal_organization", { workspace_name: "My workspace" });
+      if (error) { if (said) said.textContent = error.message; event.currentTarget.disabled = false; return; }
+      await hydrate();
+      await route();
+    });
+    return screen.replaceChildren(card);
+  }
 
   const parts = [];
   if (state.problem) parts.push(h(`<div class="card refusal"><strong>${esc(state.problem)}</strong></div>`));
@@ -336,6 +374,11 @@ function workScreen() {
         <div class="step-body" id="prepare-step"></div>
       </div>
 
+      ${state.pairing ? `<div class="card step" data-done="${(state.pairing.pairs || []).length ? "yes" : "no"}">
+        <div class="step-number">✚</div>
+        <div class="step-body" id="pairs-step"></div>
+      </div>` : ""}
+
       <div class="card step" data-done="${started ? "yes" : "no"}" data-active="${!started && preparedSubjects > 0 ? "yes" : "no"}">
         <div class="step-number">4</div>
         <div class="step-body" id="run-step"></div>
@@ -346,6 +389,7 @@ function workScreen() {
 
   node.getElementById("files-step").replaceChildren(filesStep(started));
   node.getElementById("prepare-step").replaceChildren(prepareStep(started));
+  if (state.pairing) node.getElementById("pairs-step").replaceChildren(pairsStep(started));
   node.getElementById("run-step").replaceChildren(runStep(preparedSubjects, allPrepared, started));
   if (started) node.getElementById("results-step").replaceChildren(resultsStep());
   return node;
@@ -583,6 +627,94 @@ async function prepareOne(fileRow, source) {
   }
 }
 
+
+/* ── what will be compared with what ─────────────────────────────────── */
+
+/* A COMPARISON NEEDS TWO PIECES OF MATERIAL, AND SOMETHING HAS TO SAY WHICH.
+ *
+ * Most of the time the sheets do: a sheet carries its own number and names the
+ * sheets it refers to, and that is a correspondence nobody had to invent.
+ * Nothing in a video frame says which sheet it belongs to, so that one is
+ * asked here — and where it is not answered, the place is shown as needing a
+ * check rather than paired with a guess. */
+function pairsStep(started) {
+  const pairing = state.pairing || {};
+  const pairs = pairing.pairs || [];
+  const unpaired = pairing.unpaired || [];
+  const pages = pairing.pages || [];
+  const clips = pairing.clips || [];
+  const kind = state.open.run.question_kind;
+
+  const node = h(`
+    <div>
+      <p class="eyebrow">Before you run</p>
+      <h2>What will be compared</h2>
+      <p class="muted">${esc(kind === "plan_consistency"
+        ? "Each pair below is read by two independent readers, together, and they are asked whether the two sheets agree."
+        : "Each sampled moment below is read against a plan sheet by two independent readers, and they are asked whether what is visible matches what the sheet calls for.")}</p>
+      ${pairs.length ? `
+        <div class="filelist" style="margin-bottom:12px">
+          ${pairs.map((p) => `<div class="file"><div class="file-head"><strong>${esc(p.label)}</strong></div>
+            <div class="faint">${esc(p.why)}</div></div>`).join("")}
+        </div>` : `<div class="notice" style="margin-bottom:12px"><strong>Nothing is paired yet.</strong>
+          <p class="muted" style="margin:6px 0 0">${esc(pairing.note || "")}</p></div>`}
+
+      ${unpaired.length ? `<div class="refusal" style="margin-bottom:12px">
+        <strong>${unpaired.length} place${unpaired.length === 1 ? " has" : "s have"} nothing to be compared with.</strong>
+        ${unpaired.slice(0, 4).map((u) => `<p class="muted" style="margin:6px 0 0">${esc(u.label)} — ${esc(u.question)}</p>`).join("")}
+        <p class="faint" style="margin:8px 0 0">Unpaired places are shown in the result under “Needs a check”. Nothing is compared by guesswork.</p>
+      </div>` : ""}
+
+      ${started || pairing.settled ? `<p class="faint">This analysis has been run, so what it compares is settled.</p>` : `
+        ${kind === "video_against_plans" ? `
+          <label class="field"><span>Which sheets should each clip be read against?</span>
+            <select id="pair-clip">${clips.map((c) => `<option value="${esc(c.file)}">${esc(c.label)} — ${esc(c.moments)} moments</option>`).join("")}</select>
+          </label>
+          <div class="choices" id="pair-pages">
+            ${pages.map((p) => `<label class="choice"><input type="checkbox" value="${esc(p.file)}:${esc(p.ordinal)}"><span><strong>${esc(p.label)}</strong></span></label>`).join("")}
+          </div>
+          <button class="primary" id="pair-save" type="button">Use these sheets for this clip</button>` : `
+          <div class="row" style="align-items:flex-end">
+            <label class="field" style="flex:1"><span>Compare this sheet</span>
+              <select id="pair-a">${pages.map((p) => `<option value="${esc(p.file)}:${esc(p.ordinal)}">${esc(p.label)}</option>`).join("")}</select></label>
+            <label class="field" style="flex:1"><span>with this one</span>
+              <select id="pair-b">${pages.map((p) => `<option value="${esc(p.file)}:${esc(p.ordinal)}">${esc(p.label)}</option>`).join("")}</select></label>
+            <button class="primary" id="pair-add" type="button" style="margin-bottom:12px">Add this pair</button>
+          </div>`}
+        <p class="faint">What you choose is kept with the analysis and is closed the moment you run it — a result may not
+        be left standing on a question nobody asked.</p>`}
+    </div>`);
+
+  const place = (value) => {
+    const [file, ordinal] = String(value).split(":").map(Number);
+    return { file, ordinal };
+  };
+  const saveChosen = async (chosen) => {
+    const { error } = await client.from("analysis_runs").update({ pairing: chosen }).eq("id", state.open.run.id);
+    if (error) { say(error.message); return; }
+    await refreshOpen(state.open.run.id);
+    render();
+  };
+
+  node.querySelector("#pair-add")?.addEventListener("click", async () => {
+    const a = place(screen.querySelector("#pair-a").value);
+    const b = place(screen.querySelector("#pair-b").value);
+    if (a.file === b.file && a.ordinal === b.ordinal) { say("A sheet cannot be compared with itself."); return; }
+    const chosen = { ...(pairing.chosen || {}) };
+    chosen.pagePairs = [...(chosen.pagePairs || []), { a, b }];
+    await saveChosen(chosen);
+  });
+  node.querySelector("#pair-save")?.addEventListener("click", async () => {
+    const file = Number(screen.querySelector("#pair-clip").value);
+    const wanted = [...screen.querySelectorAll("#pair-pages input:checked")].map((box) => place(box.value));
+    if (!wanted.length) { say("Choose at least one sheet, or leave it and every moment will be shown as needing a check."); return; }
+    const chosen = { ...(pairing.chosen || {}) };
+    chosen.momentPages = [...(chosen.momentPages || []).filter((m) => m.file !== file), { file, pages: wanted }];
+    await saveChosen(chosen);
+  });
+  return node;
+}
+
 /* ── step 4: the press ───────────────────────────────────────────────── */
 
 function runStep(preparedSubjects, allPrepared, started) {
@@ -817,7 +949,17 @@ const answerOf = (reading) => {
 };
 
 function placeWords(subjectKey) {
-  const [kind, fileOrdinal, ordinal] = String(subjectKey || "").split("/");
+  const parts = String(subjectKey || "").split("/");
+  /* A comparison names two places, and the card is titled by both — a person
+     looking for "the sheet that disagrees with the schedule" is looking for
+     the pair, not for one half of it. */
+  if (parts[0] === "pages" && parts.length >= 5) {
+    return `${placeWords(`page/${parts[1]}/${parts[2]}`)}  vs  ${placeWords(`page/${parts[3]}/${parts[4]}`)}`;
+  }
+  if (parts[0] === "moment" && parts[3] === "page" && parts.length >= 6) {
+    return `${placeWords(`moment/${parts[1]}/${parts[2]}`)}  vs  ${placeWords(`page/${parts[4]}/${parts[5]}`)}`;
+  }
+  const [kind, fileOrdinal, ordinal] = parts;
   const file = (state.open?.files || []).find((f) => String(f.ordinal) === String(fileOrdinal));
   const name = file?.file_name || `file ${fileOrdinal}`;
   if (kind === "page") return `${name}, page ${ordinal}`;

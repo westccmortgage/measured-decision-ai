@@ -97,7 +97,8 @@ Deno.serve(async (request: Request): Promise<Response> => {
   const offeredBearer = authorization.toLowerCase().startsWith("bearer ") ? authorization.slice(7).trim() : "";
   const allowed = (secret && sameSecret(offeredHeader, secret))
     || (serviceKey && (sameSecret(offeredHeader, serviceKey) || sameSecret(offeredBearer, serviceKey)));
-  if (!allowed) return json(401, { refused: "not for you" });
+  const offered = offeredHeader || offeredBearer;
+  if (!allowed && !offered) return json(401, { refused: "not for you" });
   const expected = secret || serviceKey;
 
   const route = routeToRecord(ROUTE_PREFIX, (name) => Deno.env.get(name));
@@ -112,6 +113,29 @@ Deno.serve(async (request: Request): Promise<Response> => {
   let db: EdgeDatabase | null = null;
   try {
     db = await EdgeDatabase.connect(route.url, FUNCTION);
+
+    /* THE THIRD WAY IN, AND THE ONLY ONE THE WATCHDOG CAN USE.
+     *
+     * A watchdog running inside the database cannot set a variable in this
+     * function's environment, so it knocks with the value of a Vault secret
+     * the record names. Recognising that means asking the record, which this
+     * function is now connected to. The value never leaves the database: the
+     * answer is true or false.
+     *
+     * It is asked LAST, after the two credentials that need no connection, so
+     * an ordinary caller costs nothing extra — and it is asked at all only
+     * when something was actually offered. */
+    if (!allowed) {
+      const recognised = (await db.query(
+        `select public.core_v2_runner_secret_matches($1::text) as ok`, [offered])).rows[0];
+      /* The driver hands a boolean back as the text of one, so both are read
+         and neither is guessed at. */
+      if (String(recognised?.ok ?? "") !== "true" && String(recognised?.ok ?? "") !== "t") {
+        return json(401, { refused: "not for you" });
+      }
+      console.log(line({ fn: FUNCTION, event: "auth.by_record" }));
+    }
+
     const store = new PostgresContinuationStore(db as never);
 
     const result = await tickOnce({
