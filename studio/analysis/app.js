@@ -522,14 +522,16 @@ function prepareStep(started) {
       <p class="muted">A reader is never handed a whole file. Each page becomes its own image plus
       whatever text the PDF carries; a video becomes a bounded set of frames at exact times. Every
       piece is stored the moment it is made, so this can stop and pick up again.</p>
+      <p class="faint">Preparation reads the file in this browser, because a page image needs a canvas
+      and a video frame needs a decoder — this deployment has neither on the server. So preparing
+      material needs this tab open, and resumes at the first piece that is not yet stored. The
+      analysis itself runs on the server and needs no tab open.</p>
       ${files.length === 0 ? `<p class="faint">Nothing to prepare yet.</p>` : ""}
       ${waiting.length && !started ? `
         <div class="notice">
           <strong>${waiting.length} file${waiting.length === 1 ? "" : "s"} still to prepare.</strong>
-          <p class="muted" style="margin:6px 0 10px">Preparation reads the file in this browser, because a
-          page image needs a canvas and a video frame needs a decoder — this deployment has neither on
-          the server. Pick the same file again and it resumes at the first piece that is not yet stored.
-          The analysis itself runs on the server and needs no tab open.</p>
+          <p class="muted" style="margin:6px 0 10px">Pick the same file again and it carries on from the
+          first piece that is not yet stored.</p>
           <input type="file" id="reprepare-picker" hidden>
           <div class="row" id="reprepare"></div>
         </div>` : ""}

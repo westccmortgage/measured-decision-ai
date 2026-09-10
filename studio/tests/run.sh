@@ -89,6 +89,7 @@ run "walking to the next room"        studio/tests/room-menu-on-screen.mjs
 run "where the reader could not read" studio/tests/reading-register.mjs
 run "no shadowed bindings"            studio/tests/static-shadows.mjs
 run "real files in, pages and frames out" studio/tests/analysis-material.mjs
+run "the analysis path, walked"        studio/tests/analysis-screens.mjs
 
 printf "\n%s\n" "────────────────────────────────────────────"
 if [ "$fail" = "0" ]; then echo "ALL CHECKS PASS"; else echo "SOMETHING FAILED — see above"; fi
