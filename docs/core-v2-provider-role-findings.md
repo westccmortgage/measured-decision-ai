@@ -304,7 +304,7 @@ different units and this document keeps them apart:
 | answer that produced something | an accepted envelope carrying at least one claim, assessment, segment or decision | **31** |
 | answer that refused, with a stated reason | an accepted envelope carrying no output and at least one limitation | **18** |
 | answer that was simply empty | accepted, no output, no reason given | **1** |
-| table row read | one entry of one table, read by one reader | **43** claims |
+| table row read | one entry of one table, read by one reader — the unit every "6 of 6" in this document counts | **43** claims |
 | segment reported | one table or note located inside a sheet by a discovery | **28** |
 
 Three of those lines need saying out loud.
@@ -340,6 +340,13 @@ In the stable window, Anthropic and OpenAI each read all three entries of both
 generations, blind to each other. **All twelve readings match the truth exactly
 — quantity, unit and category.** Twelve of twelve, two independent readers,
 zero corrections.
+
+**And "6 of 6" below means SIX TABLE ROWS, not six calls.** Each reader read
+three entries in each of two stable generations, which is six checked values
+per reader. Those twelve values came from **four** submitted calls between them
+— two `table_reader` calls each. Counting calls where rows are meant, or the
+other way round, is exactly the confusion this document's third rule exists to
+stop; the two numbers are different sizes and neither divides into the other.
 
 And the corollary, which is just as important: across the *entire* canary,
 `disagreements` contains **fourteen rows and not one of them is a value
@@ -388,7 +395,9 @@ in the record.
 
 - **Roles actually performed:** discovery (`region_discoverer`), blind table
   extraction, blind note extraction.
-- **Successful attempts:** 31 of 48 overall; 6 of 6 in the stable window.
+- **Successful attempts:** 31 of 48 calls overall; 6 of 6 calls in the stable
+  window (of which two were `table_reader` calls, carrying the six checked
+  row values below).
 - **Known failures:** 6, of which 3 are our URL or tool schema, 2 are our
   briefing, and 1 an answer the checker refused that the record cannot
   attribute (`answer_without_outcome`).
@@ -521,8 +530,9 @@ should not route it to anyone yet.
 
 **Which AI was most reliable at structured extraction?**
 The record does not separate them, and the counts must not be read as a
-ranking. In the stable window Anthropic read 6 of 6 segments correctly and
-OpenAI read 6 of 6 correctly; each anchored every claim verbatim; each had
+ranking. In the stable window each reader got **6 of 6 table-row values right**
+— three entries in each of two generations, from two `table_reader` calls
+apiece — and each anchored every claim verbatim; each had
 around one refusal in eight *before* the contracts were written properly and
 none after. Six and four clean attempts cannot distinguish two readers, and
 their differing totals reflect how much work we gave each one.
@@ -567,8 +577,8 @@ much the record proves about the assignment — never how the providers compare.
 | Core V2 role | Primary provider | Secondary provider | Why | Confidence |
 |---|---|---|---|---|
 | Discovery / segmentation | **Anthropic** | none assigned yet | The only provider ever given the role; 2/2 clean, 15/20 overall, 28 segments; every failure traced to our route, schema or briefing | **Low–moderate** — the role works, no alternative has been measured |
-| Blind extraction (reader A) | **Anthropic** | OpenAI | 6/6 correct against computed truth; every claim anchored verbatim; the most explicit refusals in the record | **Moderate** — correct on every clean attempt, on six of them |
-| Blind extraction (reader B) | **OpenAI** | Anthropic | 6/6 correct; every claim anchored verbatim; its own latency band is tight and its cache reads are the only ones recorded | **Moderate** — same small denominator |
+| Blind extraction (reader A) | **Anthropic** | OpenAI | **6 of 6 table-row values** correct against computed truth, from 2 calls; every claim anchored verbatim; the most explicit refusals in the record | **Moderate** — every checked value right, but only six values from two calls |
+| Blind extraction (reader B) | **OpenAI** | Anthropic | **6 of 6 table-row values** correct, from 2 calls; every claim anchored verbatim; its own latency band is tight and its cache reads are the only ones recorded | **Moderate** — same small denominator |
 | Comparison / independence | *kernel, deterministic* | — | Every comparison in the canary was made by the kernel; the 14 disagreements are all coverage gaps, never value conflicts | **Not yet proven** for any model — the path has never seen a real disagreement |
 | Critic / evidence verification | **Google** | none assigned yet | Two substantive criticisms with verbatim anchors and reason codes; the role stays where it is while its adapter and contract get the repair the readers already had | **Low** — thin record, most of it spent on our defects |
 | Derivation | *kernel, deterministic* | — | `category_totaliser` ran as code and cost nothing; no model was asked | **Not applicable** — deliberately not a model role |

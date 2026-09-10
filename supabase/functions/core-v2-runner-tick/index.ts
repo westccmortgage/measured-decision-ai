@@ -135,6 +135,7 @@ Deno.serve(async (request: Request): Promise<Response> => {
       moved: outcome.moved, deferred: outcome.deferred, stop: outcome.stopReason, ticks: outcome.ticks,
       scheduled_again: outcome.scheduledAgain, elapsed_ms: outcome.elapsedMs,
       final_stop: outcome.finalStop ? outcome.finalStop.reason : null,
+      reconciled: result.reconciled.length,
       unresolved_hosts: result.unresolvedHosts.length,
     }));
 
@@ -151,6 +152,9 @@ Deno.serve(async (request: Request): Promise<Response> => {
       stopReason: outcome.stopReason,
       scheduledAgain: outcome.scheduledAgain,
       finalStop: outcome.finalStop,
+      /* Workflows whose stop had been half-written and which this tick brought
+         back into agreement. Repaired on every tick, not only an idle one. */
+      reconciled: result.reconciled.length,
       elapsedMs: outcome.elapsedMs,
       problems: outcome.problems,
     });

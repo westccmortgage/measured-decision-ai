@@ -63,6 +63,38 @@ export class Scheduler {
     mayStartWork() {
         return this.options.mayStartWork ? this.options.mayStartWork() === true : true;
     }
+    /* HOW LONG AN ANSWER MAY BE WAITED FOR, RIGHT NOW.
+     *
+     * The smaller of what the policy allows and what is actually left after
+     * keeping back the room to write the answer down. A number at or below zero
+     * means there is no honest way to send this request: the wait would run past
+     * the moment this process must have returned, and a request still
+     * outstanding when a container goes is not a slow call — it is an outcome
+     * nobody will ever know, and this engine never buys one of those twice.
+     *
+     * With no deadline given, the policy's own timeout is the answer, which is
+     * what every existing caller has always had. */
+    roomForOneAttempt() {
+        if (!this.options.msUntilDeadline)
+            return this.policy.attemptTimeoutMs;
+        const left = this.options.msUntilDeadline();
+        if (!Number.isFinite(left))
+            return this.policy.attemptTimeoutMs;
+        return Math.min(this.policy.attemptTimeoutMs, left - this.policy.settlementAllowanceMs);
+    }
+    /* A task put back exactly as it was found: queued, no lease, no attempt,
+       nothing bought. The reason lives in the audit trail because a task waiting
+       in the queue has no terminal reason — nothing about it is terminal. */
+    async deferTask(taskId, reason) {
+        try {
+            await this.repo.transitionTask(taskId, "leased", "queued", reason);
+            await this.repo.audit({ action: "core_v2.task.deferred", entityType: "workflow_task", entityId: taskId, detail: { reason } });
+            return true;
+        }
+        catch {
+            return false;
+        }
+    }
     get limits() {
         return { maximumTasks: this.policy.maximumTasksPerWorkflow, maximumEdges: this.policy.maximumDependencyEdgesPerWorkflow, maximumChildrenPerParent: this.policy.maximumChildTasksPerParent, maximumDepth: this.policy.maximumFollowUpDepth };
     }
@@ -256,17 +288,9 @@ export class Scheduler {
             return results;
         }))).flat();
         for (const taskId of deferred) {
-            try {
-                await this.repo.transitionTask(taskId, "leased", "queued", "no_time_left_in_this_pass");
+            if (await this.deferTask(taskId, "no_time_left_in_this_pass"))
                 report.deferred.push(taskId);
-                await this.repo.audit({ action: "core_v2.task.deferred", entityType: "workflow_task", entityId: taskId, detail: { reason: "no_time_left_in_this_pass" } });
-            }
-            catch { /* somebody else already moved it; the record is the authority */ }
         }
-        /* A task that was never started was never dispatched. Saying otherwise
-           would tell the pass above that work happened, and the fuse that stops a
-           workflow waking forever is built out of that answer. */
-        report.dispatched = report.dispatched.filter((id) => !report.deferred.includes(id));
         for (const o of outcomes) {
             if (o.state === "completed")
                 report.completed.push(o.taskId);
@@ -274,6 +298,10 @@ export class Scheduler {
                 report.unknown.push(o.taskId);
             else if (o.state === "cancelled")
                 report.cancelled.push(o.taskId);
+            /* Put back after its packet was built, because there was no room left
+               to answer it. Queued, unrun, uncharged — not a failure. */
+            else if (o.state === "deferred")
+                report.deferred.push(o.taskId);
             else
                 report.failed.push(o.taskId);
             report.childrenCreated += o.childrenCreated;
@@ -283,6 +311,11 @@ export class Scheduler {
                 report.escalations.push(...await this.escalateDisputeOf(o.taskId, o.state));
         }
         this.escalations.push(...report.escalations);
+        /* A task that was never started was never dispatched — whether it was put
+           back before its packet was built or after. Saying otherwise would tell
+           the pass above that work happened, and the fuse that stops a workflow
+           waking forever is built out of that answer. */
+        report.dispatched = report.dispatched.filter((id) => !report.deferred.includes(id));
         /* Phase B when a discovery finished; the close of the graph when
            everything but the compositions is done. */
         if (outcomes.some((o) => o.discovered))
@@ -417,6 +450,23 @@ export class Scheduler {
             return result;
         }
         const selection = routed.selection;
+        /* ── THE LAST QUESTION BEFORE ANYTHING IS BOUGHT ────────────────────
+         *
+         * The packet is built and the reader is chosen. Both of those cost time —
+         * segments, claims and material references are read from the record, and
+         * a slow record spends the window inside them. So the clock is asked
+         * again, HERE, before an attempt row exists and before a penny is held.
+         *
+         * If what is left cannot hold one answer and the room to write it down,
+         * nothing is sent. The task goes back to the queue exactly as it was
+         * found — still queued, no lease, no attempt, no reservation — and the
+         * next pass of THIS workflow starts it with a whole window in front of
+         * it. Running out of a process's life is not a reading that failed, is
+         * never recorded as one, and never starts a new generation. */
+        if (this.roomForOneAttempt() <= 0) {
+            await this.deferTask(task.taskId, "no_time_left_before_submission");
+            return done("deferred");
+        }
         const attempt = await this.repo.createAttempt(this.newAttempt(task, attemptId, attemptNo, role.executorKind, selection.executorFamily, selection.independenceDomain, selection.modelConfiguration, packet.inputFingerprint, packetBytes, leaseToken));
         const unsent = async (reason) => {
             await this.repo.transitionAttempt(attempt.attemptId, "prepared", "cancelled_before_submission", { errorCode: reason });
@@ -473,7 +523,14 @@ export class Scheduler {
         flight.promise.then(() => { if (this.inFlight.get(attempt.attemptId) === flight && flight.timedOut)
             this.inFlight.delete(attempt.attemptId); });
         try {
-            raw = await withDeadline(execution, this.policy.attemptTimeoutMs);
+            /* AND THE WAIT ITSELF IS BOUNDED BY WHAT IS LEFT, NOT BY WHAT THE
+               POLICY HOPED FOR. Asked once more at the moment of waiting, because
+               the submission itself took time. The floor of one millisecond is
+               deliberate: the request has now gone, so the only choices are to wait
+               a little or to wait past the moment this process must have returned —
+               and an engine that does the second is the engine that produced the
+               canary's unknown outcomes. */
+            raw = await withDeadline(execution, Math.max(1, this.roomForOneAttempt()));
             envelope = normaliseEnvelope(raw);
         }
         catch (error) {

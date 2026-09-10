@@ -5349,9 +5349,35 @@ select pg_temp.check('the reopened workflow is what a runner is next handed',
   exists (select 1 from public.core_v2_due_continuations(50) w
            where w = '0c0e0000-0000-0000-0000-000000000001'));
 
+-- The ceiling is the fuse a cancellation most needs to get past, because a
+-- workflow that ran out of passes is exactly the one somebody wants to stop.
+-- Reopening must lower the count far enough for a claim to get through, and
+-- no further.
+do $$
+begin
+  perform public.core_v2_settle_continuation('0c0e0000-0000-0000-0000-000000000001', 'continuation_limit');
+  update public.workflow_continuations
+     set continuations = (select maximum_continuations from public.core_v2_continuation_limits())
+   where workflow_id = '0c0e0000-0000-0000-0000-000000000001';
+  perform public.core_v2_reopen_continuation('0c0e0000-0000-0000-0000-000000000001');
+end $$;
+select pg_temp.check('a workflow stopped by the continuation ceiling can still be reopened to be cancelled',
+  (select state from public.workflow_continuations
+    where workflow_id = '0c0e0000-0000-0000-0000-000000000001') = 'due');
+select pg_temp.check('and the count is lowered just enough that a claim is not blocked by the same ceiling',
+  (select c.continuations < l.maximum_continuations
+     from public.workflow_continuations c, public.core_v2_continuation_limits() l
+    where c.workflow_id = '0c0e0000-0000-0000-0000-000000000001'));
+select pg_temp.check('a claim really is handed that workflow rather than settling it again',
+  (select workflow_id from public.core_v2_claim_continuation('cancel-runner', 60000))
+    = '0c0e0000-0000-0000-0000-000000000001');
+select pg_temp.check('and what was granted is a budget for cancelling, not a fresh life',
+  (select l.maximum_continuations - c.continuations <= 3
+     from public.workflow_continuations c, public.core_v2_continuation_limits() l
+    where c.workflow_id = '0c0e0000-0000-0000-0000-000000000001'));
+
 -- And a workflow that is over is not restarted by a late cancellation.
 do $$
-declare token uuid;
 begin
   perform public.core_v2_settle_continuation('0c0e0000-0000-0000-0000-000000000001', 'over');
   update public.intelligence_workflows set state = 'cancelled'

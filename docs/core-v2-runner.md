@@ -213,6 +213,13 @@ migration 061, and it is the only thing that can move a settled row: it reads
 `cancel_requested_at` from the workflow itself and refuses a workflow that is
 already over.
 
+Reopening also lowers the continuation count to **three below the ceiling** —
+otherwise a workflow settled *by* the ceiling would be re-settled by the same
+ceiling on the very next claim and the cancellation would never run. Three
+passes is enough to cancel and nowhere near enough to resume: the kernel
+dispatches nothing at all for a workflow whose cancellation is recorded, so
+those passes can reconcile, cancel and settle, and cannot lease or buy.
+
 ---
 
 ## Shutdown
@@ -263,19 +270,26 @@ select state, due_at, held_by, held_until, continuations, idle_streak,
 | `settled`, reason `handed_to_a_person` | the engine did what it can; something needs a person | look at `waitingForAPerson` in status |
 | `settled`, reason `no_progress_in_5_continuations` | five passes in a row moved nothing | `last_error`, then the audit trail |
 | `settled`, reason `material_not_provable` | the runner could not rebuild this workflow's material from its own sources | the source set is not one this deployment can read |
+| `settled`, reason `continuation_limit` | it asked to be continued more times than the ceiling allows | the audit trail; cancel it if it should stop |
 | `held` with `held_until` in the past | a runner died holding it | nothing: the next claim takes it |
 | `due` with `due_at` in the past | nobody is ticking | check the watchdog (below) |
 | `due` with `due_at` a few seconds ahead | a pass is waiting for a lease somebody else holds | nothing: it comes back when that lease could no longer be alive |
 
 **Whenever a continuation settles for anything but a terminal workflow, the
-WORKFLOW is written too** — including when the SQL settled it without a runner
-ever holding it (a workflow already over, or one at the continuation ceiling).
-That case is caught by the next idle tick, which reports `reconciled` in its
-answer. It moves to `needs_attention` — or to `failed`, if it
-never got past its own start handshake — with `error_code = 'runner_stopped'`
-and the settling reason in `error_message`, and one `core_v2.workflow.runner_stopped`
-audit entry. So the two records never disagree, and a workflow that says
-`running` really is one something intends to run.
+WORKFLOW is written too.** The pass that stops it writes both records; and
+because a pass can die between the two writes — and because the SQL settles
+some rows without a runner ever holding them (a workflow already over, or one
+at the continuation ceiling) — **every tick repairs whatever is behind**, right
+after it claims, whether or not it got a workflow. Each answer reports
+`reconciled`.
+
+The workflow moves to `needs_attention` — or to `failed`, if it never got past
+its own start handshake — with `error_code = 'runner_stopped'`, the settling
+reason in `error_message`, and one `core_v2.workflow.runner_stopped` audit
+entry. A workflow **already** at `needs_attention` keeps that state and is
+still given `runner_stopped` and the specific reason, so a stop is never
+mistaken for whatever put it there first. Either way the two records agree, and
+a workflow that says `running` really is one something intends to run.
 
 ```sql
 select state, error_code, error_message from public.intelligence_workflows where id = '…';
@@ -321,10 +335,19 @@ starts it. Each one leaves a trail:
 select entity_id, detail from public.audit_events where action = 'core_v2.task.deferred';
 ```
 
-A tick's answer reports the same number as `deferred`. Seeing it every pass
-means one reading takes longer than the window allows — raise
-`CORE_V2_RUNNER_LIFETIME_MS` if the platform gives more life, or lower the
-answer window so more readings fit. Seeing it occasionally is the design.
+A tick's answer reports the same number as `deferred`. The reason says which
+of the two moments refused it:
+
+| Reason | Where the clock ran out |
+|---|---|
+| `no_time_left_in_this_pass` | before the task was started at all — between two readings of one subject, or before a new lease |
+| `no_time_left_before_submission` | after its packet was built and before an attempt existed; a slow record spent the window inside the preparation |
+
+Seeing either every pass means one reading takes longer than the window allows
+— raise `CORE_V2_RUNNER_LIFETIME_MS` if the platform gives more life, or lower
+the answer window so more readings fit. Seeing them occasionally is the design.
+In both cases nothing was prepared, sent, reserved or charged for: the task is
+queued, holds no lease, and the next pass of the same workflow starts it.
 
 ### "I need it to run right now"
 

@@ -329,6 +329,22 @@ export class PostgresOrchestrationRepository implements OrchestrationRepository 
 
   getWorkflow(workflowId: string): Promise<WorkflowRecord | null> { return this.workflowIn(this.client, workflowId); }
 
+  /* Two columns, and only these two. Migration 058's guard lists error_code
+     and error_message among the things a workflow may change; everything that
+     says what was asked, of what, by whom is frozen at creation and is not
+     touched here. No state moves — that is the whole point: a workflow already
+     at `needs_attention` has nowhere legal to move to, and still needs to
+     carry the reason the thing that runs it gave up. */
+  async noteWorkflowStopped(workflowId: string, errorCode: string, errorMessage: string): Promise<WorkflowRecord> {
+    if (!isUuid(workflowId)) throw noSuch("workflow", workflowId);
+    const r = await this.client.query(
+      `update public.intelligence_workflows w
+          set error_code = $2, error_message = $3
+        where w.id = $1 returning w.id`, [workflowId, errorCode, errorMessage]);
+    if (!r.rows.length) throw noSuch("workflow", workflowId);
+    return (await this.workflowIn(this.client, workflowId))!;
+  }
+
   private async transitionWorkflowIn(q: Q, workflowId: string, from: WorkflowState, to: WorkflowState, patch: { errorCode?: string | null; errorMessage?: string | null } = {}): Promise<WorkflowRecord> {
     if (!workflowMoveAllowed(from, to)) {
       const wf = await this.workflowIn(q, workflowId);

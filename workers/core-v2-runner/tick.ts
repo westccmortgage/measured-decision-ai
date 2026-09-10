@@ -54,14 +54,16 @@ export type TickOptions = {
   clearTimer?: (handle: unknown) => void;
 };
 
+/* `reconciled` names workflows whose continuation had been settled by
+   something other than a pass, and which this tick brought back into
+   agreement. Every outcome carries it, because the repair runs on every tick
+   rather than only on an idle one. */
 export type TickOutcome =
-  /* `reconciled` names workflows whose continuation had been settled by
-     something other than a pass, and which this tick told. */
   | { kind: "nothing_due"; reconciled: string[] }
-  | { kind: "no_such_workflow"; workflowId: string }
-  | { kind: "not_configured"; workflowId: string; missing: string[] }
-  | { kind: "material_not_provable"; workflowId: string; detail: unknown }
-  | { kind: "ran"; workflowId: string; outcome: PassOutcome; unresolvedHosts: string[]; seed: string };
+  | { kind: "no_such_workflow"; workflowId: string; reconciled: string[] }
+  | { kind: "not_configured"; workflowId: string; missing: string[]; reconciled: string[] }
+  | { kind: "material_not_provable"; workflowId: string; detail: unknown; reconciled: string[] }
+  | { kind: "ran"; workflowId: string; outcome: PassOutcome; unresolvedHosts: string[]; seed: string; reconciled: string[] };
 
 export async function tickOnce(options: TickOptions): Promise<TickOutcome> {
   const now = options.now ?? (() => Date.now());
@@ -69,27 +71,32 @@ export async function tickOnce(options: TickOptions): Promise<TickOutcome> {
 
   /* ── what is due, and it stays ours ─────────────────────────────────── */
   const hold = await store.claim(options.runner, clock.runnerHoldMs);
-  if (!hold) {
-    /* A CONTINUATION CAN BE SETTLED BY SOMETHING THAT IS NOT A PASS.
-       core_v2_claim_continuation settles a row on the spot when the workflow
-       is already terminal or the continuation ceiling has been reached, and
-       then keeps looking — so the runner is never handed that workflow and
-       never gets the chance to write its state. That leaves the same orphan
-       every other final stop is careful to avoid: a settled continuation
-       beside a workflow that still says it is running.
 
-       An idle tick is exactly the right moment to notice, and it is one
-       bounded query. Nothing else about an idle tick costs anything. */
-    const told = await tellSettledWorkflows(client, 10);
-    return { kind: "nothing_due", reconciled: told };
-  }
+  /* ── A CONTINUATION CAN BE SETTLED BY SOMETHING THAT IS NOT A PASS ────
+   *
+   * core_v2_claim_continuation settles a row on the spot when the workflow is
+   * already terminal or the continuation ceiling has been reached, and then
+   * keeps looking — so the runner is never handed that workflow and never gets
+   * the chance to write its state. A pass can also die between settling a
+   * continuation and writing the workflow, which leaves the same orphan: a
+   * settled continuation beside a workflow that still says it is running,
+   * which nothing will ever run and a cancellation cannot reach.
+   *
+   * So this runs on EVERY tick, immediately after the claim, whether or not a
+   * hold was obtained. Doing it only on an idle tick made the repair depend on
+   * a tick that might never come; doing it here means the very invocation that
+   * caused the settle also repairs it. It is one bounded query and it writes
+   * only to workflows that are behind. */
+  const reconciled = await tellSettledWorkflows(client, 10);
+
+  if (!hold) return { kind: "nothing_due", reconciled };
 
   const owner = (await client.query(
     `select organization_id::text as id from public.intelligence_workflows where id = $1::uuid`,
     [hold.workflowId])).rows[0];
   if (!owner) {
     await store.settle(hold.workflowId, "no_such_workflow");
-    return { kind: "no_such_workflow", workflowId: hold.workflowId };
+    return { kind: "no_such_workflow", workflowId: hold.workflowId, reconciled };
   }
   const organizationId = String(owner.id);
 
@@ -106,7 +113,7 @@ export async function tickOnce(options: TickOptions): Promise<TickOutcome> {
        honest answer, so the record's own backoff applies and a misconfigured
        deployment does not hammer the database. */
     await store.release({ workflowId: hold.workflowId, holdToken: hold.holdToken, moved: false, error: "not_configured" });
-    return { kind: "not_configured", workflowId: hold.workflowId, missing };
+    return { kind: "not_configured", workflowId: hold.workflowId, missing, reconciled };
   }
 
   const built = await buildWorldFor({
@@ -126,7 +133,7 @@ export async function tickOnce(options: TickOptions): Promise<TickOutcome> {
       await recordFinalStop(repo, hold.workflowId, "material_not_provable", null);
     } catch { /* the settle below is what stops it; this only explains it */ }
     await store.settle(hold.workflowId, "material_not_provable");
-    return { kind: "material_not_provable", workflowId: hold.workflowId, detail: built.detail };
+    return { kind: "material_not_provable", workflowId: hold.workflowId, detail: built.detail, reconciled };
   }
 
   /* ── the same hold, the same workflow, the same world ───────────────── */
@@ -145,7 +152,7 @@ export async function tickOnce(options: TickOptions): Promise<TickOutcome> {
     clearTimer: options.clearTimer,
   });
 
-  return { kind: "ran", workflowId: hold.workflowId, outcome, unresolvedHosts: built.unresolvedHosts, seed: built.seed };
+  return { kind: "ran", workflowId: hold.workflowId, outcome, unresolvedHosts: built.unresolvedHosts, seed: built.seed, reconciled };
 }
 
 

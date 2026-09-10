@@ -153,6 +153,10 @@ export type DispatcherOptions = {
      scheduler then leases nothing new and hands back anything it leased but
      did not start. See SchedulerOptions.mayStartWork. */
   mayStartWork?: () => boolean;
+  /* Milliseconds until this process must have returned, asked again after a
+     packet is built and again at the moment an answer is waited for. See
+     SchedulerOptions.msUntilDeadline. */
+  msUntilDeadline?: () => number;
 };
 
 export type WorkRemaining = { runnable: number; busy: number; reconcilable: number; inFlight: number };
@@ -664,6 +668,7 @@ export class Dispatcher {
     const scheduler = new Scheduler(repo, manifest, this.options.pack, this.policy, this.router, this.options.executors(manifest), {
       owner: this.name, leaseTtlMs, now: this.options.now, dispatcher: this.name,
       mayStartWork: this.options.mayStartWork,
+      msUntilDeadline: this.options.msUntilDeadline,
     });
     const held: Held = { workflowId, manifest, scheduler };
     this.held.set(workflowId, held);

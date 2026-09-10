@@ -337,6 +337,12 @@ export async function runOnePass(options: RunnerOptions): Promise<PassOutcome> {
          "do not start what you cannot finish" rule, and it is one expression
          because it is one rule. */
       mayStartWork: () => now() < stopLeasingAt && !winding.signal.aborted,
+      /* AND THE SAME DEADLINE, IN MILLISECONDS, FOR THE TWO QUESTIONS ONLY
+         THE KERNEL CAN ASK: is there still room now that the packet is built,
+         and how long may this answer actually be waited for. Building a packet
+         is not free, so a gate that was open when the task was picked up can
+         be shut by the time there is anything to send. */
+      msUntilDeadline: () => deadlineAt - now(),
       /* One workflow gets this invocation. The runner already chose which. */
       workflowsPerPass: 1,
       events: emit,
@@ -552,7 +558,16 @@ export async function recordFinalStop(
       });
     };
 
-    if (workflow.state === "needs_attention") { await note("needs_attention"); return { reason, workflowState: "needs_attention" }; }
+    /* ALREADY WHERE IT WOULD BE MOVED TO — AND STILL TOLD.
+       The transition table has no self-loop for `needs_attention` and should
+       not gain one, so the reason is written directly onto the two columns
+       migration 058 allows a workflow to change. The state does not move; the
+       record stops disagreeing with itself. */
+    if (workflow.state === "needs_attention") {
+      const noted = await repo.noteWorkflowStopped(workflowId, patch.errorCode, patch.errorMessage);
+      await note(noted.state);
+      return { reason, workflowState: noted.state };
+    }
     if (["planning", "running", "ready_for_decision", "deciding"].includes(workflow.state)) {
       const moved = await repo.transitionWorkflow(workflowId, workflow.state, "needs_attention", patch);
       await note(moved.state);

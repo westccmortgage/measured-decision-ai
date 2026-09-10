@@ -563,6 +563,85 @@ await withThrowawayDatabase(async ({ client, organizationId }) => {
   }
 
   {
+    /* ── THE DELAY INSIDE PREPARATION, WHICH NO EARLIER GATE CAN SEE ────
+     *
+     * Both gates so far are asked before the packet exists: once before a task
+     * is leased, once before a lane runs one. Building a packet reads the
+     * workflow's segments, its accepted claims and its material references
+     * from the record, and a slow record spends the window inside that. A gate
+     * that was open when the task was picked up is shut by the time there is
+     * anything to send — and the request would still go out.
+     *
+     * So the clock is moved forward BY THE PREPARATION ITSELF: the client is
+     * wrapped, and the read of the segments — which is the first thing
+     * buildPacket does — costs the rest of the window. Nothing is slow in
+     * wall-clock terms; the fake clock simply says the time went. */
+    await dueNow(client, started.workflowId);
+    const preparationStart = clock.now();
+    const deadline = preparationStart + derived.deadlineMs;
+    let charged = false;
+    const slowRecord = {
+      query: async (sql, params) => {
+        if (!charged && /from public\.source_segments/.test(sql)) {
+          charged = true;
+          /* Past the point where one answer AND the room to write it down
+             would still fit, but not past the deadline itself: the pass is
+             alive and can still finish tidily, it simply has no room left to
+             buy anything. */
+          const spend = derived.deadlineMs - derived.settlementRoomMs + 500;
+          clock.advance(spend - (clock.now() - preparationStart));
+        }
+        return client.query(sql, params);
+      },
+      transaction: (fn) => client.transaction(fn),
+    };
+
+    const before = await client.query(
+      `select count(*)::text as n from public.agent_attempts where workflow_id = $1`, [started.workflowId]);
+    const sent = [];
+    const outcome = await tickOnce({
+      runner: "clock-slow-preparation",
+      client: slowRecord,
+      store: new PostgresContinuationStore(client),
+      clock: derived,
+      gates: gatesWith(),
+      transport: sealedTransport({ sent, now: clock.now }),
+      startedAt: preparationStart,
+      deadlineAt: deadline,
+      now: clock.now,
+      setTimer: clock.setTimer,
+      clearTimer: clock.clearTimer,
+    });
+    const after = await client.query(
+      `select count(*)::text as n from public.agent_attempts where workflow_id = $1`, [started.workflowId]);
+
+    t.check("a pass whose preparation ate the window still returns cleanly",
+      outcome.kind === "ran", String(outcome.kind));
+    t.check("NOTHING WAS SENT after preparation used up the room to answer",
+      sent.length === 0, `${sent.length} requests`);
+    t.check("and no attempt was even created, so nothing was reserved",
+      n(after.rows) === n(before.rows), `${n(before.rows)} then ${n(after.rows)}`);
+
+    const deferredAfterPacket = await client.query(
+      `select count(*)::text as n from public.audit_events
+        where action = 'core_v2.task.deferred' and detail->>'reason' = 'no_time_left_before_submission'`);
+    t.check("the task was put back with the reason naming the moment it was refused",
+      n(deferredAfterPacket.rows) > 0, `${n(deferredAfterPacket.rows)} deferred after the packet was built`);
+
+    const stillQueued = await client.query(
+      `select count(*)::text as n from public.workflow_tasks
+        where workflow_id = $1 and state = 'queued' and lease_owner is null`, [started.workflowId]);
+    t.check("and it is queued again, holding no lease, waiting for the next pass",
+      n(stillQueued.rows) > 0, `${n(stillQueued.rows)} queued`);
+
+    const brokenByTime = await client.query(
+      `select count(*)::text as n from public.agent_attempts
+        where workflow_id = $1 and state in ('failed_known','outcome_unknown')`, [started.workflowId]);
+    t.check("no reading was recorded as failed or unknown because of this process's clock",
+      n(brokenByTime.rows) === 0, `${n(brokenByTime.rows)}`);
+  }
+
+  {
     /* The next pass starts what the last one deferred, and does not re-run
        what already answered. An attempt that succeeded is never bought
        again, so a second attempt on a completed task would show up here. */
@@ -647,6 +726,91 @@ await withThrowawayDatabase(async ({ client, organizationId }) => {
   }
 
   {
+    /* ── THE PROCESS THAT DIED BETWEEN THE TWO WRITES ──────────────────
+     *
+     * Stopping a workflow for good is two records: the continuation stops
+     * being woken, and the workflow is told why. A pass that dies between them
+     * leaves the orphan this whole section exists to prevent — and it must not
+     * take a lucky idle tick to notice. The repair now runs on EVERY tick,
+     * immediately after the claim, so the next tick of any kind repairs it.
+     *
+     * The death is simulated exactly: the continuation is settled and the
+     * workflow is not told, which is precisely what the record looks like a
+     * microsecond after the first write and a microsecond before the second. */
+    const halfWritten = await startVia(client, organizationId, { sourceSetSeed: "stop/died-between-writes" });
+    /* The workflow is walked to a mid-run state through the transitions 058
+       allows, and then the continuation is settled and the workflow is NOT
+       told. That is exactly the record a microsecond after the first write and
+       a microsecond before the second. */
+    await client.query(`update public.intelligence_workflows set state = 'queued' where id = $1`, [halfWritten.workflowId]);
+    await client.query(`update public.intelligence_workflows set state = 'planning' where id = $1`, [halfWritten.workflowId]);
+    await client.query(`update public.intelligence_workflows set state = 'running' where id = $1`, [halfWritten.workflowId]);
+    await store.settle(halfWritten.workflowId, "handed_to_a_person");
+
+    const stranded = (await client.query(
+      `select state, error_code from public.intelligence_workflows where id = $1`,
+      [halfWritten.workflowId])).rows[0];
+    t.check("the record is now in the state a death between the two writes leaves",
+      (await store.read(halfWritten.workflowId))?.state === "settled" &&
+      String(stranded.error_code ?? "") !== "runner_stopped",
+      `${stranded.state} / ${stranded.error_code ?? "(none)"}`);
+
+    /* Something else entirely is due, so this is a BUSY tick, not an idle
+       one — the repair must not depend on the queue happening to be empty. */
+    const other = await startVia(client, organizationId, { sourceSetSeed: "stop/somebody-else" });
+    const next = await tickVia(client, { runner: "half-second", life: { ...LIFE, lifetimeMs: 10_000 } });
+    t.check("the next tick had other work to do, so this was not an idle tick",
+      next.kind === "ran" && next.outcome.workflowId === other.workflowId,
+      `${next.kind} ${next.kind === "ran" ? next.outcome.workflowId : ""}`);
+    t.check("and it repaired the half-written stop anyway",
+      next.kind === "ran" && next.reconciled.includes(halfWritten.workflowId),
+      JSON.stringify(next.kind === "ran" ? next.reconciled : []));
+
+    const repaired = (await client.query(
+      `select state, error_code, error_message from public.intelligence_workflows where id = $1`,
+      [halfWritten.workflowId])).rows[0];
+    t.check("the workflow now carries runner_stopped and the reason the continuation gave",
+      String(repaired.error_code) === "runner_stopped" && String(repaired.error_message) === "handed_to_a_person",
+      `${repaired.state}: ${repaired.error_code} / ${repaired.error_message}`);
+    t.check("and it is left in a state a person can still act on, or cancel",
+      String(repaired.state) === "needs_attention", String(repaired.state));
+
+    /* Told once, and not told again on every tick thereafter. */
+    const again = await tickVia(client, { runner: "half-third", life: { ...LIFE, lifetimeMs: 10_000 } });
+    t.check("a workflow already told is not told a second time",
+      (again.kind === "ran" || again.kind === "nothing_due") &&
+      !(again.reconciled ?? []).includes(halfWritten.workflowId),
+      JSON.stringify(again.reconciled ?? []));
+  }
+
+  {
+    /* A WORKFLOW ALREADY AT needs_attention IS STILL TOLD WHY IT STOPPED.
+       The transition table has no self-loop, so the earlier code wrote an
+       audit entry and left the workflow's own columns saying whatever the
+       dispatcher had put there — `nothing_runnable`, which is true and is not
+       the reason the runner gave up. */
+    const already = await startVia(client, organizationId, { sourceSetSeed: "stop/already-attending" });
+    await client.query(`update public.intelligence_workflows set state = 'queued' where id = $1`, [already.workflowId]);
+    await client.query(`update public.intelligence_workflows set state = 'planning' where id = $1`, [already.workflowId]);
+    await client.query(
+      `update public.intelligence_workflows
+          set state = 'needs_attention', error_code = 'nothing_runnable', error_message = 'nothing is runnable'
+        where id = $1`, [already.workflowId]);
+
+    await store.settle(already.workflowId, "no_progress_in_5_continuations");
+    await tickVia(client, { runner: "attending-second", life: { ...LIFE, lifetimeMs: 10_000 } });
+    const after = (await client.query(
+      `select state, error_code, error_message from public.intelligence_workflows where id = $1`,
+      [already.workflowId])).rows[0];
+    t.check("a workflow already at needs_attention keeps that state",
+      String(after.state) === "needs_attention", String(after.state));
+    t.check("and still gets runner_stopped with the specific reason written on it",
+      String(after.error_code) === "runner_stopped" &&
+      String(after.error_message) === "no_progress_in_5_continuations",
+      `${after.error_code} / ${after.error_message}`);
+  }
+
+  {
     /* THE STATE NOBODY SHOULD BE ABLE TO REACH.
        A workflow that is genuinely still going, whose waking has been turned
        off, and whose owner then asks for it to be cancelled. Before migration
@@ -700,6 +864,13 @@ await withThrowawayDatabase(async ({ client, organizationId }) => {
        never gets to write its state. The tick notices on its next idle pass;
        this is that, from the ceiling rather than from 200 real invocations. */
     const capped = await startVia(client, organizationId, { sourceSetSeed: "stop/at-the-ceiling" });
+    /* A workflow that is genuinely under way when it runs out of passes —
+       which is the case that matters. One still sitting at `created` would end
+       terminal, and a late cancellation of something that never began is
+       correctly a no-op. */
+    await client.query(`update public.intelligence_workflows set state = 'queued' where id = $1`, [capped.workflowId]);
+    await client.query(`update public.intelligence_workflows set state = 'planning' where id = $1`, [capped.workflowId]);
+    await client.query(`update public.intelligence_workflows set state = 'running' where id = $1`, [capped.workflowId]);
     const limits = await store.limits();
     await client.query(
       `update public.workflow_continuations
@@ -731,6 +902,57 @@ await withThrowawayDatabase(async ({ client, organizationId }) => {
     t.check("and the state it stopped in is one a person can still act on or cancel",
       TERMINAL_WORKFLOW_STATES.includes(String(why.state)) === false || String(why.state) === "failed",
       String(why.state));
+
+    /* ── AND A CANCELLATION AFTER THE CEILING ACTUALLY RUNS ────────────
+     *
+     * Reopening a row settled by the ceiling used to be theatre: the state
+     * went back to `due` and the continuation COUNT stayed at the ceiling, so
+     * the very next claim read it, settled the row again, and handed the
+     * workflow to nobody. The cancellation was reopened straight back into the
+     * fuse it was reopened past.
+     *
+     * The fix is a small bounded budget of claims — enough to cancel, nowhere
+     * near enough to run — and this proves both halves of that sentence. */
+    if (!TERMINAL_WORKFLOW_STATES.includes(String(why.state))) {
+      await client.query(
+        `update public.intelligence_workflows set cancel_requested_at = now() where id = $1`,
+        [capped.workflowId]);
+      const reopened = await store.reopenForCancellation(capped.workflowId);
+      t.check("a workflow stopped by the ceiling can still be cancelled: the waking reopens",
+        reopened?.state === "due", String(reopened?.state));
+      t.check("and the count is lowered just enough for a claim to get through",
+        (reopened?.continuations ?? 0) < limits.maximumContinuations,
+        `${reopened?.continuations} of ${limits.maximumContinuations}`);
+
+      const attemptsBefore = (await client.query(
+        `select count(*)::text as n from public.agent_attempts where workflow_id = $1`, [capped.workflowId])).rows[0];
+
+      let held = false;
+      for (let i = 0; i < 4; i++) {
+        await client.query(
+          `update public.workflow_continuations set due_at = now() - interval '1 minute' where workflow_id = $1`,
+          [capped.workflowId]);
+        const pass = await tickVia(client, { runner: `ceiling-cancel-${i}`, life: { ...LIFE, lifetimeMs: 10_000 } });
+        if (pass.kind === "ran" && pass.outcome.workflowId === capped.workflowId) held = true;
+        if (String(await stateOf(client, capped.workflowId)) === "cancelled") break;
+      }
+      t.check("a runner is actually handed the workflow rather than being blocked by the same limit again",
+        held === true);
+      t.check("and the workflow really is cancelled, not merely asked about",
+        String(await stateOf(client, capped.workflowId)) === "cancelled",
+        String(await stateOf(client, capped.workflowId)));
+
+      const attemptsAfter = (await client.query(
+        `select count(*)::text as n from public.agent_attempts where workflow_id = $1`, [capped.workflowId])).rows[0];
+      t.check("ORDINARY WORK DID NOT RESUME — not one new attempt was made on the way out",
+        Number(attemptsAfter.n) === Number(attemptsBefore.n),
+        `${attemptsBefore.n} then ${attemptsAfter.n}`);
+
+      const budgetLeft = await store.read(capped.workflowId);
+      t.check("and the reopening was a budget for cancelling, not a fresh life",
+        (budgetLeft?.continuations ?? 0) >= limits.maximumContinuations - 3,
+        `${budgetLeft?.continuations} of ${limits.maximumContinuations}`);
+    }
   }
 
   {
