@@ -77,7 +77,10 @@ jobs:
           if before["armed"] is not True or before["watchdog"] is not True:
               raise SystemExit("Staging continuation watchdog is not ready; nothing changed.")
 
-          secrets = {item["name"]: item.get("value") for item in api("/secrets")}
+          secret_rows = api("/secrets")
+          print("Staging secret names: " + ", ".join(sorted(item["name"] for item in secret_rows)))
+          print("Secret metadata fields: " + ", ".join(sorted({key for item in secret_rows for key in item})))
+          secrets = {item["name"]: item.get("value", item.get("digest")) for item in secret_rows}
           required = ("ANTHROPIC_API_KEY", "OPENAI_API_KEY", "GEMINI_API_KEY")
           missing = [name for name in required if not secrets.get(name)]
           if missing:
@@ -91,7 +94,10 @@ jobs:
           # Owner analyses already derive permission and budget from the saved
           # Run press. Leave the global paid-call gate and global budget alone.
           api("/secrets", [{"name": flag, "value": "true"}])
-          after_secrets = {item["name"]: item.get("value") for item in api("/secrets")}
+          after_secret_rows = api("/secrets")
+          print("Staging secret names: " + ", ".join(sorted(item["name"] for item in secret_rows)))
+          print("Secret metadata fields: " + ", ".join(sorted({key for item in secret_rows for key in item})))
+          secrets = {item["name"]: item.get("value", item.get("digest")) for item in secret_rows}
           if after_secrets.get(flag) not in ("true", hashlib.sha256(b"true").hexdigest()):
               raise SystemExit("Configuration write returned, but its readback did not verify; no analysis invoked.")
           if any(after_secrets.get(name) != value for name, value in secrets.items() if name != flag):
