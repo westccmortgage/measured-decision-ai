@@ -103,10 +103,7 @@ jobs:
               api("/secrets", [{"name": name, "value": os.environ[name]} for name in missing])
               print("Configured missing staging provider keys by name: " + ", ".join(missing))
           api("/secrets", [{"name": flag, "value": "true"}])
-          after_secret_rows = api("/secrets")
-          print("Staging secret names: " + ", ".join(sorted(item["name"] for item in secret_rows)))
-          print("Secret metadata fields: " + ", ".join(sorted({key for item in secret_rows for key in item})))
-          secrets = {item["name"]: item.get("value", item.get("digest")) for item in secret_rows}
+          after_secrets = {item["name"]: item.get("value", item.get("digest")) for item in api("/secrets")}
           if after_secrets.get(flag) not in ("true", hashlib.sha256(b"true").hexdigest()):
               raise SystemExit("Configuration write returned, but its readback did not verify; no analysis invoked.")
           if any(after_secrets.get(name) != value for name, value in secrets.items() if name != flag):
