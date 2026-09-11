@@ -1,0 +1,52 @@
+name: Connect analysis to the existing Measured Decision project
+on:
+  push:
+    branches: [claude/core-v2-production-runner-v1]
+    paths: [.github/workflows/connect-existing-analysis.yml]
+permissions:
+  contents: read
+concurrency:
+  group: connect-existing-analysis
+  cancel-in-progress: false
+jobs:
+  inspect:
+    if: github.repository == 'westccmortgage/measured-decision-ai' && github.ref == 'refs/heads/claude/core-v2-production-runner-v1'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Read existing project configuration without invoking an analysis
+        env:
+          SUPABASE_ACCESS_TOKEN: ${{ secrets.SUPABASE_ACCESS_TOKEN }}
+        shell: python
+        run: |
+          import json, os, urllib.request, urllib.error, hashlib
+          root = "https://api.supabase.com/v1/projects/hbqlhplgqwuesrovbiye"
+          token = os.environ["SUPABASE_ACCESS_TOKEN"]
+          def api(path, payload=None):
+              req = urllib.request.Request(root + path, data=None if payload is None else json.dumps(payload).encode(),
+                  headers={"Authorization": "Bearer " + token, "Content-Type": "application/json"})
+              try:
+                  with urllib.request.urlopen(req, timeout=40) as r:
+                      body = r.read()
+                      return json.loads(body) if body else None
+              except urllib.error.HTTPError as e:
+                  raise SystemExit(f"{path}: HTTP {e.code}")
+          def query(sql):
+              return api("/database/query", {"query": sql, "read_only": True})
+          print("KEY NAMES", sorted(x["name"] for x in api("/secrets")))
+          print("FUNCTIONS", json.dumps([{k:x.get(k) for k in ("slug","status","verify_jwt")} for x in api("/functions")]))
+          print("MIGRATIONS", json.dumps(query("select version from supabase_migrations.schema_migrations order by version")))
+          print("RECORD", json.dumps(query("""
+            select
+              (select count(*) from public.intelligence_workflows where state not in ('completed','partial','failed','cancelled')) as unfinished,
+              (select count(*) from public.workflow_continuations where state in ('due','held')) as queued,
+              (select count(*) from public.agent_attempts) as attempts,
+              (select count(*) from public.analysis_runs) as analyses,
+              (select count(*) from public.attempt_cost_reservations) as reservations
+          """)))
+          print("SETTINGS", json.dumps(query("select armed,endpoint,secret_name from public.core_v2_runner_settings")))
+          print("COLUMNS", json.dumps(query("select table_schema,table_name,column_name from information_schema.columns where (table_schema='supabase_migrations' and table_name='schema_migrations') or (table_schema='public' and table_name='analysis_files' and column_name like 'content%')")))
+          print("EXTENSIONS", json.dumps(query("select extname from pg_extension where extname in ('pg_net','pg_cron','supabase_vault')")))
+          auth = api("/config/auth")
+          print("AUTH REDIRECTS", json.dumps({k:auth.get(k) for k in ("site_url","uri_allow_list")}))
+          print("Read-only inspection complete; no provider called.")
