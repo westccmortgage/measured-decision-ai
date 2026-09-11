@@ -2,7 +2,7 @@ name: Connect analysis to the existing Measured Decision project
 on:
   push:
     branches: [claude/core-v2-production-runner-v1]
-    paths: [.github/workflows/connect-existing-analysis.yml]
+    paths: [.github/workflows/connect-existing-analysis.yml, .github/scripts/connect-existing-analysis.py]
 permissions:
   contents: read
 concurrency:

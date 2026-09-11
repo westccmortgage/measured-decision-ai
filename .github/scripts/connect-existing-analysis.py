@@ -120,12 +120,12 @@ def prepare():
 def readiness():
     # Use the existing platform service credential inside this job only.
     # It is never logged, persisted, or sent to a model.
-    keys = api("/api-keys")
+    keys = api("/api-keys?reveal=true")
     key = next((x.get("api_key") for x in keys if x.get("name") == "service_role"), None)
     if not key:
         raise SystemExit("Cannot authenticate the read-only runner readiness check.")
     req = urllib.request.Request(TICK + "?mode=readiness", data=b"{}",
-        headers={"Authorization": "Bearer " + key, "Content-Type": "application/json"})
+        headers={"x-core-v2-runner": key, "Content-Type": "application/json"})
     try:
         with urllib.request.urlopen(req, timeout=30) as response:
             result = json.load(response)
