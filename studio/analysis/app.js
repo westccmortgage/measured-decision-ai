@@ -17,7 +17,7 @@
  *      nothing else. Provider keys live in the function environment; this file
  *      could not reach a provider if it tried.
  */
-import { backendFor } from "./backend.js";
+import { backendFor } from "./backend.js?v=existing-project-1";
 import { AnalysisRecord, Refusal } from "./record.js";
 import { KINDS, MAXIMUM_FILES, humanBytes } from "./formats.js";
 import { clock, coverageSentence } from "./plan.js";
@@ -25,9 +25,7 @@ import { clock, coverageSentence } from "./plan.js";
 const FUNCTION = "core-v2-analysis";
 const screen = document.getElementById("screen");
 
-/* WHICH DATABASE THIS PAGE IS TALKING TO. Decided by the address it was opened
-   at, said out loud on the screen, and defaulting to production so that a
-   merge cannot quietly point the product at a test branch. */
+/* Use the Studio project and its existing account session on this origin. */
 const backend = backendFor(window.location.hostname, window.MDAI_CONFIG || {});
 const config = {
   supabaseUrl: backend.supabaseUrl,
@@ -39,9 +37,7 @@ const client = window.supabase?.createClient && config.supabaseUrl && config.sup
   ? window.supabase.createClient(config.supabaseUrl, config.supabasePublishableKey, {
       auth: {
         persistSession: true, autoRefreshToken: true, detectSessionInUrl: true,
-        /* One key per backend, so a session on the test branch and a session
-           on production do not overwrite each other in this browser. */
-        storageKey: `mdai-analysis-${backend.database}`,
+
       },
     })
   : null;

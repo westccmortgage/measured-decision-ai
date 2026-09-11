@@ -136,6 +136,19 @@ Deno.serve(async (request: Request): Promise<Response> => {
       console.log(line({ fn: FUNCTION, event: "auth.by_record" }));
     }
 
+    // Authenticated readiness check: connects to the real record but never
+    // claims a workflow, creates an attempt or reaches a provider.
+    if (new URL(request.url).searchParams.get("mode") === "readiness") {
+      const row = (await db.query("select current_database() as database")).rows[0];
+      return json(200, {
+        databaseConnected: Boolean(row?.database),
+        providerNetworkEnabled: Deno.env.get(NETWORK_VARIABLE) === "true",
+        providerKeysPresent: ["ANTHROPIC_API_KEY", "OPENAI_API_KEY", "GEMINI_API_KEY"]
+          .every((name) => Boolean(Deno.env.get(name))),
+        workflowClaimed: false,
+      });
+    }
+
     const store = new PostgresContinuationStore(db as never);
 
     const result = await tickOnce({
