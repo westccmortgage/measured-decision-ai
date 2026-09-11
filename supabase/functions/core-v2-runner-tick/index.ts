@@ -36,9 +36,10 @@ import "../_shared/core-v2/install-node-globals.ts";
 import { EdgeDatabase, DatabaseUnreachable } from "../_shared/core-v2/deno-postgres.ts";
 import { isRouteProblem, routeToRecord } from "../_shared/core-v2/route.ts";
 import { invocationClock, EDGE_FUNCTION_LIFETIME_MS } from "../../../workers/core-v2-runner/clock.ts";
+import { everyDeclaredKeyIsPresent } from "../../../workers/core-v2-runtime/runtime-config.ts";
 import { PostgresContinuationStore } from "../../../workers/core-v2-runner/continuations.ts";
 import { tickOnce } from "../../../workers/core-v2-runner/tick.ts";
-import { denoTransport } from "../core-v2-runner/world.ts";
+import { denoTransport, isProblem, operatorRegistry } from "../core-v2-runner/world.ts";
 import bundledDeclaration from "../../../workers/core-v2-canary/registry.canary.json" with { type: "json" };
 import { readStoredObject } from "../_shared/core-v2/storage.ts";
 import { asToken, line } from "../core-v2-runner/log.ts";
@@ -136,15 +137,34 @@ Deno.serve(async (request: Request): Promise<Response> => {
       console.log(line({ fn: FUNCTION, event: "auth.by_record" }));
     }
 
-    // Authenticated readiness check: connects to the real record but never
-    // claims a workflow, creates an attempt or reaches a provider.
+    /* AUTHENTICATED READINESS CHECK. Connects to the real record but never
+     * claims a workflow, creates an attempt or reaches a provider.
+     *
+     * WHICH VARIABLES HOLD THE KEYS IS NOT THIS DOOR'S BUSINESS, AND SAYING
+     * SO OUT LOUD BREAKS A RULE THE SUITE ENFORCES. A door that writes one
+     * of those variable names down has an opinion about which providers
+     * exist, and this repository keeps exactly one line anywhere that reads
+     * a key — the step after every check that can be made without one, in
+     * the sealed executor. boundaries.mjs reads these files as TEXT for that
+     * reason, and fails a door that names such a variable even to count it.
+     * That is why the names are not written here, in code or in prose.
+     *
+     * The declaration already says which variable each provider's key lives
+     * in. Asking it is both the honest answer — "the providers THIS
+     * deployment declares have their keys set" — and one that keeps working
+     * when the declaration changes. */
     if (new URL(request.url).searchParams.get("mode") === "readiness") {
       const row = (await db.query("select current_database() as database")).rows[0];
+      const declared = operatorRegistry(
+        (name: string) => Deno.env.get(name), bundledDeclaration);
       return json(200, {
         databaseConnected: Boolean(row?.database),
         providerNetworkEnabled: Deno.env.get(NETWORK_VARIABLE) === "true",
-        providerKeysPresent: ["ANTHROPIC_API_KEY", "OPENAI_API_KEY", "GEMINI_API_KEY"]
-          .every((name) => Boolean(Deno.env.get(name))),
+        /* Named providers, never a variable name and never a value: what is
+           missing is discoverable from the declaration the operator wrote. */
+        providersDeclared: isProblem(declared) ? 0 : declared.config.providers.length,
+        providerKeysPresent: !isProblem(declared)
+          && everyDeclaredKeyIsPresent(declared.config, (name) => Deno.env.get(name)),
         workflowClaimed: false,
       });
     }
