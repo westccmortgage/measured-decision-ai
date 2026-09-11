@@ -4,6 +4,7 @@ import json
 import os
 from pathlib import Path
 import sys
+import time
 import urllib.error
 import urllib.request
 
@@ -118,27 +119,29 @@ def prepare():
 
 
 def readiness():
-    # Use the existing platform service credential inside this job only.
-    # It is never logged, persisted, or sent to a model.
-    keys = api("/api-keys?reveal=true")
-    key = next((x.get("api_key") for x in keys if x.get("name") == "service_role"), None)
-    if not key:
-        raise SystemExit("Cannot authenticate the read-only runner readiness check.")
-    info = api("/functions/core-v2-runner-tick")
-    print("READINESS AUTH", json.dumps({"verify_jwt": info.get("verify_jwt"), "status": info.get("status"),
-        "credential_matches_environment": hashlib.sha256(key.encode()).hexdigest() == secret_digests().get("SUPABASE_SERVICE_ROLE_KEY")}))
-    req = urllib.request.Request(TICK + "?mode=readiness", data=b"{}",
-        headers={"x-core-v2-runner": key, "Content-Type": "application/json"})
+    # Exercise the watchdog's real authentication path. The credential stays
+    # inside Vault and is sent by pg_net directly to this project's own door.
+    request_id = query("""select net.http_post(
+      url := 'https://hbqlhplgqwuesrovbiye.supabase.co/functions/v1/core-v2-runner-tick?mode=readiness',
+      headers := jsonb_build_object('Content-Type','application/json','x-core-v2-runner',
+        (select decrypted_secret from vault.decrypted_secrets where name='core_v2_runner_secret' limit 1)),
+      body := '{}'::jsonb, timeout_milliseconds := 20000) as id""", write=True)[0]["id"]
+    response = None
+    for _ in range(30):
+        rows = query("select status_code, content, timed_out from net._http_response where id=" + str(int(request_id)))
+        if rows:
+            response = rows[0]
+            break
+        time.sleep(1)
+    if response is None or response.get("timed_out"):
+        raise SystemExit("The deployed readiness request did not return in its bounded window.")
     try:
-        with urllib.request.urlopen(req, timeout=30) as response:
-            result = json.load(response)
-    except urllib.error.HTTPError as error:
-        try:
-            detail = json.loads(error.read())
-            reason = str(detail.get("refused", detail.get("message", detail.get("msg", "unclassified"))))[:180]
-        except Exception:
-            reason = "non-JSON error"
-        raise SystemExit(f"Runner readiness: HTTP {error.code}: {reason}") from None
+        result = json.loads(response.get("content") or "{}")
+    except ValueError:
+        raise SystemExit("Readiness returned no JSON.")
+    if response.get("status_code") != 200:
+        raise SystemExit("Runner readiness: HTTP " + str(response.get("status_code")) +
+                         ": " + str(result.get("refused", "unclassified"))[:180])
     if result.get("databaseConnected") is not True or result.get("providerKeysPresent") is not True:
         raise SystemExit("The deployed runner is not ready: " + json.dumps(result))
     if result.get("workflowClaimed") is not False:
@@ -148,7 +151,6 @@ def readiness():
 
 def activate():
     idle()
-    print("DEPLOYED READINESS", json.dumps(readiness()))
     # Install the existing watchdog, not a new orchestration mechanism.
     query("""begin;
       create extension if not exists pg_net;
@@ -166,6 +168,7 @@ def activate():
         'select public.core_v2_watchdog_tick(10)');
       commit;""", write=True)
     idle()
+    print("DEPLOYED READINESS", json.dumps(readiness()))
     api("/secrets", [{"name": FLAG, "value": "true"}])
     after = secret_digests()
     if after.get(FLAG) not in ("true", hashlib.sha256(b"true").hexdigest()):
