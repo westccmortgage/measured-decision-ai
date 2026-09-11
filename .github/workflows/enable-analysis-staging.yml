@@ -22,6 +22,9 @@ jobs:
       - name: Check staging readiness and enable its existing network gate
         env:
           SUPABASE_ACCESS_TOKEN: ${{ secrets.SUPABASE_ACCESS_TOKEN }}
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
         shell: python
         run: |
           import hashlib
@@ -83,8 +86,9 @@ jobs:
           secrets = {item["name"]: item.get("value", item.get("digest")) for item in secret_rows}
           required = ("ANTHROPIC_API_KEY", "OPENAI_API_KEY", "GEMINI_API_KEY")
           missing = [name for name in required if not secrets.get(name)]
-          if missing:
-              raise SystemExit("Staging provider configuration missing: " + ", ".join(missing))
+          unavailable = [name for name in missing if not os.environ.get(name)]
+          if unavailable:
+              raise SystemExit("Provider keys absent in both staging and repository secrets: " + ", ".join(unavailable) + "; no configuration changed.")
           functions = api("/functions")
           active = {item["slug"] for item in functions if item.get("status") == "ACTIVE"}
           if not {"core-v2-analysis", "core-v2-runner", "core-v2-runner-tick"}.issubset(active):
@@ -93,6 +97,11 @@ jobs:
 
           # Owner analyses already derive permission and budget from the saved
           # Run press. Leave the global paid-call gate and global budget alone.
+          if missing:
+              # Fill absent staging keys from existing deployment secrets only.
+              # Never replace a key that was already configured on staging.
+              api("/secrets", [{"name": name, "value": os.environ[name]} for name in missing])
+              print("Configured missing staging provider keys by name: " + ", ".join(missing))
           api("/secrets", [{"name": flag, "value": "true"}])
           after_secret_rows = api("/secrets")
           print("Staging secret names: " + ", ".join(sorted(item["name"] for item in secret_rows)))
