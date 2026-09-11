@@ -66,6 +66,14 @@ export class InMemoryOrchestrationRepository {
         this.workflows.set(workflowId, next);
         return next;
     }
+    async noteWorkflowStopped(workflowId, errorCode, errorMessage) {
+        const workflow = this.workflows.get(workflowId);
+        if (!workflow)
+            throw new Error(`core-v2: no workflow ${workflowId}`);
+        const next = { ...workflow, errorCode, errorMessage };
+        this.workflows.set(workflowId, next);
+        return next;
+    }
     async updateWorkflowProgress(workflowId, progress) {
         const wf = this.workflows.get(workflowId);
         if (!wf)

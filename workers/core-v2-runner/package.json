@@ -1,0 +1,11 @@
+{
+  "name": "@measured-decision/core-v2-runner",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Production Runner V1: one authorized start, then the record keeps the workflow moving. Claims one due continuation, advances that workflow under one coherent clock budget, and says when to come back — before it returns. Names no provider.",
+  "type": "module",
+  "scripts": {
+    "test": "bash tests/run.sh"
+  },
+  "dependencies": {}
+}

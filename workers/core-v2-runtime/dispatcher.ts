@@ -147,6 +147,16 @@ export type DispatcherOptions = {
   workflowsPerPass?: number;
   resumeLimit?: number;
   backoff?: Partial<BackoffSettings>;
+  /* Handed straight to every scheduler this dispatcher holds. A pass that
+     lives inside a container with a deadline answers false once there is no
+     longer room to start a reading, wait for it and write it down; the
+     scheduler then leases nothing new and hands back anything it leased but
+     did not start. See SchedulerOptions.mayStartWork. */
+  mayStartWork?: () => boolean;
+  /* Milliseconds until this process must have returned, asked again after a
+     packet is built and again at the moment an answer is waited for. See
+     SchedulerOptions.msUntilDeadline. */
+  msUntilDeadline?: () => number;
 };
 
 export type WorkRemaining = { runnable: number; busy: number; reconcilable: number; inFlight: number };
@@ -159,6 +169,9 @@ export type WorkflowPass = {
   quiet: boolean;
   remaining: WorkRemaining;
   needsPerson: boolean;
+  /* Tasks this pass leased and handed straight back because the clock ran
+     out before they could be started. They are queued, unrun and uncharged. */
+  deferred: number;
 };
 
 export type PassReport = {
@@ -430,23 +443,44 @@ export class Dispatcher {
     return r.rows.map((row) => row.id!).filter((id): id is string => Boolean(id));
   }
 
+  /* ONE WORKFLOW'S CANCELLATION, HONOURED WHEREVER IT WAS ASKED FOR.
+   *
+   * Public because a caller that holds exactly one workflow — the production
+   * runner does — must be able to honour a cancellation on that one without
+   * scanning the queue for every other. It was private, and the first version
+   * of the runner therefore drove `advance()` straight past a cancelled
+   * workflow: the scheduler's tick correctly refuses to do anything for a
+   * workflow being cancelled, so nothing happened, forever, and the runner
+   * eventually handed a cancelled workflow to a person as though it were
+   * merely stuck.
+   *
+   * Answers true when it did the cancelling, so the caller can tell that from
+   * "there was nothing to cancel". */
+  async honourCancellation(workflowId: string, repo?: OrchestrationRepository): Promise<boolean> {
+    const record = repo ?? await this.record();
+    const workflow = await record.getWorkflow(workflowId);
+    if (!workflow || workflow.cancelRequestedAt === null) return false;
+    if (workflow.domainPack !== this.options.pack.id) return false;
+    if (TERMINAL.includes(workflow.state)) return false;
+    try {
+      const held = await this.hold(workflowId);
+      const outcome = await held.scheduler.cancel("cancel_requested");
+      this.held.delete(workflowId);
+      this.emit("workflow.cancelled", {
+        workflow: workflowId, unsent_cancelled: outcome.unsentCancelled,
+        submitted_unresolved: outcome.submittedUnresolved, completed_preserved: outcome.completedPreserved,
+      });
+      return true;
+    } catch (error) {
+      this.emit("workflow.error", { workflow: workflowId, problem: problemToken(error), during: "cancellation" });
+      return false;
+    }
+  }
+
   private async honourCancellations(repo: OrchestrationRepository): Promise<string[]> {
     const cancelled: string[] = [];
     for (const workflowId of await this.cancellingWorkflows()) {
-      const workflow = await repo.getWorkflow(workflowId);
-      if (!workflow || workflow.domainPack !== this.options.pack.id) continue;
-      try {
-        const held = await this.hold(workflowId);
-        const outcome = await held.scheduler.cancel("cancel_requested");
-        this.held.delete(workflowId);
-        cancelled.push(workflowId);
-        this.emit("workflow.cancelled", {
-          workflow: workflowId, unsent_cancelled: outcome.unsentCancelled,
-          submitted_unresolved: outcome.submittedUnresolved, completed_preserved: outcome.completedPreserved,
-        });
-      } catch (error) {
-        this.emit("workflow.error", { workflow: workflowId, problem: problemToken(error), during: "cancellation" });
-      }
+      if (await this.honourCancellation(workflowId, repo)) cancelled.push(workflowId);
     }
     return cancelled;
   }
@@ -484,20 +518,27 @@ export class Dispatcher {
     let ticks = 0;
     let worked = false;
     let quiet = false;
+    let deferred = 0;
     while (ticks < budget && this.accepting()) {
       const tick = await held.scheduler.tick();
       ticks++;
       const moved = tick.dispatched.length + tick.released + tick.stopped + tick.reconciled;
       if (moved > 0) worked = true;
+      deferred += tick.deferred.length;
       this.emit("workflow.tick", {
         workflow: workflowId, tick: ticks, state: tick.workflowState,
         dispatched: tick.dispatched.length, completed: tick.completed.length, failed: tick.failed.length,
         unknown: tick.unknown.length, cancelled: tick.cancelled.length, reconciled: tick.reconciled,
-        released: tick.released, stopped: tick.stopped, children: tick.childrenCreated,
+        released: tick.released, stopped: tick.stopped, deferred: tick.deferred.length, children: tick.childrenCreated,
         /* How many subjects were handed to a person, never what they say. */
         escalations: tick.escalations.length, in_flight: held.scheduler.inFlight.size,
       });
-      if (moved === 0 && held.scheduler.inFlight.size === 0) { quiet = true; break; }
+      /* Deferring is not quiet. Nothing moved because there was no time, and
+         the work is sitting in the queue waiting for the next pass — which is
+         a different fact from a workflow with nothing left to do, and the two
+         must not be recorded as the same one. */
+      if (moved === 0 && tick.deferred.length === 0 && held.scheduler.inFlight.size === 0) { quiet = true; break; }
+      if (moved === 0 && tick.deferred.length > 0) break;
     }
 
     /* Quiet within the budget: let the kernel close the workflow the way it
@@ -531,7 +572,7 @@ export class Dispatcher {
       this.held.delete(workflowId);
       this.emit("workflow.settled", { workflow: workflowId, state: workflow.state, needs_person: needsPerson });
     }
-    return { workflowId, state: workflow.state, ticks, worked, quiet, remaining, needsPerson };
+    return { workflowId, state: workflow.state, ticks, worked, quiet, remaining, needsPerson, deferred };
   }
 
   /* What is left that this engine could do by itself. Nothing runnable,
@@ -626,6 +667,8 @@ export class Dispatcher {
     const leaseTtlMs = this.options.leaseTtlMs ?? this.policy.attemptTimeoutMs + this.policy.settlementAllowanceMs + 1;
     const scheduler = new Scheduler(repo, manifest, this.options.pack, this.policy, this.router, this.options.executors(manifest), {
       owner: this.name, leaseTtlMs, now: this.options.now, dispatcher: this.name,
+      mayStartWork: this.options.mayStartWork,
+      msUntilDeadline: this.options.msUntilDeadline,
     });
     const held: Held = { workflowId, manifest, scheduler };
     this.held.set(workflowId, held);

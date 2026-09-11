@@ -174,6 +174,27 @@ export function paidCallRefusals(config: RuntimeConfig, providerId?: string, mod
 
    Everything else is unauthorised, however thoroughly it is configured. */
 
+/* WHETHER THIS DEPLOYMENT HOLDS A KEY FOR EVERY PROVIDER IT DECLARES.
+ *
+ * Answers yes or no, and that is deliberately all. It never returns a
+ * variable name and never returns a value — which is what lets a door report
+ * that it is ready without naming, or even being ABLE to name, anything
+ * worth stealing. The rule this serves is enforced by reading the doors as
+ * text: a door that writes such a name down fails the suite whether or not
+ * it ever reads one, so the question has to be asked from here, where the
+ * configuration already says which variable holds which provider's key.
+ *
+ * A declaration with no providers is not ready. Saying "yes, all nought of
+ * them" would be true and useless. */
+export function everyDeclaredKeyIsPresent(
+  config: RuntimeConfig,
+  environment: (name: string) => string | undefined,
+): boolean {
+  if (config.providers.length === 0) return false;
+  return config.providers.every((provider) =>
+    Boolean(environment(provider.apiKeyEnvironmentVariable)));
+}
+
 export type AuthorizedProvider = { providerId: string; models: string[] };
 
 /* The providers this authorisation actually covers, and the models of each

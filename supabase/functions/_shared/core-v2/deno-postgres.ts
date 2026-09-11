@@ -46,12 +46,12 @@ export const CONNECT_TIMEOUT_MS = 10_000;
 export class DatabaseUnreachable extends Error {
   readonly phase: string;
   constructor(message: string, phase: string) {
-    super(`core-v2-canary: the record could not be reached (${phase}): ${message}`);
+    super(`core-v2 edge: the record could not be reached (${phase}): ${message}`);
     this.phase = phase;
   }
 }
 
-export class CanaryDatabase {
+export class EdgeDatabase {
   private client: Client;
   private tail: Promise<unknown> = Promise.resolve();
   private ended = false;
@@ -67,7 +67,7 @@ export class CanaryDatabase {
      34340500490 sat until the gateway gave up at 160 seconds with nothing to
      show for it. A connection that cannot be made must fail as a named
      diagnostic in ten seconds, not as silence in three minutes. */
-  static async connect(databaseUrl: string, applicationName: string, connectTimeoutMs = CONNECT_TIMEOUT_MS): Promise<CanaryDatabase> {
+  static async connect(databaseUrl: string, applicationName: string, connectTimeoutMs = CONNECT_TIMEOUT_MS): Promise<EdgeDatabase> {
     let url: URL;
     try {
       url = new URL(databaseUrl);
@@ -109,7 +109,7 @@ export class CanaryDatabase {
     } finally {
       if (timer !== undefined) clearTimeout(timer);
     }
-    return new CanaryDatabase(client);
+    return new EdgeDatabase(client);
   }
 
   /* Serialise, so a transaction's statements cannot interleave with anything. */

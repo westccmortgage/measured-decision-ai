@@ -37,6 +37,7 @@ run "the prime domain reaches AWS"    studio/tests/prime-domain-reaches-the-clou
 run "the create-project form"         studio/tests/create-project-form.mjs
 run "the drop box has a way onward"   studio/tests/intake-dead-end.mjs
 run "the two doors are told apart"    studio/tests/two-doors.mjs
+run "which database a page talks to" studio/tests/which-database.mjs
 run "one way through"                 studio/tests/one-way-through.mjs
 run "signing in from a phone"         studio/tests/mobile-sign-in.mjs
 run "every screen, pressed"           studio/tests/screen-audit.mjs
@@ -88,6 +89,8 @@ run "pressing a pin in the room"      studio/tests/pano-markers-vr.mjs
 run "walking to the next room"        studio/tests/room-menu-on-screen.mjs
 run "where the reader could not read" studio/tests/reading-register.mjs
 run "no shadowed bindings"            studio/tests/static-shadows.mjs
+run "real files in, pages and frames out" studio/tests/analysis-material.mjs
+run "the analysis path, walked"        studio/tests/analysis-screens.mjs
 
 printf "\n%s\n" "────────────────────────────────────────────"
 if [ "$fail" = "0" ]; then echo "ALL CHECKS PASS"; else echo "SOMETHING FAILED — see above"; fi

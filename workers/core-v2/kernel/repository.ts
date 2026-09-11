@@ -172,6 +172,16 @@ export interface OrchestrationRepository {
   createWorkflow(record: WorkflowRecord, sources: SourceDescriptor[]): Promise<WorkflowRecord>;
   getWorkflow(workflowId: string): Promise<WorkflowRecord | null>;
   transitionWorkflow(workflowId: string, from: WorkflowState, to: WorkflowState, patch?: { errorCode?: string | null; errorMessage?: string | null }): Promise<WorkflowRecord>;
+  /* WHY IT STOPPED, WITHOUT MOVING IT.
+     A workflow already at `needs_attention` cannot be transitioned to
+     `needs_attention` — the table has no self-loop and should not gain one.
+     But when the thing that runs it gives up for good, the reason belongs on
+     the workflow whatever state it is already in, or a person reading the
+     workflow and a person reading its continuation see two different stories.
+     Migration 058 lists error_code and error_message among the columns a
+     workflow may change, so this writes those two and nothing else — never a
+     state, never a timestamp anyone reasons about. */
+  noteWorkflowStopped(workflowId: string, errorCode: string, errorMessage: string): Promise<WorkflowRecord>;
   updateWorkflowProgress(workflowId: string, progress: { totalUnits: number; completedUnits: number; attentionUnits: number }): Promise<void>;
   requestCancel(workflowId: string, at: number): Promise<WorkflowRecord>;
   claimOutbox(workflowId: string, dispatcher: string): Promise<boolean>;

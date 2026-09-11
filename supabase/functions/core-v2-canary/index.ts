@@ -28,7 +28,7 @@
  */
 /* FIRST, AND ON PURPOSE. Everything below reaches the kernel's import graph,
    which calls Buffer at module scope. See install-node-globals.ts. */
-import { installedGlobals } from "./install-node-globals.ts";
+import { installedGlobals } from "../_shared/core-v2/install-node-globals.ts";
 
 import declaration from "../../../workers/core-v2-canary/registry.canary.json" with { type: "json" };
 import {
@@ -48,8 +48,8 @@ import { compilePrompt } from "../../../workers/core-v2-runtime/prompt-compiler.
 import { buildProviderRegistry } from "../../../workers/core-v2-runtime/providers/registry.ts";
 import { InMemoryMaterialResolver } from "../../../workers/core-v2-runtime/material/memory-resolver.ts";
 import type { StoredMaterial } from "../../../workers/core-v2-runtime/material/memory-resolver.ts";
-import { CanaryDatabase, CONNECT_TIMEOUT_MS, DatabaseUnreachable } from "./deno-postgres.ts";
-import { DenoFetchTransport } from "./deno-transport.ts";
+import { EdgeDatabase, CONNECT_TIMEOUT_MS, DatabaseUnreachable } from "../_shared/core-v2/deno-postgres.ts";
+import { DenoFetchTransport } from "../_shared/core-v2/deno-transport.ts";
 
 /* The digest of the one-time trigger. The token itself was generated on the
    operator's machine, never written to the repository and never stored here:
@@ -243,7 +243,7 @@ const ORGANIZATION_ID = entityId("core-v2-canary-organization", "core-v2-canary"
  * query, and the first that either does not exist or has not finished is
  * this run's. An operator can still pin one with
  * CORE_V2_CANARY_GENERATION when they want a specific workflow. */
-async function chooseGeneration(db: CanaryDatabase, startFresh = false): Promise<{ generation: number; runId: string; workflowId: string; resuming: boolean; generationsInTheRecord: number[] }> {
+async function chooseGeneration(db: EdgeDatabase, startFresh = false): Promise<{ generation: number; runId: string; workflowId: string; resuming: boolean; generationsInTheRecord: number[] }> {
   if (PINNED_GENERATION) {
     const pinned = Number(PINNED_GENERATION);
     return { generation: pinned, runId: runIdFor(pinned), workflowId: workflowIdFor(pinned), resuming: false, generationsInTheRecord: [] };
@@ -400,15 +400,15 @@ Deno.serve(async (request: Request): Promise<Response> => {
   const databaseUrl = route.url;
 
   const events: unknown[] = [];
-  let db: CanaryDatabase | null = null;
-  let dispatcherDb: CanaryDatabase | null = null;
+  let db: EdgeDatabase | null = null;
+  let dispatcherDb: EdgeDatabase | null = null;
   /* Named before the generation is known, so a failure on the way to
      knowing it still has something to report. */
   let RUN_ID = CANARY_ID;
   let WORKFLOW_ID = "";
   try {
-    db = await CanaryDatabase.connect(databaseUrl, CANARY_ID);
-    dispatcherDb = await CanaryDatabase.connect(databaseUrl, `${CANARY_ID}-dispatcher`);
+    db = await EdgeDatabase.connect(databaseUrl, CANARY_ID);
+    dispatcherDb = await EdgeDatabase.connect(databaseUrl, `${CANARY_ID}-dispatcher`);
 
     /* ── 5a · which generation, decided from the record ──────────────── */
     const chosen = await chooseGeneration(db, body.startNewGeneration === true);
@@ -683,12 +683,12 @@ async function probeDatabase(): Promise<Response> {
   const route = chosen.describe;
   const passwordFrom = chosen.passwordFrom;
 
-  let db: CanaryDatabase | null = null;
+  let db: EdgeDatabase | null = null;
   try {
     /* One connection, opened once, with the deadline the first run lacked. */
     const at = Date.now();
     try {
-      db = await CanaryDatabase.connect(databaseUrl, `${CANARY_ID}-probe`, CONNECT_TIMEOUT_MS);
+      db = await EdgeDatabase.connect(databaseUrl, `${CANARY_ID}-probe`, CONNECT_TIMEOUT_MS);
       phases.push({ phase: "connect", ms: Date.now() - at, detail: { route, passwordFrom, tls: "required", connectTimeoutMs: CONNECT_TIMEOUT_MS } });
     } catch (error) {
       phases.push({ phase: "connect", ms: Date.now() - at, detail: `FAILED: ${String((error as Error).message ?? error).slice(0, 300)}` });
@@ -773,7 +773,7 @@ async function probeDatabase(): Promise<Response> {
 }
 
 /* WHAT HAPPENED, READ BACK OUT OF THE RECORD rather than remembered. */
-async function report(db: CanaryDatabase, ledger: BudgetLedger, RUN_ID: string, WORKFLOW_ID: string, extra: Record<string, unknown>): Promise<Record<string, unknown>> {
+async function report(db: EdgeDatabase, ledger: BudgetLedger, RUN_ID: string, WORKFLOW_ID: string, extra: Record<string, unknown>): Promise<Record<string, unknown>> {
   const rows = async (sql: string, params: (string | number)[] = []) => (await db.query(sql, params)).rows;
   const standing = await ledger.standing(WORKFLOW_ID).catch(() => null);
   return {

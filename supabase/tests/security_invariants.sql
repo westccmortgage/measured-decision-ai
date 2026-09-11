@@ -5199,6 +5199,345 @@ select pg_temp.check('and the workflow is then holding exactly that',
   (select reserved from public.workflow_cost_budgets
     where workflow_id = '0c0e0000-0000-0000-0000-000000000001') = 0.0045);
 
+-- ═══════════════════════════════ 060 · the durable answer to "run it again"
+--
+-- The one fact that makes a workflow move without a person: when it is next
+-- due, who holds it, and how many passes in a row have moved nothing. What
+-- these check is that it cannot be forged, cannot be written by anyone who
+-- logs in, and cannot be made to wake a workflow the engine has finished with.
+
+select pg_temp.check('row-level security is on for the continuation record',
+  (select relrowsecurity from pg_class where oid = 'public.workflow_continuations'::regclass));
+select pg_temp.check('and on the runner settings, which have no read policy at all — they are the operator''s',
+  (select relrowsecurity from pg_class where oid = 'public.core_v2_runner_settings'::regclass)
+  and (select count(*) from pg_policies where tablename = 'core_v2_runner_settings') = 0);
+select pg_temp.check('the watchdog ships DORMANT: no settings row, and armed defaults to false',
+  (select count(*) from public.core_v2_runner_settings) = 0
+  and (select column_default from information_schema.columns
+        where table_name = 'core_v2_runner_settings' and column_name = 'armed') = 'false');
+select pg_temp.check('every continuation door is granted to the service role and to nobody else',
+  (select bool_and(
+      has_function_privilege('service_role', p.oid, 'execute')
+      and not has_function_privilege('authenticated', p.oid, 'execute')
+      and not has_function_privilege('anon', p.oid, 'execute'))
+     from pg_proc p join pg_namespace n on n.oid = p.pronamespace
+    where n.nspname = 'public' and p.proname in (
+      'core_v2_schedule_continuation','core_v2_claim_continuation','core_v2_release_continuation',
+      'core_v2_settle_continuation','core_v2_due_continuations','core_v2_tick_due_continuations',
+      'core_v2_continuation_limits')));
+reset role;
+set local role authenticated;
+set local test.uid = '11111111-1111-1111-1111-111111111111';
+select pg_temp.refused_because('nobody who logs in may write a continuation — waking is not a thing a member does',
+  $$insert into public.workflow_continuations(workflow_id, organization_id)
+    values ('0c0e0000-0000-0000-0000-000000000001', 'aaaaaaaa-0000-0000-0000-000000000001')$$,
+  'row-level security');
+-- Row-level security is what keeps a person out, exactly as it is for the
+-- money tables: this deployment grants the table privileges broadly and the
+-- policies decide. A table with RLS on and NO policy returns nothing to
+-- everyone but the service role, which is why the settings are checked by
+-- what they yield rather than by an error.
+select pg_temp.check('the operator''s settings yield nothing to anyone who logs in — no policy, no rows',
+  (select count(*) from public.core_v2_runner_settings) = 0);
+select pg_temp.refused_because('and cannot be written by them',
+  $$insert into public.core_v2_runner_settings(id, armed, endpoint)
+    values (true, true, 'https://example.invalid/knock')$$,
+  'row-level security');
+reset role;
+-- And structurally, not just in this transaction's rows: an UPDATE that
+-- happens to match nothing succeeds trivially, so what is checked is that
+-- there is no policy under which one could ever match. One policy, for
+-- reading, and no other.
+select pg_temp.check('a member may read their own organisation''s continuations and change none of them',
+  (select count(*) from pg_policies where tablename = 'workflow_continuations') = 1
+  and (select cmd from pg_policies where tablename = 'workflow_continuations') = 'SELECT');
+
+-- A hold is three facts or none of them, and a settled row says why.
+-- Against a workflow that really exists, so what refuses is the constraint
+-- being checked and not the tenancy guard on the way past it.
+select pg_temp.refused_because('a half-written hold is refused: a lease nobody can prove they own is not a lease',
+  $$insert into public.workflow_continuations(workflow_id, organization_id, state, held_by)
+    values ('0c0e0000-0000-0000-0000-000000000001', 'aaaaaaaa-0000-0000-0000-000000000001', 'held', 'somebody')$$,
+  'workflow_continuations_hold_is_whole');
+select pg_temp.refused_because('and a settled row that does not say why is refused',
+  $$insert into public.workflow_continuations(workflow_id, organization_id, state)
+    values ('0c0e0000-0000-0000-0000-000000000001', 'aaaaaaaa-0000-0000-0000-000000000001', 'settled')$$,
+  'workflow_continuations_settled_says_why');
+
+-- The claim, the fencing token, and the fuse.
+select public.core_v2_schedule_continuation('0c0e0000-0000-0000-0000-000000000001');
+select pg_temp.check('a scheduled workflow is due',
+  (select state from public.workflow_continuations
+    where workflow_id = '0c0e0000-0000-0000-0000-000000000001') = 'due');
+
+create temporary table core_v2_hold on commit drop as
+  select * from public.core_v2_claim_continuation('invariant-runner', 60000);
+select pg_temp.check('one runner takes it, with a token and a deadline of its own',
+  (select state = 'held' and held_by = 'invariant-runner' and hold_token is not null and held_until > now()
+     from core_v2_hold));
+select pg_temp.check('and a second runner asking at the same moment gets nothing, rather than the same row',
+  (select workflow_id from public.core_v2_claim_continuation('another-runner', 60000)) is null);
+select pg_temp.check('a release under the wrong token is refused with a null, never applied',
+  (select workflow_id from public.core_v2_release_continuation(
+     '0c0e0000-0000-0000-0000-000000000001', gen_random_uuid(), true)) is null);
+select pg_temp.check('and the real hold still stands after that',
+  (select held_by from public.workflow_continuations
+    where workflow_id = '0c0e0000-0000-0000-0000-000000000001') = 'invariant-runner');
+select pg_temp.check('a release under the right token gives it back and says when to come again',
+  (select state from public.core_v2_release_continuation(
+     '0c0e0000-0000-0000-0000-000000000001', (select hold_token from core_v2_hold), true)) = 'due');
+
+-- What the fuse is for: a workflow that cannot be advanced stops asking.
+do $$
+declare i integer; token uuid; limits record;
+begin
+  select * into limits from public.core_v2_continuation_limits();
+  for i in 1..limits.maximum_idle_streak loop
+    perform public.core_v2_schedule_continuation('0c0e0000-0000-0000-0000-000000000001', now() - interval '1 minute');
+    select hold_token into token from public.core_v2_claim_continuation('fuse-runner', 60000);
+    exit when token is null;
+    perform public.core_v2_release_continuation('0c0e0000-0000-0000-0000-000000000001', token, false);
+  end loop;
+end $$;
+select pg_temp.check('enough passes that move nothing settle it, rather than waking it forever',
+  (select state from public.workflow_continuations
+    where workflow_id = '0c0e0000-0000-0000-0000-000000000001') = 'settled');
+select pg_temp.check('and it says which fuse it stopped on',
+  (select settled_reason from public.workflow_continuations
+    where workflow_id = '0c0e0000-0000-0000-0000-000000000001') like 'no_progress%');
+select pg_temp.check('a settled workflow cannot be woken by asking again',
+  (select state from public.core_v2_schedule_continuation('0c0e0000-0000-0000-0000-000000000001')) = 'settled');
+select pg_temp.check('and nothing due lists it',
+  not exists (select 1 from public.core_v2_due_continuations(50) w
+               where w = '0c0e0000-0000-0000-0000-000000000001'));
+
+-- The watchdog, unarmed, is silent about nothing.
+select pg_temp.check('an unarmed watchdog says it is unarmed rather than reporting an empty queue',
+  (public.core_v2_tick_due_continuations(5) ->> 'armed') = 'false');
+
+-- ═══════════════ 061 · a settled workflow can still be cancelled, and only that
+--
+-- Settling is absorbing, which is right, and which left one state nobody
+-- should be able to reach: a workflow that is still going, whose waking has
+-- been turned off, and whose owner then asks for it to be cancelled. 061
+-- opens exactly that case. These check that it opens NOTHING ELSE — that it
+-- reads the workflow's own cancel_requested_at rather than trusting a caller,
+-- that it will not restart a workflow that is over, and that it is the
+-- service role's door alone.
+
+select pg_temp.check('the reopening door is the service role''s, and nobody else''s',
+  (select has_function_privilege('service_role', p.oid, 'execute')
+      and not has_function_privilege('authenticated', p.oid, 'execute')
+      and not has_function_privilege('anon', p.oid, 'execute')
+     from pg_proc p join pg_namespace n on n.oid = p.pronamespace
+    where n.nspname = 'public' and p.proname = 'core_v2_reopen_continuation'));
+
+-- The workflow from the fuse test above is settled and not cancelled.
+select pg_temp.check('a settled workflow nobody has asked to cancel stays settled',
+  (select state from public.core_v2_reopen_continuation('0c0e0000-0000-0000-0000-000000000001')) = 'settled');
+
+update public.intelligence_workflows
+   set cancel_requested_at = now()
+ where id = '0c0e0000-0000-0000-0000-000000000001';
+select pg_temp.check('but once the RECORD ITSELF says a cancellation was asked for, the waking reopens',
+  (select state from public.core_v2_reopen_continuation('0c0e0000-0000-0000-0000-000000000001')) = 'due');
+select pg_temp.check('and the reopened row carries no settled reason and no held fuse',
+  (select settled_reason is null and settled_at is null and idle_streak = 0 and held_by is null
+     from public.workflow_continuations
+    where workflow_id = '0c0e0000-0000-0000-0000-000000000001'));
+select pg_temp.check('the reopened workflow is what a runner is next handed',
+  exists (select 1 from public.core_v2_due_continuations(50) w
+           where w = '0c0e0000-0000-0000-0000-000000000001'));
+
+-- The ceiling is the fuse a cancellation most needs to get past, because a
+-- workflow that ran out of passes is exactly the one somebody wants to stop.
+-- Reopening must lower the count far enough for a claim to get through, and
+-- no further.
+do $$
+begin
+  perform public.core_v2_settle_continuation('0c0e0000-0000-0000-0000-000000000001', 'continuation_limit');
+  update public.workflow_continuations
+     set continuations = (select maximum_continuations from public.core_v2_continuation_limits())
+   where workflow_id = '0c0e0000-0000-0000-0000-000000000001';
+  perform public.core_v2_reopen_continuation('0c0e0000-0000-0000-0000-000000000001');
+end $$;
+select pg_temp.check('a workflow stopped by the continuation ceiling can still be reopened to be cancelled',
+  (select state from public.workflow_continuations
+    where workflow_id = '0c0e0000-0000-0000-0000-000000000001') = 'due');
+select pg_temp.check('and the count is lowered just enough that a claim is not blocked by the same ceiling',
+  (select c.continuations < l.maximum_continuations
+     from public.workflow_continuations c, public.core_v2_continuation_limits() l
+    where c.workflow_id = '0c0e0000-0000-0000-0000-000000000001'));
+select pg_temp.check('a claim really is handed that workflow rather than settling it again',
+  (select workflow_id from public.core_v2_claim_continuation('cancel-runner', 60000))
+    = '0c0e0000-0000-0000-0000-000000000001');
+select pg_temp.check('and what was granted is a budget for cancelling, not a fresh life',
+  (select l.maximum_continuations - c.continuations <= 3
+     from public.workflow_continuations c, public.core_v2_continuation_limits() l
+    where c.workflow_id = '0c0e0000-0000-0000-0000-000000000001'));
+
+-- And a workflow that is over is not restarted by a late cancellation.
+do $$
+begin
+  perform public.core_v2_settle_continuation('0c0e0000-0000-0000-0000-000000000001', 'over');
+  update public.intelligence_workflows set state = 'cancelled'
+   where id = '0c0e0000-0000-0000-0000-000000000001';
+end $$;
+select pg_temp.check('a workflow that is already over is never woken by a late cancellation',
+  (select state from public.core_v2_reopen_continuation('0c0e0000-0000-0000-0000-000000000001')) = 'settled');
+
+-- ═════════════ 062 · a stop is one write, and the watchdog finishes it
+--
+-- The half-written stop is the state nobody should be able to reach: a
+-- settled continuation beside a workflow that still says it is running. These
+-- check the two doors that close it — the one-statement stop, and the repair
+-- the minute cron runs whether or not anything else is happening.
+
+select pg_temp.check('the one-write stop and the repair are the service role''s alone',
+  (select bool_and(
+      has_function_privilege('service_role', p.oid, 'execute')
+      and not has_function_privilege('authenticated', p.oid, 'execute')
+      and not has_function_privilege('anon', p.oid, 'execute'))
+     from pg_proc p join pg_namespace n on n.oid = p.pronamespace
+    where n.nspname = 'public' and p.proname in (
+      'core_v2_note_workflow_stopped', 'core_v2_stop_workflow_and_settle',
+      'core_v2_finish_stopped_workflows', 'core_v2_watchdog_tick')));
+
+insert into public.intelligence_workflows (id, organization_id, domain_pack, domain_pack_version, workflow_type,
+  engine_version, state, source_set_fingerprint, request_fingerprint)
+values ('0c0e0000-0000-0000-0000-000000000009', 'aaaaaaaa-0000-0000-0000-000000000001',
+  'synthetic-records', '1.0', 'analysis', 'core-v2.test', 'created', 'fp-stop-009', 'rq-stop-009');
+update public.intelligence_workflows set state = 'queued' where id = '0c0e0000-0000-0000-0000-000000000009';
+update public.intelligence_workflows set state = 'planning' where id = '0c0e0000-0000-0000-0000-000000000009';
+update public.intelligence_workflows set state = 'running' where id = '0c0e0000-0000-0000-0000-000000000009';
+
+-- The record a process leaves when it dies between the two writes.
+select public.core_v2_schedule_continuation('0c0e0000-0000-0000-0000-000000000009', now());
+select public.core_v2_settle_continuation('0c0e0000-0000-0000-0000-000000000009', 'handed_to_a_person');
+select pg_temp.check('a half-written stop leaves a workflow that still says it is running',
+  (select state from public.intelligence_workflows where id = '0c0e0000-0000-0000-0000-000000000009') = 'running');
+
+select pg_temp.check('the watchdog''s own tick repairs it, with nothing else happening',
+  ((public.core_v2_watchdog_tick(10) -> 'repaired' ->> 'count')::int) >= 1);
+select pg_temp.check('and the workflow now carries the reason it stopped',
+  (select error_code = 'runner_stopped' and error_message = 'handed_to_a_person' and state = 'needs_attention'
+     from public.intelligence_workflows where id = '0c0e0000-0000-0000-0000-000000000009'));
+select pg_temp.check('a workflow already told is not told again',
+  ((public.core_v2_watchdog_tick(10) -> 'repaired' ->> 'count')::int) = 0);
+
+-- The stop itself, as one statement.
+insert into public.intelligence_workflows (id, organization_id, domain_pack, domain_pack_version, workflow_type,
+  engine_version, state, source_set_fingerprint, request_fingerprint)
+values ('0c0e0000-0000-0000-0000-000000000010', 'aaaaaaaa-0000-0000-0000-000000000001',
+  'synthetic-records', '1.0', 'analysis', 'core-v2.test', 'created', 'fp-stop-010', 'rq-stop-010');
+update public.intelligence_workflows set state = 'queued' where id = '0c0e0000-0000-0000-0000-000000000010';
+update public.intelligence_workflows set state = 'planning' where id = '0c0e0000-0000-0000-0000-000000000010';
+update public.intelligence_workflows set state = 'running' where id = '0c0e0000-0000-0000-0000-000000000010';
+select public.core_v2_schedule_continuation('0c0e0000-0000-0000-0000-000000000010', now());
+select pg_temp.check('one statement settles the waking and tells the workflow together',
+  (public.core_v2_stop_workflow_and_settle('0c0e0000-0000-0000-0000-000000000010', 'no_progress_in_5_continuations')
+     ->> 'continuation_state') = 'settled');
+select pg_temp.check('and both halves are in the record',
+  (select state = 'needs_attention' and error_code = 'runner_stopped'
+      and error_message = 'no_progress_in_5_continuations'
+     from public.intelligence_workflows where id = '0c0e0000-0000-0000-0000-000000000010'));
+select pg_temp.check('a workflow that is over is never re-labelled by the repair',
+  (select public.core_v2_note_workflow_stopped(w.id, 'late') from public.intelligence_workflows w
+    where w.id = '0c0e0000-0000-0000-0000-000000000001') in ('cancelled','completed','partial','failed'));
+
+
+-- ═══════════════════════════════════════════════════ 063 · an owner's own files
+--
+-- Four tables under the organisation's own row-level security, one gate that
+-- says whether anything may be sent for this analysis, and one trigger that
+-- closes an analysis's material the moment somebody presses Run.
+
+select pg_temp.check('an analysis, its files, its pieces and its history are all behind row-level security',
+  (select count(*) from pg_class c join pg_namespace n on n.oid = c.relnamespace
+    where n.nspname = 'public' and c.relrowsecurity
+      and c.relname in ('analysis_runs','analysis_files','analysis_parts','analysis_events')) = 4);
+
+select pg_temp.check('nobody signed in may ask what an analysis was authorised to spend — that is the runner''s question',
+  not has_function_privilege('authenticated', 'public.core_v2_analysis_authority(uuid)', 'execute')
+  and not has_function_privilege('anon', 'public.core_v2_analysis_authority(uuid)', 'execute')
+  and has_function_privilege('service_role', 'public.core_v2_analysis_authority(uuid)', 'execute'));
+
+insert into public.analysis_runs (id, organization_id, title, question_kind, question, state)
+values ('0d0a0000-0000-0000-0000-000000000001', 'aaaaaaaa-0000-0000-0000-000000000001',
+        'a test analysis', 'plan_consistency', '', 'ready');
+
+select pg_temp.check('an analysis nobody has pressed Run on may not spend a penny',
+  (public.core_v2_analysis_authority(
+     (select workflow_id from public.analysis_runs where id = '0d0a0000-0000-0000-0000-000000000001'))
+   ->> 'paid_calls_allowed') = 'false');
+
+insert into public.analysis_files (id, analysis_id, organization_id, ordinal, kind, file_name, media_type,
+  byte_size, storage_path, upload_state)
+values ('0d0f0000-0000-0000-0000-000000000001', '0d0a0000-0000-0000-0000-000000000001',
+        'aaaaaaaa-0000-0000-0000-000000000001', 1, 'pdf', 'a.pdf', 'application/pdf', 1024,
+        'aaaaaaaa-0000-0000-0000-000000000001/analysis/x/1-source.pdf', 'stored');
+select pg_temp.check('while an analysis is being collected, its files can still be changed',
+  (select upload_state from public.analysis_files where id = '0d0f0000-0000-0000-0000-000000000001') = 'stored');
+
+-- The press, written the way the door writes it.
+insert into public.intelligence_workflows (id, organization_id, domain_pack, domain_pack_version, workflow_type,
+  engine_version, state, source_set_fingerprint, request_fingerprint)
+values ('0d0b0000-0000-0000-0000-000000000001'::uuid, 'aaaaaaaa-0000-0000-0000-000000000001',
+  'source-documents', '1.0', 'plan_consistency', 'core-v2.test', 'created', 'fp-analysis-1', 'rq-analysis-1');
+update public.analysis_runs
+   set workflow_id = '0d0b0000-0000-0000-0000-000000000001'::uuid, authorized_usd = 5,
+       run_requested_at = now(), state = 'running'
+ where id = '0d0a0000-0000-0000-0000-000000000001';
+
+select pg_temp.check('once it has been pressed, the amount authorised is what the runner reads from the record',
+  (public.core_v2_analysis_authority('0d0b0000-0000-0000-0000-000000000001'::uuid) ->> 'paid_calls_allowed') = 'true'
+  and (public.core_v2_analysis_authority('0d0b0000-0000-0000-0000-000000000001'::uuid) ->> 'authorized_usd')::numeric = 5);
+
+do $$
+declare moved boolean := false;
+begin
+  begin
+    update public.analysis_files set file_name = 'something-else.pdf'
+     where id = '0d0f0000-0000-0000-0000-000000000001';
+    moved := true;
+  exception when others then moved := false;
+  end;
+  perform pg_temp.check('and the material under a started analysis cannot be changed at all', not moved);
+end $$;
+
+do $$
+declare removed boolean := false;
+begin
+  begin
+    delete from public.analysis_files where id = '0d0f0000-0000-0000-0000-000000000001';
+    removed := true;
+  exception when others then removed := false;
+  end;
+  perform pg_temp.check('nor removed', not removed);
+end $$;
+
+select pg_temp.check('a spend authority without a press, or a press without an amount, is not a row that can exist',
+  exists (select 1 from pg_constraint where conname = 'analysis_runs_paid_gate_is_whole'));
+
+-- ═════════════════════════════════════════════ 064 · what gets compared with what
+
+select pg_temp.check('an analysis carries the owner''s own answer to what should be compared',
+  exists (select 1 from information_schema.columns
+           where table_schema = 'public' and table_name = 'analysis_runs' and column_name = 'pairing'));
+
+do $$
+declare moved boolean := false;
+begin
+  begin
+    update public.analysis_runs set pairing = '{"pagePairs": []}'::jsonb
+     where id = '0d0a0000-0000-0000-0000-000000000001';
+    moved := true;
+  exception when others then moved := false;
+  end;
+  perform pg_temp.check('and once it has been run, what it compares cannot be changed either', not moved);
+end $$;
+
+
 -- ──────────────────────────────────────────────────────── V1 is where it was
 select pg_temp.check('V1 keeps every row it had — Core V2 stands beside it, not on it',
   pg_temp.v1_fingerprint() = (select fingerprint from core_v2_before));

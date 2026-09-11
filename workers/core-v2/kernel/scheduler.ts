@@ -54,6 +54,38 @@ export type SchedulerOptions = {
   leaseTtlMs: number;
   now: () => number;
   dispatcher?: string;
+  /* MAY THIS PROCESS START SOMETHING NEW RIGHT NOW.
+   *
+   * Asked before a task is leased, and again immediately before each task in
+   * a lane is run — because a lane runs its tasks one after another, and the
+   * second reader of a subject starts after the first one has finished. A
+   * single timer around the pass cannot see that moment; only a question
+   * asked at that moment can.
+   *
+   * Answering false does not fail anything. A task that was leased and then
+   * not started is handed back to the queue, unrun and uncharged, for the
+   * next pass of THIS workflow to pick up. Running out of a process's time is
+   * not a reading that failed and is never recorded as one.
+   *
+   * Omitted means yes, always — which is what an in-memory run and every
+   * existing test want. */
+  mayStartWork?: () => boolean;
+  /* HOW MUCH OF THE ABSOLUTE WINDOW IS LEFT, ASKED AT THE MOMENT OF ASKING.
+   *
+   * `mayStartWork` is asked before a task is leased and before a lane runs
+   * one, and both of those are before the packet exists. Building a packet is
+   * not free — it reads the workflow's segments, its accepted claims and its
+   * material references — and a slow record can spend the rest of the window
+   * inside it. A gate that was true when the task was picked up can be false
+   * by the time there is anything to send.
+   *
+   * So the question is asked twice more: once after the packet is built and
+   * before an attempt exists at all, and once at the moment the answer is
+   * waited for, to bound that wait by what is actually left. It returns
+   * milliseconds until this process must have returned.
+   *
+   * Omitted means "no deadline", which is what an in-memory run wants. */
+  msUntilDeadline?: () => number;
 };
 
 export type TickReport = {
@@ -61,6 +93,9 @@ export type TickReport = {
   released: number;
   stopped: number;
   dispatched: string[];
+  /* Leased, then handed back unrun because there was no time left to answer
+     and settle inside this process's life. Not a failure, not a charge. */
+  deferred: string[];
   completed: string[];
   failed: string[];
   unknown: string[];
@@ -143,6 +178,70 @@ export class Scheduler {
     if (!wf || wf.state !== "running") return;
     try { await this.repo.transitionWorkflow(workflowId, "running", "needs_attention"); }
     catch (error) { if (!(error instanceof StaleState)) throw error; }
+  }
+
+  /* Omitted means yes: an in-memory run, a test and every caller that does
+     not live inside a container with a clock all start whatever is ready. */
+  private mayStartWork(): boolean {
+    return this.options.mayStartWork ? this.options.mayStartWork() === true : true;
+  }
+
+  /* HOW LONG AN ANSWER MAY BE WAITED FOR, RIGHT NOW.
+   *
+   * The smaller of what the policy allows and what is actually left after
+   * keeping back the room to write the answer down. A number at or below zero
+   * means there is no honest way to send this request: the wait would run past
+   * the moment this process must have returned, and a request still
+   * outstanding when a container goes is not a slow call — it is an outcome
+   * nobody will ever know, and this engine never buys one of those twice.
+   *
+   * With no deadline given, the policy's own timeout is the answer, which is
+   * what every existing caller has always had. */
+  /* HOW LONG THIS PASS HAS, OR NOTHING AT ALL.
+   *
+   * `null` is not "no time"; it is "nobody is holding a stopwatch". A pass
+   * inside an Edge Function container has a deadline and every gate below
+   * applies to it. A pass in a long-lived process, and every test that runs
+   * one, has none — and a gate that fired anyway would refuse work for a
+   * deadline that does not exist. That is the shape of the bug this returns
+   * null to prevent. */
+  private msLeft(): number | null {
+    if (!this.options.msUntilDeadline) return null;
+    const left = this.options.msUntilDeadline();
+    return Number.isFinite(left) ? left : null;
+  }
+
+  private roomForOneAttempt(): number {
+    if (!this.options.msUntilDeadline) return this.policy.attemptTimeoutMs;
+    const left = this.options.msUntilDeadline();
+    if (!Number.isFinite(left)) return this.policy.attemptTimeoutMs;
+    return Math.min(this.policy.attemptTimeoutMs, left - this.policy.settlementAllowanceMs);
+  }
+
+  /* WHAT THE TWO WRITES BETWEEN THE DECISION AND THE SEND ARE WORTH.
+   *
+   * Deciding to send is not sending. Between them the record is written twice
+   * — the attempt row, then the atomic submission that proves the lease, the
+   * cancellation and independence and reserves the money — and both are round
+   * trips to a database that can be slow exactly when everything else is.
+   *
+   * A gate that does not budget for them is a gate that says yes and then
+   * watches the deadline pass while the record is being written. So the gate
+   * that can still put the work back asks for this much more than nothing,
+   * and the gate at the send itself asks only for what is left. */
+  private submissionAllowanceMs(): number {
+    return Math.max(250, Math.min(5_000, Math.ceil(this.policy.settlementAllowanceMs / 4)));
+  }
+
+  /* A task put back exactly as it was found: queued, no lease, no attempt,
+     nothing bought. The reason lives in the audit trail because a task waiting
+     in the queue has no terminal reason — nothing about it is terminal. */
+  private async deferTask(taskId: string, reason: string): Promise<boolean> {
+    try {
+      await this.repo.transitionTask(taskId, "leased", "queued", reason);
+      await this.repo.audit({ action: "core_v2.task.deferred", entityType: "workflow_task", entityId: taskId, detail: { reason } });
+      return true;
+    } catch { return false; }
   }
 
   private get limits(): AdmissionLimits {
@@ -237,7 +336,7 @@ export class Scheduler {
     const wf = this.manifest.workflowId;
     let workflow = await this.repo.getWorkflow(wf);
     if (!workflow) throw new Error("core-v2: plan() before tick()");
-    const report: TickReport = { reconciled: 0, released: 0, stopped: 0, dispatched: [], completed: [], failed: [], unknown: [], cancelled: [], childrenCreated: 0, childrenReused: 0, escalations: [], workflowState: workflow.state };
+    const report: TickReport = { reconciled: 0, released: 0, stopped: 0, dispatched: [], deferred: [], completed: [], failed: [], unknown: [], cancelled: [], childrenCreated: 0, childrenReused: 0, escalations: [], workflowState: workflow.state };
 
     /* Reconciliation first, cancelled or not: what a dead worker left
        submitted becomes unknown, what it left leased goes back to the queue. */
@@ -275,6 +374,9 @@ export class Scheduler {
     if (workflow.state === "needs_attention" && runnable.length) workflow = await this.repo.transitionWorkflow(wf, "needs_attention", "running");
     for (const task of runnable) {
       if (room <= 0) break;
+      /* Nothing is leased that this process could not also finish. A lease
+         taken and abandoned is the thing that cost the canary a whole pass. */
+      if (!this.mayStartWork()) break;
       const roleActive = activeByRole.get(task.roleKey) ?? 0;
       if (roleActive >= this.policy.maximumConcurrentTasksPerRole) continue;
       const leased = await this.repo.leaseTask(task.taskId, this.options.owner, this.options.leaseTtlMs, this.options.now());
@@ -298,15 +400,30 @@ export class Scheduler {
     for (const lane of lanes.values()) {
       lane.sort((a, b) => INDEPENDENCE_GROUPS.indexOf(a.independenceGroup ?? "") - INDEPENDENCE_GROUPS.indexOf(b.independenceGroup ?? "") || a.taskId.localeCompare(b.taskId));
     }
+    /* THE QUESTION ASKED AGAIN, BETWEEN ONE READING AND THE NEXT.
+       A lane runs its tasks in order: the second blind reader of a subject
+       starts only once the first has answered. If the first spent the window,
+       the second is not sent — it goes back to the queue, unrun, and the next
+       pass of this same workflow starts it. */
+    const deferred: string[] = [];
     const outcomes = (await Promise.all([...lanes.values()].map(async (lane) => {
       const results: Awaited<ReturnType<Scheduler["runTask"]>>[] = [];
-      for (const task of lane) results.push(await this.runTask(task));
+      for (const task of lane) {
+        if (!this.mayStartWork()) { deferred.push(task.taskId); continue; }
+        results.push(await this.runTask(task));
+      }
       return results;
     }))).flat();
+    for (const taskId of deferred) {
+      if (await this.deferTask(taskId, "no_time_left_in_this_pass")) report.deferred.push(taskId);
+    }
     for (const o of outcomes) {
       if (o.state === "completed") report.completed.push(o.taskId);
       else if (o.state === "outcome_unknown") report.unknown.push(o.taskId);
       else if (o.state === "cancelled") report.cancelled.push(o.taskId);
+      /* Put back after its packet was built, because there was no room left
+         to answer it. Queued, unrun, uncharged — not a failure. */
+      else if (o.state === "deferred") report.deferred.push(o.taskId);
       else report.failed.push(o.taskId);
       report.childrenCreated += o.childrenCreated;
       report.childrenReused += o.childrenReused;
@@ -314,6 +431,12 @@ export class Scheduler {
       if (o.state === "failed_known" || o.state === "outcome_unknown") report.escalations.push(...await this.escalateDisputeOf(o.taskId, o.state));
     }
     this.escalations.push(...report.escalations);
+
+    /* A task that was never started was never dispatched — whether it was put
+       back before its packet was built or after. Saying otherwise would tell
+       the pass above that work happened, and the fuse that stops a workflow
+       waking forever is built out of that answer. */
+    report.dispatched = report.dispatched.filter((id) => !report.deferred.includes(id));
 
     /* Phase B when a discovery finished; the close of the graph when
        everything but the compositions is done. */
@@ -451,6 +574,24 @@ export class Scheduler {
     }
     const selection = routed.selection;
 
+    /* ── THE LAST QUESTION BEFORE ANYTHING IS BOUGHT ────────────────────
+     *
+     * The packet is built and the reader is chosen. Both of those cost time —
+     * segments, claims and material references are read from the record, and
+     * a slow record spends the window inside them. So the clock is asked
+     * again, HERE, before an attempt row exists and before a penny is held.
+     *
+     * If what is left cannot hold one answer and the room to write it down,
+     * nothing is sent. The task goes back to the queue exactly as it was
+     * found — still queued, no lease, no attempt, no reservation — and the
+     * next pass of THIS workflow starts it with a whole window in front of
+     * it. Running out of a process's life is not a reading that failed, is
+     * never recorded as one, and never starts a new generation. */
+    if (this.roomForOneAttempt() <= 0) {
+      await this.deferTask(task.taskId, "no_time_left_before_submission");
+      return done("deferred");
+    }
+
     const attempt = await this.repo.createAttempt(this.newAttempt(task, attemptId, attemptNo, role.executorKind, selection.executorFamily, selection.independenceDomain, selection.modelConfiguration, packet.inputFingerprint, packetBytes, leaseToken));
     const unsent = async (reason: string) => {
       await this.repo.transitionAttempt(attempt.attemptId, "prepared", "cancelled_before_submission", { errorCode: reason });
@@ -459,6 +600,24 @@ export class Scheduler {
       await this.repo.audit({ action: "core_v2.attempt.cancelled_before_submission", entityType: "agent_attempt", entityId: attempt.attemptId, detail: { task: task.taskId, reason } });
       return done("cancelled");
     };
+    /* ── THE LAST MOMENT THE WORK CAN STILL BE PUT BACK ─────────────────
+     *
+     * The attempt row has just been written and that write cost time. From
+     * the next line the task is `running`, and a running task has nowhere to
+     * go but an outcome — so this is the last point at which "there is no
+     * room" can be answered by leaving the work exactly as it was found.
+     *
+     * The allowance is what the two writes ahead are worth. Asking for a
+     * whole answer's worth here and nothing at the send itself would be a
+     * gate that says yes and then watches the deadline pass while the record
+     * is being written. */
+    if (this.msLeft() !== null && this.roomForOneAttempt() <= this.submissionAllowanceMs()) {
+      await this.repo.transitionAttempt(attempt.attemptId, "prepared", "cancelled_before_submission", { errorCode: "no_time_left_before_submission" });
+      await this.deferTask(task.taskId, "no_time_left_before_submission");
+      await this.repo.audit({ action: "core_v2.attempt.cancelled_before_submission", entityType: "agent_attempt", entityId: attempt.attemptId, detail: { task: task.taskId, reason: "no_time_left_before_submission" } });
+      return done("deferred");
+    }
+
     try { await this.repo.transitionTask(task.taskId, "leased", "running"); }
     catch { return unsent("task_no_longer_leased"); }
 
@@ -488,6 +647,42 @@ export class Scheduler {
     const report = (more: ProviderFacts) => {
       facts = { ...facts, ...more, usage: { ...(facts.usage ?? {}), ...(more.usage ?? {}) } };
     };
+    /* ── THE SEND ITSELF, AND THE ONE QUESTION ASKED ON ITS THRESHOLD ───
+     *
+     * Everything above this line is the record. Below it a request leaves the
+     * process and somebody's meter starts. The two writes that just happened
+     * — the attempt row and the atomic submission — each took time, and the
+     * whole point of a deadline is that it can pass during them.
+     *
+     * Shortening the wait afterwards does not answer this. A request sent one
+     * millisecond before the container is killed is not a fast call; it is an
+     * outcome nobody will ever know, and this engine never buys one of those
+     * twice. So the last question is asked here, at the boundary, and if the
+     * answer is no THE REQUEST IS NOT MADE.
+     *
+     * The record then says what actually happened, which is a KNOWN failure:
+     * prepared, submitted in the record, never sent. The reservation is
+     * released at zero cost through the same commit the kernel uses for every
+     * other known failure, because nothing was consumed.
+     *
+     * This gate is the backstop, not the working answer. The gate above,
+     * which can still put the task back in the queue untouched, is placed
+     * with an allowance for exactly these two writes, so reaching here means
+     * they overran it — a real anomaly, and one the record should say out
+     * loud rather than smooth over. */
+    if (this.msLeft() !== null && this.roomForOneAttempt() <= 0) {
+      const reason = "not_sent_deadline_passed: the deadline passed while the attempt was being recorded, so nothing was sent";
+      try {
+        await this.repo.commitValidatedResult(this.emptyCommit(task, attempt.attemptId, null, "failed_known", "failed_known", reason, [reason], {}, "not_sent_deadline_passed"));
+      } catch {
+        try { await this.repo.transitionAttempt(attempt.attemptId, "submitted", "failed_known", { errorCode: "not_sent_deadline_passed", errorMessage: reason }); } catch { /* already moved */ }
+        const now = await this.repo.getTask(task.taskId);
+        if (now && now.state === "running") await this.repo.transitionTask(task.taskId, "running", "failed_known", "not_sent_deadline_passed");
+      }
+      await this.repo.audit({ action: "core_v2.attempt.not_sent", entityType: "agent_attempt", entityId: attempt.attemptId, detail: { task: task.taskId, reason: "not_sent_deadline_passed" } });
+      return done("failed_known");
+    }
+
     const heartbeat = this.startHeartbeat(task.taskId, leaseToken);
     let envelope: AgentResultEnvelope;
     /* What came back, before the kernel gave it a shape. The record keeps
@@ -498,7 +693,14 @@ export class Scheduler {
     this.inFlight.set(attempt.attemptId, flight);
     flight.promise.then(() => { if (this.inFlight.get(attempt.attemptId) === flight && flight.timedOut) this.inFlight.delete(attempt.attemptId); });
     try {
-      raw = await withDeadline(execution, this.policy.attemptTimeoutMs);
+      /* AND THE WAIT ITSELF IS BOUNDED BY WHAT IS LEFT, NOT BY WHAT THE
+         POLICY HOPED FOR. Asked once more at the moment of waiting, because
+         the submission itself took time. The floor of one millisecond is
+         deliberate: the request has now gone, so the only choices are to wait
+         a little or to wait past the moment this process must have returned —
+         and an engine that does the second is the engine that produced the
+         canary's unknown outcomes. */
+      raw = await withDeadline(execution, Math.max(1, this.roomForOneAttempt()));
       envelope = normaliseEnvelope(raw);
     } catch (error) {
       const timedOut = error instanceof AttemptTimeout;

@@ -40,11 +40,11 @@
  * costs the full reservation and stops the canary — which is the safe way to
  * be wrong.
  */
-import type { RuntimeConfig } from "../../../workers/core-v2-runtime/runtime-config.ts";
-import { authorizedProviders, networkAuthorizationProblems } from "../../../workers/core-v2-runtime/runtime-config.ts";
-import type { HttpRequest, HttpResponse, HttpTransport } from "../../../workers/core-v2-runtime/transport/transport.ts";
-import { NetworkNotAuthorized, TransportFault } from "../../../workers/core-v2-runtime/transport/transport.ts";
-import { httpsOrigin, isPublicAddress, parseAddress } from "../../../workers/core-v2-runtime/transport/https.ts";
+import type { RuntimeConfig } from "../../../../workers/core-v2-runtime/runtime-config.ts";
+import { authorizedProviders, networkAuthorizationProblems } from "../../../../workers/core-v2-runtime/runtime-config.ts";
+import type { HttpRequest, HttpResponse, HttpTransport } from "../../../../workers/core-v2-runtime/transport/transport.ts";
+import { NetworkNotAuthorized, TransportFault } from "../../../../workers/core-v2-runtime/transport/transport.ts";
+import { httpsOrigin, isPublicAddress, parseAddress } from "../../../../workers/core-v2-runtime/transport/https.ts";
 
 const DEFAULT_MAXIMUM_REQUEST_BYTES = 1024 * 1024;
 const DEFAULT_MAXIMUM_RESPONSE_BYTES = 4 * 1024 * 1024;
