@@ -124,13 +124,21 @@ def readiness():
     key = next((x.get("api_key") for x in keys if x.get("name") == "service_role"), None)
     if not key:
         raise SystemExit("Cannot authenticate the read-only runner readiness check.")
+    info = api("/functions/core-v2-runner-tick")
+    print("READINESS AUTH", json.dumps({"verify_jwt": info.get("verify_jwt"), "status": info.get("status"),
+        "credential_matches_environment": hashlib.sha256(key.encode()).hexdigest() == secret_digests().get("SUPABASE_SERVICE_ROLE_KEY")}))
     req = urllib.request.Request(TICK + "?mode=readiness", data=b"{}",
         headers={"x-core-v2-runner": key, "Content-Type": "application/json"})
     try:
         with urllib.request.urlopen(req, timeout=30) as response:
             result = json.load(response)
     except urllib.error.HTTPError as error:
-        raise SystemExit(f"Runner readiness: HTTP {error.code}") from None
+        try:
+            detail = json.loads(error.read())
+            reason = str(detail.get("refused", detail.get("message", detail.get("msg", "unclassified"))))[:180]
+        except Exception:
+            reason = "non-JSON error"
+        raise SystemExit(f"Runner readiness: HTTP {error.code}: {reason}") from None
     if result.get("databaseConnected") is not True or result.get("providerKeysPresent") is not True:
         raise SystemExit("The deployed runner is not ready: " + json.dumps(result))
     if result.get("workflowClaimed") is not False:
