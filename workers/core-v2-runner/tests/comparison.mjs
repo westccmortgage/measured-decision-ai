@@ -248,17 +248,47 @@ async function startAnalysis(client, organizationId, analysisId) {
    pass that claims nothing is not the end of the story: a workflow whose
    sources have just been ingested is expanded on the NEXT pass, and stopping
    at the first quiet one leaves an analysis that never began. */
-async function drain(client, workflowId, options = {}, passes = 12) {
+/* KEEP TICKING UNTIL THE RECORD IS FINISHED WITH IT, AND SAY SO IF IT IS NOT.
+ *
+ * This used to stop after twelve passes and return quietly, which made a
+ * machine that was merely SLOW look like an engine that was wrong: the run
+ * would be half done, and five assertions downstream would report missing
+ * readings without one of them saying "it never got that far". That is the
+ * failure this repository has a rule about — a cap that truncates silently
+ * reads as "covered everything" when it did not.
+ *
+ * So the cap is a safety net rather than a schedule. What ends the loop is
+ * the record: a settled continuation or a terminal workflow. What ends it
+ * otherwise is a run of passes that moved NOTHING, which is the engine's own
+ * definition of stuck rather than a guess at how many passes enough is. And
+ * exhausting the net is reported, in words, to whoever called. */
+async function drain(client, workflowId, options = {}, passes = 40) {
+  const attempts = async () => Number((await client.query(
+    `select count(*)::text as n from public.agent_attempts where workflow_id = $1`,
+    [workflowId])).rows[0].n);
+
+  let quiet = 0;
+  let before = await attempts();
   for (let i = 0; i < passes; i += 1) {
     const settled = (await client.query(
       `select state from public.workflow_continuations where workflow_id = $1`, [workflowId])).rows[0];
     const over = (await client.query(
       `select state from public.intelligence_workflows where id = $1`, [workflowId])).rows[0];
-    if (String(settled?.state) === "settled") break;
-    if (["completed", "partial", "failed", "cancelled"].includes(String(over?.state))) break;
+    if (String(settled?.state) === "settled") return { finished: true, why: "the record settled it", passes: i };
+    if (["completed", "partial", "failed", "cancelled"].includes(String(over?.state))) {
+      return { finished: true, why: `the workflow reached ${over.state}`, passes: i };
+    }
     await dueNow(client, workflowId);
     await tickVia(client, options);
+
+    const after = await attempts();
+    quiet = after > before ? 0 : quiet + 1;
+    before = after;
+    /* Five passes in a row that added no attempt is the same fuse the record
+       itself uses. Past that, more passes are not going to help. */
+    if (quiet >= 5) return { finished: false, why: `five passes in a row moved nothing (${after} attempts)`, passes: i + 1 };
   }
+  return { finished: false, why: `gave up after ${passes} passes with the workflow still unfinished`, passes };
 }
 
 /* Everything the screen would arrange, from the record. */
@@ -367,7 +397,8 @@ await withThrowawayDatabase(async ({ client, organizationId }) => {
   t.check("no sheet was left without a partner", first.pairing.unpaired.length === 0);
 
   const seen = [];
-  await drain(client, first.workflowId, { transport: sealedTransport(seen) });
+  const firstRun = await drain(client, first.workflowId, { transport: sealedTransport(seen) });
+  t.check("the run finished rather than running out of passes", firstRun.finished, firstRun.why);
 
   const pairReadings = seen.filter((r) => r.role === "page_pair_reader");
   t.check("every pair was read twice, and each reading was given BOTH sheets",
@@ -417,7 +448,8 @@ await withThrowawayDatabase(async ({ client, organizationId }) => {
     second.pairing.note);
 
   const watched = [];
-  await drain(client, second.workflowId, { transport: sealedTransport(watched) });
+  const secondRun = await drain(client, second.workflowId, { transport: sealedTransport(watched) });
+  t.check("the run finished rather than running out of passes", secondRun.finished, secondRun.why);
 
   const momentReadings = watched.filter((r) => r.role === "moment_page_reader");
   t.check("each moment was read against the sheet, twice, with the frame AND the sheet in hand",
@@ -547,7 +579,9 @@ await withThrowawayDatabase(async ({ client, organizationId }) => {
   t.check("the run moved on, without a browser and without the chain",
     after > before, `${before} → ${after} attempts`);
 
-  await drain(client, fourth.workflowId, { runner: "core-v2-watchdog" });
+  const fourthRun = await drain(client, fourth.workflowId, { runner: "core-v2-watchdog" });
+  t.check("the watchdog carried it to the end rather than running out of passes",
+    fourthRun.finished, fourthRun.why);
   const ended = (await client.query(
     `select state from public.intelligence_workflows where id = $1`, [fourth.workflowId])).rows[0];
   t.check("and it reached an end on its own",
